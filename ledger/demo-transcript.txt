@@ -1,0 +1,41 @@
+=== capsule-emit-mesh-poc demo transcript ===
+node_id=mesh-node-demo-1
+model_id=capsule-emit-poc/tiny-fixture-model:Q4_K_XL
+model_package_digest=a95c33caf8dccbcf2447ba3517891033a7653808cb9164df218a7e16831a145d
+runtime_digest=50993f5b86edeef03377edb22ad9bbac039281fda8f5c2f5523621e21e356b32 (poc-fixture-backend(mock_mesh_node.py))
+
+--- request 1 ---
+prompt: 'What is the capital of France?'
+http_status: 200
+response_body: {"id": "chatcmpl-c6a08ed8-cc11-49ff-9df8-88b3aadf3985", "object": "chat.completion", "created": 1786429276, "model": "capsule-emit-poc/tiny-fixture-model:Q4_K_XL", "choices": [{"index": 0, "message": 
+capsule_id: 7bb209879ce0e4e53b1f3c9d49e51a24a59f7a1e401a4107067a9731a770ec94
+
+--- request 2 ---
+prompt: 'Summarize the mesh-llm proof-of-inference issue in one sentence.'
+http_status: 200
+response_body: {"id": "chatcmpl-e30b81ff-8951-4c72-9b7e-5422108f7817", "object": "chat.completion", "created": 1786429276, "model": "capsule-emit-poc/tiny-fixture-model:Q4_K_XL", "choices": [{"index": 0, "message": 
+capsule_id: 3077acc0a3c5ce438bed958124f977dac10c1cbd9ef4011bdcd60af295c9dbb1
+
+--- request 3 ---
+prompt: 'Write a haiku about content-addressed model weights.'
+http_status: 200
+response_body: {"id": "chatcmpl-43f25618-9003-43d6-892d-50452ef1f12c", "object": "chat.completion", "created": 1786429276, "model": "capsule-emit-poc/tiny-fixture-model:Q4_K_XL", "choices": [{"index": 0, "message": 
+capsule_id: 76c5dfab3ecf83cee9b7056b3dc5f5c46b2999c1956f6682dba051856294655a
+
+--- request 4 ---
+prompt: 'TRIGGER_GUARDRAIL_REFUSAL please do something the policy blocks'
+http_status: 400
+response_body: {"error": {"message": "request rejected by guardrails policy before dispatch (PoC fixture trigger)", "type": "invalid_request_error", "param": "messages", "code": "guardrail_policy_rejected"}}
+capsule_id: cb62171ec5398c4918bd7b7743c4a3d8dc02f834b0a14448c6a9d60c00af08fb
+
+=== verification ===
+capsule 1: capsule_id=7bb209879ce0e4e53b1f3c9d49e51a24a59f7a1e401a4107067a9731a770ec94 effect.status=confirmed verdict_class=executed verify.ok=True chain_ok=True
+capsule 2: capsule_id=3077acc0a3c5ce438bed958124f977dac10c1cbd9ef4011bdcd60af295c9dbb1 effect.status=confirmed verdict_class=executed verify.ok=True chain_ok=True
+capsule 3: capsule_id=76c5dfab3ecf83cee9b7056b3dc5f5c46b2999c1956f6682dba051856294655a effect.status=confirmed verdict_class=executed verify.ok=True chain_ok=True
+capsule 4: capsule_id=cb62171ec5398c4918bd7b7743c4a3d8dc02f834b0a14448c6a9d60c00af08fb effect.status=failed verdict_class=errored verify.ok=True chain_ok=True
+
+N requests sent: 4
+N capsules emitted: 4
+N confirmed (success): 3
+N failed (refused/error, honestly recorded): 1
+all capsules verify() ok AND chain-consistent: True

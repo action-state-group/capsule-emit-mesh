@@ -1,0 +1,21 @@
+
+    __( O)>  ● new session · mesh bartowski/Hermes-2-Pro-Mistral-7B-GGUF:Q4_K_M
+   \____)    20260811_14 · /Users/intangible/dev/asg/_work/capsule-emit-mesh-poc/poc
+     L L     goose is ready
+
+  ────────────────────────────────────────
+  ▸ get_node_status python3
+    node_id: mesh-node-demo-1
+
+
+  ────────────────────────────────────────
+  ▸ submit_capacity_request python3
+    gpu_hours: 4
+    node_id: mesh-node-demo-1
+    reason: inference_demand_spike
+
+The node with the ID mesh-node-demo-1 is currently healthy and the GPU capacity request has been successfully queued with the reference CAP-mo-1 for 4 GPU hours due to inference demand spike.
+
+Stats:
+  Time to first token: 7.98s
+  Tokens/sec: unavailable
