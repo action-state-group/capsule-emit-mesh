@@ -125,8 +125,11 @@ Carried alongside, and explicitly **not** assurance labels:
 - **Operational evidence mode** — `full` · `digest_only` · `sampled` · `disabled`. This describes how
   much the recorder attempted, not how much anyone should believe; a downgrade is an explicit event
   with a reason.
-- **Anchor status** — `pending` · `submitted` · `anchored` · `rejected` · `failed`, plus the achieved
-  unwitnessed window.
+- **Registration status** — #1332's `pending` · `submitted` · `anchored` · `rejected` · `failed`, plus
+  the achieved unregistered window. A terminology note worth settling early: *registration* is the
+  act, a *Receipt* is what the service returns, and *witnessing* is a separate party co-signing the
+  log's checkpoint so the log cannot equivocate. They are three things, and "anchor" is worth
+  avoiding as a verb since it collides with *trust anchor*.
 - **Claim source** — `configured_claim` · `host_verified` · `unavailable`, kept as-is.
 
 ### 5.1 How existing labels land

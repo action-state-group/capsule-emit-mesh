@@ -89,7 +89,7 @@ inside the mesh's own console is not evidence to anyone who matters in a dispute
 | R3 | Replay of earlier work as fresh | **Client-contributed nonce** bound into the receipt | Not built — today's fallback nonce is node-side and is explicitly not anti-replay evidence |
 | R4 | The response received is not the response signed | Request and output digests under one signature | Built |
 | R5 | Later denial or rewriting | Signed, hash-chained records | Built, per node |
-| R6 | A different story per audience | External witness — chain peaks published where the node cannot revise them | Chaining built; publication is the missing half |
+| R6 | A different story per audience | Registration to a Transparency Service, and a witnessed log so the log cannot equivocate either | Chaining built; registration is the missing half |
 | R7 | I cannot tell which node this was | Receipt key bound to node and owner identity | Specified in #1331; not built |
 | R8 | Output behaves nothing like the claimed model | Fingerprints, as confidence not verdict (step 4) | Not built |
 | R9 | **My prompt is read, retained, or repurposed** | Nothing in the record layer — §5 | Unaddressed; #1346 is the first attempt |
@@ -143,9 +143,9 @@ that nothing signs it.**
 | T1 | I cannot check without the mesh's cooperation | Offline verification from the record alone | Largely built; witness checking necessarily needs a network |
 | T2 | I cannot tell where in the topology this was made | Observation point in the record | Enumerated, not produced |
 | T3 | I cannot establish what the rules were at the time | Constraint-set pinning [forthcoming revision] | Not built here |
-| T4 | The record is internally valid and describes a fiction | Identity binding plus an external witness | Partly specified, not built |
+| T4 | The record is internally valid and describes a fiction | Identity binding plus registration to a log outside the producer's control | Partly specified, not built |
 | T5 | I cannot tell a failed check from one that never ran | The three-state discipline, everywhere | Stated; enforcement is per-implementation |
-| T6 | I cannot tell when this was witnessed versus when it happened | Anchoring policy and achieved latency in the record (§8) | Not built |
+| T6 | I cannot tell when this was registered versus when it happened | Registration policy and achieved latency in the record (§8) | Not built |
 
 Requester and provider can settle most disputes bilaterally. The third party cannot participate in
 that exchange at all, which is why witnessing, observation point and constraint pinning are not
@@ -169,7 +169,7 @@ reason evidence must be portable.
 - **Correctness or quality of output.** A faithful record of a wrong answer is a correct record.
 - **A compromised host signing true-shaped statements about false events.** A signature authenticates
   a statement; it does not make it true. This is the permanent floor.
-- **Coordinator/node collusion** absent an external witness.
+- **Coordinator/node collusion** absent registration to a log outside both parties' control.
 - **Traffic analysis and timing side channels.**
 
 ---
@@ -197,8 +197,15 @@ deployment properties.
 | A0 Unrecorded | Nothing survives | — | — |
 | A1 Recorded | Signed commitments to request and response bytes | Who the node is; that computation occurred | Built |
 | A2 Chained | Order and completeness within one node's history | That this is its only history | Built |
-| A3 Witnessed | Peaks published where the node cannot revise them | Anything about content | Chaining built; publication missing |
-| A4 Multiply witnessed | More than one independently operated log holds the same commitments | That any witness is honest — only that they must collude | Not built |
+| A3 Registered | The record, or a digest of it, is registered to a Transparency Service, yielding a **Receipt** — existence and content-at-registration are checkable by a party who trusts neither the node nor its operator | That the *log* is honest; a single log can still show different views to different readers | Chaining built; registration missing |
+| A4 Witnessed | The log's own checkpoint is independently co-signed, or the same commitments are registered to more than one independently operated log — so the log cannot equivocate either | That any witness is honest — only that equivocation now requires collusion | Not built |
+
+> **Three things, deliberately not merged.** *Registration* is the act of submitting a Signed
+> Statement. A *Receipt* is what the service returns — a signed inclusion proof. *Witnessing* is a
+> separate party co-signing the log's checkpoint so the log cannot present different views to
+> different readers. A perfectly good receipt from an unwitnessed log is A3, not A4. This document
+> avoids "anchor" as a verb: it is not the vocabulary of the relevant RFCs, and it collides with
+> *trust anchor*, which means a root of trust rather than an act of publication.
 
 ### Class B — Identity
 
@@ -465,23 +472,23 @@ routing-safety mechanism, *"not a mesh trust system… not gossiped, not persist
 score, and not used to prove peer identity, model honesty, owner attestation, or release
 provenance,"* with cross-node reputation deferred until there is a reviewed design.
 
-The constructive question — what a relying party may compute over anchored records, and what
+The constructive question — what a relying party may compute over registered records, and what
 assurance ordering that computation must respect — is being worked separately as agent reputation
 predicates, and is deliberately out of scope here. What belongs in a threat model is the negative
 result: **evidence is presented; policy decides; and nobody is the authority for the computation.**
 
 ---
 
-## 8. Witnessing
+## 8. Registration, receipts, and witnessing
 
 ### 8.1 Required of the claim, not of the software
 
 A hash chain proves order within one history; it cannot prove that history is the only one a node
 keeps. Only publication to a log the node does not control closes that gap.
 
-A prototype sensibly ships with anchoring **off by default**, and that is correct. The reconciliation
-is that anchoring is required *of the claim*: a node that has not anchored is at A2 and must render
-as A2. What a conformant implementation needs is the **capability** — able to anchor, to more than
+A prototype sensibly ships with registration **off by default** — #1332 calls the act *anchoring*, and the two words mean the same operation here — and that default is correct. The reconciliation
+is that registration is required *of the claim*: a node that has not registered is at A2 and must render
+as A2. What a conformant implementation needs is the **capability** — able to register, to more than
 one log, with accurate status — not the act.
 
 ### 8.2 More than one log, and why it is structural
@@ -495,20 +502,20 @@ Any public instance named in documentation should be *an* instance, never a hard
 an implementation that cannot be pointed at a different log is not conformant. **An operator inside
 this ecosystem running a second log would be worth more than any amount of neutrality language.**
 
-### 8.3 Deferred anchoring: accumulate locally, witness periodically, prove on demand
+### 8.3 Deferred registration: accumulate locally, register periodically, prove on demand
 
 Records accumulate in an append-only Merkle accumulator maintained locally; its **peaks** are
 published on a schedule. Inclusion of any individual record is proved *later, on demand*, against an
 already-witnessed peak.
 
 Two honesty requirements follow. The gap between an event and its witnessing is a **rewrite window**,
-so the record should carry the anchoring policy and achieved latency, and a verifier should weight a
-record inside that window differently. And anchoring must be **scheduled, not on-demand** — a node
-that anchors only when asked can decline to anchor the record it does not want witnessed.
+so the record should carry the registration policy and achieved latency, and a verifier should weight a
+record inside that window differently. And registration must be **scheduled, not on-demand** — a node
+that registers only when asked can decline to register the record it does not want on a log.
 
-### 8.4 What anchoring costs, and what it exposes
+### 8.4 What registration costs, and what it exposes
 
-**Latency added to a request: none.** Anchoring is off the request path — records seal locally, the
+**Latency added to a request: none.** Registration is off the request path — records seal locally, the
 accumulator advances locally, peaks publish from a background queue. #1332 already requires this
 independently. The cost is paid in *freshness*, not latency.
 
@@ -522,13 +529,13 @@ batch cadence rather than request timing. A real exposure, and a small one.
 | Risk | If the log were a hard dependency | Why it is not one here |
 |---|---|---|
 | Availability | Inference stops | Never on the serving path; an unreachable log means the record renders as A2, not that a request fails |
-| Censorship | A node cannot reach the witnessed tier | No log is named, any can be used, and multiple witnesses make refusal visible rather than fatal |
-| Equivocation | Records rest on a dishonest witness | Witnesses detect equivocation; a second operator makes disagreement visible |
+| Censorship | A node cannot reach the registered tier | No log is named, any can be used, and registering to more than one makes refusal visible rather than fatal |
+| Equivocation | Records rest on a log that shows different views to different readers | Witnessing — independent co-signature of the checkpoint — is the named mechanism; a second operator makes disagreement visible |
 | Metadata | Cadence and volume leak | Peaks only, on a schedule — coarse by construction |
 | Key compromise at the log | Historic receipts untrustworthy | Receipts evidence *registration*, not truth; the record's own signature and chain survive |
 | Silent misreporting | "Anchored" claimed on submission alone | Distinguished states — pending, submitted, anchored, rejected, failed — which #1332 already requires |
 
-**Summary: anchoring is not a meaningful runtime dependency.** The residuals are the unwitnessed
+**Summary: registration is not a meaningful runtime dependency.** The residuals are the unwitnessed
 window, coarse cadence metadata, and the governance question of *whose* log — answered by insisting
 the answer is "more than one."
 
@@ -616,9 +623,9 @@ specifics, route descriptors, nonce source, FHE parameters, fingerprint confiden
    be assembled from the stages?
 5. Where should a single normative assurance vocabulary live — mesh-llm's documentation, the record
    format's specification, or both with one normative source?
-6. **Would you operate a transparency log?** A second independent witness is the difference between a
+6. **Would you operate a Transparency Service?** A second independently operated log is the difference between a
    neutral record and one whose history rests on a single organisation.
-7. Is scheduled anchoring with on-demand inclusion proofs compatible with how nodes come and go —
+7. Is scheduled registration with on-demand inclusion proofs compatible with how nodes come and go —
    particularly a node offline when its peak is due?
 8. Does metering-without-pricing fit how you expect capacity sharing to be settled?
 
