@@ -77,9 +77,26 @@ GENERATION_PARAM_KEYS = (
 CLIENT_NONCE_HEADER = "X-Capsule-Client-Nonce"
 SIG_ALG = "EdDSA"
 
+# Bilateral request attestation headers (Move 1 of draft-mih-agent-bilateral-attestation-01).
+# Lowercased — HTTP/1.1 headers are case-insensitive; the handler normalises them before lookup.
+BILATERAL_RA_HEADER = "x-capsule-request-attestation"
+BILATERAL_RA_SIG_HEADER = "x-capsule-request-attestation-sig"
+BILATERAL_PUBKEY_HEADER = "x-capsule-client-pubkey"
+
 #: Node signing key, generated on first run into --keys-dir. Never committed:
 #: keys/ is gitignored.
 NODE_KEY_FILENAME = "node-key.pem"
+
+
+@dataclass
+class BilateralEvalResult:
+    """Result of evaluating a bilateral request attestation (Move 2)."""
+
+    present: bool
+    valid: bool
+    initiator_ref: str | None
+    correlator: str | None
+    fail_reason: str | None
 
 
 
@@ -120,6 +137,154 @@ def load_or_create_signing_key(keys_dir: Path) -> bytes:
     )
     print(f"generated a new node signing key at {node_key} (0600); keys/ is gitignored")
     return pem
+
+
+def evaluate_bilateral_attestation(
+    headers: dict[str, str],
+    raw_body: bytes,
+    request_json: dict[str, Any],
+) -> BilateralEvalResult:
+    """Move 2: evaluate the client's request attestation before dispatch.
+
+    Returns ``present=False`` when no attestation headers are sent (degraded
+    path); ``present=True, valid=False`` with ``fail_reason`` when the
+    attestation is malformed, expired, or doesn't match the request; and
+    ``present=True, valid=True`` on a clean bilateral exchange.
+
+    ⚠ Non-conformant identity: the client's public key is accepted at
+    face-value here. draft-mih-agent-bilateral-attestation-01 §4.1 requires
+    a credential chaining to a root the relying party accepts; first-use
+    acceptance of a bare public key MUST NOT be treated as conformant.
+    This PoC demonstrates the mechanism only.
+    """
+    import base64
+    from datetime import datetime, timezone
+
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import serialization
+
+    ra_b64 = headers.get(BILATERAL_RA_HEADER)
+    sig_b64 = headers.get(BILATERAL_RA_SIG_HEADER)
+    pubkey_b64 = headers.get(BILATERAL_PUBKEY_HEADER)
+
+    if not ra_b64:
+        return BilateralEvalResult(
+            present=False, valid=False, initiator_ref=None, correlator=None, fail_reason=None
+        )
+
+    if not sig_b64 or not pubkey_b64:
+        return BilateralEvalResult(
+            present=True, valid=False, initiator_ref=None, correlator=None,
+            fail_reason="missing sig or pubkey header alongside request attestation",
+        )
+
+    try:
+        ra_bytes = base64.urlsafe_b64decode(ra_b64 + "==")
+        sig_bytes = base64.urlsafe_b64decode(sig_b64 + "==")
+        pubkey_pem = base64.urlsafe_b64decode(pubkey_b64 + "==")
+    except Exception as exc:
+        return BilateralEvalResult(
+            present=True, valid=False, initiator_ref=None, correlator=None,
+            fail_reason=f"base64 decode error: {exc}",
+        )
+
+    try:
+        ra = json.loads(ra_bytes.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return BilateralEvalResult(
+            present=True, valid=False, initiator_ref=None, correlator=None,
+            fail_reason=f"RA JSON parse error: {exc}",
+        )
+
+    nonce = ra.get("nonce")
+
+    # Verify Ed25519 signature over the raw RA bytes.
+    try:
+        pubkey = serialization.load_pem_public_key(pubkey_pem)
+        pubkey.verify(sig_bytes, ra_bytes)
+    except InvalidSignature:
+        return BilateralEvalResult(
+            present=True, valid=False, initiator_ref=None, correlator=nonce,
+            fail_reason="signature verification failed",
+        )
+    except Exception as exc:
+        return BilateralEvalResult(
+            present=True, valid=False, initiator_ref=None, correlator=nonce,
+            fail_reason=f"signature error: {exc}",
+        )
+
+    initiator_ref = hashlib.sha256(ra_bytes).hexdigest()
+
+    # Check validity window.
+    valid_until_str = ra.get("valid_until")
+    if valid_until_str:
+        try:
+            valid_until = datetime.fromisoformat(valid_until_str.replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) > valid_until:
+                return BilateralEvalResult(
+                    present=True, valid=False, initiator_ref=initiator_ref, correlator=nonce,
+                    fail_reason="request attestation expired (valid_until in the past)",
+                )
+        except ValueError:
+            pass  # malformed timestamp: log but don't hard-fail in the demo
+
+    # Check request_digest: RA must commit to THIS request body.
+    actual_request_digest = hashlib.sha256(raw_body).hexdigest()
+    if ra.get("request_digest") != actual_request_digest:
+        return BilateralEvalResult(
+            present=True, valid=False, initiator_ref=initiator_ref, correlator=nonce,
+            fail_reason=(
+                f"request_digest mismatch: RA attests {ra.get('request_digest')!r}, "
+                f"actual body digest {actual_request_digest!r}"
+            ),
+        )
+
+    # Check authorization bound: request must not exceed the token ceiling the client authorized.
+    ra_max_tokens = ra.get("max_tokens")
+    req_max_tokens = request_json.get("max_tokens") or request_json.get("max_completion_tokens")
+    if ra_max_tokens is not None and req_max_tokens is not None:
+        if int(req_max_tokens) > int(ra_max_tokens):
+            return BilateralEvalResult(
+                present=True, valid=False, initiator_ref=initiator_ref, correlator=nonce,
+                fail_reason=(
+                    f"max_tokens bound exceeded: request wants {req_max_tokens}, "
+                    f"RA authorized {ra_max_tokens}"
+                ),
+            )
+
+    return BilateralEvalResult(
+        present=True, valid=True, initiator_ref=initiator_ref, correlator=nonce, fail_reason=None
+    )
+
+
+def derive_cross_party_rung(cross_party: dict[str, Any] | None, has_verified_ack: bool = False) -> str:
+    """Derive the cross_party_rung from the evidence block's own bytes.
+
+    This function IS the rung derivation described in the forthcoming capsule
+    format revision. The producer NEVER asserts a rung; the verifier derives it.
+
+    Ordering: unilateral_fallback < acknowledged_receipt < full_bilateral
+
+    unilateral_fallback
+        No ``cross_party`` block in the record, or ``initiator_ref`` is absent.
+        The node's record is a unilateral account of the exchange.
+
+    acknowledged_receipt
+        ``initiator_ref`` is present and verified — the node has cryptographic
+        evidence of the initiator's prior commitment — but no verified client
+        acknowledgment of the action capsule has been received.
+
+    full_bilateral
+        Both: ``initiator_ref`` present (node verified initiator's commitment)
+        AND a verified client ack referencing this action capsule's
+        ``capsule_id`` has been produced, establishing that both parties signed
+        over the same exchange.
+    """
+    if not cross_party or not cross_party.get("initiator_ref"):
+        return "unilateral_fallback"
+    if has_verified_ack:
+        return "full_bilateral"
+    return "acknowledged_receipt"
 
 
 def _sha256_hex(data: bytes) -> str:
@@ -190,6 +355,7 @@ def build_capsule(
     disposition_decision: str,
     latency_ms: float,
     forwarded_copy: dict[str, Any] | None = None,
+    bilateral_eval: "BilateralEvalResult | None" = None,
 ) -> dict[str, Any]:
     # Stringified for the same reason as digest_json() above: this dict is
     # committed into compute_attestation, which is itself committed into
@@ -238,6 +404,32 @@ def build_capsule(
                 "statistical_fingerprint": {"type": "statistical_fingerprint", "digest": None, "context": None},
                 "tee_attestation": {"type": "tee_attestation", "digest": None, "context": None},
             },
+            # Bilateral attestation evidence block (Move 3 of
+            # draft-mih-agent-bilateral-attestation-01). Populated from the
+            # node's evaluation of the client's request attestation (Move 2).
+            # ``cross_party_rung`` is NOT stored here — it is DERIVED by the
+            # verifier from these bytes using derive_cross_party_rung().
+            # ``counterparty_ref`` is null in the action capsule: the node's
+            # own signed capsule IS the counterparty evidence; a verifier
+            # evaluating the full exchange checks whether the initiator
+            # acknowledged the returned capsule_id (the client ack, Move 4).
+            "cross_party": {
+                "initiator_ref": bilateral_eval.initiator_ref if bilateral_eval and bilateral_eval.valid else None,
+                "counterparty_ref": None,
+                "correlator": bilateral_eval.correlator if bilateral_eval and bilateral_eval.present else None,
+                "substantive": bool(bilateral_eval and bilateral_eval.valid),
+            } if bilateral_eval and bilateral_eval.present else None,
+            # Non-conformant identity label — REQUIRED per task acceptance.
+            # This demo uses a self-held Ed25519 key; §4.1 of the draft
+            # requires a credential chaining to a root the relying party
+            # accepts and states that first-use acceptance MUST NOT be
+            # treated as conformant bilateral attestation.
+            "identity_limitation": (
+                "non-conformant-demo-key: self-generated Ed25519 key; not bound to "
+                "any third-party-issued credential or trusted root; "
+                "draft-mih-agent-bilateral-attestation-01 §4.1 states first-use "
+                "acceptance MUST NOT be treated as conformant bilateral attestation"
+            ) if bilateral_eval and bilateral_eval.present else None,
         },
     }
 
@@ -320,6 +512,7 @@ def _seal_chat_completion(
     status_code: int,
     latency_ms: float,
     forwarded_copy: dict[str, Any] | None = None,
+    bilateral_eval: "BilateralEvalResult | None" = None,
 ) -> dict[str, Any]:
     response_digest = digest_json(response_json)
     if 200 <= status_code < 300:
@@ -335,6 +528,7 @@ def _seal_chat_completion(
             disposition_decision="accept",
             latency_ms=latency_ms,
             forwarded_copy=forwarded_copy,
+            bilateral_eval=bilateral_eval,
         )
     else:
         # "checked and failed", not "absent" -- see #1233 step 7 (full
@@ -351,6 +545,7 @@ def _seal_chat_completion(
             disposition_decision="reject",
             latency_ms=latency_ms,
             forwarded_copy=forwarded_copy,
+            bilateral_eval=bilateral_eval,
         )
     signed_statement = sign_capsule(state, capsule)
     record_capsule(state, capsule, signed_statement)
@@ -509,6 +704,7 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
     request_json = json.loads(raw_body.decode("utf-8"))
     request_digest = digest_json(request_json)
     client_nonce, client_nonce_source = _resolve_client_nonce(headers)
+    bilateral_eval = evaluate_bilateral_attestation(headers, raw_body, request_json)
 
     req = urllib.request.Request(
         url=f"{upstream_base}/v1/chat/completions",
@@ -547,6 +743,7 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
             disposition_decision="accept",
             latency_ms=latency_ms,
             forwarded_copy=forwarded_copy,
+            bilateral_eval=bilateral_eval,
         )
     else:
         # "checked and failed", not "absent" -- see #1233 step 7. The
@@ -571,6 +768,7 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
             disposition_decision="reject",
             latency_ms=latency_ms,
             forwarded_copy=forwarded_copy,
+            bilateral_eval=bilateral_eval,
         )
 
     signed_statement = sign_capsule(state, capsule)
@@ -650,6 +848,7 @@ def make_handler(state: NodeState, upstream_base: str):
             """
             request_digest = digest_json(request_json)
             client_nonce, client_nonce_source = _resolve_client_nonce(headers)
+            bilateral_eval = evaluate_bilateral_attestation(headers, raw_body, request_json)
             req = urllib.request.Request(
                 url=f"{upstream_base}/v1/chat/completions",
                 data=raw_body,
@@ -694,6 +893,7 @@ def make_handler(state: NodeState, upstream_base: str):
                     response_json=response_json,
                     status_code=status_code,
                     latency_ms=latency_ms,
+                    bilateral_eval=bilateral_eval,
                 )
                 return
 
@@ -712,6 +912,7 @@ def make_handler(state: NodeState, upstream_base: str):
                 status_code=status_code,
                 latency_ms=latency_ms,
                 forwarded_copy=forwarded_copy_record(forwarded, transforms),
+                bilateral_eval=bilateral_eval,
             )
 
             body = b"".join(synthesize_sse(forwarded))
