@@ -627,7 +627,7 @@ specifics, route descriptors, nonce source, FHE parameters, fingerprint confiden
    neutral record and one whose history rests on a single organisation.
 7. Is scheduled registration with on-demand inclusion proofs compatible with how nodes come and go —
    particularly a node offline when its peak is due?
-8. Does metering-without-pricing fit how you expect capacity sharing to be settled?
+8. Is the metering-in-record / pricing-out boundary drawn where you'd expect for capacity-sharing records?
 
 ---
 
