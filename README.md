@@ -20,6 +20,8 @@ boundary.
 > key is self-attested and not bound to any real node identity or hardware root
 > (see "Field mapping").
 
+> `keys/` — public half of the demo node key. Self-attested; not bound to any node identity or hardware root. See [*About the entries in `ledger-live/`*](ledger-live/README.md) for what the anchored entries do and do not establish.
+
 **Status: live-verified (2026-08-11).** An earlier session built this against
 a mock fixture node only (sandboxed execution restriction at the time — see
 git history). This session re-ran the whole thing against a **real, running
