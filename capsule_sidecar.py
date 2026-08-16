@@ -606,9 +606,10 @@ def reassemble_streamed_response(sse_chunks: list[dict[str, Any]]) -> dict[str, 
     }
 
 
-def build_forwarded_copy(response_json: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+def build_forwarded_copy(response_json: dict[str, Any]) -> tuple[dict[str, Any], list[str], list[str]]:
     """Build the client-compatibility copy of a reassembled response, and
-    return it alongside the list of transforms that were applied to it.
+    return it alongside the list of transforms that were applied to it and
+    any tool-call IDs that were already present in the raw upstream response.
 
     The capsule's ``response_digest`` always attests to the RAW object this
     function receives; it is never recomputed from the return value. The
@@ -626,12 +627,19 @@ def build_forwarded_copy(response_json: dict[str, Any]) -> tuple[dict[str, Any],
         client-side parser rejects that combination.
 
     ``tool_call_id_minted``
-        mesh-llm's real ``tool_calls`` entries carry no ``id`` field, which
-        OpenAI-compatible clients require to correlate a tool result back to
-        its call.
+        mesh-llm's real ``tool_calls`` entries carry no ``id`` field (on the
+        ``--local-model-only`` path, which bypasses the host-runtime OpenAI
+        normalizer). When the normalizer IS active (supported port), IDs are
+        already present in the raw response and this transform does NOT fire.
+
+    Returns (forwarded_copy, transforms, upstream_tool_call_ids) where
+    ``upstream_tool_call_ids`` holds the IDs that came from the upstream
+    response as-is (i.e. minted by the normalizer, not by this sidecar).
+    An empty list means the normalizer was not active or made no tool calls.
     """
     forwarded = json.loads(json.dumps(response_json))
     transforms: list[str] = []
+    upstream_tool_call_ids: list[str] = []
     for choice in forwarded.get("choices", []):
         message = choice.get("message", {})
         tool_calls = message.get("tool_calls")
@@ -640,22 +648,36 @@ def build_forwarded_copy(response_json: dict[str, Any]) -> tuple[dict[str, Any],
             if "content_dropped_with_tool_calls" not in transforms:
                 transforms.append("content_dropped_with_tool_calls")
         for tc in tool_calls or []:
-            if not tc.get("id"):
+            if tc.get("id"):
+                # ID came from the upstream normalizer; pass through unchanged.
+                upstream_tool_call_ids.append(tc["id"])
+            else:
                 tc["id"] = f"call_{uuid.uuid4().hex[:24]}"
                 if "tool_call_id_minted" not in transforms:
                     transforms.append("tool_call_id_minted")
-    return forwarded, transforms
+    return forwarded, transforms, upstream_tool_call_ids
 
 
-def forwarded_copy_record(forwarded: dict[str, Any], transforms: list[str]) -> dict[str, Any]:
+def forwarded_copy_record(forwarded: dict[str, Any], transforms: list[str], upstream_tool_call_ids: list[str] | None = None) -> dict[str, Any]:
     """The in-capsule statement about what the calling agent actually received.
 
     ``transforms: []`` with ``digest == response_digest`` is the honest
     "nothing was changed on the way out" case, and is emitted explicitly
     rather than omitted, so a verifier can tell "unchanged" apart from
     "this producer does not report it at all".
+
+    ``upstream_tool_call_ids`` (when non-None) lists IDs that the upstream
+    normalizer added to the raw response.  When the list is non-empty, the
+    ``response_digest`` field attests to bytes that include those IDs; because
+    the IDs carry a wall clock they will differ across runs even for identical
+    model output, making ``response_digest`` run-unique on the supported port.
+    An absent or empty list means either no tool calls or the sidecar had to
+    mint them (``--local-model-only`` path).
     """
-    return {"transforms": transforms, "digest": digest_json(forwarded)}
+    result: dict[str, Any] = {"transforms": transforms, "digest": digest_json(forwarded)}
+    if upstream_tool_call_ids is not None:
+        result["upstream_tool_call_ids"] = upstream_tool_call_ids
+    return result
 
 
 def synthesize_sse(response_json: dict[str, Any]) -> list[bytes]:
@@ -728,7 +750,10 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
     # forwarded copy IS the raw object. Reported explicitly (empty transforms,
     # digest == response_digest) rather than omitted, so "nothing changed" is a
     # positive statement in the record instead of an absence.
-    forwarded_copy = forwarded_copy_record(response_json, [])
+    # Still check for upstream-minted IDs so the capsule records whether the
+    # normalizer was active (same field as in the streaming path).
+    _, _, upstream_ids = build_forwarded_copy(response_json)
+    forwarded_copy = forwarded_copy_record(response_json, [], upstream_ids)
 
     if 200 <= status_code < 300:
         capsule = build_capsule(
@@ -901,7 +926,7 @@ def make_handler(state: NodeState, upstream_base: str):
             response_json = reassemble_streamed_response(sse_chunks)  # RAW -- what mesh-llm actually returned
             # Build the compat copy BEFORE sealing so the capsule can state what
             # the caller actually got. response_digest still commits to RAW.
-            forwarded, transforms = build_forwarded_copy(response_json)
+            forwarded, transforms, upstream_ids = build_forwarded_copy(response_json)
             _seal_chat_completion(
                 state,
                 client_nonce=client_nonce,
@@ -911,7 +936,7 @@ def make_handler(state: NodeState, upstream_base: str):
                 response_json=response_json,
                 status_code=status_code,
                 latency_ms=latency_ms,
-                forwarded_copy=forwarded_copy_record(forwarded, transforms),
+                forwarded_copy=forwarded_copy_record(forwarded, transforms, upstream_ids),
                 bilateral_eval=bilateral_eval,
             )
 
