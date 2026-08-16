@@ -302,17 +302,23 @@ fabrication. `model_identity.py`'s digest formula already treats those
 blocks as optional for exactly this reason. (`build_model_package.py`, the
 original fixture-based builder, is kept for the mock-node smoke test.)
 
-**`client_nonce` is sidecar-generated when the client doesn't supply one.**
+**`client_nonce`: what it establishes and what it does not.**
+A client nonce establishes freshness: the node could not have precomputed or
+replayed a request carrying a nonce it never saw.  It says nothing about who
+the requester is.  This is the complete claim — do not let "nonce" drift into
+"identity."
+
 Issue #1233 is explicit that the *client* must contribute the nonce ("so the
-node cannot fabricate or replay a request"). This sidecar accepts a
-`X-Capsule-Client-Nonce` request header and uses it when present; when
-absent (true for every call in the live goose run — goose's OpenAI-engine
-provider doesn't send this header) it mints its own and records
-`client_nonce_source: "sidecar_generated_fallback"` rather than silently
-mislabeling it as client-supplied. A fallback-sourced nonce does not carry
-the anti-replay property the issue describes — flagged, not hidden. Wiring
-a real client-contributed nonce through goose's request path is future work
-(would need a goose extension or provider-level header injection, neither
+node cannot fabricate or replay a request"). This sidecar accepts the
+`X-Capsule-Client-Nonce` request header and uses it when present
+(`client_nonce_source: "client_supplied"`); when absent it mints its own and
+records `client_nonce_source: "sidecar_generated_fallback"` rather than
+silently mislabeling it as client-supplied.  A fallback-sourced nonce does not
+carry the freshness property above — flagged, not hidden.  `run_demo.py`
+demonstrates both paths side by side: requests 1–4 send the header and show
+`client_supplied`; request 5 omits it and shows `sidecar_generated_fallback`.
+Wiring a real client-contributed nonce through goose's request path is future
+work (would need a goose extension or provider-level header injection, neither
 built here).
 
 **Anchoring: rehearsal runs verify locally only, by decision.** `capsule-emit

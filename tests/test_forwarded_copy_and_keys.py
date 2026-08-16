@@ -50,4 +50,21 @@ assert oct(os.stat(d/"node-key.pem").st_mode)[-3:] == "600"
 assert cs.load_or_create_signing_key(d) == pem, "second call must reuse"
 print("key: generated, 0600, stable across runs")
 
+# ---- client nonce resolution ----
+# client_supplied: header present -> nonce value passed through, source label is exact
+nonce_val, nonce_src = cs._resolve_client_nonce({cs.CLIENT_NONCE_HEADER.lower(): "abc-123"})
+assert nonce_val == "abc-123", f"nonce value not passed through: {nonce_val!r}"
+assert nonce_src == "client_supplied", f"wrong source label for supplied nonce: {nonce_src!r}"
+print("nonce: client_supplied OK")
+
+# sidecar_generated_fallback: header absent -> sidecar mints a nonce, label is honest
+nonce_val2, nonce_src2 = cs._resolve_client_nonce({})
+assert nonce_src2 == "sidecar_generated_fallback", f"wrong source label for fallback nonce: {nonce_src2!r}"
+assert len(nonce_val2) == 32, f"fallback nonce has unexpected length: {len(nonce_val2)}"  # uuid4().hex
+print("nonce: sidecar_generated_fallback OK")
+
+# mutant check: the two source labels must be distinct (catches any silent unification)
+assert nonce_src != nonce_src2, "client_supplied and sidecar_generated_fallback must differ"
+print("nonce: labels are distinct (mutant check OK)")
+
 print("\nALL CHECKS PASSED")

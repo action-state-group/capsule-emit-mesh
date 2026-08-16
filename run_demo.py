@@ -35,11 +35,19 @@ KEYS_DIR = ROOT / "keys"
 MOCK_PORT = 9337
 SIDECAR_PORT = 8089
 
-PROMPTS = [
-    "What is the capital of France?",
-    "Summarize the mesh-llm proof-of-inference issue in one sentence.",
-    "Write a haiku about content-addressed model weights.",
-    "TRIGGER_GUARDRAIL_REFUSAL please do something the policy blocks",
+# Each entry is (prompt, send_nonce).
+# send_nonce=True  → X-Capsule-Client-Nonce header is sent; record shows client_nonce_source=client_supplied.
+# send_nonce=False → header is absent; sidecar mints the nonce itself and records sidecar_generated_fallback.
+# Both cases are demonstrated so the record's honest label is visible in each.
+REQUESTS: list[tuple[str, bool]] = [
+    ("What is the capital of France?", True),
+    ("Summarize the mesh-llm proof-of-inference issue in one sentence.", True),
+    ("Write a haiku about content-addressed model weights.", True),
+    ("TRIGGER_GUARDRAIL_REFUSAL please do something the policy blocks", True),
+    # Fallback case: no X-Capsule-Client-Nonce header.  The sidecar still records a nonce
+    # (so the field is never absent) but labels it sidecar_generated_fallback -- which means
+    # the node could have minted it, so it does not establish freshness from the client's side.
+    ("What does client_nonce_source=sidecar_generated_fallback mean?", False),
 ]
 
 
@@ -100,7 +108,7 @@ def main() -> None:
     log(f"runtime_digest={runtime_digest} ({state.runtime_label})")
     log("")
 
-    for i, prompt in enumerate(PROMPTS, start=1):
+    for i, (prompt, send_nonce) in enumerate(REQUESTS, start=1):
         body = json.dumps(
             {
                 "model": state.manifest["model_id"],
@@ -110,14 +118,14 @@ def main() -> None:
                 "seed": 1234 + i,
             }
         ).encode("utf-8")
+        extra_headers: dict[str, str] = {}
+        if send_nonce:
+            extra_headers["X-Capsule-Client-Nonce"] = f"demo-client-nonce-{i:04d}"
         req = urllib.request.Request(
             url=f"http://127.0.0.1:{SIDECAR_PORT}/v1/chat/completions",
             data=body,
             method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "X-Capsule-Client-Nonce": f"demo-client-nonce-{i:04d}",
-            },
+            headers={"Content-Type": "application/json", **extra_headers},
         )
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
@@ -129,8 +137,10 @@ def main() -> None:
             response_body = exc.read()
             capsule_id = exc.headers.get("X-Capsule-Id") if exc.headers else None
 
+        nonce_label = "client_supplied (X-Capsule-Client-Nonce sent)" if send_nonce else "sidecar_generated_fallback (header absent)"
         log(f"--- request {i} ---")
         log(f"prompt: {prompt!r}")
+        log(f"nonce_path: {nonce_label}")
         log(f"http_status: {status}")
         log(f"response_body: {response_body.decode('utf-8')[:200]}")
         log(f"capsule_id: {capsule_id}")
@@ -148,18 +158,35 @@ def main() -> None:
         prev_id = capsule["capsule_id"]
         ok = result.ok and chain_ok
         all_ok = all_ok and ok
+        nonce_source = (
+            capsule.get("model_attestation", {})
+            .get("compute_attestation", {})
+            .get("x-mesh-poc-v1", {})
+            .get("client_nonce_source", "unknown")
+        )
         log(
             f"capsule {idx}: capsule_id={capsule['capsule_id']} "
+            f"client_nonce_source={nonce_source} "
             f"effect.status={capsule['effect']['status'] if capsule.get('effect') else None} "
             f"verdict_class={capsule['disposition']['verdict_class']} "
             f"verify.ok={result.ok} chain_ok={chain_ok}"
         )
 
+    n_client_supplied = sum(
+        1 for c in state.emitted
+        if c.get("model_attestation", {}).get("compute_attestation", {}).get("x-mesh-poc-v1", {}).get("client_nonce_source") == "client_supplied"
+    )
+    n_fallback = sum(
+        1 for c in state.emitted
+        if c.get("model_attestation", {}).get("compute_attestation", {}).get("x-mesh-poc-v1", {}).get("client_nonce_source") == "sidecar_generated_fallback"
+    )
     log("")
-    log(f"N requests sent: {len(PROMPTS)}")
+    log(f"N requests sent: {len(REQUESTS)}")
     log(f"N capsules emitted: {len(state.emitted)}")
     log(f"N confirmed (success): {sum(1 for c in state.emitted if c['effect']['status'] == 'confirmed')}")
     log(f"N failed (refused/error, honestly recorded): {sum(1 for c in state.emitted if c['effect']['status'] == 'failed')}")
+    log(f"N client_nonce_source=client_supplied: {n_client_supplied}")
+    log(f"N client_nonce_source=sidecar_generated_fallback: {n_fallback}")
     log(f"all capsules verify() ok AND chain-consistent: {all_ok}")
 
     (LEDGER_DIR / "demo-transcript.txt").write_text("\n".join(transcript_lines) + "\n")
