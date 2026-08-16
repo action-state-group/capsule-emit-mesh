@@ -105,6 +105,27 @@ a different sequence of bytes. State which ones this entry commits to, and give 
 |---|---|---|---|---|
 | | | *(subject · authority-reference · receipt-payload)* | | |
 
+### 3a. Declared transforms between domains
+
+Where two domains cover the same logical object at different points — what a producer generated
+versus what a client received — **declare the transforms applied between them**, in order, each with
+a stable identifier.
+
+| From domain | To domain | Transforms applied, in order | Reproducible? |
+|---|---|---|---|
+| | | | |
+
+This is what turns two digests from a pair of unrelated commitments into a *checkable relationship*.
+Without it a verifier holding both values and finding them different has no way to tell whether it is
+looking at a declared transformation or a substitution — which is the exact question the digests
+exist to answer. It also makes non-reproducibility legible: a transform that injects a timestamp or a
+freshly minted identifier can be named as such, so a downstream reader knows why one domain cannot be
+re-derived and the other can.
+
+> *Worked example.* `example-echo-v1` declares one transform between `echo.response.produced` and
+> `echo.response.delivered`: `stamp-served-at-v1`, which inserts a wall-clock field. It is named, so a
+> verifier expects the two digests to differ and knows exactly why.
+
 **Composition role is not optional.** The composition model carries three distinct digest roles — a
 *subject digest* identifying the action a slot's assertion applies to, a profile-tagged
 *authority-reference digest* committing to the native evidence object, and a *receipt-payload digest*

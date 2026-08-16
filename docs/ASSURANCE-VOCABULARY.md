@@ -75,10 +75,36 @@ From #1346.
 
 ---
 
+## 4a. The record format already works this way
+
+Before proposing anything, it is worth saying that the shape argued for below is not new and is not
+mine. The record format already carries **several deliberately orthogonal assurance axes** —
+`attestation_mode` (log custody), `effect_mode`, `ledger_mode`, `verdict_class`, and
+[forthcoming revision] `cross_party_rung` — and it gives an explicit reason for keeping them apart
+rather than folding them into one another:
+
+> *"It is a new axis, not a new value folded into `attestation_mode`, for the same reason
+> orthogonality already gives for keeping `verdict_class` and `effect_mode` separate:
+> `attestation_mode` answers 'has this record been committed to an independent transparency log'
+> (log custody); `cross_party_rung` answers 'how much of the counterparty's own signed evidence is
+> bound into this record' (exchange evidence). These are independent facts a producer can hold in any
+> combination — a `self_attested` record can still be `full_bilateral` (both parties signed, neither
+> side anchored yet), and an `anchored` record can still stand on `unilateral_fallback` evidence
+> alone."*
+
+Two rules travel with those axes and are worth adopting wholesale: a producer **MUST NOT** claim a
+rung its evidence does not support, and a verifier **derives** the value from the evidence's own
+bytes rather than trusting the claim — the *never-grades-up* discipline.
+
+So what follows is not a competing scheme. It is that existing discipline applied to the three
+vocabularies now in flight, which each collapsed several axes into a single label because, for their
+original purpose, the collapse was harmless.
+
+---
+
 ## 5. Proposal: five orthogonal axes
 
-These diverged not through carelessness but because each was written for one job, and for that job
-collapsing axes into one label was harmless. So the fix is a shape rule, not a naming preference:
+The fix is a shape rule, not a naming preference:
 
 > **Every value belongs to exactly one axis. A record carries one value from each axis it can speak
 > to, and an explicit "not applicable" where it cannot.**
@@ -88,7 +114,7 @@ collapsing axes into one label was harmless. So the fix is a shape rule, not a n
 | **1. Observation point** | Where the record was made | `gateway_ingress` · `serving_host_ingress` · `backend_dispatch` · `client_egress` | A, verbatim |
 | **2. Recorder role** | What the recorder was to the exchange | `collector` (observed) · `participant` (a party) · `gate` (decided admission) | A (`collector`), generalised |
 | **3. Evidence status** | Per individual claim | `absent` · `present_unverified` · `checked_passed` · `checked_failed`, plus `expired` · `revoked` · `invalid` for credential-shaped evidence | A, with C's insistence that `checked_failed` ≠ `absent` |
-| **4. Assurance rung** | Per evidence class | `record_integrity` A0–A4 · `identity` B0–B3 · `execution` C0–C3 · `mutuality` D0–D2 · `confidentiality` E0–E3 | C, absorbing A's identity modes and B's triple |
+| **4. Assurance rung** | Per evidence class | `record_integrity` A0–A4 · `identity` B0–B3 · `execution` C0–C3 · `mutuality` D0–D2 · `confidentiality` E0–E3 — where mutuality is the existing `cross_party_rung` (`unilateral_fallback` < `acknowledged_receipt` < `full_bilateral`) and record integrity extends the existing `attestation_mode` | C, absorbing A's identity modes and B's triple, and **built on the format's existing axes rather than beside them** |
 | **5. Terminal outcome** | What became of the exchange | The record format's existing `verdict_class` vocabulary (§6) | Neither A nor new — already normative |
 
 Carried alongside, and explicitly **not** assurance labels:

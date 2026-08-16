@@ -215,14 +215,37 @@ deployment properties.
 |---|---|---|---|
 | C0 Claimed | The node states a model and runtime | Nothing — a claim is not evidence | Built (labelled as claim) |
 | C1 Artifact-bound | The claimed bundle resolves to content-addressed digests within a declared equivalence class | That those bytes served *this* request | Partly (step 2) |
-| C2 Behaviourally checked | Output consistent with the claimed model at stated confidence | Certainty; model-, hardware- and sampling-sensitive | Not built (step 4) |
+| C2 Behaviourally checked | Output consistent with the claimed model — by **replay spot-check** (C2a) or **statistical fingerprint** (C2b) | Certainty. Each form fails differently; see below | Not built (step 4) |
 | C3 Execution-attested | A measured environment loaded those artifacts and produced this output | That the measured program is honest | Not built (step 5) |
 
-> **A limit worth designing around.** "Re-run and compare digests" is not generally available: above
-> temperature zero it needs pinned seed and sampler state, and GPU reduction order is not
-> deterministic across hardware. That is why C2 uses locality-sensitive fingerprints. **Exact digests
-> carry non-repudiation; fuzzy fingerprints carry behavioural identity.** Conflating them produces a
-> system that either claims certainty it lacks or fails constantly on legitimate variance.
+> **C2 has two forms, and the cheaper one is under-discussed.**
+>
+> **C2a — replay spot-check.** A receipt already commits the request digest, generation parameters,
+> execution-bundle identity and runtime. Anyone holding the weights — an auditor, a user, a dispute
+> process — has everything needed to re-run the request and compare. At temperature 0 with a pinned
+> seed that comparison is *exact* rather than statistical, it needs no new cryptography, and it needs
+> no access to intermediate activations. For a network where the disputed question is "did this node
+> run the model it claimed," this is both cheaper and sharper than fingerprinting.
+>
+> Its precondition is that the digested bytes are deterministic — which is exactly the digest-domain
+> problem in §11: a response digested after a normalizer that mints wall-clock-bearing identifiers
+> changes every run for identical model output. Replay is unavailable until a record commits to a
+> reproducible domain, which is one more reason to name the domains explicitly.
+>
+> Its limit is **hardware class**. GPU reduction order is not deterministic across different silicon,
+> so a legitimate node can fail an exact comparison for reasons unrelated to honesty. Within a
+> hardware class a mismatch is strong evidence; across one it is grounds to investigate, never a
+> verdict. A mesh is heterogeneous by definition, so this must be stated wherever the mechanism is
+> offered.
+>
+> **C2b — statistical fingerprint.** Locality-sensitive hashes over intermediate activations. It
+> tolerates hardware variance, which is what replay cannot, and pays for that with probabilistic
+> answers and a dependency on the runtime — only the inner loop holds activations.
+>
+> **The division of labour:** replay within a hardware class, fingerprints across one. And the general
+> rule underneath both — **exact digests carry non-repudiation; fuzzy fingerprints carry behavioural
+> identity.** Conflating them produces a system that either claims certainty it lacks or fails
+> constantly on legitimate variance.
 
 ### Class D — Mutuality
 
@@ -231,6 +254,19 @@ deployment properties.
 | D0 Unilateral | The node's account of the exchange | That the requester agrees; anything about who asked | Built — current state |
 | D1 Client-nonced | Freshness — no precomputation or replay | Who the requester is | Not built; the header is accepted, nothing sends it |
 | D2 Bilateral | Both parties bound to the same exchange | That either is honest — only that neither can disown what they committed | Not built |
+
+> **These map onto a vocabulary the record format already defines** [forthcoming revision]:
+> `assurance.cross_party_rung`, ordered `unilateral_fallback` < `acknowledged_receipt` <
+> `full_bilateral`, carried alongside a `cross_party` evidence block, with the rule that a producer
+> **MUST NOT** claim a rung its evidence does not support and a verifier derives the rung from the
+> block's own bytes. D0 is `unilateral_fallback` and D2 is `full_bilateral`; `acknowledged_receipt`
+> sits between them.
+>
+> One honest mismatch: **D1 (client-nonced) is not a value on that ordering.** Freshness and
+> exchange-completeness are different questions — a unilateral record can carry a client nonce, and a
+> fully bilateral one can lack it. Treat D1 as a separate property rather than forcing it onto the
+> rung, which is the same discipline the format applies when it keeps log custody and exchange
+> evidence on separate axes.
 
 ### Class E — Confidentiality
 
