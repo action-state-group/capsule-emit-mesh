@@ -28,7 +28,7 @@ self-attested; see `README.md` → *Signing keys* and `docs/TRUST-MODEL.md`.
 ```bash
 # 1. Start the supported mesh inference port (no --local-model-only flag)
 /path/to/mesh-llm serve \
-  --gguf /Users/intangible/Library/Caches/huggingface/hub/models--bartowski--Hermes-2-Pro-Mistral-7B-GGUF/blobs/1eac044564019481d5be58fa1c67579d41a9d4d3324a6803327818b96fdfd747 \
+  --gguf <path-to-gguf-blob> \
   --port 9337 --console 3131
 
 # 2. Sidecar in front of the supported port, writing to ledger-supported-port/
@@ -129,14 +129,33 @@ this run:
 
 Because these IDs are **in the raw response bytes** that `response_digest` attests, and because
 the timestamps are wall-clock values that differ on every invocation of the model, the
-`response_digest` field for tool-call-bearing responses is **run-unique even for identical
-model output**:
+`response_digest` field for tool-call-bearing responses is **run-unique** (the phrase "identical
+model output" was used here originally; it has since been retracted — sampling was not pinned,
+so output was not identical across runs):
 
-> Repeating this exact task with the same model, same prompt, same parameters would produce
-> different `response_digest` values for capsules 2 and 3 on every run.
+> ~~Repeating this exact task with the same model, same prompt, same parameters would produce
+> different `response_digest` values for capsules 2 and 3 on every run.~~
+>
+> **CORRECTION:** "capsules 2 and 3" scopes instability to tool-call turns only, implying turns
+> 1 and 4 are stable — the claim retracted below. "Same parameters" was not true: sampling was
+> not pinned. This blockquote is superseded by the full correction that follows.
 
-Capsules 1 and 4 (which are text-only responses with no tool calls) have stable
-`response_digest` values: they contain no wall-clock material injected by the normalizer.
+~~Capsules 1 and 4 (which are text-only responses with no tool calls) have stable
+`response_digest` values: they contain no wall-clock material injected by the normalizer.~~
+
+**CORRECTION:** The claim above is disproved by a subsequent run of the identical task on a
+Linux host. That run produced different digests on every capsule, including the text-only turns,
+and a different capsule count (5 instead of 4), because the model took a different conversational
+path. `response_digest` is unstable for **two independent causes**:
+
+1. **Normalizer wall-clock tool-call IDs** (`call_mesh_{ms}_{index}`): affects tool-call-bearing
+   turns only. Documented above; confirmed by the ID values in the records.
+2. **Model sampling non-determinism**: affects every turn — including text-only turns — and can
+   change the total number of capsules produced. **Sampling was not pinned in either run.**
+
+Cause 1 is independently established by the timestamp values embedded in the IDs; that argument
+survives. Cause 2 means that removing the normalizer's timestamps alone would not be sufficient
+to make digests reproducible absent pinned sampling parameters.
 
 ### What "delivered-bytes digest" means here
 
@@ -159,6 +178,13 @@ not to model-produced bytes. A verifier who runs the same task twice will see di
 noted in prior discussion; this run is the first measurement of it in actual records rather than
 a theoretical observation.
 
+### Behaviour versus bytes
+
+Across both supported-port runs, the tool calls fired correctly — the right tools were called
+with the right arguments and the tool returns were real. The record is unreproducible (the same
+bytes do not appear on a second run); the system was not unreliable (both runs reached correct
+tool completions). These are different claims and conflating them would be its own overclaim.
+
 ---
 
 ## Side-by-side record comparison
@@ -170,7 +196,7 @@ a theoretical observation.
 | `transforms` on tool-call turns | `["tool_call_id_minted"]` | `[]` |
 | `upstream_tool_call_ids` | `[]` | `["call_mesh_…"]` with wall-clock timestamps |
 | `forwarded_copy.digest == response_digest` | **No** (sidecar-minted IDs differ) | **Yes** (no sidecar transform) |
-| `response_digest` stable across runs? | **Yes** (raw response had no IDs) | **No** on tool-call turns (wall-clock in ID) |
+| `response_digest` stable across runs? | unmeasured — not re-run | **No** — all turns: tool-call turns (wall-clock in IDs) and text-only turns (sampling non-determinism); capsule count also varies. See CORRECTION in digest-domain section. |
 | `content_dropped_with_tool_calls` | Fired on one turn | Did not fire |
 | Model-produced bytes accessible? | `response_digest` ≈ model bytes (no IDs) | No — normalizer layer intervenes |
 | All capsules verify offline? | Yes | Yes |
