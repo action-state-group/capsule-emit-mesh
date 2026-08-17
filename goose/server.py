@@ -31,7 +31,7 @@ Add to ~/.config/goose/config.yaml, or pass via `goose run --with-extension`
           CAPSULE_LEDGER: "/path/to/poc/ledger-live/goose-actions.jsonl"
           CAPSULE_OPERATOR: "capsule-emit-mesh-poc-demo"
           CAPSULE_DEVELOPER: "goose@v1.39.0+mesh-llm"
-          CAPSULE_ANCHOR: "true"
+          CAPSULE_ANCHOR: "false"   # "true" posts digests to the live shared transparency log; never use for a rehearsal run
 
 Verify after a session:
     agent-action-capsule verify --store poc/ledger-live/goose-actions.jsonl

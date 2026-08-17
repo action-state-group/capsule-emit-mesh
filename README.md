@@ -199,9 +199,13 @@ python3 capsule_sidecar.py --upstream http://127.0.0.1:9337 --listen-port 8089 \
 mesh-llm goose --port 8089 --model bartowski/Hermes-2-Pro-Mistral-7B-GGUF:Q4_K_M
 
 # 6. a real, scripted goose run drives both record layers in one task
+# CAPSULE_ANCHOR=false (the default) keeps capsules locally verified only.
+# Setting it to true posts digests to the live, shared anchor.agentactioncapsule.org
+# transparency log — a permanent, unremovable write to shared production
+# infrastructure. See "Anchoring" under "Honest limitations" before changing it.
 GOOSE_PROVIDER=mesh GOOSE_MODEL=bartowski/Hermes-2-Pro-Mistral-7B-GGUF:Q4_K_M \
 goose run --no-session --no-profile --max-turns 8 \
-  --with-extension "CAPSULE_LEDGER=ledger-live/goose-actions.jsonl CAPSULE_OPERATOR=capsule-emit-mesh-poc-demo CAPSULE_DEVELOPER=goose@v1.39.0+mesh-llm CAPSULE_ANCHOR=true python3 goose/server.py" \
+  --with-extension "CAPSULE_LEDGER=ledger-live/goose-actions.jsonl CAPSULE_OPERATOR=capsule-emit-mesh-poc-demo CAPSULE_DEVELOPER=goose@v1.39.0+mesh-llm CAPSULE_ANCHOR=false python3 goose/server.py" \
   -t "Call the get_node_status tool now with node_id=mesh-node-demo-1. After you receive its result, call the submit_capacity_request tool now with node_id=mesh-node-demo-1, gpu_hours=4, reason=inference_demand_spike. You must call both tools before writing any summary text."
 ```
 
