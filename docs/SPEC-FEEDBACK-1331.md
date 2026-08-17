@@ -1,10 +1,12 @@
-# Spec-feedback on Mesh-LLM/mesh-llm#1331 — delegation chain verifier
+# Spec-feedback on mesh-llm/mesh-llm#1331 — delegation chain verifier + two-mode exemplar
 
-Submitted from `capsule-emit-mesh` as part of the delegation chain verifier
-(`delegation_chain_verifier.py`, PR #5). Each item below records a corner that
-#1331 leaves underspecified, the working assumption the verifier uses, and the
-question for Nick to settle. Nothing below is an objection — the spec is
-sound; these are precision gaps a downstream implementer needs to fill.
+Submitted as spec-feedback on #1331. Items 1–9 come from a prototype
+delegation-chain verifier (`delegation_chain_verifier.py`); items 10–15 from a
+two-mode exemplar plugin (`exemplar/`). Both are offered for re-homing. Each
+item below records a corner that #1331 leaves underspecified, the working
+assumption used, and the question for Nick to settle. Nothing below is an
+objection — the spec is sound; these are precision gaps a downstream
+implementer needs to fill.
 
 ---
 

@@ -14,7 +14,7 @@ DEPENDENCY ON MOCK LIFECYCLE HOST
     development rig produced by [mesh-1331-mock-lifecycle-host]).  That file is
     not yet in origin/main — tests/conftest.py adds its worktree to sys.path
     at test time.  Once the rig merges, the import below is a plain sibling
-    import at the capsule-emit-mesh repo root.
+    import at the project root.
 
 WHAT THIS IS NOT
     - Not a plugin (plugins are observe_only.py and admission_policy.py)
