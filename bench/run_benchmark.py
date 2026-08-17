@@ -199,7 +199,7 @@ WORKLOADS: dict[str, dict[str, Any]] = {
 
 CONCURRENCY_LEVELS = [1, 4, 16]
 WARMUP_REPS = 5
-DEFAULT_REPS = 30
+DEFAULT_REPS = 100
 
 
 # ── percentile helper (no numpy dep) ─────────────────────────────────────────
@@ -221,11 +221,12 @@ def summarise(samples_ms: list[float]) -> dict[str, Any]:
     s = sorted(samples_ms)
     mean = sum(s) / len(s)
     variance = sum((x - mean) ** 2 for x in s) / len(s)
+    # p99 omitted: n=100 cannot support a defensible 99th percentile;
+    # would need n≈1000 — not worth the runtime for an order-of-magnitude signal.
     return {
         "n": len(s),
         "p50_ms": round(percentile(s, 50), 3),
         "p95_ms": round(percentile(s, 95), 3),
-        "p99_ms": round(percentile(s, 99), 3),
         "mean_ms": round(mean, 3),
         "min_ms": round(s[0], 3),
         "max_ms": round(s[-1], 3),
@@ -419,7 +420,7 @@ def run_workloads(
                 stats["error_sample"] = errors[:3]
 
             results[wl_name]["concurrency"][str(concurrency)] = stats
-            print(f" p50={stats.get('p50_ms', 'n/a')}ms p95={stats.get('p95_ms', 'n/a')}ms p99={stats.get('p99_ms', 'n/a')}ms")
+            print(f" p50={stats.get('p50_ms', 'n/a')}ms p95={stats.get('p95_ms', 'n/a')}ms")
 
     return results
 
@@ -616,20 +617,18 @@ B_E_STUBS: dict[str, dict[str, Any]] = {
 # ── delta table ───────────────────────────────────────────────────────────────
 
 def print_delta_table(results_a: dict[str, Any], results_f: dict[str, Any]) -> None:
-    """Print a concise p50/p95/p99 comparison: A vs F."""
+    """Print a concise p50/p95 comparison: A vs F."""
     print("\n── A vs F delta table (concurrency=1) ──────────────────────────────")
-    fmt = "{:<22} {:>10} {:>10} {:>10}  {:>10} {:>10} {:>10}  {:>10}"
-    print(fmt.format("workload", "A p50", "A p95", "A p99", "F p50", "F p95", "F p99", "Δ p50"))
-    print("-" * 95)
+    fmt = "{:<22} {:>10} {:>10}  {:>10} {:>10}  {:>10}"
+    print(fmt.format("workload", "A p50", "A p95", "F p50", "F p95", "Δ p50"))
+    print("-" * 75)
     for wl in WORKLOADS:
         a_cell = results_a["workloads"].get(wl, {}).get("concurrency", {}).get("1", {})
         f_cell = results_f["workloads"].get(wl, {}).get("concurrency", {}).get("1", {})
         a50 = a_cell.get("p50_ms", float("nan"))
         a95 = a_cell.get("p95_ms", float("nan"))
-        a99 = a_cell.get("p99_ms", float("nan"))
         f50 = f_cell.get("p50_ms", float("nan"))
         f95 = f_cell.get("p95_ms", float("nan"))
-        f99 = f_cell.get("p99_ms", float("nan"))
         try:
             delta = f50 - a50
             delta_str = f"+{delta:.3f}" if delta >= 0 else f"{delta:.3f}"
@@ -639,10 +638,8 @@ def print_delta_table(results_a: dict[str, Any], results_f: dict[str, Any]) -> N
             wl[:22],
             f"{a50:.3f}ms" if isinstance(a50, float) and a50 == a50 else "n/a",
             f"{a95:.3f}ms" if isinstance(a95, float) and a95 == a95 else "n/a",
-            f"{a99:.3f}ms" if isinstance(a99, float) and a99 == a99 else "n/a",
             f"{f50:.3f}ms" if isinstance(f50, float) and f50 == f50 else "n/a",
             f"{f95:.3f}ms" if isinstance(f95, float) and f95 == f95 else "n/a",
-            f"{f99:.3f}ms" if isinstance(f99, float) and f99 == f99 else "n/a",
             delta_str,
         ))
     print()
