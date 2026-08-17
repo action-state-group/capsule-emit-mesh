@@ -1,0 +1,14 @@
+{
+  "delegation_id": "deleg-expired-0001",
+  "owner_id": "45785b64ba68e7aa933a7f55016f991245e48fa78baaa9eb35fdae85df0ab5e9",
+  "owner_sign_public_key": "5eaad1fd257174df67c0af7e68c4d1b8648f382751a981cea20569d9c9d03163",
+  "node_endpoint_id": "6f1ca260eb2e4071280172211a041dd73be9a027288451ae54a87914e1e0ab33",
+  "node_ownership_cert_id": "8bad5e7c49d6adcf756285149f2159084b17ec66d97b0b135bde3773c830530f",
+  "plugin_id": "net.example.capsule-emit",
+  "plugin_version": "0.1.0",
+  "delegated_signing_public_key": "a54b531c5400e8775a2537a595087d399941e18dd792c9ead02d01dcd4007034",
+  "scope": "mesh.inference.capsule.sign.v1",
+  "issued_at_unix_ms": 1787011200000,
+  "expires_at_unix_ms": 1000,
+  "_sig": "ff469b7357004cb90ec5eeb13779ddb630a3fdd6ee0d5416dcf4accfaf398c262a63d5156d3f806e4c9d23871eafc9822f4f9a132c5da6d1f62f7232b5b22807"
+}
