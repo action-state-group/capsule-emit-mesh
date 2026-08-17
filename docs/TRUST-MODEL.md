@@ -263,12 +263,13 @@ deployment properties.
 > limit is not just the normalizer: two runs of an identical task on byte-identical weights produced
 > different `response_digest` values on every capsule including text-only turns, and a different
 > total number of records, because model sampling was never pinned. The divergence split into two
-> causes — normalizer wall-clock tool-call IDs (documented elsewhere) and model sampling
-> non-determinism (affects every turn). Replay is unavailable until a record commits to a
-> reproducible domain — temperature 0 with a pinned seed — which is one more reason to name the
-> domains explicitly. This precondition is exactly the digest-domain problem in §11: a response
-> digested after a normalizer that mints wall-clock-bearing identifiers changes every run for
-> identical model output.
+> independent causes — normalizer wall-clock tool-call IDs (see `docs/SUPPORTED-PORT-RERUN.md`) and
+> model sampling non-determinism, which affects every turn. Replay is unavailable until a record
+> commits to a reproducible domain — temperature 0 with a pinned seed — which is one more reason to
+> name the domains explicitly. This precondition is the digest-domain problem in §11: a response
+> digested after a normalizer that mints wall-clock-bearing identifiers changes every run even when
+> generation parameters are held fixed. Sampling non-determinism is the second, independent cause,
+> and neither alone accounts for what was measured.
 >
 > Its limit is **hardware class**. GPU reduction order is not deterministic across different silicon,
 > so a legitimate node can fail an exact comparison for reasons unrelated to honesty. Within a
