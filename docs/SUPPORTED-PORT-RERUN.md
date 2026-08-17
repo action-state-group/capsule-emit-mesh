@@ -129,11 +129,16 @@ this run:
 
 Because these IDs are **in the raw response bytes** that `response_digest` attests, and because
 the timestamps are wall-clock values that differ on every invocation of the model, the
-`response_digest` field for tool-call-bearing responses is **run-unique even for identical
-model output**:
+`response_digest` field for tool-call-bearing responses is **run-unique** (the phrase "identical
+model output" was used here originally; it has since been retracted — sampling was not pinned,
+so output was not identical across runs):
 
-> Repeating this exact task with the same model, same prompt, same parameters would produce
-> different `response_digest` values for capsules 2 and 3 on every run.
+> ~~Repeating this exact task with the same model, same prompt, same parameters would produce
+> different `response_digest` values for capsules 2 and 3 on every run.~~
+>
+> **CORRECTION:** "capsules 2 and 3" scopes instability to tool-call turns only, implying turns
+> 1 and 4 are stable — the claim retracted below. "Same parameters" was not true: sampling was
+> not pinned. This blockquote is superseded by the full correction that follows.
 
 ~~Capsules 1 and 4 (which are text-only responses with no tool calls) have stable
 `response_digest` values: they contain no wall-clock material injected by the normalizer.~~
@@ -191,7 +196,7 @@ tool completions). These are different claims and conflating them would be its o
 | `transforms` on tool-call turns | `["tool_call_id_minted"]` | `[]` |
 | `upstream_tool_call_ids` | `[]` | `["call_mesh_…"]` with wall-clock timestamps |
 | `forwarded_copy.digest == response_digest` | **No** (sidecar-minted IDs differ) | **Yes** (no sidecar transform) |
-| `response_digest` stable across runs? | **Yes** (raw response had no IDs) | **No** — all turns: tool-call turns (wall-clock in IDs) and text-only turns (sampling non-determinism); capsule count also varies. See CORRECTION in digest-domain section. |
+| `response_digest` stable across runs? | unmeasured — not re-run | **No** — all turns: tool-call turns (wall-clock in IDs) and text-only turns (sampling non-determinism); capsule count also varies. See CORRECTION in digest-domain section. |
 | `content_dropped_with_tool_calls` | Fired on one turn | Did not fire |
 | Model-produced bytes accessible? | `response_digest` ≈ model bytes (no IDs) | No — normalizer layer intervenes |
 | All capsules verify offline? | Yes | Yes |
