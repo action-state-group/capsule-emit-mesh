@@ -30,7 +30,7 @@ Add to ~/.config/goose/config.yaml, or pass via `goose run --with-extension`
         envs:
           CAPSULE_LEDGER: "/path/to/poc/ledger-live/goose-actions.jsonl"
           CAPSULE_OPERATOR: "capsule-emit-mesh-poc-demo"
-          CAPSULE_DEVELOPER: "goose@v1.39.0+mesh-llm"
+          CAPSULE_DEVELOPER: "goose@v1.46.0+mesh-llm"
           CAPSULE_ANCHOR: "false"   # "true" posts digests to the live shared transparency log; never use for a rehearsal run
 
 Verify after a session:
@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import os
 
+# mcp>=2.0 removed mcp.server.fastmcp; see requirements.txt for the mcp<2 pin.
 from mcp.server.fastmcp import FastMCP
 
 from capsule_emit.adapters.mcp import MCPCapsuleEmitter

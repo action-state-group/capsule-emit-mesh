@@ -9,11 +9,14 @@
 #                                          the tool-call boundary, capsule-emit-goose)
 #
 # Prerequisites (see README.md "Live demo" section):
-#   - mesh-llm binary (this repo ships a checksummed copy under ../bin/mesh-bundle/,
-#     or use your own `mesh-llm` on PATH)
-#   - goose CLI installed (brew install block/goose/goose)
+#   - mesh-llm binary: NOT included in this repo. Download the release tarball from
+#     https://github.com/Mesh-LLM/mesh-llm/releases; it extracts to mesh-bundle/mesh-llm.
+#     Verify sha256 before running (v0.75.1 darwin-arm64:
+#     26a28ae31cd1911be3e71b1ef612cb4166f0bff8380be461769f26083c077223).
+#   - goose CLI (v1.46.0+): see https://github.com/aaif-goose/goose for install instructions
+#     (repository moved from github.com/block/goose to github.com/aaif-goose/goose)
 #   - a local GGUF model downloaded: mesh-llm download <model-name>
-#   - pip install "capsule-emit[mcp]" agent-action-capsule scitt-cose mcp
+#   - pip install -r requirements.txt
 #
 # Anchoring policy (Steven's decision, 2026-08-11): rehearsal runs stay
 # offline-verified only. Anchoring posts a real digest to the live, shared
@@ -25,8 +28,8 @@
 # Usage:
 #   ./run_live_demo.sh <mesh-llm-binary> <gguf-blob-path> <model-id> [anchor]
 #
-# Example (paths from this repo's own rehearsal, see README):
-#   ./run_live_demo.sh ../bin/mesh-bundle/mesh-llm \
+# Example (substitute your actual mesh-llm binary path and GGUF blob path):
+#   ./run_live_demo.sh /path/to/mesh-bundle/mesh-llm \
 #     ~/Library/Caches/huggingface/hub/models--bartowski--Hermes-2-Pro-Mistral-7B-GGUF/blobs/<sha256> \
 #     bartowski/Hermes-2-Pro-Mistral-7B-GGUF:Q4_K_M
 set -euo pipefail
@@ -61,8 +64,8 @@ mkdir -p "$LEDGER_DIR"
 echo "--- [1/6] building real model-package.json from the actual GGUF ---"
 python3 build_real_model_package.py "$GGUF_PATH" "$MODEL_ID"
 
-echo "--- [2/6] starting real mesh-llm serve --local-model-only (port $SERVE_PORT) ---"
-"$MESH_LLM_BIN" serve --local-model-only --gguf "$GGUF_PATH" --port "$SERVE_PORT" &
+echo "--- [2/6] starting real mesh-llm serve (supported port, port $SERVE_PORT) ---"
+"$MESH_LLM_BIN" serve --gguf "$GGUF_PATH" --port "$SERVE_PORT" &
 SERVE_PID=$!
 for _ in $(seq 1 40); do
   curl -s -m 2 "http://127.0.0.1:$SERVE_PORT/v1/models" | grep -q "$MODEL_ID" && break
@@ -80,7 +83,7 @@ python3 capsule_sidecar.py \
   --ledger-dir "$LEDGER_DIR" \
   --manifest model-package/model-package.live.json \
   --runtime-artifact "$MESH_LLM_BIN" \
-  --runtime-label "mesh-llm real local node ($MODEL_ID, --local-model-only)" &
+  --runtime-label "mesh-llm real node ($MODEL_ID, supported-port)" &
 SIDECAR_PID=$!
 for _ in $(seq 1 20); do
   curl -s -m 2 "http://127.0.0.1:$SIDECAR_PORT/v1/models" | grep -q "$MODEL_ID" && break
@@ -104,7 +107,7 @@ cat /tmp/mesh-goose-wire.log
 echo "--- [5/6] running the real, scripted Goose task (goose run --provider mesh) ---"
 GOOSE_PROVIDER=mesh GOOSE_MODEL="$MODEL_ID" \
 goose run --no-session --no-profile --max-turns 8 --stats \
-  --with-extension "CAPSULE_LEDGER=$LEDGER_DIR/goose-actions.jsonl CAPSULE_OPERATOR=capsule-emit-mesh-poc-demo CAPSULE_DEVELOPER=goose@v1.39.0+mesh-llm CAPSULE_ANCHOR=$CAPSULE_ANCHOR CAPSULE_MODEL_ID=$MODEL_ID python3 $ROOT/goose/server.py" \
+  --with-extension "CAPSULE_LEDGER=$LEDGER_DIR/goose-actions.jsonl CAPSULE_OPERATOR=capsule-emit-mesh-poc-demo CAPSULE_DEVELOPER=goose@v1.46.0+mesh-llm CAPSULE_ANCHOR=$CAPSULE_ANCHOR CAPSULE_MODEL_ID=$MODEL_ID python3 $ROOT/goose/server.py" \
   -t "Call the get_node_status tool now with node_id=mesh-node-demo-1. After you receive its result, call the submit_capacity_request tool now with node_id=mesh-node-demo-1, gpu_hours=4, reason=inference_demand_spike. You must call both tools before writing any summary text." \
   | tee "$LEDGER_DIR/goose-session-transcript.txt"
 

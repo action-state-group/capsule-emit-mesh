@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: Apache-2.0
+# Clean-venv import smoke test.
+#
+# This job catches the class of defect where a dependency is undeclared
+# (import works locally because it was installed by something else) or
+# where a transitive dependency changes its public API and breaks an import
+# that was previously fine (e.g. mcp>=2.0 removed mcp.server.fastmcp).
+#
+# Mutant verification:
+#   - Remove `mcp<2` from requirements.txt → "Smoke: mcp.server.fastmcp" fails
+#     (mcp>=2.0 removed that module).
+#   - Remove `scitt-cose` → "Smoke: scitt_cose" fails.
+#   - Remove `cbor2` → "Smoke: cbor2" fails.
+#   - Remove the goose/server.py step → a broken import in that file would go
+#     undetected until the live demo path.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  import-smoke:
+    name: Import smoke (clean venv)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install declared dependencies
+        run: pip install -r requirements.txt
+
+      - name: Smoke — mcp.server.fastmcp (mcp<2 pin, item 1 regression guard)
+        run: python -c "from mcp.server.fastmcp import FastMCP; print('ok')"
+
+      - name: Smoke — scitt_cose (item 2 regression guard)
+        run: python -c "import scitt_cose; print('ok')"
+
+      - name: Smoke — cbor2 (item 2 regression guard)
+        run: python -c "import cbor2; print('ok')"
+
+      - name: Smoke — goose/server.py top-level imports
+        run: |
+          python - <<'EOF'
+          import importlib.util, sys
+          spec = importlib.util.spec_from_file_location("goose_server", "goose/server.py")
+          m = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(m)
+          print("ok")
+          EOF
+
+      - name: Unit tests
+        run: |
+          pip install pytest
+          pytest tests/ -v
