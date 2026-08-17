@@ -1,0 +1,12 @@
+{
+  "capsule_id_recomputed": "e3af0cf57186727406b48d7fe1863f80bf79fe3ea96a09f6065ba958946c9ec1",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "not_applicable",
+    "ledger_mode": "standalone"
+  },
+  "description": "not_applicable -> effect_attestation MUST be absent (no effect record).",
+  "findings": [],
+  "kind": "positive",
+  "ok": true
+}

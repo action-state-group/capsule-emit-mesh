@@ -1,0 +1,19 @@
+{
+  "capsule_id_recomputed": "fcd96a66e391a0213f75369e386736b525a9472909137ad5eefd33d83c4845dc",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "not_applicable",
+    "ledger_mode": "standalone"
+  },
+  "description": "disposition.approver outside the closed {human, policy} enum (neutral invalid token) -> structural failure (check 1, \u00a75.4).",
+  "findings": [
+    {
+      "check": 1,
+      "code": "approver_invalid",
+      "detail": "disposition.approver MUST be human|policy (\u00a75.4); got 'vendor_bot'",
+      "severity": "error"
+    }
+  ],
+  "kind": "negative",
+  "ok": false
+}

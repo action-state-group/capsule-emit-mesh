@@ -1,0 +1,6 @@
+{
+  "kind": "canonical",
+  "capsule_id_recomputed": "8da70d6db48a3dc32fa9526602b4970d2eb551ffbbb8c497d97e4cb24f637d04",
+  "exception": null,
+  "description": "Non-BMP char U+1F600 in a string value passes through as UTF-8 (no \\uXXXX escaping needed)"
+}

@@ -1,0 +1,10 @@
+{
+  "id": "dup-nfc-escaped",
+  "description": "MUST-FAIL: NFC-equivalent duplicate, one key escaped. \"Å\" is U+00C5 (NFC Å) via escape; \"Å\" is A + U+030A (NFD Å) via escape. After escape processing and NFC normalization, both resolve to U+00C5 — a duplicate. This combines the escape-equiv and NFC-departure cases into a single input to prevent an implementation from handling them separately and missing the composed case.",
+  "spec_ref": "mesh-canonicalization-declaration; see README §Rule 3",
+  "must_fail": true,
+  "failure_reason": "duplicate_key_nfc_after_escape_processing",
+  "input_bytes_hex": "7b22c385223a227631222c2241cc8a223a227632227d",
+  "_raw_json_for_humans": "{\"Å\":\"v1\",\"Å\":\"v2\"}",
+  "departure_from_rfc8785": "Same RFC 8785 §3.1 departure as dup-nfc-nfd: NFC applied to post-escape key strings before duplicate detection."
+}

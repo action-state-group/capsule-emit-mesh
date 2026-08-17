@@ -1,0 +1,19 @@
+{
+  "capsule_id_recomputed": "404faca980459c1e0029027d6ccfc0859535aed7beb50d857217b7822974b9bc",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "not_applicable",
+    "ledger_mode": "standalone"
+  },
+  "description": "unknown verdict_class value: informational finding, ok stays true.",
+  "findings": [
+    {
+      "check": 8,
+      "code": "unknown_registry_value",
+      "detail": "disposition.verdict_class='custom_review' is not a seeded verdict_class value; informational, not rejected (\u00a712)",
+      "severity": "info"
+    }
+  ],
+  "kind": "positive",
+  "ok": true
+}

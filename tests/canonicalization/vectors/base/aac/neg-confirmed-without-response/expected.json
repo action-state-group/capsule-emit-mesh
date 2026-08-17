@@ -1,0 +1,19 @@
+{
+  "capsule_id_recomputed": "6832b77323263a0739fad7fa60bffc2bd3a2a1bd8d34dca756f2d51f9c0fd788",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "dispatched_unconfirmed",
+    "ledger_mode": "standalone"
+  },
+  "description": "confirmed effect with NO response_digest -> confirmed-effect binding failure (check 3).",
+  "findings": [
+    {
+      "check": 3,
+      "code": "confirmed_without_response",
+      "detail": "effect.status 'confirmed' requires a 64-hex response_digest (\u00a75.2)",
+      "severity": "error"
+    }
+  ],
+  "kind": "negative",
+  "ok": false
+}

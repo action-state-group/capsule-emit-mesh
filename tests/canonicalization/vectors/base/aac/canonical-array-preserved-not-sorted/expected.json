@@ -1,0 +1,6 @@
+{
+  "kind": "canonical",
+  "capsule_id_recomputed": "b86994baad57fff516a7abb8b44ea4636eede4dd04a41f84573bff0a5a205c0b",
+  "exception": null,
+  "description": "Array elements preserved in insertion order, not sorted (RFC 8785 S:3.2.2)"
+}

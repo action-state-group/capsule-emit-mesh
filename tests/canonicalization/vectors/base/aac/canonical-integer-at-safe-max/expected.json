@@ -1,0 +1,6 @@
+{
+  "kind": "canonical",
+  "capsule_id_recomputed": "a9af4cfcb37cc6c571d3b396a59af5f6e42c8ea43d06cafc89705e3fb495649d",
+  "exception": null,
+  "description": "Integer at exactly Number.MAX_SAFE_INTEGER = 9007199254740991 accepted (S:5.1 boundary)"
+}

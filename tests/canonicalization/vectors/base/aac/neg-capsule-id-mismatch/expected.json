@@ -1,0 +1,19 @@
+{
+  "capsule_id_recomputed": "1ee37f5c89f7149ab3863b60cd790f64255c13774c53069009ee80320b65bc75",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "confirmed",
+    "ledger_mode": "standalone"
+  },
+  "description": "a field mutated after sealing: capsule_id no longer recomputes over the canonical form (check 2).",
+  "findings": [
+    {
+      "check": 2,
+      "code": "capsule_id_mismatch",
+      "detail": "recomputed 1ee37f5c89f7149ab3863b60cd790f64255c13774c53069009ee80320b65bc75 != carried 5b7c4ff1bcf4364e0dd8c8b65eddddbb1d6102f27bed3ad1a3595cba51d3502a",
+      "severity": "error"
+    }
+  ],
+  "kind": "negative",
+  "ok": false
+}

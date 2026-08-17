@@ -1,0 +1,70 @@
+{
+  "id": "domain-content-dropped",
+  "description": "Two-domain declaration — content_dropped_with_tool_calls transform. The raw upstream response has both content and tool_calls. The forwarded copy has content set to null (removed). response_digest attests the raw bytes; forwarded_copy.digest attests the client-compatible bytes. The transforms list documents the change so a verifier can reason about the seam. The null content is removed by jcs-n absent-field normalization in the forwarded_copy digest pre-image, while the raw upstream pre-image retains it (as the string value, before _stringify_floats).",
+  "spec_ref": "mesh-canonicalization-declaration; README §Response-digest domains",
+  "suite": "response-digest",
+  "_number_rule_pending": false,
+  "raw_upstream": {
+    "id": "chatcmpl-resp-003",
+    "object": "chat.completion",
+    "created": 1724000300,
+    "model": "hermes-2-pro-mistral-7b",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "I will call get_weather.",
+          "tool_calls": [
+            {
+              "id": "call_abc456",
+              "type": "function",
+              "function": {
+                "name": "get_weather",
+                "arguments": "{\"city\":\"Tokyo\"}"
+              }
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ]
+  },
+  "forwarded_copy": {
+    "id": "chatcmpl-resp-003",
+    "object": "chat.completion",
+    "created": 1724000300,
+    "model": "hermes-2-pro-mistral-7b",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_abc456",
+              "type": "function",
+              "function": {
+                "name": "get_weather",
+                "arguments": "{\"city\":\"Tokyo\"}"
+              }
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ]
+  },
+  "transforms": [
+    "content_dropped_with_tool_calls"
+  ],
+  "upstream_tool_call_ids": [
+    "call_abc456"
+  ],
+  "response_digest": "078e72215f050b975c756270da2c10303c9423f87b3816e8741511c8dc2ebe80",
+  "forwarded_copy_digest": "4f0466d1c5ef11f91fa12f58723bcefe5962c9d0912c4042de1eab7f526e4170",
+  "invariant": {
+    "non_empty_transforms_implies_unequal_digests": true
+  }
+}

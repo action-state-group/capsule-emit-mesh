@@ -1,0 +1,46 @@
+{
+  "id": "domain-no-transform",
+  "description": "Two-domain declaration — no transforms. The upstream response is returned to the calling agent byte-for-byte unchanged. forwarded_copy.transforms is empty; forwarded_copy.digest equals response_digest. The capsule still emits both fields explicitly so a verifier can distinguish \"unchanged\" from \"not reported\".",
+  "spec_ref": "mesh-canonicalization-declaration; README §Response-digest domains",
+  "suite": "response-digest",
+  "_number_rule_pending": false,
+  "raw_upstream": {
+    "id": "chatcmpl-resp-001",
+    "object": "chat.completion",
+    "created": 1724000100,
+    "model": "hermes-2-pro-mistral-7b",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "The temperature is 22°C."
+        },
+        "finish_reason": "stop"
+      }
+    ]
+  },
+  "forwarded_copy": {
+    "id": "chatcmpl-resp-001",
+    "object": "chat.completion",
+    "created": 1724000100,
+    "model": "hermes-2-pro-mistral-7b",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "The temperature is 22°C."
+        },
+        "finish_reason": "stop"
+      }
+    ]
+  },
+  "transforms": [],
+  "upstream_tool_call_ids": [],
+  "response_digest": "74eeb6ff06ca0fd1029c5613d9ac7c195590168824b2a169e3b5e2e4a6ba3337",
+  "forwarded_copy_digest": "74eeb6ff06ca0fd1029c5613d9ac7c195590168824b2a169e3b5e2e4a6ba3337",
+  "invariant": {
+    "transforms_empty_implies_equal_digests": true
+  }
+}

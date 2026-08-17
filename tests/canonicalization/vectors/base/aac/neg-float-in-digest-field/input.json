@@ -1,0 +1,27 @@
+{
+  "action_id": "neg-float",
+  "action_type": "decide",
+  "assurance": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "confirmed",
+    "ledger_mode": "standalone"
+  },
+  "capsule_id": "0000000000000000000000000000000000000000000000000000000000000000",
+  "developer": "agent@v1",
+  "disposition": {
+    "approver": "human",
+    "decision": "accept",
+    "human_disposed": true
+  },
+  "effect": {
+    "amount": 12.5,
+    "effect_attestation": "gate_executed",
+    "response_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+    "status": "confirmed",
+    "type": "write_order"
+  },
+  "format_version": "2",
+  "operator": "ACME-CO",
+  "spec_version": "draft-mih-scitt-agent-action-capsule-00",
+  "timestamp": "2026-06-13T00:00:00Z"
+}

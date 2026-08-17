@@ -1,0 +1,12 @@
+{
+  "capsule_id_recomputed": "a9758b6e948e2267446ce8c727726b02420b83fffa1090eb16abd35b8cb9b0b8",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "dispatched_unconfirmed",
+    "ledger_mode": "standalone"
+  },
+  "description": "errored: action ran and threw, state unknown; effect dispatched -> dispatched_unconfirmed, attestation present.",
+  "findings": [],
+  "kind": "positive",
+  "ok": true
+}

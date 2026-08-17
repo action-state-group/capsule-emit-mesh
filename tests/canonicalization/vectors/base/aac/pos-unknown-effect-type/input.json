@@ -1,0 +1,26 @@
+{
+  "action_id": "po-unk-type",
+  "action_type": "decide",
+  "assurance": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "confirmed",
+    "ledger_mode": "standalone"
+  },
+  "capsule_id": "00cec269152650a6be04823bc5ef16f34cf20d8e92e365fccbb6bba043747e35",
+  "developer": "agent@v1",
+  "disposition": {
+    "approver": "human",
+    "decision": "accept",
+    "human_disposed": true
+  },
+  "effect": {
+    "effect_attestation": "gate_executed",
+    "response_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+    "status": "confirmed",
+    "type": "teleport_goods"
+  },
+  "format_version": "2",
+  "operator": "ACME-CO",
+  "spec_version": "draft-mih-scitt-agent-action-capsule-00",
+  "timestamp": "2026-06-13T00:00:00Z"
+}

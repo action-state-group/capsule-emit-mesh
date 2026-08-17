@@ -1,0 +1,19 @@
+{
+  "capsule_id_recomputed": "6848eda5e85c2d850699eaada427e9f25749e9cbc90604e35a4a3b385d49e594",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "not_applicable",
+    "ledger_mode": "standalone"
+  },
+  "description": "format_version '1' (old/unknown) must be explicitly rejected \u2014 no silent v1/v2 mis-parse (\u00a75.1, W9).",
+  "findings": [
+    {
+      "check": 1,
+      "code": "unsupported_format_version",
+      "detail": "format_version '1' is not a supported version; only \"2\" is defined (\u00a75.1); unknown versions must be explicitly rejected to prevent silent v1/v2 mis-parse",
+      "severity": "error"
+    }
+  ],
+  "kind": "negative",
+  "ok": false
+}

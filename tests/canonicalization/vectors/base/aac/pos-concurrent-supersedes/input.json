@@ -1,0 +1,75 @@
+{
+  "ledger": [
+    {
+      "action_id": "po-parent2",
+      "action_type": "decide",
+      "assurance": {
+        "attestation_mode": "self_attested",
+        "effect_mode": "not_applicable",
+        "ledger_mode": "standalone"
+      },
+      "capsule_id": "2e0a7892fe326fb2303ddce1852360f9da7ece3dff72e227a68b0f57effff6cb",
+      "developer": "agent@v1",
+      "disposition": {
+        "approver": "human",
+        "decision": "needs_input",
+        "human_disposed": false,
+        "verdict_class": "hitl_dispatched"
+      },
+      "format_version": "2",
+      "operator": "ACME-CO",
+      "spec_version": "draft-mih-scitt-agent-action-capsule-00",
+      "timestamp": "2026-06-13T00:00:00Z"
+    },
+    {
+      "action_id": "po-res-a",
+      "action_type": "decide",
+      "assurance": {
+        "attestation_mode": "self_attested",
+        "effect_mode": "not_applicable",
+        "ledger_mode": "chained"
+      },
+      "capsule_id": "14ab84795b87e072d90013e4ef0c2c6bfeffdfca609519674f4c3b3974c341fc",
+      "chain": {
+        "parent_capsule_id": "2e0a7892fe326fb2303ddce1852360f9da7ece3dff72e227a68b0f57effff6cb",
+        "relation": "supersedes"
+      },
+      "developer": "agent@v1",
+      "disposition": {
+        "approver": "human",
+        "decision": "reject",
+        "human_disposed": true,
+        "verdict_class": "resolved"
+      },
+      "format_version": "2",
+      "operator": "ACME-CO",
+      "spec_version": "draft-mih-scitt-agent-action-capsule-00",
+      "timestamp": "2026-06-13T00:00:00Z"
+    },
+    {
+      "action_id": "po-res-b",
+      "action_type": "decide",
+      "assurance": {
+        "attestation_mode": "self_attested",
+        "effect_mode": "not_applicable",
+        "ledger_mode": "chained"
+      },
+      "capsule_id": "577573c19ffb50d4c5e21ff23f9ed2cae2e49736ed30b9f949a98a520223a481",
+      "chain": {
+        "parent_capsule_id": "2e0a7892fe326fb2303ddce1852360f9da7ece3dff72e227a68b0f57effff6cb",
+        "relation": "supersedes"
+      },
+      "developer": "agent@v1",
+      "disposition": {
+        "approver": "human",
+        "decision": "reject",
+        "human_disposed": true,
+        "verdict_class": "resolved"
+      },
+      "format_version": "2",
+      "operator": "ACME-CO",
+      "spec_version": "draft-mih-scitt-agent-action-capsule-00",
+      "timestamp": "2026-06-13T00:00:00Z"
+    }
+  ]
+}

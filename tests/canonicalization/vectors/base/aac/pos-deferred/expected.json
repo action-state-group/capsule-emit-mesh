@@ -1,0 +1,12 @@
+{
+  "capsule_id_recomputed": "98af713413cbd9922493569f95fe1e4299f923bbdac2f05ffa8144fed4d08987",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "not_applicable",
+    "ledger_mode": "standalone"
+  },
+  "description": "deferred: a human postponed the decision; human_disposed true, not_applicable.",
+  "findings": [],
+  "kind": "positive",
+  "ok": true
+}

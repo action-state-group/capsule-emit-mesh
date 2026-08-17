@@ -1,0 +1,10 @@
+{
+  "id": "dup-literal",
+  "description": "MUST-FAIL: literal duplicate key. The same byte sequence \"key\" appears twice in the object. A conforming implementation MUST reject this input.",
+  "spec_ref": "mesh-canonicalization-declaration; see README §Rule 3",
+  "must_fail": true,
+  "failure_reason": "duplicate_key_literal",
+  "input_bytes_hex": "7b226b6579223a227631222c226b6579223a227632227d",
+  "_raw_json_for_humans": "{\"key\":\"v1\",\"key\":\"v2\"}",
+  "spec_note": "Baseline case: duplicate detection requires no special pipeline step. If an implementation passes this, its duplicate detection is broken at the most fundamental level."
+}

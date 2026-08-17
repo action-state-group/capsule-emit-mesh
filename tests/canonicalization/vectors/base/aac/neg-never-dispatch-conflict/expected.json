@@ -1,0 +1,19 @@
+{
+  "capsule_id_recomputed": "7552822905ab39bc8fcfc69865873bbdc948689f708cf8655a478b69932c7e9f",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "dispatched_unconfirmed",
+    "ledger_mode": "standalone"
+  },
+  "description": "never-dispatch verdict_class (blocked) with a dispatched effect (dispatched_unconfirmed) -> orthogonality failure (check 4).",
+  "findings": [
+    {
+      "check": 4,
+      "code": "verdict_effect_conflict",
+      "detail": "verdict_class 'blocked' never dispatches, but derived effect_mode is 'dispatched_unconfirmed' (\u00a75.4.2)",
+      "severity": "error"
+    }
+  ],
+  "kind": "negative",
+  "ok": false
+}

@@ -1,0 +1,6 @@
+{
+  "kind": "canonical",
+  "capsule_id_recomputed": "0d09c1105e6644e95345e5366a4b16ddaa4e42105d185e97e7c791281b543f80",
+  "exception": null,
+  "description": "Boolean true and deep object nesting: exercises bool branch and recursive dict serialization"
+}

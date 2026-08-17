@@ -1,0 +1,12 @@
+{
+  "capsule_id_recomputed": "ae72bf5ac9ca136431628430f0d7d413a4fb405af5b43bafff38373bcecc0550",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "not_applicable",
+    "ledger_mode": "standalone"
+  },
+  "description": "denied: operator/policy refused pre-dispatch; not_applicable.",
+  "findings": [],
+  "kind": "positive",
+  "ok": true
+}

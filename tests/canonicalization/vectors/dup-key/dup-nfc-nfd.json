@@ -1,0 +1,10 @@
+{
+  "id": "dup-nfc-nfd",
+  "description": "MUST-FAIL: NFC-equivalent duplicate key. U+0041 U+030A (A + combining ring above, NFD form of Å) and U+00C5 (Å precomposed, NFC form) are the same character under NFC. A conforming mesh-canonicalization implementation MUST apply NFC to keys before duplicate detection and MUST reject this input. THIS IS A DEPARTURE FROM RFC 8785 §3.1 (\"preserve string data as is\"): jcs-n does NOT apply NFC, and would NOT detect this as a duplicate. A jcs-n-only implementation would sort these keys by UTF-16 code units (U+0041 < U+00C5) and produce two distinct members — allowing an NFD twin to smuggle past the check.",
+  "spec_ref": "mesh-canonicalization-declaration; see README §Rule 3",
+  "must_fail": true,
+  "failure_reason": "duplicate_key_after_nfc_normalization",
+  "input_bytes_hex": "7b2241cc8a223a227631222c22c385223a227632227d",
+  "_raw_json_for_humans": "{\"Å\":\"v1\",\"Å\":\"v2\"}",
+  "departure_from_rfc8785": "RFC 8785 §3.1 states \"preserve string data as is.\" This declaration departs from that by applying NFC normalization to key strings before duplicate detection. The JCS serialization step does NOT apply NFC; only the duplicate-detection step uses NFC. Without this departure, an NFD twin of an NFC key evades the check."
+}

@@ -1,0 +1,12 @@
+{
+  "capsule_id_recomputed": "f30b0466ac0b396af8a0c2b1a2ae49114c18c034bd02d77c7aa60e39bb9b46fb",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "not_applicable",
+    "ledger_mode": "standalone"
+  },
+  "description": "hitl_dispatched: routed to a human, awaiting resolution; not_applicable, human_disposed false.",
+  "findings": [],
+  "kind": "positive",
+  "ok": true
+}

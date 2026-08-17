@@ -1,0 +1,6 @@
+{
+  "kind": "canonical",
+  "capsule_id_recomputed": "1d8b0a40f79e5ad5268e73a05caaa3c49f9e6a740deaf24542357e9978bd9ebd",
+  "exception": null,
+  "description": "JCS does not normalize Unicode; NFD key A+U+030A (first unit 0x0041) sorts before B (0x0042)"
+}

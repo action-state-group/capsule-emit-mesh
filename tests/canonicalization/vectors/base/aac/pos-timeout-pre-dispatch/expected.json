@@ -1,0 +1,12 @@
+{
+  "capsule_id_recomputed": "c61bfeee060903d79efc1fadd1c96b42d1c61c437070b1f3cc185ee70a10247d",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "not_applicable",
+    "ledger_mode": "standalone"
+  },
+  "description": "timeout before dispatch: no effect -> not_applicable (one timeout value covers both, per \u00a75.4.2).",
+  "findings": [],
+  "kind": "positive",
+  "ok": true
+}

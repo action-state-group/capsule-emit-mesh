@@ -1,0 +1,35 @@
+{
+  "ledger": [
+    {
+      "action_id": "neg-orphan",
+      "action_type": "decide",
+      "assurance": {
+        "attestation_mode": "self_attested",
+        "effect_mode": "confirmed",
+        "ledger_mode": "chained"
+      },
+      "capsule_id": "3b1f02ab14a769b630bf39d03deb8b29b4399201614524dd7d1814b12f6cbb26",
+      "chain": {
+        "parent_capsule_id": "9999999999999999999999999999999999999999999999999999999999999999",
+        "relation": "supersedes"
+      },
+      "developer": "agent@v1",
+      "disposition": {
+        "approver": "human",
+        "decision": "accept",
+        "human_disposed": true,
+        "verdict_class": "executed"
+      },
+      "effect": {
+        "effect_attestation": "gate_executed",
+        "response_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "status": "confirmed",
+        "type": "write_order"
+      },
+      "format_version": "2",
+      "operator": "ACME-CO",
+      "spec_version": "draft-mih-scitt-agent-action-capsule-00",
+      "timestamp": "2026-06-13T00:00:00Z"
+    }
+  ]
+}

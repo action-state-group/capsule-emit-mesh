@@ -1,0 +1,27 @@
+{
+  "action_id": "neg-ortho",
+  "action_type": "decide",
+  "assurance": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "dispatched_unconfirmed",
+    "ledger_mode": "standalone"
+  },
+  "capsule_id": "7552822905ab39bc8fcfc69865873bbdc948689f708cf8655a478b69932c7e9f",
+  "developer": "agent@v1",
+  "disposition": {
+    "approver": "policy",
+    "decision": "reject",
+    "human_disposed": false,
+    "verdict_class": "blocked"
+  },
+  "effect": {
+    "effect_attestation": "runtime_claimed",
+    "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+    "status": "dispatched",
+    "type": "write_order"
+  },
+  "format_version": "2",
+  "operator": "ACME-CO",
+  "spec_version": "draft-mih-scitt-agent-action-capsule-00",
+  "timestamp": "2026-06-13T00:00:00Z"
+}

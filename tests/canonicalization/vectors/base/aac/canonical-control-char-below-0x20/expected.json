@@ -1,0 +1,6 @@
+{
+  "kind": "canonical",
+  "capsule_id_recomputed": "dcc7e1887e7aeedb50a18b5718fdfd3750f9cd71b65162cfc9395ab9d5724aee",
+  "exception": null,
+  "description": "Control char U+0001 not in named-shortcut set: serialized as \\u0001 (RFC 8785 S:3.2.2.2)"
+}

@@ -1,0 +1,6 @@
+{
+  "kind": "canonical",
+  "capsule_id_recomputed": "6af97e068868f1784ed86718bb0fe550e9454dee6b0493ac5f49700b0a13fc50",
+  "exception": null,
+  "description": "Solidus / is NOT escaped in JCS (RFC 8785 S:3.2.2.2 forbids the \\/ escape)"
+}

@@ -1,0 +1,12 @@
+{
+  "capsule_id_recomputed": "8e744f7805ee62c17805a4ed2ab5e1b5ebcbf5afcb3c7c6a65a8470134eaa03f",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "not_applicable",
+    "ledger_mode": "standalone"
+  },
+  "description": "planned carve: effect.status planned -> not_applicable, effect_attestation absent; no digests.",
+  "findings": [],
+  "kind": "positive",
+  "ok": true
+}

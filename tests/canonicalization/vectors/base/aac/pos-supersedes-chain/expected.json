@@ -1,0 +1,26 @@
+{
+  "description": "supersedes chain: a hitl_dispatched parent + a superseding resolution capsule; parent's open item is resolved.",
+  "kind": "store",
+  "results": [
+    {
+      "capsule_id_recomputed": "02b0d7133bf2c5157c8e33c49d87d42b7ee17180e16fd480302dca6de1347f8b",
+      "derived": {
+        "attestation_mode": "self_attested",
+        "effect_mode": "not_applicable",
+        "ledger_mode": "standalone"
+      },
+      "findings": [],
+      "ok": true
+    },
+    {
+      "capsule_id_recomputed": "0544a74c560bc2594a39489226d45252f595bab1a10715c5e89fe6e27045217e",
+      "derived": {
+        "attestation_mode": "self_attested",
+        "effect_mode": "confirmed",
+        "ledger_mode": "chained"
+      },
+      "findings": [],
+      "ok": true
+    }
+  ]
+}

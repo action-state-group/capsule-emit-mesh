@@ -1,0 +1,25 @@
+{
+  "capsule_id_recomputed": "6895eb2d74293fd5279daae8398a906a40ffd56b1d710a85022cd4a1031fee12",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "confirmed",
+    "ledger_mode": "standalone"
+  },
+  "description": "unknown effect_attestation value: informational + graded no stronger than runtime_claimed; ok stays true.",
+  "findings": [
+    {
+      "check": 8,
+      "code": "unknown_registry_value",
+      "detail": "effect.effect_attestation='tee_anchored' is not a seeded effect_attestation value; informational, not rejected (\u00a712)",
+      "severity": "info"
+    },
+    {
+      "check": 8,
+      "code": "effect_attestation_graded_floor",
+      "detail": "unknown effect_attestation graded no stronger than 'runtime_claimed' (\u00a75.2)",
+      "severity": "info"
+    }
+  ],
+  "kind": "positive",
+  "ok": true
+}

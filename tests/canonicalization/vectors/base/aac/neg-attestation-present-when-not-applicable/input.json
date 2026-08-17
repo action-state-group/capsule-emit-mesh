@@ -1,0 +1,26 @@
+{
+  "action_id": "neg-planned-att",
+  "action_type": "decide",
+  "assurance": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "not_applicable",
+    "ledger_mode": "standalone"
+  },
+  "capsule_id": "ad97afbf96a7616ee6266685681ae70a4a3e381ce9793dd7755e07501079978b",
+  "developer": "agent@v1",
+  "disposition": {
+    "approver": "human",
+    "decision": "accept",
+    "human_disposed": true,
+    "verdict_class": "needs_decision"
+  },
+  "effect": {
+    "effect_attestation": "gate_executed",
+    "status": "planned",
+    "type": "write_order"
+  },
+  "format_version": "2",
+  "operator": "ACME-CO",
+  "spec_version": "draft-mih-scitt-agent-action-capsule-00",
+  "timestamp": "2026-06-13T00:00:00Z"
+}

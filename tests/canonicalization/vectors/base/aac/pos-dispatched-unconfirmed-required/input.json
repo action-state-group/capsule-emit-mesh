@@ -1,0 +1,27 @@
+{
+  "action_id": "po-disp",
+  "action_type": "decide",
+  "assurance": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "dispatched_unconfirmed",
+    "ledger_mode": "standalone"
+  },
+  "capsule_id": "df5e5ff88f2a2c0f0a0fcb7c7014494f60a7e18a8c859b9d5a07270f5e84d141",
+  "developer": "agent@v1",
+  "disposition": {
+    "approver": "human",
+    "decision": "accept",
+    "human_disposed": true,
+    "verdict_class": "executed"
+  },
+  "effect": {
+    "effect_attestation": "gate_executed",
+    "request_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+    "status": "dispatched",
+    "type": "write_order"
+  },
+  "format_version": "2",
+  "operator": "ACME-CO",
+  "spec_version": "draft-mih-scitt-agent-action-capsule-00",
+  "timestamp": "2026-06-13T00:00:00Z"
+}

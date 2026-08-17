@@ -1,0 +1,19 @@
+{
+  "capsule_id_recomputed": "9aee9acfb72d1ac4bf3cd039cddbc6845e0e5fced7fcd67ac8c6e315cfaadf04",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "dispatched_unconfirmed",
+    "ledger_mode": "standalone"
+  },
+  "description": "failed (dispatched_unconfirmed) with effect_attestation absent -> matrix failure (check 5, the \u00a76 NOTE).",
+  "findings": [
+    {
+      "check": 5,
+      "code": "effect_attestation_missing",
+      "detail": "effect_attestation REQUIRED for effect_mode 'dispatched_unconfirmed' (\u00a75.2)",
+      "severity": "error"
+    }
+  ],
+  "kind": "negative",
+  "ok": false
+}
