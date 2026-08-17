@@ -22,15 +22,17 @@ boundary.
 
 > `keys/` — public half of the demo node key. Self-attested; not bound to any node identity or hardware root. See [*About the entries in `ledger-live/`*](ledger-live/README.md) for what the anchored entries do and do not establish.
 
-**Status: live-verified (2026-08-11).** An earlier session built this against
-a mock fixture node only (sandboxed execution restriction at the time — see
-git history). This session re-ran the whole thing against a **real, running
-`mesh-llm serve --local-model-only` node** (Hermes-2-Pro-Mistral-7B-Q4_K_M,
-downloaded and checksummed by `mesh-llm` itself) and a **real `goose` CLI
-session** wired to that node via the documented `mesh-llm goose` workflow —
-see "Live demo" below. Both are real local processes; no mocks remain in the
-live path. The mock-node path (`mock_mesh_node.py`, `run_demo.py`) is kept
-for a network/model-download-free smoke test, clearly labeled as such.
+**Status: live-verified (2026-08-16, supported port).** An earlier session
+built this against a mock fixture node only (sandboxed execution restriction
+at the time — see git history). Subsequent sessions re-ran the whole thing
+against a **real, running `mesh-llm serve` node on the supported mesh inference
+port** (Hermes-2-Pro-Mistral-7B-Q4_K_M, downloaded and checksummed by
+`mesh-llm` itself) and a **real `goose` CLI session** wired to that node via
+the documented `mesh-llm goose` workflow — see "Live demo" below and
+[`docs/SUPPORTED-PORT-RERUN.md`](docs/SUPPORTED-PORT-RERUN.md) for findings.
+Both are real local processes; no mocks remain in the live path. The mock-node
+path (`mock_mesh_node.py`, `run_demo.py`) is kept for a
+network/model-download-free smoke test, clearly labeled as such.
 
 ## What issue #1233 actually asks for
 
@@ -131,7 +133,7 @@ session — see "Honest limitations."
 Implementation: `capsule_sidecar.py`. It can be pointed at a real node:
 
 ```bash
-mesh-llm serve --local-model-only --gguf /path/to/model.gguf --port 9337   # --gguf needs a real (non-symlink) file path
+mesh-llm serve --gguf /path/to/model.gguf --port 9337   # --gguf needs a real (non-symlink) file path
 python3 capsule_sidecar.py --upstream http://127.0.0.1:9337 --listen-port 8089 \
     --runtime-artifact /path/to/mesh-llm-binary --runtime-label "mesh-llm v0.75.1 real node" \
     --manifest model-package/model-package.live.json   # built from the real model -- see build_real_model_package.py
@@ -183,8 +185,8 @@ narrative here is the same run, spelled out.
 # 1. download a small local model mesh-llm can serve directly (one-time)
 mesh-llm download Hermes-2-Pro-Mistral-7B-Q4_K_M   # ~4.4GB; goose's catalog default for tool-calling
 
-# 2. serve it locally (needs the real, non-symlink blob path from the HF cache)
-mesh-llm serve --local-model-only --gguf <path-to-.gguf-blob> --port 9337
+# 2. serve it on the supported mesh inference port (needs the real, non-symlink blob path from the HF cache)
+mesh-llm serve --gguf <path-to-.gguf-blob> --port 9337
 
 # 3. real model-package.json from the actual downloaded weights (not a fixture)
 python3 build_real_model_package.py <path-to-.gguf-blob> bartowski/Hermes-2-Pro-Mistral-7B-GGUF:Q4_K_M
@@ -239,23 +241,33 @@ stylistic choice.
 
 ## Honest limitations (read this before the call)
 
-**This session's mock-vs-real history, for the record.** An earlier session
-built this PoC entirely against `mock_mesh_node.py` because that sandbox's
-tool policy blocked executing the downloaded mesh-llm binary. *This* session
-carries an explicit, task-specific authorization to run `mesh-llm serve
---local-model-only` and `goose` as real local processes, and did — see "Live
-demo" above for the exact commands and real output. `mock_mesh_node.py` /
-`run_demo.py` are kept only as a network/model-download-free smoke test of
-the sidecar mechanism in isolation; they are not the demo path anymore and
-are clearly labeled as a fixture everywhere they appear.
+**This PoC's run history, for the record.** An earlier session built this
+PoC entirely against `mock_mesh_node.py` because that sandbox's tool policy
+blocked executing the downloaded mesh-llm binary. A subsequent session ran
+against the supported mesh inference port (`mesh-llm serve --gguf … --port
+9337`) with a real `goose` CLI session — see "Live demo" above for the exact
+commands and real output, and [`docs/SUPPORTED-PORT-RERUN.md`](docs/SUPPORTED-PORT-RERUN.md)
+for the comparison with the earlier debugging-endpoint run.
+`mock_mesh_node.py` / `run_demo.py` are kept only as a
+network/model-download-free smoke test of the sidecar mechanism in isolation;
+they are not the demo path and are clearly labeled as a fixture everywhere they appear.
 
-**Two `mesh-llm` CLI flag corrections found by running it for real** (the
-`--help` text doesn't make either obvious): `--local-model-only` takes
-`--gguf <path>`, not `--model <name>` (that flag is for mesh-network model
-selection); and `--gguf` must be a real file, not the symlink the Hugging
-Face cache normally hands you (`snapshots/<rev>/<file>` → `blobs/<sha256>`)
-— resolve the symlink first (`build_real_model_package.py` does this and
-uses the same resolved path for hashing).
+**One `mesh-llm` CLI flag correction found by running it for real** (the
+`--help` text doesn't make it obvious): `--gguf` must be a real file, not
+the symlink the Hugging Face cache normally hands you
+(`snapshots/<rev>/<file>` → `blobs/<sha256>`) — resolve the symlink first
+(`build_real_model_package.py` does this and uses the same resolved path for
+hashing).
+
+> **Note — `--local-model-only` is a debugging endpoint, not for acceptance.**
+> It bypasses the host-runtime OpenAI normalizer and is not the path issue
+> #1332's live acceptance requires. The primary invocation in this README uses
+> the supported mesh inference port (`mesh-llm serve --gguf … --port 9337`,
+> without `--local-model-only`). For the behavioral difference between the two
+> modes and the digest-stability finding, see
+> [`docs/SUPPORTED-PORT-RERUN.md`](docs/SUPPORTED-PORT-RERUN.md). (Flag note:
+> `--local-model-only` takes `--gguf <path>`, not `--model <name>` — the
+> `--model` flag is for mesh-network model selection.)
 
 **A real, live small-model/goose tool-calling compatibility issue, found and
 fixed in this session.** Two things had to be fixed for `goose run` to
@@ -301,9 +313,9 @@ knowable without running it for real:
 `build_real_model_package.py` hashes the actual GGUF file mesh-llm
 downloaded (SHA-256 over the real ~4.4GB file, streamed — see
 `model-package/model-package.live.json`), not a fixture. It intentionally
-omits `shared`/`layers` artifacts: `--local-model-only` serves one GGUF file
-directly (no Skippy layer split, which is mesh-llm's *distributed*-serving
-format) — a manifest claiming layer artifacts here would be the
+omits `shared`/`layers` artifacts: this demo serves a single GGUF file
+directly via `--gguf <path>`, not the Skippy layer-split format mesh-llm uses
+for distributed serving — a manifest claiming layer artifacts here would be
 fabrication. `model_identity.py`'s digest formula already treats those
 blocks as optional for exactly this reason. (`build_model_package.py`, the
 original fixture-based builder, is kept for the mock-node smoke test.)
@@ -569,11 +581,12 @@ poc/
 
 ## What the call strawman should show
 
-1. **The live composition, not the mock**: real `mesh-llm serve
-   --local-model-only` + real `goose` (via `mesh-llm goose`) + real
+1. **The live composition, not the mock**: real `mesh-llm serve` on the
+   supported mesh inference port + real `goose` (via `mesh-llm goose`) + real
    `capsule-emit-goose`, one task run, two independently verifiable chained
    record streams. This is mic's two codebases (mesh-llm, capsule-emit)
-   composing, live — see "Composing capsule-emit-goose" and "Live demo."
+   composing, live — see "Composing capsule-emit-goose," "Live demo," and
+   [`docs/SUPPORTED-PORT-RERUN.md`](docs/SUPPORTED-PORT-RERUN.md).
 2. The receipt-tuple → capsule field mapping table above — the concrete
    "what we'd commit to a record" artifact for the discussion.
 3. The architecture finding (sidecar, not plugin) — worth surfacing early
