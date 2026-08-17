@@ -6,13 +6,13 @@
 # where a transitive dependency changes its public API and breaks an import
 # that was previously fine (e.g. mcp>=2.0 removed mcp.server.fastmcp).
 #
-# Mutant verification:
+# Mutant verification (each step fails its mutant):
 #   - Remove `mcp<2` from requirements.txt → "Smoke: mcp.server.fastmcp" fails
 #     (mcp>=2.0 removed that module).
-#   - Remove `scitt-cose` → "Smoke: scitt_cose" fails.
+#   - Remove `scitt-cose` → "Smoke: scitt_cose" and "Smoke: capsule_sidecar" fail.
 #   - Remove `cbor2` → "Smoke: cbor2" fails.
-#   - Remove the goose/server.py step → a broken import in that file would go
-#     undetected until the live demo path.
+#   - Break import in goose/server.py → "Smoke: goose/server.py" fails.
+#   - Break import in capsule_sidecar.py → "Smoke: capsule_sidecar" fails.
 name: ci
 
 on:
@@ -46,15 +46,11 @@ jobs:
       - name: Smoke — cbor2 (item 2 regression guard)
         run: python -c "import cbor2; print('ok')"
 
-      - name: Smoke — goose/server.py top-level imports
-        run: |
-          python - <<'EOF'
-          import importlib.util, sys
-          spec = importlib.util.spec_from_file_location("goose_server", "goose/server.py")
-          m = importlib.util.module_from_spec(spec)
-          spec.loader.exec_module(m)
-          print("ok")
-          EOF
+      - name: Smoke — capsule_sidecar (exercises scitt_cose + agent_action_capsule + model_identity)
+        run: python -c "import capsule_sidecar; print('ok')"
+
+      - name: Smoke — goose/server.py (exercises mcp.server.fastmcp + capsule_emit.adapters.mcp)
+        run: python -c "import importlib.util; spec = importlib.util.spec_from_file_location('goose_server', 'goose/server.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print('ok')"
 
       - name: Unit tests
         run: |
