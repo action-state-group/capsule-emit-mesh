@@ -231,3 +231,160 @@ principle reach D2 if the counterparty co-signs.
    not as an evidence label a downstream verifier can assert. Is that reading
    correct, or should a verifier be able to label a record as having been
    produced under `owner_delegated_required` policy?
+
+---
+
+
+## 10. Body access: not a binary flag — and the plugin must fail loudly
+
+**What #1331 says.**
+> *"body access withheld by host config"*
+
+The manifest declares `sanitized_headers` and `decision_mode`, but #1331
+does not specify the protocol for body access: whether the host passes `null`
+for the body field, whether it skips calling the plugin entirely for
+body-sensitive phases, or whether it calls the plugin with an explicit
+`body_access_granted: false` signal alongside `body: null`.
+
+**Working assumption in this exemplar.**
+
+The host calls the plugin for every subscribed phase, always passing
+`body_access_granted` as an explicit boolean alongside `body`.  When
+`body_access_granted=False`, `body` is `None`.  The plugin must check
+`body_access_granted` and raise `BodyAccessDenied` if it requires the body —
+not silently return `abstain` (which would be the fail-toward-reassurance
+shape: confident output, empty observation).
+
+The host treats `BodyAccessDenied` as `EVIDENCE_UNAVAILABLE /
+internal_hook_failure`, not as a plugin deny decision.
+
+**Questions for Nick.**
+
+1. Is body access an all-or-nothing grant per plugin, or can it be
+   phase-specific (e.g. body at REQUEST_RECEIVED but not at
+   EXCHANGE_FINISHED)?
+2. If the host withholds body access for an admission-policy plugin, does the
+   host skip loading the plugin entirely, call it with `body=null`, or
+   downgrade it to observe-only for that phase?
+3. Is there a host-level audit event for "plugin called with body access
+   denied"?  The exemplar records it in the EVIDENCE side-stream; is that
+   the expected location?
+
+---
+
+## 11. Observe-only: does silent abstain on missing body violate the contract?
+
+**What #1331 says.**
+> *"must never influence the exchange"*
+
+An observe-only plugin that returns `abstain` when its body grant is missing
+technically satisfies "never influence" — it changed nothing.  But it also
+observed nothing, which means the record it emits (if any) is misleadingly
+complete.
+
+**Working assumption.**  This exemplar treats silent abstain on missing body
+as a fail-toward-reassurance shape and raises `BodyAccessDenied` instead.
+
+**Question for Nick.**  Should the contract explicitly require observe-only
+plugins to fail loudly when they cannot observe, or is silent abstain
+acceptable?  If the spec intends observe-only as "observe and record if you
+can, otherwise stay out of the way," the plugin should emit an incomplete
+observation record rather than raise.  The exemplar explicitly chose raise
+over incomplete record because the task acceptance criterion required it;
+confirm which shape #1331 intends.
+
+---
+
+## 12. Decision mode enforcement: host-side or convention?
+
+**What #1331 says.**  Manifests declare `decision_mode` but no enforcement
+mechanism is described.
+
+**Working assumption.**  The exemplar host does not prevent an `observe_only`
+plugin from returning `DENY` — it processes whatever string the plugin
+returns.  The observe-only plugin in this exemplar simply never returns
+`DENY` by convention.
+
+**Question for Nick.**  Should the host treat a `DENY` from an
+`observe_only` plugin as a protocol error (and fail the exchange with
+`internal_hook_failure`), ignore it (treat as `abstain`), or pass it through?
+The failure mode matters: a misbehaving plugin that declares `observe_only`
+but returns `DENY` must not silently block traffic.
+
+---
+
+## 13. `sanitized_headers`: request vs grant, and forbidden-header policy
+
+**What #1331 says.**  Authorization and Cookie must not appear in plugin-
+visible context — #1331 makes this its own acceptance box.
+
+The exemplar's manifest lists `sanitized_headers=["content-type",
+"x-request-id"]` and the host filters strictly against this list.  What is
+unspecified:
+
+1. If a plugin manifest lists `authorization` in `sanitized_headers`, does
+   the host refuse to load the plugin, silently strip it, or raise an error?
+2. Is `sanitized_headers` a minimum request ("give me at least these") or an
+   exact allowlist ("give me exactly these, no more")?  If the host also
+   exposes `x-mesh-request-id` to every plugin for correlation, is that a
+   contract violation?
+3. How does a plugin discover which headers it was actually granted vs which
+   it requested?  The exemplar has no way to know whether the host silently
+   dropped a header it declared.
+
+**Working assumption.**  The host filters strictly: only headers in the
+manifest's list are passed, Authorization and Cookie are never passed
+regardless of the manifest, and no additional headers are added.  No
+load-time error for forbidden-header requests — the headers are just absent.
+
+---
+
+## 14. Phase subset calling: opt-in vs opt-out
+
+**What #1331 says.**  The manifest `phases` field lists which phases the
+plugin wants to be called for.
+
+**Question for Nick.**  If an admission-policy plugin declares only
+`["request_received"]` in phases (to avoid unnecessary body reads at
+`exchange_finished`), does the host:
+(a) skip calling the plugin entirely at `backend_selected` and
+    `exchange_finished`, or
+(b) call the plugin at all phases and the plugin returns `abstain` for phases
+    it did not declare?
+
+The exemplar's host uses (a): the `phases` list is authoritative and the host
+calls the plugin only at declared phases.  But the protocol is not in #1331.
+The distinction matters for performance: an admission-policy plugin subscribed
+to all three phases is called three times per exchange even though it only
+evaluates at `request_received`.
+
+---
+
+## 15. DENY at non-decision phases: protocol error or treated as abstain?
+
+**What #1331 says.**  Nothing.
+
+**Working assumption.**  The exemplar's host processes `DENY` wherever it
+appears.  If an `admission_policy` plugin returns `DENY` at
+`exchange_finished`, the host would produce a confusing `POLICY_DENIED` trace
+after the backend already completed.
+
+**Question for Nick.**  Should `DENY` at `exchange_finished` be:
+(a) a protocol error → `internal_hook_failure`,
+(b) silently treated as `abstain` (the backend already responded), or
+(c) valid — the host retracts the client egress and returns the denial error
+    even though the backend was already dispatched?
+
+Option (a) is the safest: it makes the plugin contract explicit about where
+denial is valid.  Option (c) would require the host to buffer the response
+and is likely out of scope for the initial contract.
+
+---
+
+*Previous spec-feedback notes from this repo:*
+
+*Items 1–9 are in `docs/SPEC-FEEDBACK-1331.md` as produced by the
+delegation-chain verifier task (`[mesh-delegation-chain-verifier]`).
+This file adds items 10–15 from the two-mode exemplar task
+(`[mesh-exemplar-plugin-two-modes]`).  The two files will be reconciled
+into one when both PRs merge.*
