@@ -6,6 +6,14 @@ threat model and assurance levels."*
 
 Steven Mih · 2026-08-16 · offered for discussion, revision, or re-homing.
 
+> **Revision 2026-08-17.** Ground-truth correction pass against a full read of the current
+> `README.md`, `MESHES.md`, `NODE_REP.md`, and issue #1331 (all fetched 2026-08-17). Six narrow
+> corrections: C7 changed from "Not built" to "Partly built" with reason codes named; the C-series
+> date hedge discharged; §9.2 public-mesh row marked as the default posture; operator levers named
+> in C1; four harnesses added to §4.3 and §12 Q2; Nostr noted as mesh-llm's own transport in §8.
+> One new addition: C2a extended with the volunteer-computing precedent, a pointer to the MoA
+> gateway, and our measured sampling non-determinism. Nothing else changed.
+
 > **Status of the referenced specifications.** Where this document refers to record-format
 > mechanisms, the published revisions are `draft-mih-scitt-agent-action-capsule-02`,
 > `draft-mih-agent-bilateral-attestation-01`, `draft-mih-sato-agent-accountability-composition-00`
@@ -120,16 +128,17 @@ only global view of a split run. It has the most exposure and the least evidence
 
 | # | Fear | Evidence that would address it | Status |
 |---|---|---|---|
-| C1 | I route work to a node not running what it advertises | An admission-time check on the same record the node produces afterwards | Partly: owner-allowlist trust policy exists. Advertised admission state is coarse availability, deliberately not evidence |
+| C1 | I route work to a node not running what it advertises | An admission-time check on the same record the node produces afterwards | Partly: operator levers already exist — `--trust-policy require-owned`, `--require-release-attestation`, `--owner-required`, private meshes, and signed bootstrap tokens. These scope or gate admission by owner identity and release provenance. Advertised admission state is coarse availability, deliberately not evidence. Any argument that a signed record helps the coordinator must say what it adds beyond restricting to a private or require-owned mesh |
 | C2 | I am blamed for a node's behaviour because I chose it | The routing decision recorded as a decision | **Not built** — a topology is a serialized structure with no signature and no issuer |
 | C3 | I cannot show which node held which layers | A signed commitment binding a topology to the request that ran on it | Correlation exists (`topology_id`, `stage_id`, `stage_index`, `run_id`, `request_id`, `session_id` travel with every stage message); **binding does not** |
 | C4 | A stage substitutes weights mid-run | Per-stage artifact digests committed per request and verified | Half-present: stage config already carries `manifest_sha256` and `source_model_sha256` — **claims by the stage**, not verified evidence, and no record consumes them |
 | C5 | I see everything, and that is a liability | Bounded, recorded knowledge at the boundary I own | Not built; gateway ingress sees complete requests |
 | C6 | Disputes land on me and my view is not evidence | Observation point in every record | Enumerated in #1331; not yet produced |
-| C7 | I exclude a node and cannot show why | Admission refusal sealed with its constraint basis | Not built |
+| C7 | I exclude a node and cannot show why | Admission refusal sealed with its constraint basis | **Partly built** — `MESHES.md` documents machine reason codes on admission refusal: `certified_binary_required`, `build_proof_invalid`, `release_signer_untrusted`, surfaced in logs, status, and evidence. The *sealed commitment* binding each refusal to its constraint basis — so that an excluded node can verify the stated reason matches an immutable policy — is not yet built |
 
-**The seams as they exist today** *(read from a checkout dated 2026-08-11 — please correct anything
-that has moved)*: the topology is already a structured object with stable ids, per-stage layer
+**The seams as they exist today** *(re-verified 2026-08-17 against current `README.md`, `MESHES.md`,
+`NODE_REP.md`, and issue #1331 — all structural claims in this paragraph still hold; C7 corrected
+above)*: the topology is already a structured object with stable ids, per-stage layer
 ranges and load modes; a correlation spine already threads run/request/session/topology/stage
 identity through the wire protocol; per-stage artifact digests are already carried but asserted
 rather than verified; and execution ordering is already modelled with epochs and a staleness
@@ -234,10 +243,33 @@ deployment properties.
 > no access to intermediate activations. For a network where the disputed question is "did this node
 > run the model it claimed," this is both cheaper and sharper than fingerprinting.
 >
-> Its precondition is that the digested bytes are deterministic — which is exactly the digest-domain
-> problem in §11: a response digested after a normalizer that mints wall-clock-bearing identifiers
-> changes every run for identical model output. Replay is unavailable until a record commits to a
-> reproducible domain, which is one more reason to name the domains explicitly.
+> **C2a is the volunteer-computing mechanism.** SETI@home and BOINC tolerated anonymous, unreliable,
+> occasionally hostile volunteers because **verification lived in the result, not the participant** —
+> work units replicated across multiple hosts and results compared; disagreement triggered re-issue.
+> Participants were largely pseudonymous and unverified; the protocol did not need to trust them
+> because it checked their work. For an open volunteer inference mesh that framing inverts the usual
+> priority: result verification is the central problem and identity is a supporting one. The record
+> layer already commits everything needed to replicate: request bytes, generation parameters,
+> execution-bundle digest, and the output to compare against.
+>
+> **mesh-llm already ships a fan-out-and-compare primitive.** The MoA gateway: *"Send a request
+> with `model: "mesh"` and the proxy fans it out to every model available in the mesh in parallel,
+> arbitrates their responses with deterministic logic."* Marked experimental; built for answer
+> quality rather than verification. Adapting it for C2a spot-checks is an offering, not a demand —
+> it is the closest thing in the codebase to what replication-based verification needs, and the use
+> case is genuinely absent from its current design.
+>
+> **Measured precondition.** C2a's precondition is that the digested bytes are deterministic. Its
+> limit is not just the normalizer: two runs of an identical task on byte-identical weights produced
+> different `response_digest` values on every capsule including text-only turns, and a different
+> total number of records, because model sampling was never pinned. The divergence split into two
+> independent causes — normalizer wall-clock tool-call IDs (see `docs/SUPPORTED-PORT-RERUN.md`) and
+> model sampling non-determinism, which affects every turn. Replay is unavailable until a record
+> commits to a reproducible domain — temperature 0 with a pinned seed — which is one more reason to
+> name the domains explicitly. This precondition is the digest-domain problem in §11: a response
+> digested after a normalizer that mints wall-clock-bearing identifiers changes every run even when
+> generation parameters are held fixed. Sampling non-determinism is the second, independent cause,
+> and neither alone accounts for what was measured.
 >
 > Its limit is **hardware class**. GPU reduction order is not deterministic across different silicon,
 > so a legitimate node can fail an exact comparison for reasons unrelated to honesty. Within a
@@ -381,6 +413,10 @@ and the composition model explicitly allows that: not every action populates eve
   inference" remains narration.
 - **Terminal-state honesty.** Refusal before dispatch, refusal after dispatch, backend error,
   cancellation and incomplete observation are five different facts.
+- **Client-contract scope.** mesh-llm documents four named harnesses — `goose`, `opencode`,
+  `claude`, `pi` — plus curl and every OpenAI-compatible SDK. A request-signing step placed in
+  one harness reaches one client; a serving contract expressed on the mesh-llm side reaches all.
+  This is the operative constraint behind §12 Q2.
 
 ---
 
@@ -502,6 +538,11 @@ Any public instance named in documentation should be *an* instance, never a hard
 an implementation that cannot be pointed at a different log is not conformant. **An operator inside
 this ecosystem running a second log would be worth more than any amount of neutrality language.**
 
+**Discovery uses Nostr relays by default** (`--publish` advertises a mesh for Nostr discovery) —
+this is mesh-llm's own transport layer, not a dependency of any particular downstream client. Any
+channel design for record distribution or credential announcement can use the same relay
+infrastructure rather than introducing a separate broadcast mechanism.
+
 ### 8.3 Deferred registration: accumulate locally, register periodically, prove on demand
 
 Records accumulate in an append-only Merkle accumulator maintained locally; its **peaks** are
@@ -563,13 +604,18 @@ One mechanism, two postures, no protocol change between them.
 
 ### 9.2 Floors per class
 
+**The public mesh is the default posture.** `mesh-llm serve --auto` joins the best discovered
+public mesh — that is the quick start, not a later phase. The table below is ordered accordingly:
+the public-mesh row is the baseline; every other profile is a deviation from it, with stricter or
+different requirements.
+
 | Profile | A | B | C | D | E | Notes |
 |---|---|---|---|---|---|---|
-| **Membership-gated** | A2 | B2 | C1 | D2 | E1 | Keys have a root; the operator can act on a finding |
-| **Internal fleet** | A1 | B2 | C1 | D1 | E1 | Identity boundary already exists; admission control is the main use |
-| **Research / inter-department** | A2 | B2 | C1 | D2 | E1 | Attribution matters more than confidentiality |
-| **Public mesh** | A4 | B2 | C2 | D2 | E1 | Best-effort attestation covers most of what users ask for; **E0 is the residual and E2/E3 the only real answer** |
-| **Confidential / regulated** | A4 | B3 | C3 | D2 | E2–E3 | Every claim checkable by a party trusting neither side; batch latency acceptable |
+| **Public mesh** *(default — `serve --auto`)* | A4 | B2 | C2 | D2 | E1 | Best-effort attestation covers most of what users ask for; **E0 is the residual and E2/E3 the only real answer** |
+| **Membership-gated** *(deviation: admission gated by operator)* | A2 | B2 | C1 | D2 | E1 | Keys have a root; the operator can act on a finding |
+| **Internal fleet** *(deviation: existing identity boundary)* | A1 | B2 | C1 | D1 | E1 | Identity boundary already exists; admission control is the main use |
+| **Research / inter-department** *(deviation: attribution priority)* | A2 | B2 | C1 | D2 | E1 | Attribution matters more than confidentiality |
+| **Confidential / regulated** *(deviation: every claim externally verifiable)* | A4 | B3 | C3 | D2 | E2–E3 | Every claim checkable by a party trusting neither side; batch latency acceptable |
 
 ---
 
@@ -616,8 +662,10 @@ specifics, route descriptors, nonce source, FHE parameters, fingerprint confiden
 1. **Does §2.3 match what node operators actually tell you?** It is the half with the least evidence
    behind it — reasoned, not researched. If your list differs, the section should be rewritten rather
    than patched.
-2. Is the request commitment in §4 something a mesh client can send today, and where in the client
-   does a request-signing step belong?
+2. Is the request commitment in §4 something a mesh client can send today, and where does a
+   request-signing step belong? mesh-llm documents four named harnesses — `goose`, `opencode`,
+   `claude`, `pi` — plus curl and every OpenAI-compatible SDK. A change in one harness reaches one
+   client; a serving contract on the mesh-llm side reaches all. (See §4.3.)
 3. Which profile in §9.2 has to work first? The floors differ enough to change build order.
 4. For split inference, does the coordinator hold enough context to commit to stage order, or must it
    be assembled from the stages?
