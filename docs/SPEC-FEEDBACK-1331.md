@@ -183,3 +183,51 @@ verifier checks `delegation.plugin_id == expected_plugin_id`.
 checking a chain after the fact) an intended use case? If so, what is the
 canonical source of the expected plugin_id for a verifier that was not party
 to the original exchange?
+
+---
+
+## 9. Identity mode → cross-party rung: axes are orthogonal, mapping does not exist
+
+**What #1331 says.**
+
+Four identity modes are defined:
+- `self_attested` — plugin uses an independent key; no owner binding
+- `owner_delegated` — valid PluginSigningDelegationV1 + SignedNodeOwnership
+- `owner_delegated_required` — host policy floor; fail plugin readiness if unavailable
+- `hardware_delegated` — reserved for future TEE/TPM-backed non-exportable keys
+
+**The mode→rung mapping does not exist.**
+
+The cross-party rung ladder (`unilateral_fallback` < `acknowledged_receipt` <
+`full_bilateral`) answers *"how many parties co-signed the exchange record?"*
+The identity mode answers *"how is the plugin's signing key delegated?"*
+These are orthogonal axes. The verifier's `mode_output_dict()` always sets
+`rung: null` for every mode, with a note explaining why.
+
+| Identity mode | Rung | Why no rung |
+|---|---|---|
+| `self_attested` | none | The mode says nothing about counterparty co-signing. A self_attested plugin can produce `unilateral_fallback` records. The exchange evidence, not the key delegation, determines the rung. |
+| `owner_delegated` | none | Owner binding improves attributability (identity axis B2) but does NOT grant a higher cross-party rung. `unilateral_fallback` (one-party signature) is the floor. `acknowledged_receipt` and `full_bilateral` require counterparty co-signing, which is independent of how the plugin key is delegated. |
+| `owner_delegated_required` | n/a | This is a host policy setting, not an evidence label. It cannot be placed on the evidence ladder. |
+| `hardware_delegated` | none | Reserved; unrepresentable in software. Even if it were representable, it addresses the key provenance sub-axis of identity, not the cross-party co-signing axis. |
+
+**This is consistent with ASSURANCE-VOCABULARY.md §5.** That document already
+separates assurance into five orthogonal axes. Identity (`B0–B3`) and
+mutuality (`D0–D2`) are distinct axes; a value on the identity axis does not
+determine a value on the mutuality axis and vice versa. The `owner_delegated`
+mode corresponds to B2 (owner-delegated software key). `full_bilateral`
+corresponds to D2 (both parties signed). A plugin at B2 can still stand at
+D0 (`unilateral_fallback`), and a self-attested plugin at B1 could in
+principle reach D2 if the counterparty co-signs.
+
+**Question for Nick.**
+1. Is the intent that an `owner_delegated` plugin enables any specific rung
+   on the cross-party ladder, or is the identity mode purely an attribution /
+   revocation / key-management concern?
+2. If `owner_delegated` is intended to unlock `acknowledged_receipt`, what
+   additional evidence from the counterparty makes the step, and where does
+   it land in the host's evidence bundle?
+3. `owner_delegated_required` reads as a policy setting in the host config,
+   not as an evidence label a downstream verifier can assert. Is that reading
+   correct, or should a verifier be able to label a record as having been
+   produced under `owner_delegated_required` policy?

@@ -36,9 +36,15 @@ _REPO_ROOT = _HERE.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
 from delegation_chain_verifier import (  # noqa: E402
+    EvidenceState,
+    IdentityMode,
+    IdentityModeResult,
     RejectionCode,
     VerifyStep,
+    assess_identity_mode,
+    assess_identity_mode_without_verifying,
     chain_verdict,
+    mode_output_dict,
     verify_chain,
 )
 
@@ -313,3 +319,287 @@ def test_bad_signature_detected_before_expiry():
     assert verdict.rejection == RejectionCode.BAD_SIGNATURE, (
         f"Step 1 must trigger before step 5; got {verdict.rejection!r} at {verdict.step!r}"
     )
+
+
+# ===========================================================================
+# Identity mode and evidence state tests — [mesh-identity-mode-assurance-labels]
+#
+# THE TESTS THAT MATTER ARE THE NON-UPGRADE ONES.
+# #1331: "No mode silently upgrades its assurance label."
+# #1331: "must preserve distinctions between missing, present-unverified,
+#          verified, expired, revoked, and invalid"
+# #1331: "must not forward a boolean such as owner_verified without the
+#          signed evidence needed to verify it."
+# ===========================================================================
+
+class TestEvidenceStateDistinctions:
+    """Six evidence states each shown failing to be reported as anything stronger."""
+
+    def test_verified_state_on_happy_path(self):
+        """Happy path: evidence_state must be VERIFIED, mode must be OWNER_DELEGATED."""
+        delegation, node_ownership, capsule_bytes, revocation_list, node_id = _load("happy")
+        results = _run_case("happy")
+        mode_result = assess_identity_mode(results, delegation)
+        assert mode_result.evidence_state == EvidenceState.VERIFIED, (
+            f"Happy path must produce VERIFIED; got {mode_result.evidence_state!r}"
+        )
+        assert mode_result.mode == IdentityMode.OWNER_DELEGATED, (
+            f"Happy path must produce OWNER_DELEGATED; got {mode_result.mode!r}"
+        )
+
+    def test_missing_state_when_no_delegation(self):
+        """No delegation → evidence_state=MISSING, mode=SELF_ATTESTED."""
+        # assess without providing any delegation document
+        mode_result = assess_identity_mode_without_verifying(None)
+        assert mode_result.evidence_state == EvidenceState.MISSING
+        assert mode_result.mode == IdentityMode.SELF_ATTESTED
+
+    def test_expired_state_is_not_self_attested(self):
+        """Expired delegation must NOT silently degrade to self_attested.
+
+        #1331: distinction between expired and missing is required.
+        A verifier that collapses expired→self_attested loses the information
+        that a credential WAS issued and DID expire.
+        """
+        results = _run_case("expired")
+        delegation = json.loads(
+            (_FIXTURES_DIR / "expired" / "delegation.json").read_bytes()
+        )
+        mode_result = assess_identity_mode(results, delegation)
+        assert mode_result.evidence_state == EvidenceState.EXPIRED, (
+            f"Expired delegation must produce EXPIRED state; got {mode_result.evidence_state!r}"
+        )
+        assert mode_result.mode != IdentityMode.SELF_ATTESTED, (
+            "Expired delegation must NOT degrade silently to self_attested"
+        )
+        assert mode_result.mode == IdentityMode.UNKNOWN, (
+            f"Mode for expired delegation must be UNKNOWN; got {mode_result.mode!r}"
+        )
+
+    def test_revoked_state_is_not_self_attested(self):
+        """Revoked delegation must NOT silently degrade to self_attested."""
+        results = _run_case("revoked")
+        delegation = json.loads(
+            (_FIXTURES_DIR / "revoked" / "delegation.json").read_bytes()
+        )
+        mode_result = assess_identity_mode(results, delegation)
+        assert mode_result.evidence_state == EvidenceState.REVOKED, (
+            f"Revoked delegation must produce REVOKED state; got {mode_result.evidence_state!r}"
+        )
+        assert mode_result.mode != IdentityMode.SELF_ATTESTED
+        assert mode_result.mode == IdentityMode.UNKNOWN
+
+    def test_invalid_signature_produces_invalid_not_owner_delegated(self):
+        """Bad signature must produce INVALID state, NOT owner_delegated.
+
+        This is the 'present-but-unverified' trap in step form: a delegation
+        that exists on disk but whose signature fails must NOT upgrade the mode.
+        """
+        results = _run_case("bad_signature")
+        delegation = json.loads(
+            (_FIXTURES_DIR / "bad_signature" / "delegation.json").read_bytes()
+        )
+        mode_result = assess_identity_mode(results, delegation)
+        assert mode_result.evidence_state == EvidenceState.INVALID, (
+            f"Bad-signature delegation must produce INVALID; got {mode_result.evidence_state!r}"
+        )
+        assert mode_result.mode != IdentityMode.OWNER_DELEGATED, (
+            "A delegation with an invalid signature must NOT report owner_delegated"
+        )
+
+    def test_present_unverified_does_not_upgrade_to_owner_delegated(self):
+        """A delegation that is present but has NOT been verified must report
+        PRESENT_UNVERIFIED, never OWNER_DELEGATED.
+
+        This tests the 'naive presence check' trap: a consumer that merely
+        checks 'is there a delegation?' and upgrades to owner_delegated is
+        wrong. This verifier must refuse that shortcut.
+        """
+        # Use a valid happy-path delegation document but call the unverified assessor —
+        # simulating a consumer that skips verification.
+        delegation = json.loads(
+            (_FIXTURES_DIR / "happy" / "delegation.json").read_bytes()
+        )
+        mode_result = assess_identity_mode_without_verifying(delegation)
+        assert mode_result.evidence_state == EvidenceState.PRESENT_UNVERIFIED, (
+            f"Unverified delegation must produce PRESENT_UNVERIFIED; got {mode_result.evidence_state!r}"
+        )
+        assert mode_result.mode != IdentityMode.OWNER_DELEGATED, (
+            "An unverified delegation must NOT report owner_delegated — "
+            "presence is not verification"
+        )
+        assert mode_result.mode == IdentityMode.UNKNOWN
+
+
+class TestNonUpgradeRules:
+    """Each pair where an upgrade would be wrong, shown refusing it.
+
+    #1331: "No mode silently upgrades its assurance label."
+    """
+
+    def test_present_unverified_refuses_upgrade(self):
+        """present_unverified → owner_delegated is always wrong."""
+        valid_delegation = json.loads(
+            (_FIXTURES_DIR / "happy" / "delegation.json").read_bytes()
+        )
+        mr = assess_identity_mode_without_verifying(valid_delegation)
+        assert mr.mode != IdentityMode.OWNER_DELEGATED, (
+            "PRESENT_UNVERIFIED must never upgrade to OWNER_DELEGATED"
+        )
+
+    def test_expired_refuses_upgrade_to_owner_delegated(self):
+        """expired → owner_delegated is always wrong."""
+        results = _run_case("expired")
+        delegation = json.loads(
+            (_FIXTURES_DIR / "expired" / "delegation.json").read_bytes()
+        )
+        mr = assess_identity_mode(results, delegation)
+        assert mr.mode != IdentityMode.OWNER_DELEGATED
+        assert mr.evidence_state == EvidenceState.EXPIRED
+
+    def test_revoked_refuses_upgrade_to_owner_delegated(self):
+        """revoked → owner_delegated is always wrong."""
+        results = _run_case("revoked")
+        delegation = json.loads(
+            (_FIXTURES_DIR / "revoked" / "delegation.json").read_bytes()
+        )
+        mr = assess_identity_mode(results, delegation)
+        assert mr.mode != IdentityMode.OWNER_DELEGATED
+        assert mr.evidence_state == EvidenceState.REVOKED
+
+    def test_expired_refuses_downgrade_to_self_attested(self):
+        """expired → self_attested downgrade is also wrong — it is a distinct state."""
+        results = _run_case("expired")
+        delegation = json.loads(
+            (_FIXTURES_DIR / "expired" / "delegation.json").read_bytes()
+        )
+        mr = assess_identity_mode(results, delegation)
+        assert mr.mode != IdentityMode.SELF_ATTESTED, (
+            "Expired delegation must remain UNKNOWN, not silently degrade to self_attested"
+        )
+
+    def test_hardware_delegated_is_unrepresentable(self):
+        """hardware_delegated must be unrepresentable — not approximated.
+
+        #1331: "hardware_delegated: reserved for future attested/non-exportable keys."
+        A software Ed25519 key verified by this verifier is NOT hardware_delegated.
+        The verifier never returns this value; it must not be in IdentityMode.
+        """
+        # hardware_delegated is not a member of IdentityMode
+        mode_values = {m.value for m in IdentityMode}
+        assert "hardware_delegated" not in mode_values, (
+            "hardware_delegated must not appear in IdentityMode — it is unrepresentable "
+            "in software and must not be approximated"
+        )
+        # Even the fully-verified happy path does not claim hardware_delegated
+        results = _run_case("happy")
+        delegation = json.loads(
+            (_FIXTURES_DIR / "happy" / "delegation.json").read_bytes()
+        )
+        mr = assess_identity_mode(results, delegation)
+        assert mr.mode.value != "hardware_delegated"
+        # The best a software chain can achieve is owner_delegated
+        assert mr.mode == IdentityMode.OWNER_DELEGATED
+
+    def test_owner_delegated_required_is_not_in_output(self):
+        """owner_delegated_required is host POLICY, not an evidence label.
+
+        It should never appear in verifier output — the verifier produces
+        evidence labels (what the evidence shows), not policy labels (what
+        the operator requires).
+        """
+        mode_values = {m.value for m in IdentityMode}
+        assert "owner_delegated_required" not in mode_values, (
+            "owner_delegated_required is a policy floor, not an evidence label; "
+            "it must not appear in IdentityMode"
+        )
+
+
+class TestNoBooleanOwnerVerified:
+    """#1331: must not forward a boolean such as owner_verified without the
+    signed evidence needed to verify it.
+    """
+
+    def test_mode_output_has_no_boolean_owner_verified(self):
+        """mode_output_dict() must never include an owner_verified key."""
+        results = _run_case("happy")
+        delegation = json.loads(
+            (_FIXTURES_DIR / "happy" / "delegation.json").read_bytes()
+        )
+        mr = assess_identity_mode(results, delegation)
+        output = mode_output_dict(mr)
+        assert "owner_verified" not in output, (
+            "mode_output_dict must not include owner_verified — "
+            "the evidence_state field IS the evidence; callers must read it"
+        )
+
+    def test_mode_output_failed_case_has_no_boolean_owner_verified(self):
+        """Even a failed chain must not include owner_verified."""
+        results = _run_case("expired")
+        delegation = json.loads(
+            (_FIXTURES_DIR / "expired" / "delegation.json").read_bytes()
+        )
+        mr = assess_identity_mode(results, delegation)
+        output = mode_output_dict(mr)
+        assert "owner_verified" not in output
+
+    def test_mode_output_fields_are_evidence_state_not_boolean(self):
+        """Verify the output shape: evidence_state is a string label, not bool."""
+        results = _run_case("happy")
+        delegation = json.loads(
+            (_FIXTURES_DIR / "happy" / "delegation.json").read_bytes()
+        )
+        mr = assess_identity_mode(results, delegation)
+        output = mode_output_dict(mr)
+        assert isinstance(output["evidence_state"], str), (
+            "evidence_state must be a string label, not a boolean"
+        )
+        assert isinstance(output["identity_mode"], str)
+        # No boolean values anywhere in output
+        bool_values = [k for k, v in output.items() if isinstance(v, bool)]
+        assert not bool_values, f"Output must contain no boolean values; found: {bool_values}"
+
+
+class TestModeRungMapping:
+    """The mode→rung mapping must be explicitly documented in the output.
+
+    The mapping note is that identity mode and cross-party rung are orthogonal —
+    see SPEC-FEEDBACK-1331.md §9.
+    """
+
+    def test_owner_delegated_rung_is_none(self):
+        """owner_delegated does not map to a specific rung — must say so."""
+        results = _run_case("happy")
+        delegation = json.loads(
+            (_FIXTURES_DIR / "happy" / "delegation.json").read_bytes()
+        )
+        mr = assess_identity_mode(results, delegation)
+        assert mr.mode == IdentityMode.OWNER_DELEGATED
+        assert mr.rung is None, (
+            "owner_delegated must not claim a specific cross-party rung — "
+            "the two axes are orthogonal (see SPEC-FEEDBACK-1331.md §9)"
+        )
+        assert mr.rung_note, "rung_note must explain why there is no rung"
+
+    def test_self_attested_rung_is_none(self):
+        """self_attested does not determine a cross-party rung."""
+        mr = assess_identity_mode_without_verifying(None)
+        assert mr.mode == IdentityMode.SELF_ATTESTED
+        assert mr.rung is None
+        assert mr.rung_note
+
+    def test_rung_note_is_prose_not_empty(self):
+        """Every mode result must carry a non-empty rung_note."""
+        for case in ["happy", "expired", "revoked", "bad_signature", "wrong_scope"]:
+            if case in ("happy",):
+                results = _run_case(case)
+                delegation = json.loads(
+                    (_FIXTURES_DIR / case / "delegation.json").read_bytes()
+                )
+            else:
+                results = _run_case(case)
+                delegation = json.loads(
+                    (_FIXTURES_DIR / case / "delegation.json").read_bytes()
+                )
+            mr = assess_identity_mode(results, delegation)
+            assert mr.rung_note, f"rung_note must not be empty for case {case!r}"

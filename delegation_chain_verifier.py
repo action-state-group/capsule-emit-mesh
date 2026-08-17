@@ -547,6 +547,217 @@ def chain_verdict(results: list[VerifyResult]) -> VerifyResult:
 
 
 # ---------------------------------------------------------------------------
+# Identity mode and evidence state — #1331 §"Host identity and signing delegation"
+# ---------------------------------------------------------------------------
+
+class EvidenceState(str, Enum):
+    """Six evidence states #1331 requires the identity bundle to distinguish.
+
+    #1331: "The response must preserve distinctions between missing,
+    present-unverified, verified, expired, revoked, and invalid. It must not
+    forward a boolean such as owner_verified without the signed evidence
+    needed to verify it."
+    """
+    MISSING = "missing"                        # no delegation provided
+    PRESENT_UNVERIFIED = "present_unverified"  # present but NOT checked
+    VERIFIED = "verified"                      # full six-step chain passed
+    EXPIRED = "expired"                        # delegation has expired (step 5)
+    REVOKED = "revoked"                        # delegation in revocation list (step 5)
+    INVALID = "invalid"                        # structural/signature failure (steps 1-4)
+
+
+class IdentityMode(str, Enum):
+    """Identity modes from #1331 §"Fallback and policy".
+
+    Strings are used VERBATIM from #1331 — do not rename.
+
+    #1331 defines four modes:
+      self_attested           — plugin uses an independent key; no owner binding
+      owner_delegated         — valid PluginSigningDelegationV1 + SignedNodeOwnership
+      owner_delegated_required — HOST POLICY, not an evidence label (see note below)
+      hardware_delegated      — RESERVED; unrepresentable in software
+
+    "owner_delegated_required" is a deployment floor that the operator sets on
+    the HOST, not a label this verifier can produce from evidence. It answers
+    "what is the minimum acceptable mode?" not "what does the evidence show?"
+    This verifier never returns it.
+
+    "hardware_delegated" is reserved for future TPM/TEE-backed or non-exportable
+    keys. A software Ed25519 key, however validated, is NOT hardware_delegated.
+    This verifier never approximates it — it is unrepresentable here.
+
+    #1331 rule: "No mode silently upgrades its assurance label."
+    """
+    SELF_ATTESTED = "self_attested"
+    OWNER_DELEGATED = "owner_delegated"
+    UNKNOWN = "unknown"  # delegation present but insufficient/invalid for a mode claim
+
+    # The two values below are excluded from the enum deliberately.
+    # owner_delegated_required: policy floor, not an evidence label
+    # hardware_delegated: reserved/unrepresentable — see SPEC-FEEDBACK-1331.md §9
+
+
+# Cross-party rung ladder (from the existing assurance vocabulary).
+_RUNG_LADDER = ("unilateral_fallback", "acknowledged_receipt", "full_bilateral")
+
+# Prose mapping from identity mode to cross-party rung.
+# See SPEC-FEEDBACK-1331.md §9 for why this does not map cleanly.
+IDENTITY_MODE_RUNG_MAP: dict[IdentityMode, tuple[str | None, str]] = {
+    IdentityMode.SELF_ATTESTED: (
+        None,
+        "self_attested is about key delegation, not counterparty binding. "
+        "A self_attested plugin can still produce unilateral_fallback records. "
+        "The mode does not determine the rung — the exchange evidence does.",
+    ),
+    IdentityMode.OWNER_DELEGATED: (
+        None,
+        "owner_delegated binds the plugin key to the node owner, improving "
+        "attributability. It does NOT grant a higher cross-party rung: "
+        "unilateral_fallback (one-party signature) is the floor; "
+        "acknowledged_receipt and full_bilateral require counterparty co-signing, "
+        "which is independent of how the plugin key is delegated. "
+        "The mode addresses identity axis B (B2: owner-delegated software key); "
+        "the cross-party rung addresses mutuality axis D. They are orthogonal.",
+    ),
+    IdentityMode.UNKNOWN: (
+        None,
+        "Mode is unknown/unverified — no rung can be determined from evidence.",
+    ),
+}
+
+
+@dataclass
+class IdentityModeResult:
+    """Explicit identity-mode output — never inferred by the reader.
+
+    #1331 rule: "No mode silently upgrades its assurance label."
+    This object NEVER sets mode=owner_delegated unless evidence_state=verified.
+    It NEVER sets mode=owner_delegated when evidence_state=present_unverified.
+    It NEVER degrades an expired delegation to mode=self_attested.
+    It NEVER includes an owner_verified boolean without the signed evidence.
+    """
+    mode: IdentityMode
+    evidence_state: EvidenceState
+    rung: str | None    # cross-party rung value if determinable, else None
+    rung_note: str      # prose explaining the mapping or why it does not apply
+
+
+def assess_identity_mode(
+    chain_results: list[VerifyResult],
+    delegation: dict[str, Any] | None,
+) -> IdentityModeResult:
+    """Derive the identity mode from the completed verification chain.
+
+    Must be called AFTER verify_chain() so evidence_state is based on actual
+    verification, not on the mere presence of a delegation document.
+
+    #1331: "No mode silently upgrades its assurance label."
+    #1331: "must not forward a boolean such as owner_verified without the
+            signed evidence needed to verify it."
+    """
+    if delegation is None:
+        return IdentityModeResult(
+            mode=IdentityMode.SELF_ATTESTED,
+            evidence_state=EvidenceState.MISSING,
+            **_rung(IdentityMode.SELF_ATTESTED),
+        )
+
+    verdict = chain_verdict(chain_results)
+
+    if verdict.ok:
+        # All six steps passed — mode is owner_delegated.
+        return IdentityModeResult(
+            mode=IdentityMode.OWNER_DELEGATED,
+            evidence_state=EvidenceState.VERIFIED,
+            **_rung(IdentityMode.OWNER_DELEGATED),
+        )
+
+    # Chain failed — identify WHY and preserve the distinct state.
+    # RULE: expired/revoked/invalid must NOT silently degrade to self_attested.
+    if verdict.rejection == RejectionCode.EXPIRED:
+        return IdentityModeResult(
+            mode=IdentityMode.UNKNOWN,
+            evidence_state=EvidenceState.EXPIRED,
+            **_rung(IdentityMode.UNKNOWN),
+        )
+
+    if verdict.rejection == RejectionCode.REVOKED:
+        return IdentityModeResult(
+            mode=IdentityMode.UNKNOWN,
+            evidence_state=EvidenceState.REVOKED,
+            **_rung(IdentityMode.UNKNOWN),
+        )
+
+    if verdict.rejection in (
+        RejectionCode.BAD_SIGNATURE,
+        RejectionCode.DELEGATION_SIGNATURE_INVALID,
+        RejectionCode.NODE_OWNERSHIP_SIGNATURE_INVALID,
+        RejectionCode.OWNER_ID_MISMATCH,
+        RejectionCode.MALFORMED,
+    ):
+        return IdentityModeResult(
+            mode=IdentityMode.UNKNOWN,
+            evidence_state=EvidenceState.INVALID,
+            **_rung(IdentityMode.UNKNOWN),
+        )
+
+    # Remaining: semantic failures (wrong scope, mismatched node/plugin).
+    # Delegation is present but cannot be tied to the expected identity.
+    return IdentityModeResult(
+        mode=IdentityMode.UNKNOWN,
+        evidence_state=EvidenceState.PRESENT_UNVERIFIED,
+        **_rung(IdentityMode.UNKNOWN),
+    )
+
+
+def assess_identity_mode_without_verifying(
+    delegation: dict[str, Any] | None,
+) -> IdentityModeResult:
+    """Report evidence state WITHOUT running any verification.
+
+    This represents a consumer that has received a delegation document but
+    has not yet (or deliberately chose not to) verify it. The mode MUST NOT
+    be owner_delegated — presence alone is not evidence of validity.
+
+    Use this to confirm that a naive "is there a delegation? → owner_delegated"
+    shortcut is wrong.
+    """
+    if delegation is None:
+        return IdentityModeResult(
+            mode=IdentityMode.SELF_ATTESTED,
+            evidence_state=EvidenceState.MISSING,
+            **_rung(IdentityMode.SELF_ATTESTED),
+        )
+    # Delegation present but UNCHECKED — mode is unknown, not owner_delegated.
+    return IdentityModeResult(
+        mode=IdentityMode.UNKNOWN,
+        evidence_state=EvidenceState.PRESENT_UNVERIFIED,
+        **_rung(IdentityMode.UNKNOWN),
+    )
+
+
+def _rung(mode: IdentityMode) -> dict[str, Any]:
+    """Unpack the rung tuple for a given mode into keyword args."""
+    rung_val, rung_note = IDENTITY_MODE_RUNG_MAP[mode]
+    return {"rung": rung_val, "rung_note": rung_note}
+
+
+def mode_output_dict(mr: IdentityModeResult) -> dict[str, Any]:
+    """Serialisable representation of an IdentityModeResult.
+
+    NEVER includes a boolean owner_verified field.
+    The evidence_state IS the evidence — callers must read it, not an
+    opaque boolean derived from it.
+    """
+    return {
+        "identity_mode": mr.mode.value,
+        "evidence_state": mr.evidence_state.value,
+        "rung": mr.rung,
+        "rung_note": mr.rung_note,
+    }
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -587,6 +798,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     verdict = chain_verdict(results)
+    mode_result = assess_identity_mode(results, delegation)
 
     if args.verbose:
         for r in results:
@@ -601,10 +813,18 @@ def main(argv: list[str] | None = None) -> int:
 
     if verdict.ok:
         print("VERIFIED: chain ok")
-        return 0
     else:
         print(f"REJECTED: {verdict.rejection.value}")
-        return 1
+
+    # Always emit the identity mode — never a boolean, always the full evidence state.
+    print(f"IDENTITY_MODE: {mode_result.mode.value}")
+    print(f"EVIDENCE_STATE: {mode_result.evidence_state.value}")
+    if mode_result.rung:
+        print(f"RUNG: {mode_result.rung}")
+    else:
+        print(f"RUNG: none (see rung_note)")
+
+    return 0 if verdict.ok else 1
 
 
 if __name__ == "__main__":
