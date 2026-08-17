@@ -1,0 +1,11 @@
+# pip install -r requirements.txt
+#
+# capsule-emit[mcp] pulls agent-action-capsule and capsule-emit.
+# scitt-cose and cbor2 are NOT pulled by capsule-emit[mcp]; they must be declared
+# here because capsule_sidecar.py imports scitt_cose directly.
+# mcp>=2.0 removed mcp.server.fastmcp; the <2 pin keeps goose/server.py importable
+# until it migrates to the standalone fastmcp package.
+capsule-emit[mcp]
+scitt-cose
+cbor2
+mcp<2

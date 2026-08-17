@@ -181,6 +181,14 @@ Everything below is a real local process. No mock server, no fixture model,
 no fabricated bytes. `run_live_demo.sh` orchestrates all six steps; the
 narrative here is the same run, spelled out.
 
+> **Obtaining mesh-llm and goose.** The `mesh-llm` binary is **not included in this
+> repository**. Download the release tarball (v0.75.1 or later) from
+> https://github.com/Mesh-LLM/mesh-llm/releases — it extracts to `mesh-bundle/mesh-llm`.
+> Verify the sha256 before running (`sha256sum mesh-bundle/mesh-llm`; v0.75.1 darwin-arm64:
+> `26a28ae31cd1911be3e71b1ef612cb4166f0bff8380be461769f26083c077223`). For goose (v1.46.0+),
+> see https://github.com/aaif-goose/goose (the repository moved from `block/goose`).
+> Install Python dependencies with `pip install -r requirements.txt`.
+
 ```bash
 # 1. download a small local model mesh-llm can serve directly (one-time)
 mesh-llm download Hermes-2-Pro-Mistral-7B-Q4_K_M   # ~4.4GB; goose's catalog default for tool-calling
@@ -194,7 +202,8 @@ python3 build_real_model_package.py <path-to-.gguf-blob> bartowski/Hermes-2-Pro-
 # 4. the sidecar sits in front and seals inference receipts
 python3 capsule_sidecar.py --upstream http://127.0.0.1:9337 --listen-port 8089 \
     --ledger-dir ledger-live --manifest model-package/model-package.live.json \
-    --runtime-artifact ../bin/mesh-bundle/mesh-llm --runtime-label "mesh-llm real local node"
+    --runtime-artifact /path/to/mesh-llm --runtime-label "mesh-llm real node"
+# Note: the mesh-llm binary is not in this repo; see "Obtaining mesh-llm" below.
 
 # 5. the real, documented `mesh-llm goose` workflow wires goose's provider config
 #    at the sidecar port (writes ~/.config/goose/custom_providers/mesh.json)
@@ -576,7 +585,7 @@ poc/
     test_bilateral_demo.py           bilateral attestation tests (rung derivation, all failure modes, e2e)
 ../mesh-llm-src/                read-only research clone of Mesh-LLM/mesh-llm (no modifications)
 ../openai-endpoint-src/         read-only research clone of Mesh-LLM/openai-endpoint (no modifications)
-../bin/                         downloaded + checksummed mesh-llm v0.75.1 darwin-arm64 release (executed live this session)
+../bin/                         NOT in this repo; see "Obtaining mesh-llm and goose" in the Live demo section above
 ```
 
 ## What the call strawman should show

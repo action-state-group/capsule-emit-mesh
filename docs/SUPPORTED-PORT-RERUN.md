@@ -48,7 +48,7 @@ GOOSE_PROVIDER=mesh GOOSE_MODEL=bartowski/Hermes-2-Pro-Mistral-7B-GGUF:Q4_K_M \
 goose run --no-session --no-profile --max-turns 8 \
   --with-extension "CAPSULE_LEDGER=ledger-supported-port/goose-actions.jsonl \
                     CAPSULE_OPERATOR=capsule-emit-mesh-poc-demo \
-                    CAPSULE_DEVELOPER=goose@v1.39.0+mesh-llm \
+                    CAPSULE_DEVELOPER=goose@v1.46.0+mesh-llm \
                     CAPSULE_ANCHOR=false python3 goose/server.py" \
   -t "Call the get_node_status tool now with node_id=mesh-node-demo-1. \
       After you receive its result, call the submit_capacity_request tool now \
