@@ -327,6 +327,80 @@ def test_openai_response_digest(path: str, vector: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# SSE transcript tests
+# ---------------------------------------------------------------------------
+
+TRANSCRIPT_VECTORS = _load_vectors('openai-shaped/sse/transcript')
+
+
+@pytest.mark.parametrize('path,vector', TRANSCRIPT_VECTORS, ids=[p for p, _ in TRANSCRIPT_VECTORS])
+def test_transcript_digest_domain(path: str, vector: dict) -> None:
+    """Every transcript vector must declare sse_digest_domain = 'frame-payloads'."""
+    if 'generation_error' in vector:
+        pytest.skip(f'{path}: mock rig was unavailable during generation')
+    assert vector.get('sse_digest_domain') == 'frame-payloads', (
+        f'{path}: transcript must declare sse_digest_domain="frame-payloads"; '
+        f'got {vector.get("sse_digest_domain")!r}'
+    )
+
+
+@pytest.mark.parametrize('path,vector', TRANSCRIPT_VECTORS, ids=[p for p, _ in TRANSCRIPT_VECTORS])
+def test_transcript_response_digest(path: str, vector: dict) -> None:
+    """Transcript response_digest matches independent recomputation from reassembled."""
+    if 'generation_error' in vector:
+        pytest.skip(f'{path}: mock rig was unavailable during generation')
+    if vector.get('_number_rule_pending') and vector.get('response_digest') is None:
+        pytest.skip(f'{path}: number rule pending — response_digest=null, cannot verify')
+
+    reassembled = vector.get('reassembled')
+    if reassembled is None:
+        pytest.skip(f'{path}: no reassembled object (placeholder vector)')
+
+    computed = _jcs_n_digest(reassembled)
+    assert computed == vector['response_digest'], (
+        f'{path}: response_digest mismatch\n'
+        f'  computed:  {computed}\n'
+        f'  expected:  {vector["response_digest"]}'
+    )
+
+
+@pytest.mark.parametrize('path,vector', TRANSCRIPT_VECTORS, ids=[p for p, _ in TRANSCRIPT_VECTORS])
+def test_transcript_independent_verification_claim(path: str, vector: dict) -> None:
+    """Transcript must carry the independent_verification field.
+
+    This test is structural: it checks that the transcript DECLARES the
+    independent-verification claim, not just that it has a digest.  The absence
+    of the field would mean the vector is not making the #1331 claim at all.
+    """
+    if 'generation_error' in vector:
+        pytest.skip(f'{path}: mock rig was unavailable during generation')
+    assert 'independent_verification' in vector, (
+        f'{path}: transcript must carry independent_verification field '
+        f'(the #1331 "independent test calculation" claim)'
+    )
+    iv = vector['independent_verification']
+    assert 'description' in iv, f'{path}: independent_verification must have description'
+    assert 'algorithm' in iv, f'{path}: independent_verification must have algorithm'
+
+
+@pytest.mark.parametrize('path,vector', TRANSCRIPT_VECTORS, ids=[p for p, _ in TRANSCRIPT_VECTORS])
+def test_transcript_mock_rig_verified(path: str, vector: dict) -> None:
+    """Mock-rig transcript must have independent_verification.verified == True."""
+    if not vector.get('mock_rig'):
+        pytest.skip(f'{path}: not a mock-rig transcript')
+    if 'generation_error' in vector:
+        pytest.skip(f'{path}: mock rig was unavailable during generation')
+    if vector.get('_number_rule_pending') and vector.get('response_digest') is None:
+        pytest.skip(f'{path}: number rule pending — cannot verify digest')
+    iv = vector.get('independent_verification', {})
+    assert iv.get('verified') is True, (
+        f'{path}: mock-rig transcript must have independent_verification.verified=True; '
+        f'this means the sidecar\'s computed digest equals an independent recomputation '
+        f'from the same frame payloads — the #1331 claim'
+    )
+
+
+# ---------------------------------------------------------------------------
 # Structural integrity: no pending vector silently passes
 # ---------------------------------------------------------------------------
 

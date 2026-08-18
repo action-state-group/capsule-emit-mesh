@@ -44,6 +44,7 @@ from typing import Any
 THIS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = THIS_DIR.parents[1]
 VECTORS_OUT = THIS_DIR / "vectors"
+sys.path.insert(0, str(THIS_DIR))  # allow `import sse_transcript`
 
 _candidate = REPO_ROOT.parent
 WORKSPACE_ROOT = REPO_ROOT.parent  # fallback
@@ -978,6 +979,175 @@ def _build_openai_shaped_vectors() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 6. SSE transcript vectors
+# ---------------------------------------------------------------------------
+
+def _build_sse_transcript_vectors() -> None:
+    """Build SSE transcript vectors using sse_transcript.build_sse_transcript.
+
+    Includes:
+    - Two static transcript vectors (pre-built SSE bytes — no mock rig dependency)
+    - One mock-rig transcript (actual HTTP exchange; nondeterministic IDs/timestamps)
+
+    UNFREEZING PRECONDITION for digest fields in transcript vectors:
+    These vectors carry response_digest = null and _number_rule_pending = True if the
+    reassembled object contains floats. The precondition is the same as for all other
+    pending vectors: the float-to-string conversion rule must be settled AND
+    _stringify_floats_canonical() updated. Until then, transcript response_digest
+    is null. See README §"What changes when the number rule lands."
+    """
+    from sse_transcript import build_sse_transcript, run_against_mock
+
+    out = VECTORS_OUT / 'openai-shaped' / 'sse' / 'transcript'
+
+    # ---- Build static transcript from text-basic SSE bytes ----
+    chunk_base = {
+        'id': 'chatcmpl-sse-test-001',
+        'object': 'chat.completion.chunk',
+        'created': 1724000000,
+        'model': 'hermes-2-pro-mistral-7b',
+    }
+
+    def _raw_sse(deltas: list[tuple[dict, str | None]]) -> bytes:
+        """Build SSE wire bytes from a delta sequence."""
+        parts: list[bytes] = []
+        for delta, finish in deltas:
+            chunk = {
+                **chunk_base,
+                'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}],
+            }
+            parts.append(f'data: {json.dumps(chunk)}\n\n'.encode('utf-8'))
+        parts.append(b'data: [DONE]\n\n')
+        return b''.join(parts)
+
+    # --- transcript-text-basic ---
+    text_raw = _raw_sse([
+        ({'role': 'assistant'}, None),
+        ({'content': 'Hello'}, None),
+        ({'content': ', world!'}, None),
+        ({}, 'stop'),
+    ])
+    text_transcript = build_sse_transcript(text_raw, exchange_id='test-exchange-text-001')
+
+    _write(out / 'transcript-text-basic.json', {
+        'id': 'transcript-text-basic',
+        'description': (
+            'SSE transcript — text content. Parses frame payloads from raw SSE bytes, '
+            'reassembles to chat.completion, computes response_digest via jcs-n. '
+            'DIGEST DOMAIN: frame-payloads (see README §SSE digest domain: why frame payloads). '
+            'Transport-variant fields discarded: line terminators, comment lines, retry: fields, '
+            'data: prefix bytes, HTTP chunk boundaries.'
+        ),
+        'spec_ref': 'mesh-sse-transcript-definition; README §SSE transcript definition',
+        'suite': 'sse-transcript',
+        'raw_sse_bytes_hex': text_raw.hex(),
+        'sse_digest_domain': 'frame-payloads',
+        '_number_rule_pending': text_transcript['_number_rule_pending'],
+        'frame_count': text_transcript['frame_count'],
+        'frame_payloads': text_transcript['frame_payloads'],
+        'reassembled': text_transcript['reassembled'],
+        'response_digest': text_transcript['response_digest'],
+        'independent_verification': text_transcript['independent_verification'],
+        'note': (
+            'Static fixture: SSE bytes are deterministic (no uuid/time), so digest is '
+            'stable across runs once the number rule is settled. '
+            'Frame payloads contain no floats (created is an integer); digest is therefore '
+            'stable regardless of the number rule.'
+        ),
+    })
+    if not text_transcript['_number_rule_pending']:
+        assert text_transcript['response_digest'] == _jcs_n_digest(text_transcript['reassembled'])
+
+    # --- transcript-tool-call ---
+    tool_raw = _raw_sse([
+        ({'role': 'assistant'}, None),
+        ({'tool_calls': [{'index': 0, 'id': 'call_abc123', 'type': 'function',
+                          'function': {'name': 'get_weather', 'arguments': ''}}]}, None),
+        ({'tool_calls': [{'index': 0, 'function': {'arguments': '{"city":'}}]}, None),
+        ({'tool_calls': [{'index': 0, 'function': {'arguments': '"Paris"}'}}]}, None),
+        ({}, 'tool_calls'),
+    ])
+    tool_transcript = build_sse_transcript(tool_raw, exchange_id='test-exchange-tool-001')
+
+    _write(out / 'transcript-tool-call.json', {
+        'id': 'transcript-tool-call',
+        'description': (
+            'SSE transcript — tool-call delta sequence. Incremental tool_calls deltas '
+            '(name and arguments in separate chunks) are folded via reassemble_sse. '
+            'DIGEST DOMAIN: frame-payloads. '
+            'This confirms the transcript algorithm handles streaming tool-call arguments '
+            'correctly — argument fragments are concatenated before digesting.'
+        ),
+        'spec_ref': 'mesh-sse-transcript-definition; README §SSE transcript definition',
+        'suite': 'sse-transcript',
+        'raw_sse_bytes_hex': tool_raw.hex(),
+        'sse_digest_domain': 'frame-payloads',
+        '_number_rule_pending': tool_transcript['_number_rule_pending'],
+        'frame_count': tool_transcript['frame_count'],
+        'frame_payloads': tool_transcript['frame_payloads'],
+        'reassembled': tool_transcript['reassembled'],
+        'response_digest': tool_transcript['response_digest'],
+        'independent_verification': tool_transcript['independent_verification'],
+    })
+
+    # --- transcript-mock-rig ---
+    # Spins up the mock rig and makes a real HTTP exchange.
+    # IDs and timestamps are nondeterministic; the vector captures the STRUCTURE
+    # and the verified invariant (independent_verification.verified), not frozen bytes.
+    print('  [mock rig] starting HTTP exchange for transcript-mock-rig...')
+    try:
+        mock_transcript = run_against_mock(
+            prompt='What is 2 + 2?',
+            port=19879,
+        )
+        verified = mock_transcript['independent_verification']['verified']
+        print(f'  [mock rig] done — frame_count={mock_transcript["frame_count"]}, '
+              f'verified={verified}')
+
+        _write(out / 'transcript-mock-rig.json', {
+            'id': 'transcript-mock-rig',
+            'description': (
+                'SSE transcript from a REAL HTTP exchange with the mock rig (mock_mesh_node.py). '
+                'IDs (chatcmpl-*) and timestamps (created) are nondeterministic — this vector '
+                'is regenerated on each run. The invariant being verified is: '
+                'response_digest computed by build_sse_transcript from wire bytes matches '
+                'response_digest recomputed by an independent observer from the same frame payloads. '
+                'This is the #1331 "host-computed ... match independent test calculations" claim: '
+                'WE ARE the independent calculation.'
+            ),
+            'spec_ref': 'mesh-sse-transcript-definition; README §SSE transcript definition',
+            'suite': 'sse-transcript',
+            'mock_rig': True,
+            'nondeterministic': True,
+            'sse_digest_domain': 'frame-payloads',
+            '_number_rule_pending': mock_transcript['_number_rule_pending'],
+            'frame_count': mock_transcript['frame_count'],
+            'frame_payloads': mock_transcript['frame_payloads'],
+            'reassembled': mock_transcript['reassembled'],
+            'response_digest': mock_transcript['response_digest'],
+            'independent_verification': mock_transcript['independent_verification'],
+            'note': (
+                'Regenerated on each `generate_vectors.py` run — IDs and timestamps vary. '
+                'A test should verify the invariant (independent_verification.verified == True) '
+                'not the specific digest value.'
+            ),
+        })
+        if not verified and not mock_transcript['_number_rule_pending']:
+            print('  [BUG] transcript-mock-rig: independent verification FAILED')
+    except Exception as exc:
+        print(f'  [SKIP] transcript-mock-rig: mock rig failed — {exc}')
+        _write(out / 'transcript-mock-rig.json', {
+            'id': 'transcript-mock-rig',
+            'description': 'Placeholder — mock rig unavailable during generation.',
+            'suite': 'sse-transcript',
+            'mock_rig': True,
+            'generation_error': str(exc),
+            '_number_rule_pending': False,
+            'response_digest': None,
+        })
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1006,6 +1176,10 @@ def main() -> int:
     _build_openai_shaped_vectors()
     print()
 
+    print('=== 6. SSE transcript vectors ===')
+    _build_sse_transcript_vectors()
+    print()
+
     # Summary
     all_vectors = sorted(VECTORS_OUT.rglob('*.json'))
     pending = [f for f in all_vectors if '"_number_rule_pending": true' in f.read_text()]
@@ -1021,7 +1195,7 @@ def main() -> int:
         for f in pending:
             print(f'    {f.relative_to(THIS_DIR)}')
     print()
-    print('Done.  See tests/canonicalization/README.md for the harness contract.')
+    print('Done.  See tests/canonicalization/README.md for the harness contract and SSE transcript definition.')
     return 0
 
 

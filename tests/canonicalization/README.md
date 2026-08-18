@@ -94,6 +94,7 @@ vectors/
     request/               OpenAI chat/completions request digest cases
     response/              Non-streaming response digest cases
     sse/                   SSE reassembly + digest cases (float-free, stable)
+    sse/transcript/        SSE transcript vectors (frame-payload domain, mock-rig verified)
   dup-key/                 Duplicate-key MUST-reject cases (stable)
   response-digest/         Two-domain declaration with declared transforms (stable)
 ```
@@ -107,6 +108,100 @@ vectors/
 | `dup-nfc-nfd` | `{"Å":"v1","Å":"v2"}` | Same after NFC (see Rule 2 departure) |
 | `dup-before-normalization` | `{"a":null,"a":"v"}` | Dup detected before absent-field normalization |
 
+## SSE digest domain: why frame payloads
+
+**The digest domain for SSE is FRAME PAYLOADS ONLY** — the parsed JSON objects
+from `data:` lines, not the complete encoded SSE frames.
+
+The deciding consideration: a verifier must be able to REPRODUCE the digest from
+bytes it did not produce.  Anything an intermediary may legally reformat cannot
+be inside the digest without making the digest a function of the transport, not
+the LLM's generation.
+
+**Complete enumeration of what SSE permits an intermediary to change:**
+
+| Element | SSE spec status | Consequence for digest |
+|---|---|---|
+| Line terminators (`\n` vs `\r\n` vs `\r`) | All three are valid per W3C SSE; intermediaries may normalize | CANNOT be in digest |
+| Optional leading space after `data:` | `data: payload` and `data:payload` are both valid | CANNOT be in digest |
+| Comment lines (`:` prefix) | A sender may insert heartbeat comments at any time; a proxy may add or strip them | CANNOT be in digest |
+| `retry:` fields | A proxy may change the retry interval; a sender may add retry between events | CANNOT be in digest |
+| Blank lines between events (event boundaries) | The SSE spec defines an event as terminated by a blank line; a proxy may add blank lines within fields or change spacing | CANNOT be in digest |
+| HTTP transfer-encoding (chunked framing) | HTTP chunking is transparent to the SSE consumer; chunk boundaries bear no relation to event boundaries | CANNOT be in digest |
+| HTTP header values (Content-Type charset, Transfer-Encoding) | Transport metadata | CANNOT be in digest |
+| **JSON-parsed `data:` field content** | The LLM's actual generation — this is what the sidecar committed to | **IS the digest domain** |
+
+What survives: the JSON-parsed content of each `data:` field, in delivery order.
+This is what the LLM generated.  The transport cannot forge, reorder, or modify
+these without breaking the `response_digest` commitment in the capsule.
+
+**Departure from a "complete frames" domain:**  If the digest covered the
+complete encoded SSE frame bytes, then two transports producing identical
+generations but different line terminators would produce different digests — a
+verifier on a different transport stack could not independently verify the same
+capsule.  Frame payloads give transport-independence.
+
+## SSE transcript definition
+
+An SSE transcript is the verifiable record of what the sidecar observed from the
+LLM's streaming response.  It is the sidecar's side of the `response_digest`
+claim: the sidecar computed `response_digest` INDEPENDENTLY from the frame
+payloads it saw on the wire.
+
+**Algorithm (mesh-sse-reassembly-v1):**
+
+```
+parse_sse_stream(raw_sse_bytes):
+  1. Split raw bytes on \n, \r\n, or \r (all valid SSE terminators).
+  2. For each line starting with "data:", strip the optional single leading space.
+  3. Skip: comment lines (:), retry: fields, [DONE] sentinel, empty lines.
+  4. JSON-parse each remaining payload → list of frame payloads.
+
+reassemble_sse(frame_payloads):
+  1. Fold role, content, and tool_calls deltas in delivery order.
+  2. Exclude usage fields (see USAGE EXCLUSION note below).
+  3. Return one chat.completion object (same shape as non-streaming response).
+
+response_digest = jcs-n(reassemble_sse(parse_sse_stream(raw_sse_bytes)))
+```
+
+**USAGE EXCLUSION:** Usage fields (`prompt_tokens`, `completion_tokens`,
+`total_tokens`) are excluded from the reassembled object and thus from the
+transcript digest.  Reasons:
+1. Real mesh-llm does not emit usage in the main chunk stream.
+2. Usage counts are plain integers, but a future version may emit float-typed
+   usage — which would create a `_number_rule_pending` dependency in every
+   transcript.  The exclusion is declared explicitly so an implementer knows it
+   is a deliberate choice, not an oversight.
+
+**UNFREEZING PRECONDITION for transcript `response_digest`:**  Transcript
+vectors carry `response_digest = null` and `_number_rule_pending = true` if the
+reassembled object contains floats.  The precondition for unfreezing is identical
+to the non-transcript pending vectors: the float-to-string conversion rule must
+be settled AND `_stringify_floats_canonical()` updated.  See §"What changes when
+the number rule lands" — the same `generate_vectors.py` re-run also regenerates
+all transcript vectors.
+
+## SSE transcript and independent verification (#1331)
+
+The `#1331 verification box` states: "host-computed request and response byte
+digests match independent test calculations."
+
+**The sidecar IS the independent calculation.**  Here is the claim stated plainly:
+
+> The sidecar computes `response_digest` from the SSE frame payloads it observed
+> directly on the wire — NOT from what the host's application layer reported.
+> The signed capsule is cryptographic evidence of this independently-computed
+> value.  A third-party verifier can replay the transcript (parse the same frame
+> payloads, reassemble, jcs-n) and arrive at the same digest.  The host cannot
+> substitute different response bytes and claim the digest matches, because the
+> sidecar computed it from what actually flowed.
+
+This is the contribution that makes SSE transcript coverage non-trivial: without
+the independent computation framing, a "streaming digest" is just another field
+the host populates.  With it, the capsule commits the sidecar's view of the
+generation, verifiable by anyone who holds the transcript.
+
 ## SSE reassembly cases
 
 SSE vectors are separate because the digest domain differs: the sidecar
@@ -119,6 +214,19 @@ objects contain no floating-point values.
 | `sse-text-basic` | Simple text content delta sequence |
 | `sse-tool-call` | Tool-call delta sequence with function arguments |
 | `sse-reassembly-stable` | Same generation via stream and non-stream paths produces the same digest |
+
+## SSE transcript cases
+
+| ID | What it covers |
+|---|---|
+| `transcript-text-basic` | Transcript of text content SSE bytes; verifies frame-payload domain |
+| `transcript-tool-call` | Transcript of tool-call SSE bytes; verifies argument concatenation |
+| `transcript-mock-rig` | Transcript from a real HTTP exchange with mock_mesh_node.py; verifies independent-verification invariant |
+
+The `transcript-mock-rig` vector is regenerated on each `generate_vectors.py`
+run (IDs and timestamps vary).  Its `independent_verification.verified` field
+must be `true` after generation; this is the "implemented against the mock rig"
+check.
 
 ## Response-digest domains
 
@@ -157,15 +265,22 @@ settles it), the following files change and NOTHING else:
 3. Every `openai-shaped/request/*.json` with `"_number_rule_pending": true`
    gets its `"digest"` field filled in.
 4. Every `openai-shaped/response/*.json` with floating-point values similarly.
-5. `vectors/base/manifest.json` `generated_at` timestamp updates.
+5. Every `openai-shaped/sse/transcript/*.json` with floats in the reassembled
+   object gets its `"response_digest"` filled in.
+6. `vectors/base/manifest.json` `generated_at` timestamp updates.
 
 **NOT changed by the number rule:**
 - All `dup-key/` vectors (no floats, digests are already stable).
-- All `sse/` vectors (reassembled objects have no floats, digests are stable).
+- All `sse/` vectors at the top level (reassembled objects have no floats,
+  digests are stable).
 - All `response-digest/` vectors (test cases are designed float-free).
 - The NFC departure statement (Rule 2 above).
 - The duplicate-detection ordering (Rule 3 above).
 - The `base/` repackaged vectors (those are from the sibling repos and don't change here).
+- The SSE digest domain declaration ("frame-payloads") — that is independent of
+  the number rule.
+- The independent-verification framing in transcript vectors — that is
+  structural, not digest-value-dependent.
 
 ---
 
