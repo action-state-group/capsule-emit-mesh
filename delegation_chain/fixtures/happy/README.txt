@@ -1,0 +1,1 @@
+Happy path: all six steps verify cleanly. Expected result: VERIFIED.
