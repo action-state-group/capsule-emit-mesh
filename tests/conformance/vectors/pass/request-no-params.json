@@ -1,0 +1,10 @@
+{
+  "id": "request-no-params",
+  "description": "PASS: minimal OpenAI chat request with no generation parameters. model + messages only; no floats. Digest is stable regardless of the number rule.",
+  "suite": "pass",
+  "input_bytes_hex": "7b226d6f64656c223a226865726d65732d322d70726f2d6d69737472616c2d3762222c226d65737361676573223a5b7b22726f6c65223a2275736572222c22636f6e74656e74223a225768617420697320746865206361706974616c206f66204672616e63653f227d5d7d",
+  "digest": "6c9946c17c776f125a8d9cf6015b5c4331171664b41ee0e48426d4fa9caa13e7",
+  "_number_rule_pending": false,
+  "spec_ref": "mesh-canonicalization-declaration §Rule 1",
+  "note": "No floats. Digest is unconditionally stable."
+}

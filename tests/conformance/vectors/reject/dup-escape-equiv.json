@@ -1,0 +1,10 @@
+{
+  "id": "dup-escape-equiv",
+  "description": "REJECT: escape-equivalent duplicate key. \"\\\\u006b\\\\u0065\\\\u0079\" and \"key\" resolve to the same Unicode string \"key\" after JSON escape processing. Duplicate detection MUST happen after escape processing (post-parse). An implementation that compares raw bytes before escape processing would see different byte sequences and miss the duplicate.",
+  "suite": "reject",
+  "must_fail": true,
+  "failure_reason": "duplicate_key_after_escape_processing",
+  "input_bytes_hex": "7b225c75303036625c75303036355c7530303739223a227631222c226b6579223a227632227d",
+  "spec_ref": "mesh-canonicalization-declaration §Rule 3",
+  "note": "This is the defect-A inversion vector. A round-tripping harness calls json.loads(raw) which silently returns the last value for \"key\", discarding the duplicate. It then re-serializes to {\"key\":\"v2\"} — no duplicate — and the implementation accepts it, producing a FALSE PASS. This harness sends raw bytes; the implementation must detect the duplicate."
+}
