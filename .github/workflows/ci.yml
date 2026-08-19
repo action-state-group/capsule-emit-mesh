@@ -53,6 +53,18 @@ jobs:
       - name: Smoke — goose/server.py (exercises mcp.server.fastmcp + capsule_emit.adapters.mcp)
         run: python -c "import importlib.util; spec = importlib.util.spec_from_file_location('goose_server', 'goose/server.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print('ok')"
 
+      - name: Smoke — mock_lifecycle_host (rig bundled for exemplar CI)
+        run: python -c "import mock_lifecycle_host; print('ok')"
+
+      - name: Smoke — exemplar plugin_contract
+        run: python -c "from exemplar.plugin_contract import CONTRACT, BodyAccessDenied; print('ok')"
+
+      - name: Smoke — exemplar observe_only
+        run: python -c "from exemplar.observe_only import ObserveOnlyPlugin; print('ok')"
+
+      - name: Smoke — exemplar admission_policy
+        run: python -c "from exemplar.admission_policy import AdmissionPolicyPlugin; print('ok')"
+
       - name: Unit tests
         run: |
           pip install pytest
