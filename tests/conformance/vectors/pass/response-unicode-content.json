@@ -1,0 +1,9 @@
+{
+  "id": "response-unicode-content",
+  "description": "PASS: response with multi-script Unicode content (degree symbol, Japanese, French diacritics). jcs-n uses UTF-8 encoding; no characters require \\u escaping above U+001F. Ensures the implementation handles non-ASCII strings without corruption.",
+  "suite": "pass",
+  "input_bytes_hex": "7b226964223a2263686174636d706c2d636f6e662d303033222c226f626a656374223a22636861742e636f6d706c6574696f6e222c2263726561746564223a313732343030303730302c226d6f64656c223a226865726d65732d322d70726f2d6d69737472616c2d3762222c2263686f69636573223a5b7b22696e646578223a302c226d657373616765223a7b22726f6c65223a22617373697374616e74222c22636f6e74656e74223a223432c2b04320e381af2052c3a973756dc3a920e381aee6b8a9e5baa6e381a7e38199e38082227d2c2266696e6973685f726561736f6e223a2273746f70227d5d7d",
+  "digest": "9ca8e7624f6b8c8f66746001d238866ac43ded043f6aef2fd2da3700fa132eb1",
+  "_number_rule_pending": false,
+  "spec_ref": "mesh-canonicalization-declaration §Rule 1"
+}
