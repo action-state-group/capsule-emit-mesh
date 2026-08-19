@@ -1,0 +1,625 @@
+{
+  "schema": "capsule-emit-mesh-benchmark/v1",
+  "generated_utc": "2026-08-17T21:16:23.698763+00:00",
+  "environment": {
+    "timestamp_utc": "2026-08-17T21:16:23.698763+00:00",
+    "machine": "arm64",
+    "node": "Stevens-MacBook-Pro.local",
+    "os": "Darwin",
+    "os_release": "24.6.0",
+    "os_version": "Darwin Kernel Version 24.6.0: Mon Jul 14 11:30:40 PDT 2025; root:xnu-11417.140.69~1/RELEASE_ARM64_T6041",
+    "platform": "macOS-15.6-arm64-arm-64bit-Mach-O",
+    "processor": "arm",
+    "python_version": "3.13.7 (v3.13.7:bcee1c32211, Aug 14 2025, 19:10:51) [Clang 16.0.0 (clang-1600.0.26.6)]",
+    "python_impl": "CPython",
+    "cpu_count_logical": 14,
+    "cpu_brand": "Apple M4 Max",
+    "cpu_count_physical": "14",
+    "cpu_count_logical_sysctl": "14",
+    "hw_model": "Mac16,5",
+    "memory_bytes": 38654705664,
+    "memory_gib": 36.0,
+    "git_sha": "aed39c12a1706578052a64be8cbaf0b3d617ba08",
+    "git_branch": "mesh-benchmark-baselines-af",
+    "pip_freeze": [
+      "-e git+https://github.com/action-state-group/agent-action-capsule.git@5f434913027e9bd7431df9fe605a5f2d75d04f03#egg=agent_action_capsule&subdirectory=../../../_worktrees/agent-action-capsule/gar-sample-03-fields/python",
+      "aiohttp==3.14.1",
+      "aiohttp-retry==2.9.1",
+      "-e git+https://github.com/action-state-group/capsule-emit.git@7098c10455e42d827c7c86deeaecfaffeb498f82#egg=capsule_emit&subdirectory=../../_worktrees/capsule-emit/capsule-emit-float-in-digest-example-broken",
+      "# Editable install with no version control (capsule-emit-nanda==0.1.0)",
+      "-e /Users/intangible/dev/asg/_work/nandatown/examples/capsule-emit",
+      "cbor2==5.8.0",
+      "cryptography==46.0.7",
+      "httpx==0.28.1",
+      "httpx-sse==0.4.3",
+      "-e git+https://github.com/action-state-group/capsule-emit.git@7a66d2b1bc1956c6d616ec1cd72fa0cb3c6df4f9#egg=nanda_capsule_trust&subdirectory=examples/nanda-trust-capsule",
+      "-e git+https://github.com/action-state-group/capsule-emit.git@7a66d2b1bc1956c6d616ec1cd72fa0cb3c6df4f9#egg=nanda_tax_audit&subdirectory=examples/nanda-tax-audit",
+      "scitt-cose==0.1.1"
+    ],
+    "harness_sha256": "c789b0da50ff6111"
+  },
+  "configs": {
+    "B": {
+      "config": "B",
+      "status": "stub",
+      "description": "Plugin installed with lifecycle/body grants disabled. Measures generic mesh-llm plugin-hook overhead with no capsule work performed \u2014 isolates IPC entry cost.",
+      "preconditions": [
+        "Native Rust capsule-emit plugin built per #1332 (Phase 3 P1/P2).",
+        "mesh-llm \u2265 0.78.0 with #1331 plugin lifecycle API.",
+        "Plugin installed via mesh-llm plugin mechanism (no fork).",
+        "Plugin manifest declares mesh.openai.exchange.v1 but grants body/lifecycle access disabled in host config.",
+        "Same GGUF model and hardware as A for apples-to-apples delta."
+      ],
+      "run_instructions": "mesh-llm serve --gguf <model.gguf> --port 9337 --plugin-config capsule-emit-disabled-grants.toml; python3 bench/run_benchmark.py --configs B --upstream 127.0.0.1:9337"
+    },
+    "C": {
+      "config": "C",
+      "status": "stub",
+      "description": "Plugin active, digest_only evidence mode, ledger persistence disabled. Measures request hashing + COSE signing without filesystem I/O \u2014 isolates crypto path cost.",
+      "preconditions": [
+        "Preconditions B, plus:",
+        "Plugin body/lifecycle grants enabled.",
+        "Plugin config: evidence_mode=digest_only, ledger disabled."
+      ]
+    },
+    "D": {
+      "config": "D",
+      "status": "stub",
+      "description": "Plugin active, full evidence mode, local signing and ledger persistence enabled. Primary production-like configuration and the pass/conditional/redesign/stop decision gate per #1332.",
+      "preconditions": [
+        "Preconditions C, plus:",
+        "Plugin config: evidence_mode=full, ledger=<dir>.",
+        "Ledger dir on the same disk class as production (NVMe/SSD).",
+        "Measure fsync latency separately."
+      ]
+    },
+    "E": {
+      "config": "E",
+      "status": "stub",
+      "description": "Full mode with anchoring enabled, but network submission isolated behind the durable retry queue. Measures anchoring queue write overhead while keeping network latency out of the critical path.",
+      "preconditions": [
+        "Preconditions D, plus:",
+        "Plugin config: anchoring_enabled=true, anchor_url=<isolated-or-mock>.",
+        "Network submission isolated: either a mock anchor endpoint that accepts and drops, or the real anchor with a loopback firewall rule so submissions queue but never complete.",
+        "Verify anchor queue depth rises and no requests are retried into the benchmark window."
+      ]
+    },
+    "A": {
+      "config": "A",
+      "description": "No plugin installed. Direct request/response with no interceptor overhead. Baseline for all other configs.",
+      "backend": "mock_mesh_node.py (in-process, deterministic JSON fixture)",
+      "sidecar": null,
+      "reps_per_cell": 30,
+      "warmup_reps": 5,
+      "workloads": {
+        "short_nonstream": {
+          "description": "Short non-streaming chat completion",
+          "expect_error": false,
+          "stream_flag": false,
+          "concurrency": {
+            "1": {
+              "n": 30,
+              "p50_ms": 0.331,
+              "p95_ms": 0.388,
+              "p99_ms": 0.398,
+              "mean_ms": 0.339,
+              "min_ms": 0.299,
+              "max_ms": 0.402,
+              "stddev_ms": 0.027,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "4": {
+              "n": 30,
+              "p50_ms": 1.318,
+              "p95_ms": 1.891,
+              "p99_ms": 2.125,
+              "mean_ms": 1.323,
+              "min_ms": 0.776,
+              "max_ms": 2.189,
+              "stddev_ms": 0.323,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "16": {
+              "n": 30,
+              "p50_ms": 3.26,
+              "p95_ms": 47.913,
+              "p99_ms": 63.095,
+              "mean_ms": 14.098,
+              "min_ms": 1.069,
+              "max_ms": 64.02,
+              "stddev_ms": 18.097,
+              "warmup_reps": 5,
+              "error_count": 0
+            }
+          }
+        },
+        "short_stream": {
+          "description": "Short prompt, stream=true (mock backend returns JSON not SSE; measures sidecar streaming-path overhead; real SSE throughput requires mesh-llm real node)",
+          "expect_error": false,
+          "stream_flag": true,
+          "concurrency": {
+            "1": {
+              "n": 30,
+              "p50_ms": 0.338,
+              "p95_ms": 0.359,
+              "p99_ms": 0.386,
+              "mean_ms": 0.337,
+              "min_ms": 0.298,
+              "max_ms": 0.397,
+              "stddev_ms": 0.019,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "4": {
+              "n": 30,
+              "p50_ms": 1.178,
+              "p95_ms": 1.894,
+              "p99_ms": 2.118,
+              "mean_ms": 1.259,
+              "min_ms": 0.806,
+              "max_ms": 2.181,
+              "stddev_ms": 0.34,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "16": {
+              "n": 30,
+              "p50_ms": 3.001,
+              "p95_ms": 62.423,
+              "p99_ms": 62.709,
+              "mean_ms": 14.941,
+              "min_ms": 0.812,
+              "max_ms": 62.719,
+              "stddev_ms": 19.881,
+              "warmup_reps": 5,
+              "error_count": 0
+            }
+          }
+        },
+        "long_context": {
+          "description": "Long-context request (~2.5 KiB prompt body)",
+          "expect_error": false,
+          "stream_flag": false,
+          "concurrency": {
+            "1": {
+              "n": 30,
+              "p50_ms": 0.368,
+              "p95_ms": 0.454,
+              "p99_ms": 0.464,
+              "mean_ms": 0.38,
+              "min_ms": 0.305,
+              "max_ms": 0.467,
+              "stddev_ms": 0.046,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "4": {
+              "n": 30,
+              "p50_ms": 1.528,
+              "p95_ms": 2.183,
+              "p99_ms": 2.817,
+              "mean_ms": 1.637,
+              "min_ms": 0.942,
+              "max_ms": 3.074,
+              "stddev_ms": 0.429,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "16": {
+              "n": 30,
+              "p50_ms": 2.945,
+              "p95_ms": 129.355,
+              "p99_ms": 130.319,
+              "mean_ms": 39.203,
+              "min_ms": 0.784,
+              "max_ms": 130.559,
+              "stddev_ms": 52.835,
+              "warmup_reps": 5,
+              "error_count": 0
+            }
+          }
+        },
+        "tool_calling": {
+          "description": "Tool-calling request with nested schemas",
+          "expect_error": false,
+          "stream_flag": false,
+          "concurrency": {
+            "1": {
+              "n": 30,
+              "p50_ms": 0.355,
+              "p95_ms": 0.403,
+              "p99_ms": 0.507,
+              "mean_ms": 0.36,
+              "min_ms": 0.274,
+              "max_ms": 0.549,
+              "stddev_ms": 0.049,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "4": {
+              "n": 30,
+              "p50_ms": 1.51,
+              "p95_ms": 1.901,
+              "p99_ms": 1.94,
+              "mean_ms": 1.456,
+              "min_ms": 0.779,
+              "max_ms": 1.951,
+              "stddev_ms": 0.315,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "16": {
+              "n": 30,
+              "p50_ms": 3.232,
+              "p95_ms": 50.06,
+              "p99_ms": 63.675,
+              "mean_ms": 15.305,
+              "min_ms": 1.677,
+              "max_ms": 63.742,
+              "stddev_ms": 18.255,
+              "warmup_reps": 5,
+              "error_count": 0
+            }
+          }
+        },
+        "multimodal_shaped": {
+          "description": "Multimodal-shaped request (synthetic 1 KiB image_url data URI, no private data)",
+          "expect_error": false,
+          "stream_flag": false,
+          "concurrency": {
+            "1": {
+              "n": 30,
+              "p50_ms": 0.348,
+              "p95_ms": 0.466,
+              "p99_ms": 0.483,
+              "mean_ms": 0.362,
+              "min_ms": 0.309,
+              "max_ms": 0.487,
+              "stddev_ms": 0.049,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "4": {
+              "n": 30,
+              "p50_ms": 1.352,
+              "p95_ms": 1.693,
+              "p99_ms": 1.791,
+              "mean_ms": 1.285,
+              "min_ms": 0.728,
+              "max_ms": 1.826,
+              "stddev_ms": 0.271,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "16": {
+              "n": 30,
+              "p50_ms": 3.545,
+              "p95_ms": 32.31,
+              "p99_ms": 53.788,
+              "mean_ms": 13.37,
+              "min_ms": 1.493,
+              "max_ms": 62.401,
+              "stddev_ms": 15.807,
+              "warmup_reps": 5,
+              "error_count": 0
+            }
+          }
+        },
+        "backend_error": {
+          "description": "Backend error path \u2014 guardrail refusal trigger. Expected 400 from mock; sidecar records as errored/failed capsule.",
+          "expect_error": true,
+          "stream_flag": false,
+          "concurrency": {
+            "1": {
+              "n": 30,
+              "p50_ms": 0.366,
+              "p95_ms": 0.403,
+              "p99_ms": 0.421,
+              "mean_ms": 0.365,
+              "min_ms": 0.318,
+              "max_ms": 0.429,
+              "stddev_ms": 0.028,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "4": {
+              "n": 30,
+              "p50_ms": 1.301,
+              "p95_ms": 1.732,
+              "p99_ms": 1.959,
+              "mean_ms": 1.336,
+              "min_ms": 0.89,
+              "max_ms": 2.041,
+              "stddev_ms": 0.255,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "16": {
+              "n": 30,
+              "p50_ms": 2.856,
+              "p95_ms": 31.6,
+              "p99_ms": 53.702,
+              "mean_ms": 12.019,
+              "min_ms": 0.859,
+              "max_ms": 62.687,
+              "stddev_ms": 15.752,
+              "warmup_reps": 5,
+              "error_count": 0
+            }
+          }
+        }
+      }
+    },
+    "F": {
+      "config": "F",
+      "description": "Previous reverse-proxy sidecar (capsule_sidecar.py) in front of mock backend. Informative comparison per #1332 \u2014 not the target architecture (that is the native plugin, configs B\u2013E). Overhead vs A = request hashing + JSON canonicalisation + COSE signing + ledger append, all on the Python hot path.",
+      "backend": "mock_mesh_node.py (in-process, deterministic JSON fixture)",
+      "sidecar": "capsule_sidecar.py (ThreadingHTTPServer, same process)",
+      "sidecar_note": "Streaming workload (short_stream, stream=true): mock backend returns JSON not SSE; sidecar's streaming path sees zero SSE chunks and re-synthesises an empty SSE frame sequence. Measures streaming-path IPC + signing overhead but not token-cadence throughput (real SSE requires mesh-llm real node).",
+      "reps_per_cell": 30,
+      "warmup_reps": 5,
+      "workloads": {
+        "short_nonstream": {
+          "description": "Short non-streaming chat completion",
+          "expect_error": false,
+          "stream_flag": false,
+          "concurrency": {
+            "1": {
+              "n": 30,
+              "p50_ms": 2.235,
+              "p95_ms": 2.749,
+              "p99_ms": 2.926,
+              "mean_ms": 2.303,
+              "min_ms": 2.021,
+              "max_ms": 2.993,
+              "stddev_ms": 0.233,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "4": {
+              "n": 30,
+              "p50_ms": 7.539,
+              "p95_ms": 8.824,
+              "p99_ms": 9.849,
+              "mean_ms": 7.428,
+              "min_ms": 5.042,
+              "max_ms": 10.234,
+              "stddev_ms": 1.064,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "16": {
+              "n": 30,
+              "p50_ms": 19.888,
+              "p95_ms": 66.972,
+              "p99_ms": 67.759,
+              "mean_ms": 27.898,
+              "min_ms": 12.129,
+              "max_ms": 67.888,
+              "stddev_ms": 17.478,
+              "warmup_reps": 5,
+              "error_count": 0
+            }
+          }
+        },
+        "short_stream": {
+          "description": "Short prompt, stream=true (mock backend returns JSON not SSE; measures sidecar streaming-path overhead; real SSE throughput requires mesh-llm real node)",
+          "expect_error": false,
+          "stream_flag": true,
+          "concurrency": {
+            "1": {
+              "n": 30,
+              "p50_ms": 1.972,
+              "p95_ms": 2.274,
+              "p99_ms": 2.497,
+              "mean_ms": 2.007,
+              "min_ms": 1.851,
+              "max_ms": 2.541,
+              "stddev_ms": 0.141,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "4": {
+              "n": 30,
+              "p50_ms": 6.904,
+              "p95_ms": 7.972,
+              "p99_ms": 8.801,
+              "mean_ms": 6.842,
+              "min_ms": 4.142,
+              "max_ms": 9.097,
+              "stddev_ms": 0.928,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "16": {
+              "n": 30,
+              "p50_ms": 18.79,
+              "p95_ms": 67.099,
+              "p99_ms": 67.537,
+              "mean_ms": 26.646,
+              "min_ms": 10.256,
+              "max_ms": 67.575,
+              "stddev_ms": 17.217,
+              "warmup_reps": 5,
+              "error_count": 0
+            }
+          }
+        },
+        "long_context": {
+          "description": "Long-context request (~2.5 KiB prompt body)",
+          "expect_error": false,
+          "stream_flag": false,
+          "concurrency": {
+            "1": {
+              "n": 30,
+              "p50_ms": 2.37,
+              "p95_ms": 2.604,
+              "p99_ms": 2.676,
+              "mean_ms": 2.368,
+              "min_ms": 2.12,
+              "max_ms": 2.683,
+              "stddev_ms": 0.132,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "4": {
+              "n": 30,
+              "p50_ms": 8.555,
+              "p95_ms": 10.859,
+              "p99_ms": 11.177,
+              "mean_ms": 8.711,
+              "min_ms": 5.334,
+              "max_ms": 11.244,
+              "stddev_ms": 1.291,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "16": {
+              "n": 30,
+              "p50_ms": 25.156,
+              "p95_ms": 57.292,
+              "p99_ms": 61.991,
+              "mean_ms": 30.271,
+              "min_ms": 14.877,
+              "max_ms": 63.708,
+              "stddev_ms": 13.968,
+              "warmup_reps": 5,
+              "error_count": 0
+            }
+          }
+        },
+        "tool_calling": {
+          "description": "Tool-calling request with nested schemas",
+          "expect_error": false,
+          "stream_flag": false,
+          "concurrency": {
+            "1": {
+              "n": 30,
+              "p50_ms": 2.207,
+              "p95_ms": 2.51,
+              "p99_ms": 3.449,
+              "mean_ms": 2.281,
+              "min_ms": 2.039,
+              "max_ms": 3.823,
+              "stddev_ms": 0.31,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "4": {
+              "n": 30,
+              "p50_ms": 7.956,
+              "p95_ms": 9.355,
+              "p99_ms": 9.458,
+              "mean_ms": 7.851,
+              "min_ms": 5.658,
+              "max_ms": 9.46,
+              "stddev_ms": 1.064,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "16": {
+              "n": 30,
+              "p50_ms": 22.449,
+              "p95_ms": 55.577,
+              "p99_ms": 56.168,
+              "mean_ms": 27.922,
+              "min_ms": 16.753,
+              "max_ms": 56.172,
+              "stddev_ms": 12.759,
+              "warmup_reps": 5,
+              "error_count": 0
+            }
+          }
+        },
+        "multimodal_shaped": {
+          "description": "Multimodal-shaped request (synthetic 1 KiB image_url data URI, no private data)",
+          "expect_error": false,
+          "stream_flag": false,
+          "concurrency": {
+            "1": {
+              "n": 30,
+              "p50_ms": 2.282,
+              "p95_ms": 2.524,
+              "p99_ms": 2.589,
+              "mean_ms": 2.311,
+              "min_ms": 2.137,
+              "max_ms": 2.6,
+              "stddev_ms": 0.127,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "4": {
+              "n": 30,
+              "p50_ms": 8.684,
+              "p95_ms": 9.807,
+              "p99_ms": 10.188,
+              "mean_ms": 8.417,
+              "min_ms": 5.004,
+              "max_ms": 10.338,
+              "stddev_ms": 1.211,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "16": {
+              "n": 30,
+              "p50_ms": 20.313,
+              "p95_ms": 66.986,
+              "p99_ms": 67.298,
+              "mean_ms": 29.815,
+              "min_ms": 11.674,
+              "max_ms": 67.37,
+              "stddev_ms": 18.052,
+              "warmup_reps": 5,
+              "error_count": 0
+            }
+          }
+        },
+        "backend_error": {
+          "description": "Backend error path \u2014 guardrail refusal trigger. Expected 400 from mock; sidecar records as errored/failed capsule.",
+          "expect_error": true,
+          "stream_flag": false,
+          "concurrency": {
+            "1": {
+              "n": 30,
+              "p50_ms": 2.156,
+              "p95_ms": 2.516,
+              "p99_ms": 2.528,
+              "mean_ms": 2.194,
+              "min_ms": 1.877,
+              "max_ms": 2.529,
+              "stddev_ms": 0.204,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "4": {
+              "n": 30,
+              "p50_ms": 7.39,
+              "p95_ms": 8.451,
+              "p99_ms": 8.489,
+              "mean_ms": 7.261,
+              "min_ms": 3.914,
+              "max_ms": 8.498,
+              "stddev_ms": 1.082,
+              "warmup_reps": 5,
+              "error_count": 0
+            },
+            "16": {
+              "n": 30,
+              "p50_ms": 27.049,
+              "p95_ms": 63.724,
+              "p99_ms": 67.652,
+              "mean_ms": 31.413,
+              "min_ms": 12.252,
+              "max_ms": 68.49,
+              "stddev_ms": 14.819,
+              "warmup_reps": 5,
+              "error_count": 0
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -583,6 +583,9 @@ poc/
   tests/
     test_forwarded_copy_and_keys.py  sidecar pure-function tests (streaming, key generation)
     test_bilateral_demo.py           bilateral attestation tests (rung derivation, all failure modes, e2e)
+  bench/
+    run_benchmark.py               A/F benchmark harness (one-command; python3 bench/run_benchmark.py)
+    results/                       machine-readable JSON result files (environment-labelled, timestamped)
 ../mesh-llm-src/                read-only research clone of Mesh-LLM/mesh-llm (no modifications)
 ../openai-endpoint-src/         read-only research clone of Mesh-LLM/openai-endpoint (no modifications)
 ../bin/                         NOT in this repo; see "Obtaining mesh-llm and goose" in the Live demo section above
@@ -614,6 +617,10 @@ poc/
    difference) as a live, honest example of what building against a REAL
    local model surfaces that a mock never would — good, specific texture
    for the call, not a weakness to hide.
+
+## Benchmark notes
+
+`bench/run_benchmark.py` reports p50 and p95 only. p99 is omitted: n=100 cannot support a defensible 99th percentile (that needs n≈1000, not worth the runtime for an order-of-magnitude signal — the published n=100 p99 is statistically the sample maximum).
 
 ## License
 
