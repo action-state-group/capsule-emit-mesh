@@ -1,0 +1,26 @@
+{
+  "action_id": "po-failed",
+  "action_type": "decide",
+  "assurance": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "dispatched_unconfirmed",
+    "ledger_mode": "standalone"
+  },
+  "capsule_id": "02d810a07695738f6d9556d5ad90615e1a5cd545eea6eb07249ae58d3e94c5be",
+  "developer": "agent@v1",
+  "disposition": {
+    "approver": "human",
+    "decision": "accept",
+    "human_disposed": true,
+    "verdict_class": "errored"
+  },
+  "effect": {
+    "effect_attestation": "runtime_claimed",
+    "status": "failed",
+    "type": "write_order"
+  },
+  "format_version": "2",
+  "operator": "ACME-CO",
+  "spec_version": "draft-mih-scitt-agent-action-capsule-00",
+  "timestamp": "2026-06-13T00:00:00Z"
+}

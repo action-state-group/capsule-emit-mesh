@@ -66,6 +66,46 @@ def chat_completion_response(request: dict) -> dict:
     }
 
 
+def chat_completion_sse_frames(request: dict) -> list[bytes]:
+    """Return SSE-framed chunks for the same content as chat_completion_response.
+
+    Produces the streaming (text/event-stream) equivalent of the non-streaming
+    response.  Usage data is deliberately NOT included in stream chunks: real
+    mesh-llm sends usage only in a trailing annotation after [DONE] (an
+    implementation detail that varies by version), and the sidecar's
+    reassemble_streamed_response does not pull usage into the reassembled object.
+    Excluding usage here keeps the digest domain identical to the non-streaming path
+    and avoids a number-rule dependency in test transcripts.
+
+    Frame structure (matches synthesize_sse in capsule_sidecar.py):
+      1. Role delta: {"delta": {"role": "assistant"}}
+      2. Content delta(s): {"delta": {"content": "..."}}
+      3. Finish delta: {"delta": {}, "finish_reason": "stop"}
+      4. [DONE] sentinel
+    """
+    full = chat_completion_response(request)
+    message = (full.get("choices") or [{}])[0].get("message", {})
+
+    base = {
+        "id": full["id"],
+        "object": "chat.completion.chunk",
+        "created": full["created"],
+        "model": full["model"],
+    }
+
+    def _frame(delta: dict, finish_reason: str | None = None) -> bytes:
+        chunk = {**base, "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}]}
+        return f"data: {json.dumps(chunk)}\n\n".encode("utf-8")
+
+    frames = [_frame({"role": "assistant"})]
+    content = message.get("content") or ""
+    if content:
+        frames.append(_frame({"content": content}))
+    frames.append(_frame({}, finish_reason="stop"))
+    frames.append(b"data: [DONE]\n\n")
+    return frames
+
+
 def guardrail_refusal_error() -> tuple[int, dict]:
     # Shape matches errors.rs ErrorResponse { error: ErrorBody }.
     # Mirrors a pre-dispatch guardrails rejection (crates/openai-frontend/src/guardrails/):
@@ -120,7 +160,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(status, body)
             return
 
-        self._send_json(200, chat_completion_response(request))
+        if request.get("stream"):
+            frames = chat_completion_sse_frames(request)
+            body = b"".join(frames)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Server", "mesh-llm-poc-fixture/0.75.1-stand-in")
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self._send_json(200, chat_completion_response(request))
 
 
 def run(host: str = "127.0.0.1", port: int = 9337) -> None:

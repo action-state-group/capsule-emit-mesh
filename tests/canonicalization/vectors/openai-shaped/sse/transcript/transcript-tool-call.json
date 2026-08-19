@@ -1,0 +1,141 @@
+{
+  "id": "transcript-tool-call",
+  "description": "SSE transcript — tool-call delta sequence. Incremental tool_calls deltas (name and arguments in separate chunks) are folded via reassemble_sse. DIGEST DOMAIN: frame-payloads. This confirms the transcript algorithm handles streaming tool-call arguments correctly — argument fragments are concatenated before digesting.",
+  "spec_ref": "mesh-sse-transcript-definition; README §SSE transcript definition",
+  "suite": "sse-transcript",
+  "raw_sse_bytes_hex": "646174613a207b226964223a202263686174636d706c2d7373652d746573742d303031222c20226f626a656374223a2022636861742e636f6d706c6574696f6e2e6368756e6b222c202263726561746564223a20313732343030303030302c20226d6f64656c223a20226865726d65732d322d70726f2d6d69737472616c2d3762222c202263686f69636573223a205b7b22696e646578223a20302c202264656c7461223a207b22726f6c65223a2022617373697374616e74227d2c202266696e6973685f726561736f6e223a206e756c6c7d5d7d0a0a646174613a207b226964223a202263686174636d706c2d7373652d746573742d303031222c20226f626a656374223a2022636861742e636f6d706c6574696f6e2e6368756e6b222c202263726561746564223a20313732343030303030302c20226d6f64656c223a20226865726d65732d322d70726f2d6d69737472616c2d3762222c202263686f69636573223a205b7b22696e646578223a20302c202264656c7461223a207b22746f6f6c5f63616c6c73223a205b7b22696e646578223a20302c20226964223a202263616c6c5f616263313233222c202274797065223a202266756e6374696f6e222c202266756e6374696f6e223a207b226e616d65223a20226765745f77656174686572222c2022617267756d656e7473223a2022227d7d5d7d2c202266696e6973685f726561736f6e223a206e756c6c7d5d7d0a0a646174613a207b226964223a202263686174636d706c2d7373652d746573742d303031222c20226f626a656374223a2022636861742e636f6d706c6574696f6e2e6368756e6b222c202263726561746564223a20313732343030303030302c20226d6f64656c223a20226865726d65732d322d70726f2d6d69737472616c2d3762222c202263686f69636573223a205b7b22696e646578223a20302c202264656c7461223a207b22746f6f6c5f63616c6c73223a205b7b22696e646578223a20302c202266756e6374696f6e223a207b22617267756d656e7473223a20227b5c22636974795c223a227d7d5d7d2c202266696e6973685f726561736f6e223a206e756c6c7d5d7d0a0a646174613a207b226964223a202263686174636d706c2d7373652d746573742d303031222c20226f626a656374223a2022636861742e636f6d706c6574696f6e2e6368756e6b222c202263726561746564223a20313732343030303030302c20226d6f64656c223a20226865726d65732d322d70726f2d6d69737472616c2d3762222c202263686f69636573223a205b7b22696e646578223a20302c202264656c7461223a207b22746f6f6c5f63616c6c73223a205b7b22696e646578223a20302c202266756e6374696f6e223a207b22617267756d656e7473223a20225c2250617269735c227d227d7d5d7d2c202266696e6973685f726561736f6e223a206e756c6c7d5d7d0a0a646174613a207b226964223a202263686174636d706c2d7373652d746573742d303031222c20226f626a656374223a2022636861742e636f6d706c6574696f6e2e6368756e6b222c202263726561746564223a20313732343030303030302c20226d6f64656c223a20226865726d65732d322d70726f2d6d69737472616c2d3762222c202263686f69636573223a205b7b22696e646578223a20302c202264656c7461223a207b7d2c202266696e6973685f726561736f6e223a2022746f6f6c5f63616c6c73227d5d7d0a0a646174613a205b444f4e455d0a0a",
+  "sse_digest_domain": "frame-payloads",
+  "_number_rule_pending": false,
+  "frame_count": 5,
+  "frame_payloads": [
+    {
+      "id": "chatcmpl-sse-test-001",
+      "object": "chat.completion.chunk",
+      "created": 1724000000,
+      "model": "hermes-2-pro-mistral-7b",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {
+            "role": "assistant"
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-sse-test-001",
+      "object": "chat.completion.chunk",
+      "created": 1724000000,
+      "model": "hermes-2-pro-mistral-7b",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {
+            "tool_calls": [
+              {
+                "index": 0,
+                "id": "call_abc123",
+                "type": "function",
+                "function": {
+                  "name": "get_weather",
+                  "arguments": ""
+                }
+              }
+            ]
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-sse-test-001",
+      "object": "chat.completion.chunk",
+      "created": 1724000000,
+      "model": "hermes-2-pro-mistral-7b",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {
+            "tool_calls": [
+              {
+                "index": 0,
+                "function": {
+                  "arguments": "{\"city\":"
+                }
+              }
+            ]
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-sse-test-001",
+      "object": "chat.completion.chunk",
+      "created": 1724000000,
+      "model": "hermes-2-pro-mistral-7b",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {
+            "tool_calls": [
+              {
+                "index": 0,
+                "function": {
+                  "arguments": "\"Paris\"}"
+                }
+              }
+            ]
+          },
+          "finish_reason": null
+        }
+      ]
+    },
+    {
+      "id": "chatcmpl-sse-test-001",
+      "object": "chat.completion.chunk",
+      "created": 1724000000,
+      "model": "hermes-2-pro-mistral-7b",
+      "choices": [
+        {
+          "index": 0,
+          "delta": {},
+          "finish_reason": "tool_calls"
+        }
+      ]
+    }
+  ],
+  "reassembled": {
+    "id": "chatcmpl-sse-test-001",
+    "object": "chat.completion",
+    "created": 1724000000,
+    "model": "hermes-2-pro-mistral-7b",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_abc123",
+              "type": "function",
+              "function": {
+                "name": "get_weather",
+                "arguments": "{\"city\":\"Paris\"}"
+              }
+            }
+          ]
+        },
+        "finish_reason": "tool_calls"
+      }
+    ]
+  },
+  "response_digest": "37302718bd517fff1d9737d15140cfde28a2ae1b234de7211528ae87a4ef51b7",
+  "independent_verification": {
+    "description": "The sidecar computed response_digest INDEPENDENTLY from the SSE frame payloads it observed on the wire. This is the \"independent test calculation\" in the #1331 verification box: the host cannot substitute different response bytes and claim the digest matches, because the sidecar computed it from what actually flowed, not from what the host reported.",
+    "algorithm": "parse_sse_stream → reassemble_sse → jcs-n",
+    "verified": true
+  }
+}

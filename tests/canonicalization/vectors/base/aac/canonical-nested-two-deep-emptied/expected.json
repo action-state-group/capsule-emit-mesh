@@ -1,0 +1,6 @@
+{
+  "kind": "canonical",
+  "capsule_id_recomputed": "9afeb0f2b203f254312ec8ded441d0318b7c34c57f8695ede42d2215a30c0960",
+  "exception": null,
+  "description": "normalize() bottom-up two levels: d->c->b all emptied and removed"
+}

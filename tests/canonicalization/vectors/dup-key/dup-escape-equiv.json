@@ -1,0 +1,10 @@
+{
+  "id": "dup-escape-equiv",
+  "description": "MUST-FAIL: escape-equivalent duplicate key. \"key\" and \"key\" resolve to the same Unicode string after JSON escape processing. Duplicate detection MUST happen after escape processing (post-parse), not on raw bytes.",
+  "spec_ref": "mesh-canonicalization-declaration; see README §Rule 3",
+  "must_fail": true,
+  "failure_reason": "duplicate_key_after_escape_processing",
+  "input_bytes_hex": "7b226b6579223a227631222c226b6579223a227632227d",
+  "_raw_json_for_humans": "{\"key\":\"v1\",\"key\":\"v2\"}",
+  "spec_note": "An implementation that compares raw bytes before escape processing would see \"key\" != \"key\" and miss the duplicate. The reference harness catches this via Python json.loads object_pairs_hook, which delivers post-escape keys."
+}

@@ -1,0 +1,23 @@
+{
+  "description": "a chain referencing a parent_capsule_id not present in the store -> chain failure (check 6).",
+  "kind": "store",
+  "results": [
+    {
+      "capsule_id_recomputed": "3b1f02ab14a769b630bf39d03deb8b29b4399201614524dd7d1814b12f6cbb26",
+      "derived": {
+        "attestation_mode": "self_attested",
+        "effect_mode": "confirmed",
+        "ledger_mode": "chained"
+      },
+      "findings": [
+        {
+          "check": 6,
+          "code": "chain_parent_missing",
+          "detail": "chain parent 9999999999999999999999999999999999999999999999999999999999999999 not found in the store (\u00a76)",
+          "severity": "error"
+        }
+      ],
+      "ok": false
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "kind": "canonical",
+  "capsule_id_recomputed": null,
+  "exception": "FloatInDigestError",
+  "description": "Float value raises FloatInDigestError (S:5.1 forbids floats in digest-bearing fields)"
+}

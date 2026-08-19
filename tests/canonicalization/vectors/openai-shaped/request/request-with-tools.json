@@ -1,0 +1,40 @@
+{
+  "id": "request-with-tools",
+  "description": "OpenAI chat request with tool definitions (no floats in tool spec). Tool definitions use string/integer/boolean parameters; no floats. Digest is stable regardless of the number rule.",
+  "spec_ref": "mesh-canonicalization-declaration; README §Rule 1",
+  "suite": "openai-shaped-request",
+  "_number_rule_pending": false,
+  "input": {
+    "model": "hermes-2-pro-mistral-7b",
+    "messages": [
+      {
+        "role": "user",
+        "content": "What files are in /?"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "list_files",
+          "description": "List files in a directory.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto"
+  },
+  "input_bytes_hex": "7b226d6f64656c223a226865726d65732d322d70726f2d6d69737472616c2d3762222c226d65737361676573223a5b7b22726f6c65223a2275736572222c22636f6e74656e74223a22576861742066696c65732061726520696e202f3f227d5d2c22746f6f6c73223a5b7b2274797065223a2266756e6374696f6e222c2266756e6374696f6e223a7b226e616d65223a226c6973745f66696c6573222c226465736372697074696f6e223a224c6973742066696c657320696e2061206469726563746f72792e222c22706172616d6574657273223a7b2274797065223a226f626a656374222c2270726f70657274696573223a7b2270617468223a7b2274797065223a22737472696e67227d7d2c227265717569726564223a5b2270617468225d7d7d7d5d2c22746f6f6c5f63686f696365223a226175746f227d",
+  "digest": "31b1d1eba5333fd1bcaa944ab243607ce5f807a7bce5b5ec3ba6d589796ee80c",
+  "note": "Tool spec has no floats. If temperature were added it would become pending."
+}

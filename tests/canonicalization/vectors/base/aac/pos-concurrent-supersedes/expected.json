@@ -1,0 +1,43 @@
+{
+  "description": "two supersedes over one parent: earliest in ledger order is authoritative; the later one surfaces an info finding; both remain ok.",
+  "kind": "store",
+  "results": [
+    {
+      "capsule_id_recomputed": "2e0a7892fe326fb2303ddce1852360f9da7ece3dff72e227a68b0f57effff6cb",
+      "derived": {
+        "attestation_mode": "self_attested",
+        "effect_mode": "not_applicable",
+        "ledger_mode": "standalone"
+      },
+      "findings": [],
+      "ok": true
+    },
+    {
+      "capsule_id_recomputed": "14ab84795b87e072d90013e4ef0c2c6bfeffdfca609519674f4c3b3974c341fc",
+      "derived": {
+        "attestation_mode": "self_attested",
+        "effect_mode": "not_applicable",
+        "ledger_mode": "chained"
+      },
+      "findings": [],
+      "ok": true
+    },
+    {
+      "capsule_id_recomputed": "577573c19ffb50d4c5e21ff23f9ed2cae2e49736ed30b9f949a98a520223a481",
+      "derived": {
+        "attestation_mode": "self_attested",
+        "effect_mode": "not_applicable",
+        "ledger_mode": "chained"
+      },
+      "findings": [
+        {
+          "check": 6,
+          "code": "concurrent_supersedes",
+          "detail": "a later supersedes over parent 2e0a7892fe326fb2303ddce1852360f9da7ece3dff72e227a68b0f57effff6cb; the earliest is authoritative (\u00a75.4.4)",
+          "severity": "info"
+        }
+      ],
+      "ok": true
+    }
+  ]
+}

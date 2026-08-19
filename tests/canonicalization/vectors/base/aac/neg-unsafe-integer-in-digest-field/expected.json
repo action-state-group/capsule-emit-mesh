@@ -1,0 +1,19 @@
+{
+  "capsule_id_recomputed": null,
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "confirmed",
+    "ledger_mode": "standalone"
+  },
+  "description": "an integer beyond 2^53-1 in a digest-bearing field -> structural failure (check 1). IMPL GUARD ahead of -00; flagged for an -01 clarification (large integers MUST be decimal strings).",
+  "findings": [
+    {
+      "check": 1,
+      "code": "unsafe_integer_in_digest_field",
+      "detail": "integer outside the JS-safe range (+/-9007199254740991) at effect.amount; large integers MUST be exact decimal strings for cross-impl digest reproducibility (impl guard ahead of -00; see -01 flag)",
+      "severity": "error"
+    }
+  ],
+  "kind": "negative",
+  "ok": false
+}

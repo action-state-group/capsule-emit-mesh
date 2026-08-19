@@ -1,0 +1,12 @@
+{
+  "capsule_id_recomputed": "6807e92d7f96e2438226b935e513f34cfb41c863d5ccc10d7fa66b82dccabb9b",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "not_applicable",
+    "ledger_mode": "standalone"
+  },
+  "description": "blocked: a blocking constraint stopped it pre-dispatch; no effect, effect_mode not_applicable.",
+  "findings": [],
+  "kind": "positive",
+  "ok": true
+}

@@ -1,0 +1,19 @@
+{
+  "capsule_id_recomputed": "00cec269152650a6be04823bc5ef16f34cf20d8e92e365fccbb6bba043747e35",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "confirmed",
+    "ledger_mode": "standalone"
+  },
+  "description": "unknown effect.type value: informational finding, ok stays true.",
+  "findings": [
+    {
+      "check": 8,
+      "code": "unknown_registry_value",
+      "detail": "effect.type='teleport_goods' is not a seeded effect.type value; informational, not rejected (\u00a712)",
+      "severity": "info"
+    }
+  ],
+  "kind": "positive",
+  "ok": true
+}

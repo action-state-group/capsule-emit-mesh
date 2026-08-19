@@ -1,0 +1,27 @@
+{
+  "action_id": "honesty-1",
+  "action_type": "decide",
+  "assurance": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "confirmed",
+    "ledger_mode": "standalone"
+  },
+  "capsule_id": "c5ca677a7ad50eb73c8e71acca66d1532d2735b2b9cf8460dd54364b66b39f5a",
+  "developer": "agent@v1",
+  "disposition": {
+    "approver": "policy",
+    "decision": "accept",
+    "human_disposed": true,
+    "verdict_class": "executed"
+  },
+  "effect": {
+    "effect_attestation": "gate_executed",
+    "response_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+    "status": "confirmed",
+    "type": "write_order"
+  },
+  "format_version": "2",
+  "operator": "ACME-CO",
+  "spec_version": "draft-mih-scitt-agent-action-capsule-00",
+  "timestamp": "2026-06-13T00:00:00Z"
+}

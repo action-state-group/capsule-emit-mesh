@@ -1,0 +1,26 @@
+{
+  "action_id": "po-conf-rc",
+  "action_type": "decide",
+  "assurance": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "confirmed",
+    "ledger_mode": "standalone"
+  },
+  "capsule_id": "9017bb75d43841bd930b1209e441984e3495f4c7b716f480bef249082c01de45",
+  "developer": "agent@v1",
+  "disposition": {
+    "approver": "human",
+    "decision": "accept",
+    "human_disposed": true
+  },
+  "effect": {
+    "effect_attestation": "runtime_claimed",
+    "response_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+    "status": "confirmed",
+    "type": "write_order"
+  },
+  "format_version": "2",
+  "operator": "ACME-CO",
+  "spec_version": "draft-mih-scitt-agent-action-capsule-00",
+  "timestamp": "2026-06-13T00:00:00Z"
+}

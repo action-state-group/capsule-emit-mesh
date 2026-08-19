@@ -1,0 +1,12 @@
+{
+  "capsule_id_recomputed": "633f3635fedb0175563b51a081e95db4b7cd6294cc16886fc94777904c64e7b3",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "dispatched_unconfirmed",
+    "ledger_mode": "standalone"
+  },
+  "description": "timeout after dispatch: effect dispatched -> dispatched_unconfirmed, attestation present.",
+  "findings": [],
+  "kind": "positive",
+  "ok": true
+}

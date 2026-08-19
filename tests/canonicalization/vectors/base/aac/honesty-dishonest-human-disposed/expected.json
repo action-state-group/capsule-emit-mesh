@@ -1,0 +1,19 @@
+{
+  "capsule_id_recomputed": "c5ca677a7ad50eb73c8e71acca66d1532d2735b2b9cf8460dd54364b66b39f5a",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "confirmed",
+    "ledger_mode": "standalone"
+  },
+  "description": "human_disposed=true with a non-human (policy) approver in parsed bytes: \u00a76 makes this a structurally-guaranteed invariant, so the verifier reports a NON-GATING defensive warning; ok still reflects the gating checks (here, true).",
+  "findings": [
+    {
+      "check": null,
+      "code": "dishonest_human_disposed",
+      "detail": "human_disposed=true with a non-human approver (\u00a75.4). Structurally unconstructable by a conforming producer; reported as a non-gating defensive warning, not a \u00a76 gating check.",
+      "severity": "warning"
+    }
+  ],
+  "kind": "honesty",
+  "ok": true
+}

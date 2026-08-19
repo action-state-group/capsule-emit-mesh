@@ -1,0 +1,10 @@
+{
+  "id": "dup-before-normalization",
+  "description": "MUST-FAIL: duplicate key where one value is null. Both \"a\" members are present; the first has value null and the second has value \"v\". Absent-field normalization (jcs-n step 1) would remove the null-valued member, but duplicate detection MUST happen before normalization so the duplicate is not silently resolved away.",
+  "spec_ref": "mesh-canonicalization-declaration; see README §Rule 3",
+  "must_fail": true,
+  "failure_reason": "duplicate_key_before_normalization",
+  "input_bytes_hex": "7b2261223a6e756c6c2c2261223a2276227d",
+  "_raw_json_for_humans": "{\"a\":null,\"a\":\"v\"}",
+  "spec_note": "An implementation that normalizes before checking duplicates would remove the null \"a\" and proceed with {\"a\":\"v\"} — incorrectly accepting input that a correct implementation must reject. Duplicate detection is unconditional on the value of the duplicated member."
+}

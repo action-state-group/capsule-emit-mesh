@@ -1,0 +1,6 @@
+{
+  "kind": "canonical",
+  "capsule_id_recomputed": "66635620f153896b5510f2e09e7d42235bcfbd39425f089860025871fdb580ea",
+  "exception": null,
+  "description": "Top-level capsule_id/chain exclusion does not apply to nested members with those names"
+}

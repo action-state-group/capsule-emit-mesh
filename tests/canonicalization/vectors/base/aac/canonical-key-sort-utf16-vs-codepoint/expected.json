@@ -1,0 +1,6 @@
+{
+  "kind": "canonical",
+  "capsule_id_recomputed": "f343d8ac9c4d80fcc70afa65897ef00b2457b4e5e902d2321115b1d12352faff",
+  "exception": null,
+  "description": "UTF-16 key ordering: U+1F600 emoji (first surrogate 0xD83D) sorts after U+FF3A (single unit)"
+}

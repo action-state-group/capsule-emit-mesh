@@ -1,0 +1,19 @@
+{
+  "capsule_id_recomputed": "ad97afbf96a7616ee6266685681ae70a4a3e381ce9793dd7755e07501079978b",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "not_applicable",
+    "ledger_mode": "standalone"
+  },
+  "description": "planned (not_applicable) with effect_attestation present -> matrix failure (check 5).",
+  "findings": [
+    {
+      "check": 5,
+      "code": "effect_attestation_present",
+      "detail": "effect_attestation MUST be absent for effect_mode 'not_applicable' (\u00a75.2)",
+      "severity": "error"
+    }
+  ],
+  "kind": "negative",
+  "ok": false
+}

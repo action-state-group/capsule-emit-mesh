@@ -1,0 +1,12 @@
+{
+  "capsule_id_recomputed": "df5e5ff88f2a2c0f0a0fcb7c7014494f60a7e18a8c859b9d5a07270f5e84d141",
+  "derived": {
+    "attestation_mode": "self_attested",
+    "effect_mode": "dispatched_unconfirmed",
+    "ledger_mode": "standalone"
+  },
+  "description": "dispatched_unconfirmed -> effect_attestation REQUIRED (present).",
+  "findings": [],
+  "kind": "positive",
+  "ok": true
+}
