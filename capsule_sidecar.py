@@ -76,6 +76,11 @@ GENERATION_PARAM_KEYS = (
 )
 
 CLIENT_NONCE_HEADER = "X-Capsule-Client-Nonce"
+#: Set by mesh-llm's own local ingress (never by a real client) only when IT
+#: minted the nonce -- lets the sidecar tell "harness sent it" from "ingress
+#: minted it one hop upstream" even though both arrive as a present header.
+CLIENT_NONCE_ORIGIN_HEADER = "x-capsule-nonce-origin"
+CLIENT_NONCE_ORIGIN_LOCAL_INGRESS = "local_ingress"
 SIG_ALG = "EdDSA"
 
 # Bilateral request attestation headers (Move 1 of draft-mih-agent-bilateral-attestation-01).
@@ -603,6 +608,12 @@ def _resolve_client_nonce(state: NodeState, headers: dict[str, str]) -> tuple[st
         if client_nonce in state.seen_client_nonces:
             return client_nonce, "client_supplied_replayed"
         state.seen_client_nonces.add(client_nonce)
+        if headers.get(CLIENT_NONCE_ORIGIN_HEADER) == CLIENT_NONCE_ORIGIN_LOCAL_INGRESS:
+            # Present, but minted by mesh-llm's own local ingress one hop
+            # upstream, not contributed by the actual client -- same honest-
+            # labeling discipline as the sidecar's own fallback below: name
+            # the degradation, do not silently upgrade it to "client_supplied".
+            return client_nonce, "local_ingress"
         return client_nonce, "client_supplied"
     # Honest PoC compromise: #1233 requires the CLIENT to contribute the
     # nonce (so the node can't fabricate/replay). When no client nonce

@@ -174,11 +174,40 @@ def test_client_nonce_resolution_fallback():
     assert len(nonce_val) == 32, f"unexpected fallback nonce length: {len(nonce_val)}"  # uuid4().hex
 
 
+def test_client_nonce_resolution_local_ingress():
+    state = _make_node_state()
+    nonce_val, nonce_src = cs._resolve_client_nonce(state, {
+        cs.CLIENT_NONCE_HEADER.lower(): "abc-123",
+        cs.CLIENT_NONCE_ORIGIN_HEADER: cs.CLIENT_NONCE_ORIGIN_LOCAL_INGRESS,
+    })
+    assert nonce_val == "abc-123", f"nonce value not passed through: {nonce_val!r}"
+    assert nonce_src == "local_ingress", f"wrong source label: {nonce_src!r}"
+
+
+def test_client_nonce_origin_header_ignored_without_nonce():
+    # Origin marker present but no nonce header -- must still fall back, not
+    # be misread as a local_ingress-labeled empty nonce.
+    state = _make_node_state()
+    nonce_val, nonce_src = cs._resolve_client_nonce(state, {
+        cs.CLIENT_NONCE_ORIGIN_HEADER: cs.CLIENT_NONCE_ORIGIN_LOCAL_INGRESS,
+    })
+    assert nonce_src == "sidecar_generated_fallback", f"wrong source label: {nonce_src!r}"
+
+
 def test_client_nonce_labels_distinct():
     state = _make_node_state()
     _, src_supplied = cs._resolve_client_nonce(state, {cs.CLIENT_NONCE_HEADER.lower(): "x"})
     _, src_fallback = cs._resolve_client_nonce(state, {})
-    assert src_supplied != src_fallback, "client_supplied and sidecar_generated_fallback must be distinct labels"
+    # A different nonce value than "x" -- reusing "x" here would trip replay
+    # detection first (state.seen_client_nonces already has "x" from the
+    # src_supplied call above) and return client_supplied_replayed instead of
+    # local_ingress, masking the very label this test is checking for.
+    _, src_local_ingress = cs._resolve_client_nonce(state, {
+        cs.CLIENT_NONCE_HEADER.lower(): "y",
+        cs.CLIENT_NONCE_ORIGIN_HEADER: cs.CLIENT_NONCE_ORIGIN_LOCAL_INGRESS,
+    })
+    labels = {src_supplied, src_fallback, src_local_ingress}
+    assert len(labels) == 3, f"client_supplied, sidecar_generated_fallback, local_ingress must be distinct labels: {labels}"
 
 
 def test_client_nonce_replay_detected_and_labeled():
