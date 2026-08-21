@@ -84,6 +84,13 @@ jobs:
   #   Neither mutant feature is enabled here — CI only runs the correct build;
   #   the mutant runs are a manual proof captured in
   #   plugins/admission-policy/DELTA.md, not a permanently red CI job.
+  #
+  # `tests/interop.rs` implements the HOST side of the protocol itself (a
+  # faithful stand-in — mesh-llm-host-runtime isn't published to crates.io).
+  # `tests/host_runtime_e2e.rs` closes that gap against an actual
+  # mesh-llm-host-runtime process, but can only run locally with a real
+  # mesh-llm binary; see plugins/admission-policy/REAL-HOST-VERIFICATION.md
+  # for the reproducible verification and what it found.
   admission-policy-plugin:
     name: admission-policy-plugin (real mesh-llm interop)
     runs-on: ubuntu-latest
@@ -111,3 +118,11 @@ jobs:
 
       - name: Interop tests (real Envelope wire protocol + real HTTP dispatch)
         run: cargo test --locked --test interop -- --test-threads=1
+
+      # This test's own scenarios are #[ignore]'d and gated on MESH_LLM_HOST_BIN:
+      # running them needs a real mesh-llm-host-runtime binary, which isn't
+      # buildable in this repo's CI (see
+      # plugins/admission-policy/REAL-HOST-VERIFICATION.md). This step only
+      # keeps it compiling; "0 passed; 3 ignored" is the expected result here.
+      - name: Real-host e2e test compiles (scenarios need a local mesh-llm binary)
+        run: cargo test --locked --test host_runtime_e2e
