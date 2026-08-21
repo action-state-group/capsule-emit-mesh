@@ -47,19 +47,31 @@ cargo test --bin admission-policy-plugin   # decision-logic unit tests
 cargo test --test interop -- --test-threads=1   # real Envelope-wire-protocol interop
 ```
 
+`tests/host_runtime_e2e.rs` runs the plugin against an actual
+`mesh-llm-host-runtime` process (not the stand-in host `tests/interop.rs`
+implements) — see `REAL-HOST-VERIFICATION.md` for why it's `#[ignore]`d by
+default, the exact reproduction steps, and a real bug this level of testing
+found that the stand-in structurally could not.
+
 ### Mutant proof
 
 Two features deliberately break one negative check each. Neither is enabled
-in CI — they exist to prove the interop test actually discriminates correct
+in CI — they exist to prove the interop tests actually discriminate correct
 behavior from each specific regression, over the real wire protocol:
 
 ```sh
 # Fails `denies_request_for_blocked_model` (fail-open on the exact threat
-# this policy exists to catch):
+# this policy exists to catch). Also fails the real-host equivalent,
+# `denies_blocked_model_end_to_end_through_real_host` — see
+# REAL-HOST-VERIFICATION.md.
 cargo test --test interop --features mutant-allow-blocked -- --test-threads=1
 
-# Fails `denies_malformed_body_fail_safe` (fail-open on unparseable input):
+# Fails `denies_malformed_body_fail_safe` (fail-open on unparseable input).
+# Only reachable through the direct-to-plugin stand-in — see
+# REAL-HOST-VERIFICATION.md for why the real host's own ingress can't
+# exercise this branch.
 cargo test --test interop --features mutant-allow-malformed -- --test-threads=1
 ```
 
-See `DELTA.md` for the full already-covered-vs-needed-added accounting.
+See `DELTA.md` for the full already-covered-vs-needed-added accounting, and
+`REAL-HOST-VERIFICATION.md` for the real-host-specific findings.

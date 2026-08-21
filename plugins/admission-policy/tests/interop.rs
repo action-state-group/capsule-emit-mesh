@@ -200,7 +200,7 @@ async fn v1_models_advertises_only_the_blocked_model() {
     let manifest = response.manifest.unwrap();
     let address = inference_endpoint(&manifest).address.clone().unwrap();
 
-    let body: serde_json::Value = reqwest::get(format!("http://{address}/v1/models"))
+    let body: serde_json::Value = reqwest::get(format!("{address}/v1/models"))
         .await
         .expect("GET /v1/models")
         .json()
@@ -228,7 +228,7 @@ async fn denies_request_for_blocked_model() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("http://{address}/v1/chat/completions"))
+        .post(format!("{address}/v1/chat/completions"))
         .json(&serde_json::json!({"model": "blocked-test-model", "messages": []}))
         .send()
         .await
@@ -252,7 +252,7 @@ async fn denies_malformed_body_fail_safe() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("http://{address}/v1/chat/completions"))
+        .post(format!("{address}/v1/chat/completions"))
         .header("content-type", "application/json")
         .body("{not valid json")
         .send()
