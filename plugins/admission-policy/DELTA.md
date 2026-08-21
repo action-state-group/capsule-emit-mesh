@@ -3,7 +3,10 @@
 Written against `mesh-llm-plugin`/`mesh-llm-host-runtime` as of the
 `mesh-ingress-nonce-injection` branch of `github.com/Mesh-LLM/mesh-llm`
 (crates.io `mesh-llm-plugin = 0.75.0`). See `PROTOCOL-NOTE.md` for the
-narrative version of this same finding.
+narrative version of this same finding, and `REAL-HOST-VERIFICATION.md` for
+findings from running this plugin against an actual `mesh-llm-host-runtime`
+process instead of `tests/interop.rs`'s stand-in — including a real bug
+(unschemed endpoint address) the stand-in structurally could not catch.
 
 ## Already covered — used as-is in this plugin, nothing invented
 

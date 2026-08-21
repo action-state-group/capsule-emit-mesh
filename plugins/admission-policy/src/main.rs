@@ -83,7 +83,7 @@ async fn serve_admission_http(listener: TcpListener, models: Vec<String>) {
 async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
-    let address = format!("127.0.0.1:{port}");
+    let address = format!("http://127.0.0.1:{port}");
     let models = blocked_models();
 
     tokio::spawn(serve_admission_http(listener, models));
