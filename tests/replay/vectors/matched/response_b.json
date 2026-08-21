@@ -1,0 +1,16 @@
+{
+  "object": "chat.completion",
+  "id": "chatcmpl-replay-demo-001",
+  "model": "hermes-2-pro-mistral-7b",
+  "created": 1787000000,
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Node mesh-node-demo-1 has 4 GPU-hours of headroom this cycle.",
+        "role": "assistant"
+      }
+    }
+  ]
+}
