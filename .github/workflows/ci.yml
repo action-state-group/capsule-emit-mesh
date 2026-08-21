@@ -69,3 +69,45 @@ jobs:
         run: |
           pip install pytest
           pytest tests/ -v
+
+  # Builds the real mesh-llm-plugin admission-policy plugin against mesh-llm's
+  # actual published `mesh-llm-plugin` crate and runs it GREEN over the real
+  # wire protocol (length-prefixed protobuf Envelope frames), not the private
+  # spike's invented stdio/JSON protocol.
+  #
+  # Mutant verification (each negative check fails its mutant, both directions):
+  #   - `cargo test --features mutant-allow-blocked` must fail
+  #     `denies_request_for_blocked_model` (fail-open on the exact threat the
+  #     policy exists to catch).
+  #   - `cargo test --features mutant-allow-malformed` must fail
+  #     `denies_malformed_body_fail_safe` (fail-open on unparseable input).
+  #   Neither mutant feature is enabled here — CI only runs the correct build;
+  #   the mutant runs are a manual proof captured in
+  #   plugins/admission-policy/DELTA.md, not a permanently red CI job.
+  admission-policy-plugin:
+    name: admission-policy-plugin (real mesh-llm interop)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/admission-policy
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            plugins/admission-policy/target
+          key: ${{ runner.os }}-cargo-admission-policy-${{ hashFiles('plugins/admission-policy/Cargo.lock') }}
+
+      - name: Build plugin binary
+        run: cargo build --locked
+
+      - name: Unit tests (decision logic)
+        run: cargo test --locked --bin admission-policy-plugin
+
+      - name: Interop tests (real Envelope wire protocol + real HTTP dispatch)
+        run: cargo test --locked --test interop -- --test-threads=1
