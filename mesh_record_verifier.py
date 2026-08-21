@@ -9,14 +9,19 @@ mesh-record-side-state-and-observation-binding exists to demonstrate.
 Key responsibilities:
 1. Extract terminal_state, observation_point, exchange_id, hop_id, attempt,
    local_peer_id from the x-mesh-lifecycle-v1 block in the record.
-2. Enforce the transcript completeness guard:
+2. Verify the requester_commitment (rung-2, requester_commitment.py) against
+   the record's own request digest and derive cross_party_rung — see
+   derive_cross_party_rung() below. A record without a valid commitment stays
+   unilateral_fallback; the label is NEVER upgraded on absent or invalid
+   evidence.
+3. Enforce the transcript completeness guard:
        complete=True AND event_count < expected_count → IncompleteTranscriptError
    This guard is what distinguishes "complete evidence" from "incomplete evidence
    that a bad producer labelled complete".  The deliberately-broken truncation
    test in test_record_side_state_binding.py proves this guard can fire by first
    showing it ABSENT (the lie passes a naive verifier) and then PRESENT (the
    guard catches it).
-3. Enforce the observation-point provenance check:
+4. Enforce the observation-point provenance check:
        observation_point in {gateway_ingress} AND local_peer_id != gateway → warning
    (recorded in findings, not a hard error — the spec rule is "must not present
    as proof from the serving target", which is enforced at the record level by
@@ -29,6 +34,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from typing import Any
+
+from requester_commitment import verify_requester_commitment
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +69,53 @@ HOST_OBSERVATION_POINTS = frozenset({
     "backend_dispatch",
     "client_egress",
 })
+
+#: Mutuality axis (docs/ASSURANCE-VOCABULARY.md §5, capsule_sidecar.py's
+#: existing cross_party_rung vocabulary) — reused verbatim, not reforked.
+#: Ordering: UNILATERAL_FALLBACK < FULL_BILATERAL. This record family has no
+#: separate client-acknowledgment step (that is #1233/capsule_sidecar.py's
+#: Move 4, a different mechanism), so ``acknowledged_receipt`` is not a value
+#: this deriver produces — the requester's rung-2 commitment IS the evidence,
+#: and either it verifies or it does not.
+UNILATERAL_FALLBACK = "unilateral_fallback"
+FULL_BILATERAL = "full_bilateral"
+
+
+def derive_cross_party_rung(
+    requester_commitment: dict[str, Any] | None,
+    *,
+    request_digest: str,
+    exchange_id: str,
+) -> tuple[str, bool, str]:
+    """Derive cross_party_rung from the requester_commitment's own bytes.
+
+    Returns (rung, commitment_valid, reason). The rung is DERIVED here, never
+    read off a producer-asserted label — there is no such label in the record
+    to trust in the first place; ``requester_commitment`` is evidence, and
+    this function IS the derivation, exactly the discipline
+    capsule_sidecar.derive_cross_party_rung() already established for the
+    #1233 receipt tuple.
+
+    full_bilateral
+        The record carries a requester_commitment whose signature verifies
+        under its own embedded public key AND whose request_digest and
+        exchange_id match this record's own values.
+
+    unilateral_fallback
+        No commitment, or a commitment present but invalid (bad signature,
+        wrong key, or bound to a different request/exchange). Invalid
+        evidence is never worth partial credit — it is treated identically
+        to absent evidence, matching capsule_sidecar.py's own rule that a
+        present-but-invalid bilateral evaluation still yields
+        unilateral_fallback.
+    """
+    valid, reason = verify_requester_commitment(
+        requester_commitment,
+        expected_request_digest=request_digest,
+        expected_exchange_id=exchange_id,
+    )
+    rung = FULL_BILATERAL if valid else UNILATERAL_FALLBACK
+    return rung, valid, reason
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +176,10 @@ class LifecycleVerdict:
     transcript_event_count: int
     transcript_expected_count: int | None
     transcript_complete: bool
+    cross_party_rung: str
+    requester_commitment_present: bool
+    requester_commitment_valid: bool
+    requester_commitment_reason: str
     findings: list[str] = field(default_factory=list)
 
     def is_joinable_with(self, other: "LifecycleVerdict") -> bool:
@@ -287,6 +345,7 @@ def verify_record_bytes(
     """
     record = json.loads(record_bytes.decode("utf-8"))
     block = _extract_lifecycle_block(record)
+    compute_attestation = (record.get("model_attestation") or {}).get("compute_attestation") or {}
 
     terminal_state = block.get("terminal_state")
     if require_known_terminal_state:
@@ -312,6 +371,16 @@ def verify_record_bytes(
     # Guarded transcript check.
     transcript_complete = verify_transcript(block)
 
+    # Rung-2: derive cross_party_rung from the requester_commitment's own
+    # bytes, bound against this record's own agent_input_digest and
+    # exchange_id — never against a claim the commitment makes about itself.
+    requester_commitment = block.get("requester_commitment")
+    cross_party_rung, commitment_valid, commitment_reason = derive_cross_party_rung(
+        requester_commitment,
+        request_digest=compute_attestation.get("agent_input_digest", ""),
+        exchange_id=exchange_id,
+    )
+
     findings: list[str] = []
     if check_provenance and observation_point:
         findings.extend(
@@ -329,6 +398,10 @@ def verify_record_bytes(
         transcript_event_count=event_count,
         transcript_expected_count=expected_count,
         transcript_complete=transcript_complete,
+        cross_party_rung=cross_party_rung,
+        requester_commitment_present=requester_commitment is not None,
+        requester_commitment_valid=commitment_valid,
+        requester_commitment_reason=commitment_reason,
         findings=findings,
     )
 
