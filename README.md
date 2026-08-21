@@ -248,6 +248,35 @@ rather than a natural-language "step 1/2/3" narrative — see "Honest
 limitations": that phrasing is a *finding* from this session, not a
 stylistic choice.
 
+## Replay spot-check harness (C2a)
+
+`tools/replay_spot_check.py` implements the C2a mechanism from
+[`docs/TRUST-MODEL.md`](docs/TRUST-MODEL.md) §3 Class C: fire the same
+temperature-0, fixed-seed request twice and compare the two responses on the
+domain the sidecar already commits to — `response_digest`
+(`capsule_sidecar.digest_json`, jcs-n over the float-stringified raw
+response). It answers one question only — do these two runs match on that
+domain — and is deliberately not a scorer: the result carries `match: true`
+/ `false` and the two digests, never a confidence, trust, or reputation
+value. A mismatch is grounds to investigate, not a verdict (sampling
+non-determinism and cross-hardware execution are named, expected
+confounds in TRUST-MODEL.md — see the C2a discussion there before reading
+anything into a mismatch).
+
+```
+# Offline: compare two already-captured response bodies
+python3 tools/replay_spot_check.py compare response_a.json response_b.json
+
+# Live: pin a request to temperature 0 + a fixed seed, fire it twice
+# against a running upstream, and compare
+python3 tools/replay_spot_check.py live --upstream http://127.0.0.1:9337 --request request.json
+```
+
+See [`tests/replay/README.md`](tests/replay/README.md) for the vector suite
+(a matched pair and a deliberately mismatched pair — one sampled token
+flipped) and `tests/test_replay_spot_check.py` for both directions
+exercised end to end against a local stub upstream.
+
 ## Honest limitations (read this before the call)
 
 **This PoC's run history, for the record.** An earlier session built this
@@ -569,6 +598,8 @@ poc/
   mock_mesh_node.py              schema-accurate /v1 stand-in -- mock-node smoke-test path only
   run_demo.py                    orchestrates the mock-node smoke test + verification pass
   run_live_demo.sh               orchestrates the real mesh-llm + real goose live demo end to end
+  tools/
+    replay_spot_check.py          C2a replay spot-check harness (temp-0/fixed-seed re-run comparison; see above)
   goose/
     server.py                    capsule-emit-goose: the action-record MCP extension (tool-call boundary)
   model-package/
@@ -583,6 +614,8 @@ poc/
   tests/
     test_forwarded_copy_and_keys.py  sidecar pure-function tests (streaming, key generation)
     test_bilateral_demo.py           bilateral attestation tests (rung derivation, all failure modes, e2e)
+    test_replay_spot_check.py        C2a replay spot-check harness tests (both directions, scope guardrail)
+    replay/                          vector suite for the replay spot-check harness (matched + mismatched pairs)
   bench/
     run_benchmark.py               A/F benchmark harness (one-command; python3 bench/run_benchmark.py)
     results/                       machine-readable JSON result files (environment-labelled, timestamped)
