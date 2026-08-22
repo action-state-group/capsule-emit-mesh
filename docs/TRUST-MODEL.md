@@ -24,6 +24,13 @@ Steven Mih · 2026-08-16 · offered for discussion, revision, or re-homing.
 > `full_bilateral` derivation, which still requires a client acknowledgment (Move 4) as well as a
 > request attestation (Move 1) — see the scoping note after §4.1.
 
+> **Revision 2026-08-21 (remediation).** [mesh-rung12-adversarial-review] ran seven adversarial
+> attacks against the rung-1/rung-2 code above and found `full_bilateral` self-mintable by a lone
+> node in both mechanisms (§4.1a's new addendum), an unhardened nonce-replay gap (R3, corrected
+> above), and an unrelated hygiene default. §4.1a now discloses the self-mint finding and the
+> code-level honest-labeling fix; R3's status is corrected to reflect the (scoped) replay-detection
+> fix. Nothing else in this document changed.
+>
 > **Status of the referenced specifications.** Where this document refers to record-format
 > mechanisms, the published revisions are `draft-mih-scitt-agent-action-capsule-02`,
 > `draft-mih-agent-bilateral-attestation-01`, `draft-mih-sato-agent-accountability-composition-00`
@@ -104,7 +111,7 @@ inside the mesh's own console is not evidence to anyone who matters in a dispute
 |---|---|---|---|
 | R1 | Substituted quantization or different weights | Model package digest bound into the receipt (step 2) | Manifests largely carry it; needs tag-not-branch discipline and a declared equivalence class |
 | R2 | A canned answer with no computation | TEE / execution evidence (step 5) | Not built |
-| R3 | Replay of earlier work as fresh | **Client-contributed nonce** bound into the receipt | Not built — today's fallback nonce is node-side and is explicitly not anti-replay evidence |
+| R3 | Replay of earlier work as fresh | **Client-contributed nonce** bound into the receipt | Partly built (2026-08-21) — `capsule_sidecar.py`'s `_resolve_client_nonce()` now tracks client-supplied nonces per node, in-memory, for that node's running lifetime; a replayed nonce is labeled `client_supplied_replayed` rather than accepted as indistinguishably fresh (closes the gap [mesh-rung12-adversarial-review] found: a captured nonce replayed onto an unrelated exchange previously read as an ordinary `client_supplied` value). Scope, stated honestly: this catches replay within one running node's process only — not across a restart (the tracking set is not persisted) or across independently-operated nodes. Today's *fallback* nonce (minted when the client sends none) remains node-side and is explicitly not anti-replay evidence; that half is unchanged. |
 | R4 | The response received is not the response signed | Request and output digests under one signature | Built |
 | R5 | Later denial or rewriting | Signed, hash-chained records | Built, per node |
 | R6 | A different story per audience | Registration to a Transparency Service, and a witnessed log so the log cannot equivocate either | Chaining built; registration is the missing half |
@@ -432,6 +439,21 @@ exchange in §4's opening paragraph:
 - **The rung-0/1/2 discipline still holds**: a `client_nonce` alone (no commitment) never appears as
   more than freshness evidence in either mechanism; only a verified signed commitment reaches
   `full_bilateral` in either.
+- **What `full_bilateral` still does not prove, in either mechanism — found by
+  [mesh-rung12-adversarial-review] (2026-08-21) and now disclosed in code, not just here.** §4.1's
+  spectrum table above says a self-held key is "an identifier, not a vouched identity"; the concrete
+  consequence for this rung is stronger than that reads on its own: **the node itself can generate a
+  fresh requester (or client-ack) keypair and satisfy every check either `derive_cross_party_rung()`
+  performs, with no second, independent party involved at any point.** `verify_requester_commitment()`
+  confirms a signature is self-consistent and bound to the record's own `request_digest`/`exchange_id`
+  — it does not and cannot confirm the embedded public key belongs to anyone else. This is inherent
+  without an external identity anchor (the Authority tier; out of scope for this record layer), so the
+  fix is disclosure, not prevention: a record or verdict reporting `cross_party_rung=full_bilateral`
+  now always carries an `identity_limitation` caveat saying plainly that the rung proves *a commitment
+  was made and matches this record*, never *that an independent party made it* — attached at the
+  emitted-record layer (`mesh_record_emitter.py`) and re-derived independently at the verifier layer
+  (`mesh_record_verifier.py` / `capsule_sidecar.identity_limitation_for_rung()`) so a reader is never
+  solely dependent on the producer having chosen to disclose it.
 
 ### 4.2 Where this sits in the composition model
 

@@ -44,6 +44,7 @@ from mesh_record_verifier import (  # noqa: E402
     verify_record_bytes,
 )
 from requester_commitment import (  # noqa: E402
+    IDENTITY_LIMITATION_CAVEAT,
     RequesterKey,
     make_requester_commitment,
     verify_requester_commitment,
@@ -187,6 +188,93 @@ class TestAssuranceLabelNeverSilentlyUpgraded:
         assert verdict.cross_party_rung == FULL_BILATERAL, verdict.requester_commitment_reason
         assert verdict.requester_commitment_present is True
         assert verdict.requester_commitment_valid is True
+
+
+class TestIdentityLimitationCaveat:
+    """[mesh-rung12-adversarial-review] D1 — a lone node can self-mint a
+    fully self-consistent requester_commitment (fresh keypair, signs over
+    its own record's request_digest/exchange_id) with no real requester
+    ever involved, and still reach full_bilateral -- this is inherent
+    without an external identity anchor (out of scope here), so the honest
+    fix is disclosure: full_bilateral must never be reported without this
+    caveat, at both the emitted-record layer and the verifier layer.
+    """
+
+    def _emit(self, *, node, requester_commitment=None, request_digest=REQUEST_DIGEST):
+        return emit_lifecycle_record(
+            node,
+            terminal_state="completed",
+            exchange_id=EXCHANGE_ID,
+            local_peer_id="serving-host-A",
+            transcript=make_transcript_summary(3, 3),
+            request_digest=request_digest,
+            requester_commitment=requester_commitment,
+        )
+
+    def test_self_minted_commitment_still_reaches_full_bilateral_but_is_labeled(self) -> None:
+        """The exact D1 repro: the node mints its own fresh key and signs a
+        self-consistent commitment -- no real requester involved. The rung
+        cannot be prevented (inherent, no external anchor); the caveat MUST
+        be present so a reader is not misled into thinking it proves an
+        independent party."""
+        node = default_node_state("attacker-node")
+        node_self_key = RequesterKey.generate()
+        self_minted = make_requester_commitment(
+            node_self_key, request_digest=REQUEST_DIGEST, exchange_id=EXCHANGE_ID
+        )
+        capsule = self._emit(node=node, requester_commitment=self_minted)
+        verdict = verify_record_bytes(capsule_to_bytes(capsule))
+
+        assert verdict.cross_party_rung == FULL_BILATERAL
+        assert verdict.identity_limitation == IDENTITY_LIMITATION_CAVEAT, (
+            "a full_bilateral verdict must always carry the identity-limitation "
+            "caveat -- it is not disclosed only when the producer happens to "
+            "include it"
+        )
+
+    def test_emitted_record_carries_the_caveat_on_its_own_bytes(self) -> None:
+        """The RECORD itself (not just the verifier's derived verdict) must
+        state the caveat -- restores the identity_limitation label the old
+        capsule_sidecar.build_capsule() path already carries, which the new
+        mesh_record_emitter.py path had dropped."""
+        node = default_node_state()
+        key = RequesterKey.generate()
+        commitment = make_requester_commitment(
+            key, request_digest=REQUEST_DIGEST, exchange_id=EXCHANGE_ID
+        )
+        capsule = self._emit(node=node, requester_commitment=commitment)
+        block = capsule["model_attestation"]["compute_attestation"]["x-mesh-lifecycle-v1"]
+        assert block["identity_limitation"] == IDENTITY_LIMITATION_CAVEAT
+
+    def test_no_commitment_no_caveat(self) -> None:
+        """unilateral_fallback makes no independent-party claim -- no
+        caveat should be attached (nothing to caveat)."""
+        node = default_node_state()
+        capsule = self._emit(node=node, requester_commitment=None)
+        block = capsule["model_attestation"]["compute_attestation"]["x-mesh-lifecycle-v1"]
+        assert block["identity_limitation"] is None
+
+        verdict = verify_record_bytes(capsule_to_bytes(capsule))
+        assert verdict.identity_limitation is None
+
+    def test_invalid_commitment_no_caveat_on_verdict(self) -> None:
+        """A present-but-invalid commitment stays unilateral_fallback --
+        the verifier's derived identity_limitation must be None (it only
+        applies to a rung that actually claims independent-party evidence).
+        The emitted record still carries the caveat (it can't know validity
+        at emit time), but the verdict must not."""
+        node = default_node_state()
+        key = RequesterKey.generate()
+        commitment = make_requester_commitment(
+            key, request_digest=REQUEST_DIGEST, exchange_id=EXCHANGE_ID
+        )
+        bad_byte = bytes.fromhex(commitment["signature"])
+        commitment["signature"] = (bytes([bad_byte[0] ^ 0xFF]) + bad_byte[1:]).hex()
+        capsule = self._emit(node=node, requester_commitment=commitment)
+        verdict = verify_record_bytes(capsule_to_bytes(capsule))
+
+        assert verdict.cross_party_rung == UNILATERAL_FALLBACK
+        assert verdict.identity_limitation is None
 
     def test_mutant_invalid_commitment_does_not_reach_full_bilateral(self) -> None:
         """A present-but-forged commitment (wrong signature) must NOT upgrade

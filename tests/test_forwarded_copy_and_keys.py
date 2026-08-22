@@ -144,19 +144,77 @@ def test_load_or_create_signing_key():
     assert cs.load_or_create_signing_key(d) == pem, "second call must reuse"
 
 
+def _make_node_state():
+    """Minimal NodeState for _resolve_client_nonce tests -- no real signing key
+    or manifest needed since these tests never sign or emit a capsule."""
+    d = pathlib.Path(tempfile.mkdtemp())
+    return cs.NodeState(
+        node_id="test-node",
+        operator="test-operator",
+        developer="test-developer",
+        signing_key_pem=b"unused-in-these-tests",
+        manifest_path=d / "manifest.json",
+        runtime_label="test-runtime",
+        runtime_digest="0" * 64,
+        ledger_dir=d / "ledger",
+    )
+
+
 def test_client_nonce_resolution_client_supplied():
-    nonce_val, nonce_src = cs._resolve_client_nonce({cs.CLIENT_NONCE_HEADER.lower(): "abc-123"})
+    state = _make_node_state()
+    nonce_val, nonce_src = cs._resolve_client_nonce(state, {cs.CLIENT_NONCE_HEADER.lower(): "abc-123"})
     assert nonce_val == "abc-123", f"nonce value not passed through: {nonce_val!r}"
     assert nonce_src == "client_supplied", f"wrong source label: {nonce_src!r}"
 
 
 def test_client_nonce_resolution_fallback():
-    nonce_val, nonce_src = cs._resolve_client_nonce({})
+    state = _make_node_state()
+    nonce_val, nonce_src = cs._resolve_client_nonce(state, {})
     assert nonce_src == "sidecar_generated_fallback", f"wrong source label: {nonce_src!r}"
     assert len(nonce_val) == 32, f"unexpected fallback nonce length: {len(nonce_val)}"  # uuid4().hex
 
 
 def test_client_nonce_labels_distinct():
-    _, src_supplied = cs._resolve_client_nonce({cs.CLIENT_NONCE_HEADER.lower(): "x"})
-    _, src_fallback = cs._resolve_client_nonce({})
+    state = _make_node_state()
+    _, src_supplied = cs._resolve_client_nonce(state, {cs.CLIENT_NONCE_HEADER.lower(): "x"})
+    _, src_fallback = cs._resolve_client_nonce(state, {})
     assert src_supplied != src_fallback, "client_supplied and sidecar_generated_fallback must be distinct labels"
+
+
+def test_client_nonce_replay_detected_and_labeled():
+    """[mesh-rung12-adversarial-review] D3 -- the SAME client-supplied nonce
+    replayed on a second, unrelated call must be labeled distinctly from a
+    fresh client_supplied nonce, not silently accepted as equally fresh."""
+    state = _make_node_state()
+    headers = {cs.CLIENT_NONCE_HEADER.lower(): "captured-nonce-REPLAY-ME"}
+    nonce_1, src_1 = cs._resolve_client_nonce(state, headers)
+    nonce_2, src_2 = cs._resolve_client_nonce(state, headers)
+    assert nonce_1 == nonce_2 == "captured-nonce-REPLAY-ME"
+    assert src_1 == "client_supplied", f"first sighting must be a fresh label: {src_1!r}"
+    assert src_2 == "client_supplied_replayed", f"replay must be labeled distinctly: {src_2!r}"
+    assert src_2 != src_1, "a replayed nonce must not be indistinguishable from a fresh one"
+
+
+def test_client_nonce_replay_detection_is_per_node():
+    """Replay detection is scoped to one NodeState (one running node) --
+    stated honestly in _resolve_client_nonce's docstring, not silently
+    assumed to cover independently-operated nodes."""
+    headers = {cs.CLIENT_NONCE_HEADER.lower(): "same-nonce-different-nodes"}
+    state_a = _make_node_state()
+    state_b = _make_node_state()
+    _, src_a = cs._resolve_client_nonce(state_a, headers)
+    _, src_b = cs._resolve_client_nonce(state_b, headers)
+    assert src_a == "client_supplied"
+    assert src_b == "client_supplied", (
+        "a fresh NodeState (a different node) has never seen this nonce -- "
+        "must not be labeled as a replay it has no way to know about"
+    )
+
+
+def test_client_nonce_replay_does_not_affect_fallback_path():
+    """Replay tracking must never leak into or alter the no-header fallback
+    path -- only client_supplied header values are tracked."""
+    state = _make_node_state()
+    _, src_1 = cs._resolve_client_nonce(state, {})
+    _, src_2 = cs._resolve_client_nonce(state, {})
+    assert src_1 == src_2 == "sidecar_generated_fallback"

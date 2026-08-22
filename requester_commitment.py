@@ -54,6 +54,31 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 #: than the single-hop #1233 receipt tuple.
 COMMITMENT_TYPE = "x-mesh-requester-commitment/1"
 
+#: [mesh-rung12-adversarial-review] D1 — verify_requester_commitment() below
+#: confirms a commitment's signature is internally self-consistent and bound
+#: to a record's own request_digest/exchange_id; it does NOT confirm the
+#: embedded public key belongs to anyone other than whoever produced the
+#: record. A single actor (the node itself) can generate a fresh keypair and
+#: sign a fully self-consistent commitment with no real requester ever
+#: involved — see TRUST-MODEL.md §4.1/§4.1a. A record or verdict reporting
+#: cross_party_rung=full_bilateral therefore carries this caveat: it proves
+#: "a commitment was made and matches this record", never "an independent
+#: party made it". Both the emitter (mesh_record_emitter.py, on the record
+#: bytes) and the verifier (mesh_record_verifier.py, on the derived verdict,
+#: independent of what the record claims) attach it whenever full_bilateral
+#: is reached.
+IDENTITY_LIMITATION_CAVEAT = (
+    "non-conformant-identity: requester_commitment is signed with a "
+    "self-generated, self-held key, not bound to any third-party-issued "
+    "credential or trusted root. cross_party_rung=full_bilateral proves the "
+    "commitment's signature verifies and is bound to this record's own "
+    "request_digest/exchange_id — it does NOT prove an independent party "
+    "produced it: a single actor holding the node's own signing key can "
+    "mint a fresh requester key and self-satisfy this check. "
+    "draft-mih-agent-bilateral-attestation-01 §4.1: first-use acceptance of "
+    "a bare key MUST NOT be treated as conformant. See TRUST-MODEL.md §4.1a."
+)
+
 
 def _jcs(obj: dict[str, Any]) -> bytes:
     """JSON Canonical Serialization (RFC 8785): sorted keys, no whitespace.

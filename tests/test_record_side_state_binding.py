@@ -76,6 +76,7 @@ from mesh_record_verifier import (  # noqa: E402
     TERMINAL_STATES,
     IncompleteTranscriptError,
     LifecycleVerdict,
+    MissingExchangeId,
     UnknownObservationPoint,
     UnknownTerminalState,
     verify_record_bytes,
@@ -812,3 +813,64 @@ class TestStructuralProperties:
         cap_a = emit_from_trace(node_a, trace_a, local_peer_id="serving-host-A")
         cap_b = emit_from_trace(node_b, trace_b, local_peer_id="serving-host-A")
         assert cap_a["capsule_id"] != cap_b["capsule_id"]
+
+
+# ===========================================================================
+# 7. MISSING exchange_id — [mesh-rung12-adversarial-review] D2
+# ===========================================================================
+#
+# emit_lifecycle_record() requires exchange_id as a mandatory keyword
+# argument, so an honest producer cannot omit it. The verifier must still
+# fail closed on a record that does (a malicious or corrupted one) rather
+# than defaulting to "" — a value any number of unrelated broken/malicious
+# records could collapse onto.
+
+class TestMissingExchangeIdFailsClosed:
+
+    def _capsule_missing_exchange_id(self, node: RecordNodeState) -> dict[str, Any]:
+        """A well-formed record with exchange_id deleted from the block --
+        simulates a malicious/corrupted record; emit_lifecycle_record()
+        itself cannot produce one (exchange_id has no default)."""
+        capsule = emit_lifecycle_record(
+            node,
+            terminal_state="completed",
+            exchange_id="temp-will-be-stripped",
+            local_peer_id="serving-host-A",
+            transcript=make_transcript_summary(1, 1),
+        )
+        block = capsule["model_attestation"]["compute_attestation"]["x-mesh-lifecycle-v1"]
+        del block["exchange_id"]
+        return capsule
+
+    def test_mutant_missing_exchange_id_key_raises(self, node: RecordNodeState) -> None:
+        """RED-before-green: before this fix, a missing exchange_id key
+        silently defaulted to "" and verification proceeded. Now it must
+        raise rather than silently collapse onto a shared correlator."""
+        capsule = self._capsule_missing_exchange_id(node)
+        with pytest.raises(MissingExchangeId):
+            verify_record_bytes(capsule_to_bytes(capsule))
+
+    def test_mutant_empty_string_exchange_id_raises(self, node: RecordNodeState) -> None:
+        """An explicit exchange_id="" is exactly as unusable a correlator as
+        a missing key -- must fail closed the same way."""
+        capsule = emit_lifecycle_record(
+            node,
+            terminal_state="completed",
+            exchange_id="",
+            local_peer_id="serving-host-A",
+            transcript=make_transcript_summary(1, 1),
+        )
+        with pytest.raises(MissingExchangeId):
+            verify_record_bytes(capsule_to_bytes(capsule))
+
+    def test_normal_record_with_real_exchange_id_still_verifies(self, node: RecordNodeState) -> None:
+        """The guard must not false-positive on the normal case."""
+        capsule = emit_lifecycle_record(
+            node,
+            terminal_state="completed",
+            exchange_id="a-real-exchange-id",
+            local_peer_id="serving-host-A",
+            transcript=make_transcript_summary(1, 1),
+        )
+        verdict = verify_record_bytes(capsule_to_bytes(capsule))
+        assert verdict.exchange_id == "a-real-exchange-id"

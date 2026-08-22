@@ -35,7 +35,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from requester_commitment import verify_requester_commitment
+from requester_commitment import IDENTITY_LIMITATION_CAVEAT, verify_requester_commitment
 
 
 # ---------------------------------------------------------------------------
@@ -80,26 +80,35 @@ HOST_OBSERVATION_POINTS = frozenset({
 UNILATERAL_FALLBACK = "unilateral_fallback"
 FULL_BILATERAL = "full_bilateral"
 
+# IDENTITY_LIMITATION_CAVEAT is imported above from requester_commitment —
+# see its docstring there for the full rationale ([mesh-rung12-adversarial-
+# review] D1): full_bilateral proves a commitment was made and matches this
+# record, never that an independent party made it. derive_cross_party_rung()
+# below attaches it automatically whenever it returns FULL_BILATERAL.
+
 
 def derive_cross_party_rung(
     requester_commitment: dict[str, Any] | None,
     *,
     request_digest: str,
     exchange_id: str,
-) -> tuple[str, bool, str]:
+) -> tuple[str, bool, str, str | None]:
     """Derive cross_party_rung from the requester_commitment's own bytes.
 
-    Returns (rung, commitment_valid, reason). The rung is DERIVED here, never
-    read off a producer-asserted label — there is no such label in the record
-    to trust in the first place; ``requester_commitment`` is evidence, and
-    this function IS the derivation, exactly the discipline
-    capsule_sidecar.derive_cross_party_rung() already established for the
-    #1233 receipt tuple.
+    Returns (rung, commitment_valid, reason, identity_limitation). The rung
+    is DERIVED here, never read off a producer-asserted label — there is no
+    such label in the record to trust in the first place;
+    ``requester_commitment`` is evidence, and this function IS the
+    derivation, exactly the discipline capsule_sidecar.derive_cross_party_rung()
+    already established for the #1233 receipt tuple.
 
     full_bilateral
         The record carries a requester_commitment whose signature verifies
         under its own embedded public key AND whose request_digest and
-        exchange_id match this record's own values.
+        exchange_id match this record's own values. ``identity_limitation``
+        is ALWAYS populated (IDENTITY_LIMITATION_CAVEAT) alongside this rung
+        — see that constant's docstring for why: this check cannot and does
+        not confirm the key belongs to a second, independent party.
 
     unilateral_fallback
         No commitment, or a commitment present but invalid (bad signature,
@@ -107,7 +116,7 @@ def derive_cross_party_rung(
         evidence is never worth partial credit — it is treated identically
         to absent evidence, matching capsule_sidecar.py's own rule that a
         present-but-invalid bilateral evaluation still yields
-        unilateral_fallback.
+        unilateral_fallback. ``identity_limitation`` is None here.
     """
     valid, reason = verify_requester_commitment(
         requester_commitment,
@@ -115,7 +124,8 @@ def derive_cross_party_rung(
         expected_exchange_id=exchange_id,
     )
     rung = FULL_BILATERAL if valid else UNILATERAL_FALLBACK
-    return rung, valid, reason
+    identity_limitation = IDENTITY_LIMITATION_CAVEAT if rung == FULL_BILATERAL else None
+    return rung, valid, reason, identity_limitation
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +164,20 @@ class VantagePointConflict(RecordVerificationError):
     or vice versa — indicating a provenance conflict."""
 
 
+class MissingExchangeId(RecordVerificationError):
+    """The record's x-mesh-lifecycle-v1 block has no exchange_id, or it is
+    an empty string.
+
+    [mesh-rung12-adversarial-review] D2 — exchange_id is the correlator two
+    records of an exchange are joined on AND the value a rung-2
+    requester_commitment is bound against. Defaulting an absent value to ""
+    would let any two records that both omit exchange_id collapse onto the
+    same fixed correlator (a latent splice risk if request_digest were ever
+    also degenerate). Fail closed instead: a record MUST set a real
+    exchange_id to be verified at all.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Verdict dataclass
 # ---------------------------------------------------------------------------
@@ -180,6 +204,7 @@ class LifecycleVerdict:
     requester_commitment_present: bool
     requester_commitment_valid: bool
     requester_commitment_reason: str
+    identity_limitation: str | None
     findings: list[str] = field(default_factory=list)
 
     def is_joinable_with(self, other: "LifecycleVerdict") -> bool:
@@ -339,6 +364,7 @@ def verify_record_bytes(
     Raises:
         json.JSONDecodeError         if bytes are not valid JSON
         MissingLifecycleBlock        if x-mesh-lifecycle-v1 is absent
+        MissingExchangeId            if exchange_id is absent or empty
         UnknownTerminalState         if terminal_state not in known set
         UnknownObservationPoint      if observation_point not in known set
         IncompleteTranscriptError    if complete=True but count check fails
@@ -357,7 +383,17 @@ def verify_record_bytes(
     if require_known_observation_point and observation_point is not None:
         observation_point = _check_observation_point(observation_point)
 
-    exchange_id = block.get("exchange_id", "")
+    exchange_id = block.get("exchange_id")
+    if not exchange_id:
+        raise MissingExchangeId(
+            "x-mesh-lifecycle-v1.exchange_id is missing or empty. "
+            "exchange_id is the correlator two records of an exchange are "
+            "joined on and the value a rung-2 requester_commitment is bound "
+            "against — a record must set a real value, not rely on a "
+            "default. This record was not emitted by "
+            "mesh_record_emitter.emit_lifecycle_record() (it requires "
+            "exchange_id as a mandatory argument)."
+        )
     hop_id = block.get("hop_id", "hop-0")
     attempt = int(block.get("attempt", 0))
     local_peer_id = block.get("local_peer_id", "")
@@ -375,7 +411,7 @@ def verify_record_bytes(
     # bytes, bound against this record's own agent_input_digest and
     # exchange_id — never against a claim the commitment makes about itself.
     requester_commitment = block.get("requester_commitment")
-    cross_party_rung, commitment_valid, commitment_reason = derive_cross_party_rung(
+    cross_party_rung, commitment_valid, commitment_reason, identity_limitation = derive_cross_party_rung(
         requester_commitment,
         request_digest=compute_attestation.get("agent_input_digest", ""),
         exchange_id=exchange_id,
@@ -402,6 +438,7 @@ def verify_record_bytes(
         requester_commitment_present=requester_commitment is not None,
         requester_commitment_valid=commitment_valid,
         requester_commitment_reason=commitment_reason,
+        identity_limitation=identity_limitation,
         findings=findings,
     )
 

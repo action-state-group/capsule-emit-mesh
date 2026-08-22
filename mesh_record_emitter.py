@@ -36,6 +36,16 @@ FIELD DESIGN  (x-mesh-lifecycle-v1 inside compute_attestation)
                           record's own agent_input_digest and derives
                           cross_party_rung from that verification — it is
                           NEVER read as pre-asserted trust.
+  identity_limitation    str|None  Present whenever requester_commitment is
+                          not None (requester_commitment.IDENTITY_LIMITATION_
+                          CAVEAT). States plainly that cross_party_rung=
+                          full_bilateral proves a commitment was made and
+                          matches this record, not that an independent party
+                          made it — a lone actor can self-mint both halves
+                          with no external identity anchor. Mirrors the
+                          identity_limitation capsule_sidecar.build_capsule()
+                          already attaches for the #1233 receipt tuple; see
+                          [mesh-rung12-adversarial-review] D1.
 """
 from __future__ import annotations
 
@@ -50,6 +60,8 @@ from typing import Any
 from agent_action_capsule.contracts import Disposition, EffectRecord
 from agent_action_capsule.emit import emit
 from agent_action_capsule.verify import verify as verify_capsule
+
+from requester_commitment import IDENTITY_LIMITATION_CAVEAT
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +243,16 @@ def emit_lifecycle_record(
             "complete": transcript.complete,
         },
         "requester_commitment": requester_commitment,
+        # [mesh-rung12-adversarial-review] D1(a) — restores the honesty
+        # caveat the old capsule_sidecar.build_capsule() path already
+        # carries (identity_limitation, attached whenever bilateral evidence
+        # is present). Attached whenever a requester_commitment is passed,
+        # regardless of whether it later verifies — this emitter cannot
+        # verify it; only mesh_record_verifier.py can, and it independently
+        # re-derives this same caveat at verify time (see
+        # LifecycleVerdict.identity_limitation) so a reader is never solely
+        # dependent on the producer having chosen to disclose it.
+        "identity_limitation": IDENTITY_LIMITATION_CAVEAT if requester_commitment is not None else None,
     }
     if extra:
         mesh_block.update(extra)
