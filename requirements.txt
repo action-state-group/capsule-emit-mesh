@@ -5,7 +5,17 @@
 # here because capsule_sidecar.py imports scitt_cose directly.
 # mcp>=2.0 removed mcp.server.fastmcp; the <2 pin keeps goose/server.py importable
 # until it migrates to the standalone fastmcp package.
-capsule-emit[mcp]
-scitt-cose
+#
+# TEMPORARY git-ref pins (checkpointing.py / [checkpoint] config, Layers 1-2):
+# capsule_emit.checkpoint and scitt_cose.cll are not yet on either project's
+# released main -- both are held for review (capsule-emit PR #66, scitt-cose
+# PR #38, both CI-green as of 2026-08-21). Pinned to those branches' exact
+# commits rather than main so this repo's own CI can exercise the real
+# subpackages ahead of their merge. SWAP THESE TWO LINES to plain
+# `capsule-emit[mcp]>=0.5.0` / `scitt-cose>=0.2.0` (or whatever versions ship
+# the merge) once both PRs land -- do not leave a git-ref pin in main past
+# that point.
+capsule-emit[mcp] @ git+https://github.com/action-state-group/capsule-emit.git@34e90f14db0ef18711eea0889368d5d9f494c78f
+scitt-cose @ git+https://github.com/action-state-group/scitt-cose.git@5d959ea88fe76d04656d8cbbf08373d2793a9193
 cbor2
 mcp<2

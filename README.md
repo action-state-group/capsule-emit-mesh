@@ -248,6 +248,100 @@ rather than a natural-language "step 1/2/3" narrative — see "Honest
 limitations": that phrasing is a *finding* from this session, not a
 stylistic choice.
 
+## Checkpointing: local MMR + signed checkpoints (Layers 1-2, opt-in)
+
+Layer 0 (a signed capsule per exchange, above) is always on. This section adds
+two strictly optional, strictly stronger layers, consuming `capsule_emit.checkpoint`
+as a library — nothing here vendors or reimplements MMR/checkpoint logic:
+
+- **Layer 1** — a local, append-only Merkle Mountain Range (MMR) over this
+  node's own `capsules.jsonl`, so any individual capsule can later be proven
+  included under a later checkpoint without re-hashing the whole log.
+- **Layer 2** — a periodic, signed checkpoint (a 32-byte MMR root, signed with
+  the same Ed25519 key that signs the node's capsules) committing everything
+  appended since the previous checkpoint.
+- **Layer 3** — an independent witness (any conforming SCITT Transparency
+  Service, e.g. the free public-good tier at `anchor.agentactioncapsule.org`)
+  co-signs the checkpoint. Also opt-in, per URL, and never on the serving
+  path: an unreachable witness leaves the checkpoint locally-committed
+  (self-checkpointed), never blocks or fails the request it's attached to.
+
+A node opts in by passing `--checkpoint-config` with a `[checkpoint]` TOML
+table — see `checkpoint.example.toml`. A node that never passes this flag
+pays zero cost: no MMR is built, no extra file is written. See
+`checkpointing.py` for the adapter (`JsonlLogSource`, wrapping this repo's
+existing ledger as a `capsule_emit.checkpoint.LogSource`) and `CheckpointState`
+for the cadence + reconnect logic.
+
+**Offline nodes: latest-checkpoint-on-reconnect, not one checkpoint per missed
+tick.** A node that goes offline keeps appending to its local ledger and MMR;
+nothing is lost. On reconnect it emits and registers **one** checkpoint
+covering everything accrued since the last witnessed one — the new
+checkpoint's `prev_size`/`prev_root` chain from the old one, so a consistency
+proof spans the whole gap in a single step. The honest exposure window this
+leaves: entries appended while offline are provably included once the
+reconnect checkpoint lands, but until then they exist only in the local,
+unwitnessed log — anyone relying on third-party freshness evidence for those
+entries has to wait for reconnect, and that wait is reported, not hidden (see
+`describe_witness_state()` below).
+
+**Witness grading — never overstate what a checkpoint has actually achieved.**
+This repo's checkpoint status lines distinguish three strictly increasing
+levels of assurance, and never round up:
+
+1. **self-checkpointed** — locally committed and signed, no outside party has
+   seen it (`ts_urls` empty, or every registration attempt failed).
+2. **peer-witnessed** — another mesh node has carried/composed this
+   checkpoint into its own record. Documented here as the decentralized
+   option; **not built in this PoC** — see the mesh architecture doc's
+   posture ruling (the default integration path is checkpoint → operated
+   witness, not peer-to-peer witnessing).
+3. **independently witnessed** — at least one registered SCITT Transparency
+   Service has actually countersigned the checkpoint's digest.
+
+`describe_witness_state()` in `checkpointing.py` renders exactly one of these,
+plus any lag ("N more entries appended since"), and is covered by a mutant
+test asserting it can never say "witnessed" for a checkpoint with an empty
+witness list. `scitt_cose.cll.witness_status_line()` (the independently-ported
+verify-side function, used by `run_checkpoint_demo.py`'s offline-verify leg)
+renders the same discipline as "witnessed up to size *S* at time *T*" — *S* in
+raw MMR node-count terms there, vs. leaf/entry-count in this repo's own
+`describe_witness_state()`; both surface lag rather than rounding a stale
+checkpoint up to "current."
+
+**What witnessing proves, and what it never proves.** A witness (Layer 3)
+proves the checkpoint — and everything under it — has not been silently
+rewritten after the fact: the witness's own signature is over a root a
+rewrite cannot retroactively match. It proves **non-rewrite of the log
+structure**. It proves **nothing about the content** of any capsule under
+that root — a witnessed checkpoint over a log of capsules containing false
+claims is just as witnessed as one over a log of true claims. Do not let
+"witnessed" drift into "verified honest," the same discipline this repo
+already applies to `client_nonce` (see "Honest limitations" below: a nonce
+proves freshness, not identity).
+
+**What was actually run.** `run_checkpoint_demo.py` exercises: N mesh
+exchanges → capsules → local MMR → cadence-triggered and reconnect-triggered
+checkpoints → registration at the live public anchor
+(`anchor.agentactioncapsule.org`) → offline inclusion + receipt verification
+via `scitt_cose.cll`, with no sidecar state in memory for the offline leg.
+Run with `--register-live-anchor` for the real Layer 3 registration (a real
+write to shared infrastructure — off by default; without the flag the demo
+stays local/self-checkpointed only). `ledger-checkpoint-demo/` is this run's
+committed transcript and fixture output, kept for the same reason
+`ledger-live/` is: so the claims above are checkable against a real artifact,
+not just this description.
+
+**Release-train dependency — read before relying on this section.**
+`capsule_emit.checkpoint` and `scitt_cose.cll` are not on either project's
+released `main` as of this writing; `requirements.txt` pins two exact commits
+on unmerged branches (capsule-emit PR #66, scitt-cose PR #38). This mirrors
+the same unreleased-dependency caveat flagged against `[ldg-mmr-consume-neutral-core]`
+in the ledger lane — both consume the same unreleased `capsule_emit.checkpoint`
+release train. See `requirements.txt`'s inline comment for the swap-over-to-release
+instructions once both PRs land; do not let a git-ref pin sit in this repo's
+`main` past that point.
+
 ## Honest limitations (read this before the call)
 
 **This PoC's run history, for the record.** An earlier session built this
@@ -569,6 +663,9 @@ poc/
   mock_mesh_node.py              schema-accurate /v1 stand-in -- mock-node smoke-test path only
   run_demo.py                    orchestrates the mock-node smoke test + verification pass
   run_live_demo.sh               orchestrates the real mesh-llm + real goose live demo end to end
+  checkpointing.py                Layers 1-2: LogSource adapter, cadence + reconnect checkpointing, witness-state rendering
+  checkpoint.example.toml         example [checkpoint] config for --checkpoint-config (opt-in, empty ts_urls by default)
+  run_checkpoint_demo.py          orchestrates the checkpoint demo: exchanges -> MMR -> checkpoint -> registry -> offline verify
   goose/
     server.py                    capsule-emit-goose: the action-record MCP extension (tool-call boundary)
   model-package/
@@ -580,9 +677,12 @@ poc/
                                   degraded-capsule.json, client-ack.json, bilateral-transcript.txt
   ledger-live/                   generated by run_live_demo.sh: capsules.jsonl, goose-actions.jsonl,
                                   permalink-*.txt, goose-session-transcript.txt (gitignored -- regenerate per run)
+  ledger-checkpoint-demo/         generated by run_checkpoint_demo.py: capsules.jsonl, checkpoints.jsonl,
+                                  checkpoint-demo-transcript.txt (committed fixture, real anchor registration)
   tests/
     test_forwarded_copy_and_keys.py  sidecar pure-function tests (streaming, key generation)
     test_bilateral_demo.py           bilateral attestation tests (rung derivation, all failure modes, e2e)
+    test_checkpointing.py            Layers 1-2 tests: LogSource, cadence, reconnect self-heal, witness-honesty mutants
   bench/
     run_benchmark.py               A/F benchmark harness (one-command; python3 bench/run_benchmark.py)
     results/                       machine-readable JSON result files (environment-labelled, timestamped)

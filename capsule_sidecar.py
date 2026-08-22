@@ -58,6 +58,7 @@ from agent_action_capsule.verify import verify as verify_capsule
 
 import scitt_cose
 
+from checkpointing import CheckpointState, Ed25519Signer, JsonlLogSource, load_checkpoint_config
 from model_identity import load_manifest, model_package_digest
 
 # Generation parameters we carry verbatim (not digested -- these are policy
@@ -332,6 +333,7 @@ class NodeState:
     ledger_dir: Path
     last_capsule_id: str | None = None
     emitted: list[dict[str, Any]] = field(default_factory=list)
+    checkpoint_config_path: Path | None = None
 
     def __post_init__(self) -> None:
         self.manifest = load_manifest(self.manifest_path)
@@ -340,6 +342,22 @@ class NodeState:
         self.ledger_path = self.ledger_dir / "capsules.jsonl"
         self.statements_dir = self.ledger_dir / "signed-statements"
         self.statements_dir.mkdir(parents=True, exist_ok=True)
+
+        self.log_source = JsonlLogSource(self.ledger_path)
+        self.checkpoint: CheckpointState | None = None
+        if self.checkpoint_config_path is not None:
+            loaded = load_checkpoint_config(self.checkpoint_config_path)
+            if loaded is not None:
+                cfg, log_id_override = loaded
+                log_id = log_id_override or self.node_id
+                signer = Ed25519Signer(log_id, self.signing_key_pem)
+                self.checkpoint = CheckpointState.load(
+                    ledger_dir=self.ledger_dir,
+                    log_source=self.log_source,
+                    cfg=cfg,
+                    signer=signer,
+                    log_id=log_id,
+                )
 
 
 def build_capsule(
@@ -479,14 +497,15 @@ def sign_capsule(state: NodeState, capsule: dict[str, Any]) -> bytes:
 
 
 def record_capsule(state: NodeState, capsule: dict[str, Any], signed_statement: bytes) -> None:
-    with state.ledger_path.open("a") as fh:
-        fh.write(json.dumps(capsule, sort_keys=True) + "\n")
+    state.log_source.append(capsule)
     (state.statements_dir / f"{capsule['capsule_id']}.cose").write_bytes(signed_statement)
     result = verify_capsule(capsule)
     if not result.ok:
         raise RuntimeError(f"sidecar emitted a capsule that fails its own verify(): {result.findings}")
     state.last_capsule_id = capsule["capsule_id"]
     state.emitted.append(capsule)
+    if state.checkpoint is not None:
+        state.checkpoint.record_appended()
 
 
 def _resolve_client_nonce(headers: dict[str, str]) -> tuple[str, str]:
@@ -980,7 +999,14 @@ def run_sidecar(
     return server
 
 
-def default_state(ledger_dir: Path, manifest_path: Path, keys_dir: Path, runtime_label: str, runtime_digest: str) -> NodeState:
+def default_state(
+    ledger_dir: Path,
+    manifest_path: Path,
+    keys_dir: Path,
+    runtime_label: str,
+    runtime_digest: str,
+    checkpoint_config_path: Path | None = None,
+) -> NodeState:
     signing_key_pem = load_or_create_signing_key(keys_dir)
     return NodeState(
         node_id="mesh-node-demo-1",
@@ -991,6 +1017,7 @@ def default_state(ledger_dir: Path, manifest_path: Path, keys_dir: Path, runtime
         runtime_label=runtime_label,
         runtime_digest=runtime_digest,
         ledger_dir=ledger_dir,
+        checkpoint_config_path=checkpoint_config_path,
     )
 
 
@@ -1008,6 +1035,12 @@ if __name__ == "__main__":
     parser.add_argument("--manifest", default=str(Path(__file__).parent / "model-package" / "model-package.json"))
     parser.add_argument("--runtime-label", default="unspecified-real-node")
     parser.add_argument("--runtime-artifact", help="path to a binary/artifact to hash for runtime_digest (read-only, never executed)")
+    parser.add_argument(
+        "--checkpoint-config",
+        help="path to a TOML file with a [checkpoint] table (Layers 1-2: local MMR + optional witness "
+        "registration); omit to stay at Layer 0 (a signed capsule per exchange, no local log). See "
+        "checkpoint.example.toml.",
+    )
     args = parser.parse_args()
 
     if args.runtime_artifact:
@@ -1022,8 +1055,17 @@ if __name__ == "__main__":
         keys_dir=Path(__file__).parent / "keys",
         runtime_label=args.runtime_label,
         runtime_digest=runtime_digest,
+        checkpoint_config_path=Path(args.checkpoint_config) if args.checkpoint_config else None,
     )
+    if state.checkpoint is not None:
+        # Latest-checkpoint-on-reconnect: catch up on anything this node
+        # accrued locally while this process wasn't running, in one shot.
+        reconnect_cp = state.checkpoint.reconnect()
+        if reconnect_cp is not None:
+            print(f"reconnect checkpoint emitted: {state.checkpoint.witness_status()}")
     server = run_sidecar(listen_host=args.listen_host, listen_port=args.listen_port, upstream_base=args.upstream, state=state)
     print(f"capsule sidecar listening on http://{args.listen_host}:{args.listen_port} -> upstream {args.upstream}")
     print(f"node_id={state.node_id} model_package_digest={state.model_package_digest}")
+    if state.checkpoint is not None:
+        print(f"checkpointing enabled: log_id={state.checkpoint.log_id} {state.checkpoint.witness_status()}")
     server.serve_forever()
