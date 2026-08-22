@@ -363,7 +363,7 @@ report under `[mesh-poc-live-goose-meshllm-run]` for the full decision and
 its rationale (anchored log entries should correspond to the real call
 artifact, not an earlier rehearsal).
 
-## Field mapping: receipt tuple → capsule
+## Field mapping: #1233's "receipt tuple" → capsule record
 
 | #1233 receipt tuple field | Capsule field | Notes |
 |---|---|---|
@@ -375,7 +375,7 @@ artifact, not an earlier rehearsal).
 | `output_digest` | `effect.response_digest` | **Spec-native field** (§5.2), same treatment as `request_digest` — JSON-DIGEST over the canonicalized response body (success or error body alike). |
 | `timestamp` | `timestamp` | **Spec-native field** (§5.1), RFC 3339 UTC, set at capsule-seal time. |
 | `sign_node_key(...)` (the whole tuple, signed) | The whole capsule, wrapped in a COSE_Sign1 **Signed Statement** | `scitt_cose.build_signed_statement()`, `alg=EdDSA`, `issuer=<node_id>`, `subject=<capsule_id>`. Signing key generated on first run at `keys/node-key.pem` — **self-attested, not bound to any real node identity or hardware root**; a real deployment would bind the signing key to the node's actual identity (issue #1233's own "the signing key must be bound to a trusted node identity, owner policy, or hardware attestation"). |
-| "hash-chained per node" | `chain.parent_capsule_id` + `chain.relation="confirms"` | Spec-native (§5.4.4). Each capsule after the first in a node-run chains to the prior one; `agent-action-capsule verify --store` recomputes and checks the whole chain. |
+| "hash-chained per node" | `chain.parent_capsule_id` + `chain.relation="confirms"` | Spec-native (§5.4.4). Each capsule after the first in a node-run chains to the prior one via `relation="confirms"` — used here for same-node **sequential ordering**, not the approved→executed→confirmed semantic the same relation carries elsewhere; `agent-action-capsule verify --store` recomputes and checks the whole chain. |
 | fingerprint / TEE evidence (issue steps 4–5, explicitly *not* built here) | `model_attestation.compute_attestation["x-mesh-poc-v1"].evidence_refs.{statistical_fingerprint,tee_attestation}` | **Typed reference fields, present but empty** (`{"type": ..., "digest": null, "context": null}`) — exactly Steven's "rides as a typed reference (digest + declared context) inside the same record" framing. Populating these later upgrades the evidence a record carries without changing the record shape — the mechanism-agnostic pitch. |
 
 ### Extension note (why some fields aren't first-class yet)
