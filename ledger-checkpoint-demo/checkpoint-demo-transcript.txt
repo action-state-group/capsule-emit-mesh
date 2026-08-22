@@ -1,0 +1,34 @@
+=== capsule-emit-mesh checkpoint (Layers 1-2) demo transcript ===
+register_live_anchor=True
+
+--- phase A: 4 exchanges, checkpointing OFF (Layer 0 only) ---
+phase A capsules emitted: 4
+phase A checkpoint state: (none -- checkpointing was off)
+
+--- phase B: reconnect with checkpointing ON -- self-heals phase-A backlog ---
+reconnect checkpoint emitted: True
+status after reconnect: witnessed up to entry 4 at 2026-08-22T06:41:34.282852Z by https://anchor.agentactioncapsule.org
+
+--- phase C: 4 more exchanges, checkpointing ON (cadence_entries=3) ---
+phase C capsules emitted: 4
+status after phase C: witnessed up to entry 7 at 2026-08-22T06:41:34.518910Z by https://anchor.agentactioncapsule.org -- 1 more entry appended since, not yet witnessed
+total capsules in ledger: 8
+
+=== capsule verification ===
+capsule 1: capsule_id=3a6faadee33c76eb4a1c8ea408d436bf3027fc943c7cec0f71a53291e1c08d97 verify.ok=True chain_ok=True
+capsule 2: capsule_id=a0f524003592a374830286b1aa9e5ad8df8ba3fd99165c6683ada06e5deec84b verify.ok=True chain_ok=True
+capsule 3: capsule_id=e8ca5d822489fb23250d9f47ccdf0274e0d7e1806d4dcd8a168c3a9360911d6e verify.ok=True chain_ok=True
+capsule 4: capsule_id=9699c6484f7fef8190517f913169c0d4b26efa927b7352bd641b6fdf44b2b3f6 verify.ok=True chain_ok=True
+capsule 5: capsule_id=b22e053a04366eb1d2f1028031a66863e97fdc168232dbf28a67927423ee5f6d verify.ok=True chain_ok=True
+capsule 6: capsule_id=61f8d87bcb51858d2af45427688df7aa8d45484e6e0362e88775b967c381c84f verify.ok=True chain_ok=True
+capsule 7: capsule_id=f925da39810f47e1d5bc17461262186eb55dd011d8fd57cf0ae7837feabd78e0 verify.ok=True chain_ok=True
+capsule 8: capsule_id=7745d5fc0797d819e6ba37f2f56b85bce8e43dba0e753edfd4b02a6165653466 verify.ok=True chain_ok=True
+all capsules verify() ok AND chain-consistent: True
+
+=== offline verify (scitt_cose.cll -- no live sidecar state) ===
+target capsule (seq=2): a0f524003592a374830286b1aa9e5ad8df8ba3fd99165c6683ada06e5deec84b
+inclusion-under-checkpoint verify.ok=True
+status: witnessed up to size 11 at time 2026-08-22T06:41:34.518910Z -- 4 more entries appended since, not yet witnessed
+TS receipt verify (via https://anchor.agentactioncapsule.org): ok=True errors=[]
+
+final witness status: witnessed up to entry 7 at 2026-08-22T06:41:34.518910Z by https://anchor.agentactioncapsule.org -- 1 more entry appended since, not yet witnessed

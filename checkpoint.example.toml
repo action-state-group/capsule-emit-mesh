@@ -1,0 +1,34 @@
+# Example [checkpoint] config for capsule_sidecar.py --checkpoint-config.
+#
+# Copy this file, edit as needed, and pass its path via --checkpoint-config.
+# Omitting --checkpoint-config entirely keeps a node at Layer 0 (a signed
+# capsule per exchange, no local log) -- this file is what opts a node into
+# Layer 1 (a local, append-only MMR over its own capsule ledger) and,
+# if ts_urls is set, Layer 2/3 (a periodic signed checkpoint, independently
+# witnessed by the named Transparency Service).
+#
+# Shape matches capsule_emit.checkpoint.emit.EXAMPLE_CONFIG_TOML, plus one
+# mesh-specific key (log_id) capsule_emit.checkpoint itself doesn't need to
+# know about.
+
+[checkpoint]
+# Stable id for THIS node's log -- lets a multi-log/multi-peer deployment
+# (or a verifier holding several nodes' checkpoints) tell them apart.
+# Defaults to the node's own node_id if omitted.
+log_id = "mesh-node-demo-1"
+
+# Emit a checkpoint after this many new capsules land.
+cadence_entries = 20
+
+# If a checkpoint is more than this many entries overdue, verification output
+# should treat it as lagging, not merely due -- see lag_exceeded() /
+# describe_witness_state() in checkpointing.py.
+max_lag_entries = 40
+
+# EMPTY BY DEFAULT: registration is opt-in, always. Uncomment to submit each
+# checkpoint's digest to the free public-good witness tier -- any conforming
+# SCITT Transparency Service may be substituted (capsule_emit.checkpoint's
+# DEFAULT_TS_URL is the same anchor.agentactioncapsule.org tier). A checkpoint
+# emitted with ts_urls = [] is Layer 2 only: locally committed and signed,
+# but NOT independently witnessed (see README "Witness grading").
+# ts_urls = ["https://anchor.agentactioncapsule.org"]
