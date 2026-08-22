@@ -1,0 +1,47 @@
+=== real-deployment checkpoint offline verify ===
+ledger_dir=/Users/intangible/dev/asg/_worktrees/capsule-emit-mesh/mesh-llm-deployment-checkpoint-e2e/ledger-real-deployment
+REAL (this run): mesh-llm-host-runtime inference, capsule_sidecar.py emission, local
+CLL/checkpoint below. STAGED, not executed: live anchor registration -- see the
+'anchor registration' section at the end for the exact command and why.
+
+--- capsule verification ---
+capsule 1: capsule_id=07fa3b1307e97142aa6d906aa3f3418e64e854bb8be983e3d5f9d101f57637b2 verify.ok=True chain_ok=True
+capsule 2: capsule_id=cce84089f5ae1b1d9c981fd970417cee7202147a3356361eacaf23bba3d9b114 verify.ok=True chain_ok=True
+capsule 3: capsule_id=6570438b809b98fe6a80e0c1b86507b61d9f47fd6811babfc7d91e15adfce589 verify.ok=True chain_ok=True
+capsule 4: capsule_id=43193b2c090d1355b40ec03255966ac80adf789913ecf8dc7aae7cd4f023abef verify.ok=True chain_ok=True
+all 4 real capsules verify() ok AND chain-consistent: True
+
+checkpoints emitted: 2; last checkpoint mmr_size=7 root=d9db475d9ebd5dacaaba88169f0eecfaa3512b7e7aac85b55d360dc4430ad8c9
+
+--- offline inclusion verify (scitt_cose.cll, ledger files only) ---
+target capsule (seq=1): 07fa3b1307e97142aa6d906aa3f3418e64e854bb8be983e3d5f9d101f57637b2
+inclusion-under-checkpoint verify.ok=True
+status: witnessed up to size 7 at time 2026-08-22T19:39:43.777855Z
+
+--- witness status ---
+no witnesses on this checkpoint -- self-checkpointed only (ts_urls was empty for this run)
+honesty note: this checkpoint proves "not rewritten since", NOT "seen by an independent third party"
+
+--- rollback mutant (fork/rewrite a COPY of the real log at the SAME size, must go RED) ---
+baseline (unmutated real log): recomputed root at mmr_size=7 == signed root: True
+mutated (rewritten entry 1, same mmr_size=7): recomputed root 47f2ae681add87662b19835436c25c557dc6813165fc3da084651ddeac530bd8
+signed checkpoint root:                                          d9db475d9ebd5dacaaba88169f0eecfaa3512b7e7aac85b55d360dc4430ad8c9
+rollback/rewrite DETECTED (mismatch, expected True): True
+
+--- anchor registration (STAGED, not executed this run) ---
+exact command to register the last real checkpoint at the live public-good witness (https://anchor.agentactioncapsule.org):
+
+  python3 - <<'PY'
+  import json
+  from capsule_emit.checkpoint import CheckpointRecord, register_checkpoint, DEFAULT_TS_URL
+  path = '/Users/intangible/dev/asg/_worktrees/capsule-emit-mesh/mesh-llm-deployment-checkpoint-e2e/ledger-real-deployment/checkpoints.jsonl'
+  cp = CheckpointRecord.from_dict(json.loads(open(path).readlines()[-1]))
+  witness = register_checkpoint(cp, DEFAULT_TS_URL)
+  cp.witnesses.append(witness)
+  open(path, 'a').write(json.dumps(cp.to_dict(), sort_keys=True) + '\n')
+  PY
+
+Not run in this session: this task's own gate reserves live-anchor writes for Steven's
+explicit go, separate from the task-level go (neutral/inbox.md constraints). The local
+chain above (real inference -> capsules -> CLL -> checkpoint -> offline verify) is
+complete and real; only this one network POST is deferred.

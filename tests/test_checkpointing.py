@@ -179,7 +179,7 @@ def test_describe_witness_state_never_says_witnessed_without_a_real_witness():
 
     unwitnessed = CheckpointRecord(
         v=1, kind="mmr_checkpoint", log_id="log-a", mmr_size=3, root="aa" * 32,
-        peaks_digest="bb" * 32, prev_size=0, prev_root="", key_id="node-a",
+        prev_size=0, prev_root="", key_id="node-a",
         timestamp="2026-08-21T00:00:00Z", signature="deadbeef",
     )
     line = describe_witness_state(unwitnessed, current_entries=2)
@@ -189,7 +189,7 @@ def test_describe_witness_state_never_says_witnessed_without_a_real_witness():
 
     witnessed = CheckpointRecord(
         v=1, kind="mmr_checkpoint", log_id="log-a", mmr_size=3, root="aa" * 32,
-        peaks_digest="bb" * 32, prev_size=0, prev_root="", key_id="node-a",
+        prev_size=0, prev_root="", key_id="node-a",
         timestamp="2026-08-21T00:00:00Z", signature="deadbeef",
         witnesses=[WitnessRecord(ts_url="https://ts.example", entry_hash="x", receipt_b64="eA==", leaf_index=0, tree_size=1)],
     )
@@ -209,7 +209,7 @@ def test_describe_witness_state_surfaces_lag_when_log_outgrew_checkpoint():
 
     cp = CheckpointRecord(
         v=1, kind="mmr_checkpoint", log_id="log-a", mmr_size=1, root="aa" * 32,  # size=1 -> leaf_count=1
-        peaks_digest="bb" * 32, prev_size=0, prev_root="", key_id="node-a",
+        prev_size=0, prev_root="", key_id="node-a",
         timestamp="2026-08-21T00:00:00Z", signature="deadbeef",
     )
     line = describe_witness_state(cp, current_entries=5)
@@ -226,12 +226,17 @@ def test_offline_inclusion_verify_round_trips_through_cll(tmp_path):
 
     mmr = MmrLedger(log)
     mmr.sync()
-    cfg = CheckpointConfig(cadence_entries=100, max_lag_entries=200)  # no ts_urls: self-checkpoint only
     signer = _signer("node-a")
     from capsule_emit.checkpoint import emit_checkpoint
 
     cp = emit_checkpoint(mmr, signer, log_id="log-a", timestamp="2026-08-21T00:00:00Z")
-    cll_checkpoint = cll.Checkpoint.from_dict(cp.to_dict())
+    # scitt_cose.cll.Checkpoint.from_dict still hard-requires a `peaks_digest` key
+    # left over from a shape capsule_emit.checkpoint no longer emits (single-
+    # commitment CheckpointRecord, 2026-08-22 Option-C ruling) -- the field is
+    # provably unread by any cll.py verification path. See
+    # verify_real_deployment_checkpoint.py's cll_checkpoint_from_record() for
+    # the full note; flagged in the outbox report as a live cross-repo divergence.
+    cll_checkpoint = cll.Checkpoint.from_dict({**cp.to_dict(), "peaks_digest": ""})
 
     target_seq = 3
     proof = mmr.inclusion_proof(target_seq, size=cp.mmr_size)

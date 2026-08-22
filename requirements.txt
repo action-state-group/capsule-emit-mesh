@@ -7,15 +7,16 @@
 # until it migrates to the standalone fastmcp package.
 #
 # TEMPORARY git-ref pins (checkpointing.py / [checkpoint] config, Layers 1-2):
-# capsule_emit.checkpoint and scitt_cose.cll are not yet on either project's
-# released main -- both are held for review (capsule-emit PR #66, scitt-cose
-# PR #38, both CI-green as of 2026-08-21). Pinned to those branches' exact
-# commits rather than main so this repo's own CI can exercise the real
-# subpackages ahead of their merge. SWAP THESE TWO LINES to plain
-# `capsule-emit[mcp]>=0.5.0` / `scitt-cose>=0.2.0` (or whatever versions ship
-# the merge) once both PRs land -- do not leave a git-ref pin in main past
-# that point.
-capsule-emit[mcp] @ git+https://github.com/action-state-group/capsule-emit.git@34e90f14db0ef18711eea0889368d5d9f494c78f
-scitt-cose @ git+https://github.com/action-state-group/scitt-cose.git@5d959ea88fe76d04656d8cbbf08373d2793a9193
+# capsule_emit.checkpoint and scitt_cose.cll are MERGED to both projects'
+# main (capsule-emit PR #66, scitt-cose PR #38 -- updated 2026-08-22, was
+# pinned to the pre-merge feature-branch commits) but NEITHER has cut a
+# release with these modules yet (both still report their pre-checkpoint
+# pyproject version). Pinned to each project's current main commit rather
+# than a feature branch now that both have landed. SWAP THESE TWO LINES to
+# plain `capsule-emit[mcp]>=0.5.0` / `scitt-cose>=0.2.0` (or whatever
+# versions ship the release) once a version bump ships -- do not leave a
+# git-ref pin in main past that point.
+capsule-emit[mcp] @ git+https://github.com/action-state-group/capsule-emit.git@514e0d32ba8a2ee564a8c6de992c1cb64885c3ae
+scitt-cose @ git+https://github.com/action-state-group/scitt-cose.git@056e5e1c6514d611c60bd6abb131db4c7167c156
 cbor2
 mcp<2

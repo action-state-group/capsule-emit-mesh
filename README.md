@@ -333,14 +333,67 @@ committed transcript and fixture output, kept for the same reason
 not just this description.
 
 **Release-train dependency — read before relying on this section.**
-`capsule_emit.checkpoint` and `scitt_cose.cll` are not on either project's
-released `main` as of this writing; `requirements.txt` pins two exact commits
-on unmerged branches (capsule-emit PR #66, scitt-cose PR #38). This mirrors
-the same unreleased-dependency caveat flagged against `[ldg-mmr-consume-neutral-core]`
-in the ledger lane — both consume the same unreleased `capsule_emit.checkpoint`
-release train. See `requirements.txt`'s inline comment for the swap-over-to-release
-instructions once both PRs land; do not let a git-ref pin sit in this repo's
-`main` past that point.
+`capsule_emit.checkpoint` and `scitt_cose.cll` are MERGED to both projects'
+`main` (capsule-emit PR #66, scitt-cose PR #38) but neither has cut a release
+with these modules yet, so `requirements.txt` still pins two exact `main`
+commits rather than a released version. This mirrors the same
+unreleased-dependency caveat flagged against `[ldg-mmr-consume-neutral-core]`
+in the ledger lane. See `requirements.txt`'s inline comment for the
+swap-over-to-release instructions once a version bump ships; do not let a
+git-ref pin sit in this repo's `main` past that point.
+
+**Known cross-repo shape divergence (flagged 2026-08-22, unresolved).**
+`capsule_emit.checkpoint.CheckpointRecord` dropped its `peaks_digest` field
+(single-commitment shape, one peak-set commitment field: `root`) as part of
+landing PR #66. `scitt_cose.cll.Checkpoint.from_dict()` (merged earlier via
+PR #38) still hard-requires a `peaks_digest` key from the older two-field
+shape — a real, live incompatibility between the two projects' current
+`main` branches, not merely a stale pin. `peaks_digest` is provably unread
+anywhere in `cll.py`'s verification logic (only the dataclass field
+declaration and `to_dict`/`from_dict` round-tripping reference it), so both
+`verify_real_deployment_checkpoint.py` and `tests/test_checkpointing.py`
+bridge it locally with `{**checkpoint.to_dict(), "peaks_digest": ""}` rather
+than changing scitt-cose (out of this repo's scope). Whether `scitt_cose.cll`
+should also drop `peaks_digest` — the same call already made for
+capsule-ledger's `CheckpointRecord` (2026-08-22 Option-C ruling) — is an open
+question for a scitt-cose-lane decision, not resolved here.
+
+## Real deployment: checkpointing driven by an actual mesh-llm-host-runtime run
+
+`run_real_deployment_checkpoint_demo.sh` closes the gap the section above
+leaves open: `run_checkpoint_demo.py` is a fully synthetic, in-process demo
+(`mock_mesh_node.py`, fabricated prompts/responses) — useful for exercising
+the checkpoint machinery hermetically, but it never actually talks to a real
+mesh-llm-host-runtime. This script does: it starts a real, locally-built
+`mesh-llm serve` process against a real downloaded GGUF model (the same
+"live demo" pattern as `run_live_demo.sh`, minus the goose tool-call leg,
+which is a separate stream/boundary), points `capsule_sidecar.py` at it with
+`--checkpoint-config` enabled (Layers 0-2 all live), sends real chat-completion
+requests through the sidecar so real inference happens, and then hands off to
+`verify_real_deployment_checkpoint.py` for an offline, ledger-files-only
+verify pass (capsule verify + chain, inclusion-under-checkpoint, witness
+status, and a rollback/fork mutant proof) plus the exact, not-executed,
+command to register the resulting checkpoint at the live public-good witness.
+
+```
+./run_real_deployment_checkpoint_demo.sh <mesh-llm-binary> <gguf-path> <model-id>
+```
+
+**What was actually run vs. staged.** The full local chain — real
+`mesh-llm-host-runtime` inference through the sidecar, capsule emission into
+`ledger-real-deployment/capsules.jsonl`, cadence-triggered checkpoints into
+`ledger-real-deployment/checkpoints.jsonl`, offline inclusion verify, and the
+rollback-mutant proof — is real, this run, no mocks. Live registration at
+`anchor.agentactioncapsule.org` is deliberately STAGED, not executed: this
+task's own gate reserves live-anchor writes for a separate go from the
+task-level one (see the outbox report for the exact reasoning). The staged
+command is printed by `verify_real_deployment_checkpoint.py` and is a single,
+already-correct call to `capsule_emit.checkpoint.register_checkpoint` — no
+further code work needed if/when it's authorized.
+`ledger-real-deployment/` is this run's committed transcript and fixture
+output, same rationale as `ledger-checkpoint-demo/` and `ledger-live/`: so
+the claims above are checkable against a real artifact, not just this
+description.
 
 ## Honest limitations (read this before the call)
 
@@ -666,6 +719,8 @@ poc/
   checkpointing.py                Layers 1-2: LogSource adapter, cadence + reconnect checkpointing, witness-state rendering
   checkpoint.example.toml         example [checkpoint] config for --checkpoint-config (opt-in, empty ts_urls by default)
   run_checkpoint_demo.py          orchestrates the checkpoint demo: exchanges -> MMR -> checkpoint -> registry -> offline verify
+  run_real_deployment_checkpoint_demo.sh  real mesh-llm-host-runtime + checkpointing, end to end (no goose leg)
+  verify_real_deployment_checkpoint.py     offline verify + rollback-mutant proof for the real-deployment ledger
   goose/
     server.py                    capsule-emit-goose: the action-record MCP extension (tool-call boundary)
   model-package/
@@ -679,6 +734,9 @@ poc/
                                   permalink-*.txt, goose-session-transcript.txt (gitignored -- regenerate per run)
   ledger-checkpoint-demo/         generated by run_checkpoint_demo.py: capsules.jsonl, checkpoints.jsonl,
                                   checkpoint-demo-transcript.txt (committed fixture, real anchor registration)
+  ledger-real-deployment/         generated by run_real_deployment_checkpoint_demo.sh: capsules.jsonl (real
+                                  mesh-llm-host-runtime inference), checkpoints.jsonl, real-deployment-transcript.txt
+                                  (committed fixture; live anchor registration staged, not executed -- see above)
   tests/
     test_forwarded_copy_and_keys.py  sidecar pure-function tests (streaming, key generation)
     test_bilateral_demo.py           bilateral attestation tests (rung derivation, all failure modes, e2e)
