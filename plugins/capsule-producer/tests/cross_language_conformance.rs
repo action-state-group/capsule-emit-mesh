@@ -83,6 +83,7 @@ fn sample_capsule_input() -> CapsuleInput {
         disposition_approver: "policy".to_string(),
         disposition_human_disposed: false,
         disposition_verdict_class: "executed".to_string(),
+        chain: None,
     }
 }
 

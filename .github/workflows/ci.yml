@@ -129,20 +129,31 @@ jobs:
 
   # Milestone 1 of #1332: emits ONE Agent Action Capsule + COSE_Sign1 signed
   # statement in Rust (JCS canonicalization, Ed25519, COSE_Sign1 via `coset`).
+  # Milestone 2 adds chaining, a durable local ledger, key persistence +
+  # rotation, an optional anchor client, and an offline verification CLI
+  # (`src/ledger.rs`, `src/keys.rs::rotate`, `src/anchor.rs`,
+  # `src/bin/verify_capsule.rs`).
+  #
   # The de-risking question this crate exists to answer — is the Rust output
-  # byte-conformant with the Python/scitt-cose reference and the independent
-  # Go COSE verifier — is checked by `tests/jcs_vectors.rs` and
-  # `tests/cross_language_conformance.rs`, both #[ignore]'d and gated on env
-  # vars pointing at the private multi-repo workspace (agent-action-capsule's
-  # test-vectors/, the scitt-cose Python packages, and scitt-cose-go-verify),
-  # none of which this repo's CI has checked out. Same shape as
-  # admission-policy's host_runtime_e2e.rs above: this job only compile-checks
-  # them ("0 passed; N ignored" is the expected result); the actual
-  # cross-language conformance run is reproducible locally per the doc
-  # comments at the top of each test file, and its output is captured in
-  # plugins/capsule-producer/MILESTONE-1-REPORT.md.
+  # byte-conformant with the Python/scitt-cose/capsule-anchor reference —
+  # is checked by `tests/jcs_vectors.rs`, `tests/cross_language_conformance.rs`
+  # (M1), and `tests/chain_ledger_conformance.rs` +
+  # `tests/anchor_conformance.rs` (M2), all #[ignore]'d and gated on env vars
+  # pointing at the private multi-repo workspace (agent-action-capsule's
+  # test-vectors/, the scitt-cose Python packages, scitt-cose-go-verify, and
+  # capsule-anchor), none of which this repo's CI has checked out. Same shape
+  # as admission-policy's host_runtime_e2e.rs above: this job only
+  # compile-checks them ("0 passed; N ignored" is the expected result); the
+  # actual cross-language conformance run is reproducible locally per the
+  # doc comments at the top of each test file, and its output is captured in
+  # plugins/capsule-producer/MILESTONE-1-REPORT.md and
+  # plugins/capsule-producer/MILESTONE-2-REPORT.md.
+  #
+  # `tests/verify_cli.rs` is NOT gated -- it's self-contained (no external
+  # workspace, no Python) and actually RUNS in CI, exercising the compiled
+  # `verify_capsule` binary end-to-end.
   capsule-producer:
-    name: capsule-producer (JCS/COSE unit tests; cross-lang conformance compile-checked)
+    name: capsule-producer (unit + CLI tests; cross-lang conformance compile-checked)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -163,8 +174,11 @@ jobs:
       - name: Build
         run: cargo build --locked
 
-      - name: Unit tests (JCS canonicalization)
+      - name: Unit tests (JCS/capsule/keys/ledger canonicalization + mechanics)
         run: cargo test --locked --lib
+
+      - name: Offline verification CLI tests (self-contained, no external workspace)
+        run: cargo test --locked --test verify_cli
 
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
@@ -173,3 +187,5 @@ jobs:
         run: |
           cargo test --locked --test jcs_vectors
           cargo test --locked --test cross_language_conformance
+          cargo test --locked --test chain_ledger_conformance
+          cargo test --locked --test anchor_conformance
