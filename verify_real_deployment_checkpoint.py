@@ -30,24 +30,14 @@ from scitt_cose import cll
 
 
 def cll_checkpoint_from_record(cp: CheckpointRecord) -> cll.Checkpoint:
-    """Bridge capsule_emit.checkpoint's single-commitment CheckpointRecord
+    """Convert capsule_emit.checkpoint's single-commitment CheckpointRecord
     (v, kind, log_id, mmr_size, root, prev_size, prev_root, key_id, timestamp,
     signature[, witnesses] -- no peaks_digest, per the 2026-08-22 Option-C
-    single-commitment ruling, already shipped on capsule-emit main PR #66)
-    onto scitt_cose.cll.Checkpoint, whose from_dict() still hard-requires a
-    `peaks_digest` key left over from an earlier two-field shape (scitt-cose
-    main PR #38, merged before the capsule-ledger ruling).
-
-    `peaks_digest` is provably unread anywhere in cll.py's verification logic
-    (only two hits: the dataclass field declaration and to_dict/from_dict
-    round-tripping) -- passing "" changes no verification outcome. This is a
-    narrow, local shim inside THIS script, not a change to scitt-cose itself:
-    fixing the dependency is out of this task's repo scope (capsule-emit-mesh)
-    and is flagged in the outbox report as a live cross-repo divergence.
+    single-commitment ruling) onto scitt_cose.cll.Checkpoint. As of scitt-cose
+    0.2.2, Checkpoint.from_dict() reads only known keys and neither requires
+    nor reads a `peaks_digest` key, so this is a direct field mapping.
     """
-    d = cp.to_dict()
-    d.setdefault("peaks_digest", "")
-    return cll.Checkpoint.from_dict(d)
+    return cll.Checkpoint.from_dict(cp.to_dict())
 
 
 def main() -> None:

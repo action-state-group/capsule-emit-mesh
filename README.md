@@ -342,21 +342,16 @@ in the ledger lane. See `requirements.txt`'s inline comment for the
 swap-over-to-release instructions once a version bump ships; do not let a
 git-ref pin sit in this repo's `main` past that point.
 
-**Known cross-repo shape divergence (flagged 2026-08-22, unresolved).**
+**Cross-repo shape divergence (flagged 2026-08-22, resolved 2026-08-22).**
 `capsule_emit.checkpoint.CheckpointRecord` dropped its `peaks_digest` field
 (single-commitment shape, one peak-set commitment field: `root`) as part of
-landing PR #66. `scitt_cose.cll.Checkpoint.from_dict()` (merged earlier via
-PR #38) still hard-requires a `peaks_digest` key from the older two-field
-shape — a real, live incompatibility between the two projects' current
-`main` branches, not merely a stale pin. `peaks_digest` is provably unread
-anywhere in `cll.py`'s verification logic (only the dataclass field
-declaration and `to_dict`/`from_dict` round-tripping reference it), so both
+landing PR #66. `scitt_cose.cll.Checkpoint.from_dict()` briefly hard-required
+a `peaks_digest` key from an older two-field shape, but scitt-cose 0.2.2
+(`cll.py`'s `Checkpoint.from_dict`) dropped that requirement and reads only
+known keys. Both sides now agree on the Option-C single-commitment shape, so
 `verify_real_deployment_checkpoint.py` and `tests/test_checkpointing.py`
-bridge it locally with `{**checkpoint.to_dict(), "peaks_digest": ""}` rather
-than changing scitt-cose (out of this repo's scope). Whether `scitt_cose.cll`
-should also drop `peaks_digest` — the same call already made for
-capsule-ledger's `CheckpointRecord` (2026-08-22 Option-C ruling) — is an open
-question for a scitt-cose-lane decision, not resolved here.
+convert directly (`cll.Checkpoint.from_dict(checkpoint.to_dict())`) with no
+local bridging.
 
 ## Real deployment: checkpointing driven by an actual mesh-llm-host-runtime run
 

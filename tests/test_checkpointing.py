@@ -230,13 +230,9 @@ def test_offline_inclusion_verify_round_trips_through_cll(tmp_path):
     from capsule_emit.checkpoint import emit_checkpoint
 
     cp = emit_checkpoint(mmr, signer, log_id="log-a", timestamp="2026-08-21T00:00:00Z")
-    # scitt_cose.cll.Checkpoint.from_dict still hard-requires a `peaks_digest` key
-    # left over from a shape capsule_emit.checkpoint no longer emits (single-
-    # commitment CheckpointRecord, 2026-08-22 Option-C ruling) -- the field is
-    # provably unread by any cll.py verification path. See
-    # verify_real_deployment_checkpoint.py's cll_checkpoint_from_record() for
-    # the full note; flagged in the outbox report as a live cross-repo divergence.
-    cll_checkpoint = cll.Checkpoint.from_dict({**cp.to_dict(), "peaks_digest": ""})
+    cp_dict = cp.to_dict()
+    assert "peaks_digest" not in cp_dict  # Option-C single-commitment shape
+    cll_checkpoint = cll.Checkpoint.from_dict(cp_dict)
 
     target_seq = 3
     proof = mmr.inclusion_proof(target_seq, size=cp.mmr_size)
