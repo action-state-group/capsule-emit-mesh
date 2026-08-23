@@ -83,6 +83,18 @@ BILATERAL_RA_HEADER = "x-capsule-request-attestation"
 BILATERAL_RA_SIG_HEADER = "x-capsule-request-attestation-sig"
 BILATERAL_PUBKEY_HEADER = "x-capsule-client-pubkey"
 
+# Non-conformant identity label — REQUIRED per the #1233 receipt tuple's own
+# task acceptance, and referenced from build_capsule() below. Factored out to
+# a module constant so identity_limitation_for_rung() (D1's honest-labeling
+# fix, see its docstring) can reuse the exact same text rather than a second
+# hand-copied string drifting from this one.
+IDENTITY_LIMITATION_CAVEAT = (
+    "non-conformant-demo-key: self-generated Ed25519 key; not bound to "
+    "any third-party-issued credential or trusted root; "
+    "draft-mih-agent-bilateral-attestation-01 §4.1 states first-use "
+    "acceptance MUST NOT be treated as conformant bilateral attestation"
+)
+
 #: Node signing key, generated on first run into --keys-dir. Never committed:
 #: keys/ is gitignored.
 NODE_KEY_FILENAME = "node-key.pem"
@@ -279,12 +291,59 @@ def derive_cross_party_rung(cross_party: dict[str, Any] | None, has_verified_ack
         AND a verified client ack referencing this action capsule's
         ``capsule_id`` has been produced, establishing that both parties signed
         over the same exchange.
+
+    ⚠ [mesh-rung12-adversarial-review] D1 — WHAT THIS FUNCTION DOES NOT AND
+    CANNOT CHECK, stated precisely because "checks presence" is easy to
+    misread as "checks validity":
+
+    - ``initiator_ref`` is checked for PRESENCE (truthy) only. It is never
+      re-derived or verified against a real request attestation — this
+      function has no access to the raw request-attestation bytes/signature,
+      only whatever string the capsule (potentially forged) claims. A node
+      that fabricates the capsule directly (bypassing build_capsule()) can
+      put any truthy string here.
+    - ``has_verified_ack`` is a bool the CALLER computed (normally via
+      bilateral_demo.verify_client_ack()) — this function is stateless and
+      trusts it as given. Passing an uncomputed ``True`` reaches
+      full_bilateral with zero evidence; that is a caller contract violation,
+      not a property this function verifies or can verify.
+    - Even when the caller's ack verification is done correctly,
+      verify_client_ack() only confirms the ack's signature is
+      self-consistent under its OWN embedded public key — it does not pin
+      that key to a real, independent requester. One attacker controlling
+      both the emitting node and a throwaway client keypair can satisfy
+      every check this function and verify_client_ack() perform.
+
+    None of the above is closable without an external identity anchor (out
+    of scope here — see TRUST-MODEL.md §4.1). The honest response is
+    disclosure: call identity_limitation_for_rung() on this function's return
+    value and surface the result alongside the rung. Every caller in this
+    repo that reports a rung does so (verify_exchange() below; the offline
+    verification section of bilateral_demo.py's demo runner).
     """
     if not cross_party or not cross_party.get("initiator_ref"):
         return "unilateral_fallback"
     if has_verified_ack:
         return "full_bilateral"
     return "acknowledged_receipt"
+
+
+def identity_limitation_for_rung(rung: str) -> str | None:
+    """Return the identity-limitation caveat for a derived cross_party_rung.
+
+    [mesh-rung12-adversarial-review] D1 — derive_cross_party_rung() cannot
+    confirm ``initiator_ref`` or the client ack's key belong to a party
+    independent of the node (see its docstring). ``full_bilateral`` is
+    therefore never disclosed alone: every caller that surfaces a rung MUST
+    also surface this caveat when it is not None, so "the claim matches what
+    the crypto proves" — the rung says a commitment and an ack were present
+    and self-consistent; this text says that alone does not prove a second,
+    independent party produced them.
+
+    Returns None for unilateral_fallback and acknowledged_receipt — those
+    rungs make no independent-party claim in the first place.
+    """
+    return IDENTITY_LIMITATION_CAVEAT if rung == "full_bilateral" else None
 
 
 def _sha256_hex(data: bytes) -> str:
@@ -332,6 +391,16 @@ class NodeState:
     ledger_dir: Path
     last_capsule_id: str | None = None
     emitted: list[dict[str, Any]] = field(default_factory=list)
+    #: [mesh-rung12-adversarial-review] D3 — client-supplied nonces this node
+    #: has already seen, in-memory, this process's lifetime. rung-1's claim
+    #: is equivocation resistance: the node cannot have precomputed a record
+    #: before seeing the client's nonce. A captured genuine nonce replayed
+    #: verbatim on a later, unrelated exchange defeats exactly that property,
+    #: and nothing tracked it before this set. Scope, stated honestly: this
+    #: is per-node, in-memory, and does not persist across a restart or
+    #: correlate across independently-operated nodes — see
+    #: _resolve_client_nonce()'s docstring.
+    seen_client_nonces: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         self.manifest = load_manifest(self.manifest_path)
@@ -425,10 +494,7 @@ def build_capsule(
             # accepts and states that first-use acceptance MUST NOT be
             # treated as conformant bilateral attestation.
             "identity_limitation": (
-                "non-conformant-demo-key: self-generated Ed25519 key; not bound to "
-                "any third-party-issued credential or trusted root; "
-                "draft-mih-agent-bilateral-attestation-01 §4.1 states first-use "
-                "acceptance MUST NOT be treated as conformant bilateral attestation"
+                IDENTITY_LIMITATION_CAVEAT
             ) if bilateral_eval and bilateral_eval.present else None,
         },
     }
@@ -489,9 +555,35 @@ def record_capsule(state: NodeState, capsule: dict[str, Any], signed_statement: 
     state.emitted.append(capsule)
 
 
-def _resolve_client_nonce(headers: dict[str, str]) -> tuple[str, str]:
+def _resolve_client_nonce(state: NodeState, headers: dict[str, str]) -> tuple[str, str]:
+    """Resolve the client nonce and label its source honestly.
+
+    [mesh-rung12-adversarial-review] D3 — a captured genuine client nonce
+    replayed verbatim on a later, unrelated exchange used to be
+    indistinguishable from a fresh one: both returned ``client_supplied``
+    with no dedup, no rejection, no warning, weakening the one property
+    rung-1 exists to buy (equivocation resistance -- the node can't have
+    precomputed a record before seeing THIS exchange's client nonce). A
+    nonce already present in ``state.seen_client_nonces`` is now labeled
+    ``client_supplied_replayed`` instead of ``client_supplied`` -- named,
+    not hidden, same discipline as the sidecar_generated_fallback label
+    below.
+
+    Scope, stated honestly rather than assumed: ``seen_client_nonces`` is
+    in-memory and per-NodeState. It catches replay within one node's
+    running lifetime (exactly what Attack 6a demonstrated) but NOT replay
+    across a process restart (the set is not persisted) or across two
+    independently-operated nodes (each node's set is its own). Closing
+    those needs a shared/persistent store, which is out of scope for a PoC
+    sidecar; if replay-across-restart or replay-across-node resistance is
+    required, that scope gap must be closed explicitly, not assumed away by
+    this fix.
+    """
     client_nonce = headers.get(CLIENT_NONCE_HEADER.lower())
     if client_nonce:
+        if client_nonce in state.seen_client_nonces:
+            return client_nonce, "client_supplied_replayed"
+        state.seen_client_nonces.add(client_nonce)
         return client_nonce, "client_supplied"
     # Honest PoC compromise: #1233 requires the CLIENT to contribute the
     # nonce (so the node can't fabricate/replay). When no client nonce
@@ -725,7 +817,7 @@ def synthesize_sse(response_json: dict[str, Any]) -> list[bytes]:
 def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[str, str], raw_body: bytes) -> tuple[int, bytes, dict[str, str]]:
     request_json = json.loads(raw_body.decode("utf-8"))
     request_digest = digest_json(request_json)
-    client_nonce, client_nonce_source = _resolve_client_nonce(headers)
+    client_nonce, client_nonce_source = _resolve_client_nonce(state, headers)
     bilateral_eval = evaluate_bilateral_attestation(headers, raw_body, request_json)
 
     req = urllib.request.Request(
@@ -872,7 +964,7 @@ def make_handler(state: NodeState, upstream_base: str):
             synthesized SSE stream, rather than forwarding raw bytes live.
             """
             request_digest = digest_json(request_json)
-            client_nonce, client_nonce_source = _resolve_client_nonce(headers)
+            client_nonce, client_nonce_source = _resolve_client_nonce(state, headers)
             bilateral_eval = evaluate_bilateral_attestation(headers, raw_body, request_json)
             req = urllib.request.Request(
                 url=f"{upstream_base}/v1/chat/completions",

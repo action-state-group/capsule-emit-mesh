@@ -14,6 +14,23 @@ Steven Mih · 2026-08-16 · offered for discussion, revision, or re-homing.
 > One new addition: C2a extended with the volunteer-computing precedent, a pointer to the MoA
 > gateway, and our measured sampling non-determinism. Nothing else changed.
 
+> **Revision 2026-08-21.** Rung-2 of the client capability ladder (§1) — the requester's signed
+> request commitment — is now built for the exchange_id-correlated record family
+> (`mesh_record_emitter.py` / `mesh_record_verifier.py` / `requester_commitment.py`), closing the
+> gap this document flagged in P1. R10 and P6 move from "Not built" / "Half" to "Partly built" /
+> "Built" with the scope named precisely below. **What did not change**: rung-1 (a nonce) still
+> establishes freshness only, never identity; the two-step ladder in §1 is unchanged; and this
+> mechanism does not touch the separate #1233/`capsule_sidecar.py` receipt tuple or its own
+> `full_bilateral` derivation, which still requires a client acknowledgment (Move 4) as well as a
+> request attestation (Move 1) — see the scoping note after §4.1.
+
+> **Revision 2026-08-21 (remediation).** [mesh-rung12-adversarial-review] ran seven adversarial
+> attacks against the rung-1/rung-2 code above and found `full_bilateral` self-mintable by a lone
+> node in both mechanisms (§4.1a's new addendum), an unhardened nonce-replay gap (R3, corrected
+> above), and an unrelated hygiene default. §4.1a now discloses the self-mint finding and the
+> code-level honest-labeling fix; R3's status is corrected to reflect the (scoped) replay-detection
+> fix. Nothing else in this document changed.
+>
 > **Status of the referenced specifications.** Where this document refers to record-format
 > mechanisms, the published revisions are `draft-mih-scitt-agent-action-capsule-02`,
 > `draft-mih-agent-bilateral-attestation-01`, `draft-mih-sato-agent-accountability-composition-00`
@@ -94,32 +111,34 @@ inside the mesh's own console is not evidence to anyone who matters in a dispute
 |---|---|---|---|
 | R1 | Substituted quantization or different weights | Model package digest bound into the receipt (step 2) | Manifests largely carry it; needs tag-not-branch discipline and a declared equivalence class |
 | R2 | A canned answer with no computation | TEE / execution evidence (step 5) | Not built |
-| R3 | Replay of earlier work as fresh | **Client-contributed nonce** bound into the receipt | Not built — today's fallback nonce is node-side and is explicitly not anti-replay evidence |
+| R3 | Replay of earlier work as fresh | **Client-contributed nonce** bound into the receipt | Partly built (2026-08-21) — `capsule_sidecar.py`'s `_resolve_client_nonce()` now tracks client-supplied nonces per node, in-memory, for that node's running lifetime; a replayed nonce is labeled `client_supplied_replayed` rather than accepted as indistinguishably fresh (closes the gap [mesh-rung12-adversarial-review] found: a captured nonce replayed onto an unrelated exchange previously read as an ordinary `client_supplied` value). Scope, stated honestly: this catches replay within one running node's process only — not across a restart (the tracking set is not persisted) or across independently-operated nodes. Today's *fallback* nonce (minted when the client sends none) remains node-side and is explicitly not anti-replay evidence; that half is unchanged. |
 | R4 | The response received is not the response signed | Request and output digests under one signature | Built |
 | R5 | Later denial or rewriting | Signed, hash-chained records | Built, per node |
 | R6 | A different story per audience | Registration to a Transparency Service, and a witnessed log so the log cannot equivocate either | Chaining built; registration is the missing half |
 | R7 | I cannot tell which node this was | Receipt key bound to node and owner identity | Specified in #1331; not built |
 | R8 | Output behaves nothing like the claimed model | Fingerprints, as confidence not verdict (step 4) | Not built |
 | R9 | **My prompt is read, retained, or repurposed** | Nothing in the record layer — §5 | Unaddressed; #1346 is the first attempt |
-| R10 | Split across strangers, and I cannot see who held what | Per-stage receipts plus a coordinator receipt over stage order | Not built |
+| R10 | Split across strangers, and I cannot see who held what | Per-stage receipts plus a coordinator receipt over stage order | Partly built — a requester_commitment bound to `exchange_id` and `request_digest` lets a verifier confirm the SAME requester is present, independently verified, in every hop's record (ingress and completion shown bound in both halves); a coordinator receipt over stage order itself is still not built |
 | R11 | Charged for more work than I authorized | Authorization bound and consumption as two separate facts (§6) | Not built |
 
 ### 2.3 What the provider fears — the half not yet written down
 
 | # | Fear | Evidence that would address it | Status |
 |---|---|---|---|
-| P1 | I am asked to generate something unlawful and it is attributed to me | **A request commitment signed by the requester** — attribution follows the author | Not built. The receipt tuple has no requester identity field at all |
+| P1 | I am asked to generate something unlawful and it is attributed to me | **A request commitment signed by the requester** — attribution follows the author | Built, for the exchange_id-correlated record family: a record MAY carry a `requester_commitment` signed over that record's own `request_digest` and `exchange_id`; the verifier derives `cross_party_rung` from it, and a missing or invalid commitment never upgrades past `unilateral_fallback`. Same non-conformant-key caveat as §4.1 — this is pseudonymous accountability, not attribution to a person |
 | P2 | I am accused of substituting a model and cannot disprove it | The same receipt the requester checks me with is my defence | Built — non-repudiation is symmetric, and this is under-sold |
 | P3 | My refusal is invisible or reads as a fault | Refusal as a first-class terminal state, distinct from failure | Specified in #1331/#1332 (`policy_denied` before dispatch vs `backend_error`); not built |
 | P4 | I hold strangers' prompts in memory and possibly logs | Digest-only records; explicit non-retention | Partly — the record layer discards bodies; the *runtime* still sees plaintext |
 | P5 | The workload harms my machine | Isolation and resource bounds | Out of scope for the record layer |
-| P6 | I served honestly and have no durable proof of what | The receipt, with the requester's commitment inside it | Half — node side exists, requester side does not |
+| P6 | I served honestly and have no durable proof of what | The receipt, with the requester's commitment inside it | Built, for the exchange_id-correlated record family — the requester's commitment travels inside the record itself (bound to that record's own `request_digest`), not a side-channel file, so the node's own record is durable proof of exactly what was asked |
 | P7 | A dispute becomes my word against theirs | Both commitments in one record, in a log neither controls | Not built |
 | P8 | I spent electricity and hardware time with no record of how much | Consumption in units, bound to a signed request (§6) | Not built |
 
 **Six of these eight are answered by the same records the requester already relies on** — but only
-if the requester is bound into them. Today the record is unilateral: the node signs an account of an
-exchange it describes alone. That asymmetry is why the provider side reads as unaddressed.
+if the requester is bound into them. **P1 and P6 now have that binding**, for records that carry a
+verified `requester_commitment` (§4.1a); a record that does not carry one is still exactly the old
+unilateral case — the node signs an account of an exchange it describes alone, and nothing here
+changes that for records without the commitment. The remaining rows (P2–P5, P7, P8) are unaffected.
 
 ### 2.4 What the coordinator fears
 
@@ -392,6 +411,49 @@ Which makes this a spectrum that the *deployment* resolves, not the mechanism:
 **Strangers can become verified participants without changing the mechanism.** The same signed
 commitment carries more weight as its key acquires a root. That is a deployment progression, not a
 protocol change.
+
+### 4.1a Built: rung-2 for the exchange_id-correlated record family (2026-08-21)
+
+`requester_commitment.py`, used by `mesh_record_emitter.py` and checked by
+`mesh_record_verifier.py`, implements §1's rung-2 — a requester-signed commitment over the exact
+request bytes — for the exchange_id/observation_point-correlated record family (the #1331 lifecycle
+and multi-hop tracking mechanism). This is deliberately narrower than the four-move bilateral
+exchange in §4's opening paragraph:
+
+- **What it does**: a record MAY carry a `requester_commitment` signed over that record's own
+  `request_digest` and `exchange_id`. The verifier confirms the signature and the binding, and
+  derives `cross_party_rung` — `full_bilateral` only when the commitment verifies, `unilateral_fallback`
+  otherwise, **never** silently upgraded on absent or invalid evidence. Because the same commitment can
+  travel unmodified with the request across every hop of a split exchange, an ingress record and a
+  completion record sharing one `exchange_id` are each independently verified as carrying the same
+  requester — closing part of R10 without needing a coordinator receipt.
+- **What it deliberately does not do**: it does not implement Moves 2–4 of
+  draft-mih-agent-bilateral-attestation-01 (constraint evaluation, action attestation referencing the
+  request attestation, or a client acknowledgment of the completion). The separate #1233 receipt tuple
+  (`capsule_sidecar.py` / `bilateral_demo.py`) already implements that fuller four-move exchange and
+  its own `derive_cross_party_rung()`, whose `full_bilateral` requires **both** a valid request
+  attestation **and** a verified client acknowledgment. **The two `full_bilateral` labels are not the
+  same claim carried by two mechanisms** — one is "a signed request commitment verified against this
+  record," the other is "a signed request commitment *and* a signed acknowledgment of the response,
+  both verified." Anything comparing records across the two mechanisms must say which it means.
+- **The rung-0/1/2 discipline still holds**: a `client_nonce` alone (no commitment) never appears as
+  more than freshness evidence in either mechanism; only a verified signed commitment reaches
+  `full_bilateral` in either.
+- **What `full_bilateral` still does not prove, in either mechanism — found by
+  [mesh-rung12-adversarial-review] (2026-08-21) and now disclosed in code, not just here.** §4.1's
+  spectrum table above says a self-held key is "an identifier, not a vouched identity"; the concrete
+  consequence for this rung is stronger than that reads on its own: **the node itself can generate a
+  fresh requester (or client-ack) keypair and satisfy every check either `derive_cross_party_rung()`
+  performs, with no second, independent party involved at any point.** `verify_requester_commitment()`
+  confirms a signature is self-consistent and bound to the record's own `request_digest`/`exchange_id`
+  — it does not and cannot confirm the embedded public key belongs to anyone else. This is inherent
+  without an external identity anchor (the Authority tier; out of scope for this record layer), so the
+  fix is disclosure, not prevention: a record or verdict reporting `cross_party_rung=full_bilateral`
+  now always carries an `identity_limitation` caveat saying plainly that the rung proves *a commitment
+  was made and matches this record*, never *that an independent party made it* — attached at the
+  emitted-record layer (`mesh_record_emitter.py`) and re-derived independently at the verifier layer
+  (`mesh_record_verifier.py` / `capsule_sidecar.identity_limitation_for_rung()`) so a reader is never
+  solely dependent on the producer having chosen to disclose it.
 
 ### 4.2 Where this sits in the composition model
 

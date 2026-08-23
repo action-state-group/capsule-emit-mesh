@@ -49,6 +49,7 @@ from capsule_sidecar import (
     BILATERAL_PUBKEY_HEADER,
     default_state,
     derive_cross_party_rung,
+    identity_limitation_for_rung,
     run_sidecar,
 )
 
@@ -269,6 +270,14 @@ def verify_exchange(
         findings.append(f"client_ack: {ack_reason}")
 
     rung = derive_cross_party_rung(cross_party, has_verified_ack=ack_ok)
+    # [mesh-rung12-adversarial-review] D1 — surface the identity-limitation
+    # caveat automatically whenever this real entry point derives
+    # full_bilateral, so a reader of `findings` never sees the rung without
+    # the disclosure of what it does and doesn't prove (see
+    # identity_limitation_for_rung()'s docstring).
+    caveat = identity_limitation_for_rung(rung)
+    if caveat:
+        findings.append(f"identity_limitation: {caveat}")
     all_ok = result.ok
     return rung, all_ok, findings
 
@@ -635,6 +644,9 @@ def main() -> None:
             f"  capsule 1 (with stored ack): ack_verified={ack_ok_1} "
             f"({ack_reason_1[:60]}) derived_rung={rung_with_ack!r}"
         )
+        caveat_with_ack = identity_limitation_for_rung(rung_with_ack)
+        if caveat_with_ack:
+            out(f"    identity_limitation: {caveat_with_ack}")
     out("")
     out(f"All capsules verify offline: {all_ok}")
     out("")

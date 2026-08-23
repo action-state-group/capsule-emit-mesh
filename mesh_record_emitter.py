@@ -27,6 +27,25 @@ FIELD DESIGN  (x-mesh-lifecycle-v1 inside compute_attestation)
                           complete MUST be False when event_count < expected_count.
                           See TranscriptSummary and the producer-side safety
                           enforced in make_transcript_summary().
+  requester_commitment  dict|None  Rung-2 evidence (requester_commitment.py):
+                          the requester's signed commitment over this record's
+                          own request_digest, or None when the requester
+                          contributed nothing beyond (at most) a nonce. A
+                          record MAY carry this on any hop of an exchange;
+                          mesh_record_verifier.py verifies it against the
+                          record's own agent_input_digest and derives
+                          cross_party_rung from that verification — it is
+                          NEVER read as pre-asserted trust.
+  identity_limitation    str|None  Present whenever requester_commitment is
+                          not None (requester_commitment.IDENTITY_LIMITATION_
+                          CAVEAT). States plainly that cross_party_rung=
+                          full_bilateral proves a commitment was made and
+                          matches this record, not that an independent party
+                          made it — a lone actor can self-mint both halves
+                          with no external identity anchor. Mirrors the
+                          identity_limitation capsule_sidecar.build_capsule()
+                          already attaches for the #1233 receipt tuple; see
+                          [mesh-rung12-adversarial-review] D1.
 """
 from __future__ import annotations
 
@@ -41,6 +60,8 @@ from typing import Any
 from agent_action_capsule.contracts import Disposition, EffectRecord
 from agent_action_capsule.emit import emit
 from agent_action_capsule.verify import verify as verify_capsule
+
+from requester_commitment import IDENTITY_LIMITATION_CAVEAT
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +185,7 @@ def emit_lifecycle_record(
     transcript: TranscriptSummary,
     request_digest: str | None = None,
     response_digest: str | None = None,
+    requester_commitment: dict[str, Any] | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Emit one signed capsule record for a lifecycle state / observation point.
@@ -173,6 +195,14 @@ def emit_lifecycle_record(
     read terminal_state, observation_point, exchange_id, hop_id, attempt,
     local_peer_id, and transcript.complete without access to the rig or any other
     side-channel.
+
+    ``requester_commitment`` (optional): rung-2 evidence built with
+    requester_commitment.make_requester_commitment(), bound to this call's own
+    request_digest and exchange_id. Passing one signed against a DIFFERENT
+    request_digest or exchange_id is exactly the forged-evidence case
+    mesh_record_verifier.verify_record_bytes() must catch — this emitter does
+    not check the binding itself; only the offline verifier does, because the
+    producer's own claim is never the evidence.
 
     Producer-side invariant enforced here:
         if transcript.expected_count is not None and transcript.complete is True:
@@ -212,6 +242,17 @@ def emit_lifecycle_record(
             "expected_count": transcript.expected_count,
             "complete": transcript.complete,
         },
+        "requester_commitment": requester_commitment,
+        # [mesh-rung12-adversarial-review] D1(a) — restores the honesty
+        # caveat the old capsule_sidecar.build_capsule() path already
+        # carries (identity_limitation, attached whenever bilateral evidence
+        # is present). Attached whenever a requester_commitment is passed,
+        # regardless of whether it later verifies — this emitter cannot
+        # verify it; only mesh_record_verifier.py can, and it independently
+        # re-derives this same caveat at verify time (see
+        # LifecycleVerdict.identity_limitation) so a reader is never solely
+        # dependent on the producer having chosen to disclose it.
+        "identity_limitation": IDENTITY_LIMITATION_CAVEAT if requester_commitment is not None else None,
     }
     if extra:
         mesh_block.update(extra)
@@ -303,6 +344,7 @@ def emit_from_trace(
     transcript_event_count: int | None = None,
     transcript_expected_count: int | None = None,
     _transcript_override_complete: bool | None = None,
+    requester_commitment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Emit a capsule record from a LifecycleTrace + optional ObservationRecord.
 
@@ -344,4 +386,5 @@ def emit_from_trace(
         transcript=transcript,
         request_digest=req_digest,
         response_digest=resp_digest,
+        requester_commitment=requester_commitment,
     )

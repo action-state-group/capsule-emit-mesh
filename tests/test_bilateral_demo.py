@@ -48,8 +48,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from capsule_sidecar import (
     BilateralEvalResult,
+    IDENTITY_LIMITATION_CAVEAT,
     derive_cross_party_rung,
     evaluate_bilateral_attestation,
+    identity_limitation_for_rung,
 )
 from bilateral_demo import (
     ClientKey,
@@ -155,6 +157,48 @@ def test_rung_ordering_is_strict():
     assert derive_cross_party_rung(None) == rungs[0]
     assert derive_cross_party_rung({"initiator_ref": "x" * 64}) == rungs[1]
     assert derive_cross_party_rung({"initiator_ref": "x" * 64}, has_verified_ack=True) == rungs[2]
+
+
+# ===========================================================================
+# identity_limitation_for_rung — [mesh-rung12-adversarial-review] D1
+#
+# derive_cross_party_rung() cannot confirm initiator_ref or the client ack's
+# key belong to a party independent of the node -- a lone attacker playing
+# both "node" and "client" satisfies every check it performs (see its own
+# docstring). full_bilateral must never be reported without this caveat.
+# ===========================================================================
+
+
+def test_no_caveat_for_unilateral_fallback():
+    assert identity_limitation_for_rung("unilateral_fallback") is None
+
+
+def test_no_caveat_for_acknowledged_receipt():
+    """acknowledged_receipt makes no independent-party claim -- only
+    full_bilateral (initiator_ref + a verified ack) does."""
+    assert identity_limitation_for_rung("acknowledged_receipt") is None
+
+
+def test_caveat_present_for_full_bilateral():
+    assert identity_limitation_for_rung("full_bilateral") == IDENTITY_LIMITATION_CAVEAT
+
+
+def test_self_minted_ack_spoof_reaches_full_bilateral_but_is_labeled():
+    """[mesh-rung12-adversarial-review] Attack 5a repro: has_verified_ack=True
+    passed directly with a fabricated, never-checked initiator_ref. The rung
+    cannot be prevented from this direct call (inherent -- the function is
+    stateless and this is a documented caller contract, see
+    derive_cross_party_rung()'s docstring); the disclosure function must
+    still report the caveat for whatever rung comes out, so any caller that
+    checks it sees the truth."""
+    fabricated_ref = "totally-fabricated-not-a-real-hash"
+    rung = derive_cross_party_rung({"initiator_ref": fabricated_ref}, has_verified_ack=True)
+    assert rung == "full_bilateral"
+    assert identity_limitation_for_rung(rung) == IDENTITY_LIMITATION_CAVEAT, (
+        "a caller that checks identity_limitation_for_rung() must be told "
+        "this rung does not prove an independent party, even when reached "
+        "via a direct call with an unverified ack bool"
+    )
 
 
 # ===========================================================================
@@ -424,6 +468,13 @@ def test_bilateral_demo_e2e():
     # Verify both rungs appear in the output.
     assert "full_bilateral" in result.stdout
     assert "unilateral_fallback" in result.stdout
+    # [mesh-rung12-adversarial-review] D1 — every full_bilateral derivation
+    # in this demo (verify_exchange's live findings, and the offline
+    # capsule-1-with-ack re-derivation) must carry the identity_limitation
+    # caveat in the real output, not just in a unit test against a stub.
+    assert "identity_limitation" in result.stdout, (
+        f"identity_limitation caveat not found in real demo output:\n{result.stdout}"
+    )
 
 
 if __name__ == "__main__":
