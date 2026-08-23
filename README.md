@@ -332,16 +332,6 @@ committed transcript and fixture output, kept for the same reason
 `ledger-live/` is: so the claims above are checkable against a real artifact,
 not just this description.
 
-**Release-train dependency — read before relying on this section.**
-`capsule_emit.checkpoint` and `scitt_cose.cll` are MERGED to both projects'
-`main` (capsule-emit PR #66, scitt-cose PR #38) but neither has cut a release
-with these modules yet, so `requirements.txt` still pins two exact `main`
-commits rather than a released version. This mirrors the same
-unreleased-dependency caveat flagged against `[ldg-mmr-consume-neutral-core]`
-in the ledger lane. See `requirements.txt`'s inline comment for the
-swap-over-to-release instructions once a version bump ships; do not let a
-git-ref pin sit in this repo's `main` past that point.
-
 **Cross-repo shape divergence (flagged 2026-08-22, resolved 2026-08-22).**
 `capsule_emit.checkpoint.CheckpointRecord` dropped its `peaks_digest` field
 (single-commitment shape, one peak-set commitment field: `root`) as part of
