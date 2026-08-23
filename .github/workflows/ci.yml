@@ -126,3 +126,50 @@ jobs:
       # keeps it compiling; "0 passed; 3 ignored" is the expected result here.
       - name: Real-host e2e test compiles (scenarios need a local mesh-llm binary)
         run: cargo test --locked --test host_runtime_e2e
+
+  # Milestone 1 of #1332: emits ONE Agent Action Capsule + COSE_Sign1 signed
+  # statement in Rust (JCS canonicalization, Ed25519, COSE_Sign1 via `coset`).
+  # The de-risking question this crate exists to answer — is the Rust output
+  # byte-conformant with the Python/scitt-cose reference and the independent
+  # Go COSE verifier — is checked by `tests/jcs_vectors.rs` and
+  # `tests/cross_language_conformance.rs`, both #[ignore]'d and gated on env
+  # vars pointing at the private multi-repo workspace (agent-action-capsule's
+  # test-vectors/, the scitt-cose Python packages, and scitt-cose-go-verify),
+  # none of which this repo's CI has checked out. Same shape as
+  # admission-policy's host_runtime_e2e.rs above: this job only compile-checks
+  # them ("0 passed; N ignored" is the expected result); the actual
+  # cross-language conformance run is reproducible locally per the doc
+  # comments at the top of each test file, and its output is captured in
+  # plugins/capsule-producer/MILESTONE-1-REPORT.md.
+  capsule-producer:
+    name: capsule-producer (JCS/COSE unit tests; cross-lang conformance compile-checked)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/capsule-producer
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            plugins/capsule-producer/target
+          key: ${{ runner.os }}-cargo-capsule-producer-${{ hashFiles('plugins/capsule-producer/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --locked
+
+      - name: Unit tests (JCS canonicalization)
+        run: cargo test --locked --lib
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Cross-language conformance tests compile (private workspace needed to actually run)
+        run: |
+          cargo test --locked --test jcs_vectors
+          cargo test --locked --test cross_language_conformance
