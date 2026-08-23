@@ -1,9 +1,9 @@
 [package]
 name = "capsule-producer"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "Milestone 1: emit an Agent Action Capsule + COSE_Sign1 signed statement in Rust, cross-checked byte-for-byte against the Python/scitt-cose reference and the Go COSE verifier. Does NOT yet do chaining/ledger/rotation/anchoring."
+description = "Emit a chained, ledgered, optionally-anchored Agent Action Capsule + COSE_Sign1 signed statement stream in Rust, cross-checked against the Python/scitt-cose reference and the Go COSE verifier."
 publish = false
 
 [lib]
@@ -22,6 +22,9 @@ pkcs8 = { version = "0.10", features = ["pem"] }
 spki = { version = "0.7", features = ["pem"] }
 anyhow = "1"
 thiserror = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+ureq = { version = "2", features = ["json"] }
 
 [dev-dependencies]
 tempfile = "3"
+base64 = "0.22"
