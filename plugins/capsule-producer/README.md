@@ -44,7 +44,10 @@ stream in Rust:
   `GET /anchor/authority-pubkey` — matching `capsule_emit/checkpoint/emit.py`'s
   `register_checkpoint` wire contract. Not wired into `seal`/`ledger::append`;
   callers anchor explicitly, and a failed anchor call never invalidates an
-  already-ledgered capsule.
+  already-ledgered capsule. This is the PRE-v4 per-record-anchor path and is
+  gated behind the `per-record-anchor` Cargo feature, **off by default** —
+  v4 makes checkpoint-only the default network path. Build/test with
+  `--features per-record-anchor` to include it.
 - **`verify`** / **`bin/verify_capsule`** — offline (no-network)
   verification: recompute `capsule_id`, verify the COSE_Sign1 signature,
   check the payload matches the supplied capsule, and (given a ledger
@@ -95,7 +98,7 @@ AAC_VERIFY_LEDGER_SCRIPT=$PWD/tests/scripts/verify_rust_ledger.py \
 AAC_PYTHON=python3 \
 AAC_VERIFY_ANCHOR_RECEIPT_SCRIPT=$PWD/tests/scripts/verify_anchor_receipt.py \
 CAPSULE_ANCHOR_DIR=/path/to/capsule-anchor/packages \
-  cargo test --test anchor_conformance -- --ignored --nocapture --test-threads=1
+  cargo test --features per-record-anchor --test anchor_conformance -- --ignored --nocapture --test-threads=1
 ```
 
 Results from the last full runs: see `MILESTONE-1-REPORT.md` and
