@@ -171,7 +171,7 @@ jobs:
             plugins/capsule-producer/target
           key: ${{ runner.os }}-cargo-capsule-producer-${{ hashFiles('plugins/capsule-producer/Cargo.lock') }}
 
-      - name: Build
+      - name: Build (default features -- per-record-anchor path OFF)
         run: cargo build --locked
 
       - name: Unit tests (JCS/capsule/keys/ledger canonicalization + mechanics)
@@ -180,12 +180,22 @@ jobs:
       - name: Offline verification CLI tests (self-contained, no external workspace)
         run: cargo test --locked --test verify_cli
 
-      - name: Clippy
+      - name: Clippy (default features)
         run: cargo clippy --locked --all-targets -- -D warnings
+
+      # `per-record-anchor` (anchor.rs/anchor_queue.rs) is OFF by default --
+      # v4 makes checkpoint-only the default network path -- so it gets its
+      # own build/test/lint pass with the feature explicitly enabled,
+      # otherwise it would silently stop compiling in CI at all.
+      - name: Build + unit tests with per-record-anchor feature enabled
+        run: cargo build --locked --features per-record-anchor && cargo test --locked --features per-record-anchor --lib
+
+      - name: Clippy (per-record-anchor feature)
+        run: cargo clippy --locked --all-targets --features per-record-anchor -- -D warnings
 
       - name: Cross-language conformance tests compile (private workspace needed to actually run)
         run: |
           cargo test --locked --test jcs_vectors
           cargo test --locked --test cross_language_conformance
           cargo test --locked --test chain_ledger_conformance
-          cargo test --locked --test anchor_conformance
+          cargo test --locked --features per-record-anchor --test anchor_conformance

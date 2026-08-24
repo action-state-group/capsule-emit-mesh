@@ -13,7 +13,7 @@
 //! anchor call is never allowed to invalidate an already-sealed, already-
 //! ledgered capsule.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 pub const DEFAULT_ANCHOR_BASE: &str = "https://anchor.agentactioncapsule.org";
@@ -28,9 +28,24 @@ pub enum AnchorError {
     Decode(String),
 }
 
+impl AnchorError {
+    /// Whether a retry is plausibly worth attempting: a transport-level
+    /// failure or a server error (5xx) may succeed on a later attempt; a
+    /// 4xx status is the service telling us this exact request is invalid,
+    /// which resubmitting unchanged will not fix. Anything else defaults to
+    /// non-retryable rather than looping forever on an unrecognized shape.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            AnchorError::Transport(_) => true,
+            AnchorError::Status { status, .. } => *status >= 500,
+            AnchorError::Decode(_) => false,
+        }
+    }
+}
+
 /// `RegisterStatementResponse` shape from `capsule-anchor`'s
 /// `POST /v1/digest` and `POST /transparency/register-statement`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnchorReceipt {
     pub receipt_b64: String,
     pub entry_hash: String,

@@ -16,11 +16,23 @@
 //!   receipt lookup.
 //! - [`anchor`] Optional SCITT Transparency Service client
 //!   (`capsule-anchor`'s `/v1/digest` + `/v1/inclusion/{id}`).
+//! - [`anchor_queue`] Durable anchor state machine (pending / submitted /
+//!   anchored / rejected / failed) + restart-safe retry queue on top of
+//!   [`anchor`].
 //! - [`verify`] Offline (no-network) verification composing capsule_id
 //!   recomputation, COSE signature verification, and chain-parent
 //!   membership.
+//!
+//! `anchor` and `anchor_queue` are the PRE-v4 per-record-anchor path and sit
+//! behind the `per-record-anchor` feature, OFF by default: v4 makes
+//! checkpoint-only the default network path, so this crate ships with no
+//! anchor path compiled in unless a caller opts in explicitly. The
+//! key-renewal machinery in `keys` is unaffected and always available.
 
+#[cfg(feature = "per-record-anchor")]
 pub mod anchor;
+#[cfg(feature = "per-record-anchor")]
+pub mod anchor_queue;
 pub mod capsule;
 pub mod cose;
 pub mod jcs;

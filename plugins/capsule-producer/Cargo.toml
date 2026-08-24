@@ -10,6 +10,17 @@ publish = false
 name = "capsule_producer"
 path = "src/lib.rs"
 
+[features]
+default = []
+# PRE-v4 per-record-anchor path (`anchor` + `anchor_queue`): checkpoint-only
+# is the v4 default network path, so this stays opt-in, not on-by-default,
+# until the surface-v4 freeze lands. See lib.rs module docs.
+per-record-anchor = []
+
+[[test]]
+name = "anchor_conformance"
+required-features = ["per-record-anchor"]
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }

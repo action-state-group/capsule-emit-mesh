@@ -14,13 +14,18 @@
 //!   caller appends to the ledger as an ordinary capsule so the transition is
 //!   itself part of the durable, chained record rather than a side channel.
 
+use chrono::{DateTime, Utc};
 use ed25519_dalek::pkcs8::spki::der::pem::LineEnding;
 use ed25519_dalek::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand_core::OsRng;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -28,6 +33,7 @@ use std::os::unix::fs::PermissionsExt;
 const NODE_KEY_FILENAME: &str = "node-key.pem";
 const NODE_PUBKEY_FILENAME: &str = "node-key.pub.pem";
 const ARCHIVE_DIRNAME: &str = "archive";
+const KEY_METADATA_FILENAME: &str = "node-key.meta.json";
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeyError {
@@ -37,6 +43,10 @@ pub enum KeyError {
     Decode(#[from] anyhow::Error),
     #[error("no current key at {0}; cannot rotate a key that does not exist yet")]
     NoCurrentKey(String),
+    #[error("key metadata decode error: {0}")]
+    MetaDecode(#[from] serde_json::Error),
+    #[error("key metadata parse error: {0}")]
+    MetaTimestamp(String),
 }
 
 #[derive(Debug)]
@@ -106,6 +116,44 @@ fn write_private_pem(path: &Path, pem: &str) -> std::io::Result<()> {
     fs::write(path, pem)
 }
 
+/// When a key was minted, keyed by its `key_id` -- the renewal cycle's only
+/// source of truth for "is the active key due." Written alongside
+/// `node-key.pem` by both `load_or_create` (on generation) and `rotate`, so
+/// the clock a renewal decision is based on is itself durable and survives
+/// restart, never re-derived from filesystem mtimes (which change on copy,
+/// backup, or any tool that touches the file).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyMetadata {
+    pub key_id: String,
+    pub issued_at: String,
+}
+
+fn metadata_path(keys_dir: &Path) -> PathBuf {
+    keys_dir.join(KEY_METADATA_FILENAME)
+}
+
+fn write_metadata(keys_dir: &Path, key_id: &str, issued_at: &str) -> Result<(), KeyError> {
+    let meta = KeyMetadata {
+        key_id: key_id.to_string(),
+        issued_at: issued_at.to_string(),
+    };
+    fs::write(metadata_path(keys_dir), serde_json::to_string(&meta)?)?;
+    Ok(())
+}
+
+/// Read the active key's metadata, if present. `Ok(None)` covers both "no
+/// key yet" and "key exists but predates metadata tracking" -- callers that
+/// need renewal decisions treat both as "start the clock now" rather than
+/// erroring, since a missing clock is not corruption.
+pub fn read_metadata(keys_dir: &Path) -> Result<Option<KeyMetadata>, KeyError> {
+    let path = metadata_path(keys_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&path)?;
+    Ok(Some(serde_json::from_str(&raw)?))
+}
+
 /// Load `<keys_dir>/node-key.pem` if present; otherwise generate a fresh
 /// Ed25519 key, write it 0600, write the public half beside it as
 /// `node-key.pub.pem`, and return it. Mirrors
@@ -122,6 +170,7 @@ pub fn load_or_create(keys_dir: &Path) -> Result<KeyPair, KeyError> {
     let keys = KeyPair::generate();
     write_private_pem(&node_key_path, &keys.private_key_pem())?;
     fs::write(keys_dir.join(NODE_PUBKEY_FILENAME), keys.public_key_pem())?;
+    write_metadata(keys_dir, &keys.key_id(), &crate::timestamp::utc_now_iso8601())?;
     Ok(keys)
 }
 
@@ -175,6 +224,7 @@ pub fn rotate(keys_dir: &Path) -> Result<RotationRecord, KeyError> {
     fs::write(&node_pub_path, new_keys.public_key_pem())?;
 
     let rotated_at = crate::timestamp::utc_now_iso8601();
+    write_metadata(keys_dir, &new_key_id, &rotated_at)?;
 
     Ok(RotationRecord {
         old_key_id,
@@ -182,6 +232,139 @@ pub fn rotate(keys_dir: &Path) -> Result<RotationRecord, KeyError> {
         rotated_at,
         new_keys,
     })
+}
+
+/// A pre-expiry renewal policy: the active key is due for renewal once its
+/// age reaches `key_lifetime - renew_before` -- i.e. renewal always happens
+/// with `renew_before` of margin left on the OLD key, so as long as the
+/// caller checks at least that often there is never a moment where the
+/// active key has expired with no successor in place ("no gap in signing").
+#[derive(Debug, Clone, Copy)]
+pub struct RenewalPolicy {
+    pub key_lifetime: chrono::Duration,
+    pub renew_before: chrono::Duration,
+}
+
+impl RenewalPolicy {
+    pub fn new(key_lifetime: chrono::Duration, renew_before: chrono::Duration) -> Self {
+        Self {
+            key_lifetime,
+            renew_before,
+        }
+    }
+
+    fn due_at(&self, issued_at: DateTime<Utc>) -> DateTime<Utc> {
+        issued_at + (self.key_lifetime - self.renew_before)
+    }
+
+    fn is_due(&self, issued_at: DateTime<Utc>, now: DateTime<Utc>) -> bool {
+        now >= self.due_at(issued_at)
+    }
+}
+
+fn parse_issued_at(meta: &KeyMetadata) -> Result<DateTime<Utc>, KeyError> {
+    DateTime::parse_from_rfc3339(&meta.issued_at)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|e| KeyError::MetaTimestamp(e.to_string()))
+}
+
+/// Pure, deterministic renewal check: no thread, no sleep, `now` is
+/// caller-supplied so this is exercised exactly like any other unit under
+/// test. Returns `Ok(None)` when there is no current key yet (nothing to
+/// renew -- use `load_or_create` first), when metadata predates renewal
+/// tracking (the clock is backfilled to `now` instead of guessing), or when
+/// the active key simply isn't due yet. Returns `Ok(Some(record))` when a
+/// renewal actually happened -- the same `RotationRecord` `rotate()`
+/// produces, so a caller wires it into the ledger exactly like a manual
+/// rotation.
+pub fn renew_if_due(
+    keys_dir: &Path,
+    policy: &RenewalPolicy,
+    now: DateTime<Utc>,
+) -> Result<Option<RotationRecord>, KeyError> {
+    if !keys_dir.join(NODE_KEY_FILENAME).exists() {
+        return Ok(None);
+    }
+    let now_str = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let Some(meta) = read_metadata(keys_dir)? else {
+        // Existing key predates metadata tracking: start the clock now
+        // rather than renewing immediately on the very first observation
+        // (which would fire a spurious rotation on every pre-tracking key).
+        let active = load_or_create(keys_dir)?;
+        write_metadata(keys_dir, &active.key_id(), &now_str)?;
+        return Ok(None);
+    };
+    let issued_at = parse_issued_at(&meta)?;
+    if !policy.is_due(issued_at, now) {
+        return Ok(None);
+    }
+    let record = rotate(keys_dir)?;
+    // rotate() stamps the new key's metadata with the real wall clock;
+    // overwrite with the caller-supplied `now` so a renewal cycle driven by
+    // an injected clock (tests; a caller replaying/backfilling) stays
+    // internally consistent rather than silently reverting to real time.
+    write_metadata(keys_dir, &record.new_key_id, &now_str)?;
+    Ok(Some(record))
+}
+
+/// Handle to a background renewal cycle started by
+/// `spawn_background_renewal`. Dropping it without calling `stop` still
+/// joins the thread (best-effort) so the thread never outlives the process
+/// silently, but `stop` is the clean shutdown path: it wakes the thread
+/// immediately rather than waiting out the rest of the current interval.
+pub struct RenewalHandle {
+    stop_tx: mpsc::Sender<()>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl RenewalHandle {
+    pub fn stop(mut self) {
+        let _ = self.stop_tx.send(());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+impl Drop for RenewalHandle {
+    fn drop(&mut self) {
+        let _ = self.stop_tx.send(());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// Background pre-expiry renewal cycle: every `check_interval`, calls
+/// `renew_if_due` with the real wall clock and, on an actual renewal,
+/// invokes `on_renewed` with the resulting `RotationRecord` so the caller
+/// can append the transition into its ledger (same caller-owns-the-ledger-
+/// event design as manual `rotate()`). Runs on a plain OS thread -- this
+/// crate has no async runtime -- and shuts down promptly via `stop()`
+/// rather than waiting out its last interval.
+pub fn spawn_background_renewal(
+    keys_dir: PathBuf,
+    policy: RenewalPolicy,
+    check_interval: Duration,
+    mut on_renewed: impl FnMut(RotationRecord) + Send + 'static,
+) -> RenewalHandle {
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    let thread = std::thread::spawn(move || loop {
+        match stop_rx.recv_timeout(check_interval) {
+            Ok(()) => return,                              // stop() called
+            Err(mpsc::RecvTimeoutError::Disconnected) => return, // handle dropped
+            Err(mpsc::RecvTimeoutError::Timeout) => {}      // tick
+        }
+        match renew_if_due(&keys_dir, &policy, Utc::now()) {
+            Ok(Some(record)) => on_renewed(record),
+            Ok(None) => {}
+            Err(_) => {} // transient I/O hiccup: try again next tick, never panic the thread
+        }
+    });
+    RenewalHandle {
+        stop_tx,
+        thread: Some(thread),
+    }
 }
 
 #[cfg(test)]
@@ -281,5 +464,151 @@ mod tests {
         recovered.verify_strict(message, &sig).expect(
             "a signature made before rotation must still verify with the archived old key",
         );
+    }
+
+    fn policy() -> RenewalPolicy {
+        // 24h key lifetime, renew with 1h of margin still left.
+        RenewalPolicy::new(chrono::Duration::hours(24), chrono::Duration::hours(1))
+    }
+
+    #[test]
+    fn renew_if_due_does_nothing_before_the_pre_expiry_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = load_or_create(dir.path()).unwrap();
+        let issued_at = parse_issued_at(&read_metadata(dir.path()).unwrap().unwrap()).unwrap();
+
+        // Well inside the key's lifetime -- not due.
+        let now = issued_at + chrono::Duration::hours(2);
+        let result = renew_if_due(dir.path(), &policy(), now).unwrap();
+        assert!(result.is_none());
+
+        let active = load_or_create(dir.path()).unwrap();
+        assert_eq!(active.key_id(), original.key_id(), "must not have rotated");
+    }
+
+    #[test]
+    fn renew_if_due_renews_inside_the_pre_expiry_window_with_no_signing_gap() {
+        use ed25519_dalek::Signer;
+        let dir = tempfile::tempdir().unwrap();
+        let original = load_or_create(dir.path()).unwrap();
+        let issued_at = parse_issued_at(&read_metadata(dir.path()).unwrap().unwrap()).unwrap();
+
+        let message = b"payload signed before pre-expiry renewal";
+        let sig = original.signing_key.sign(message);
+
+        // 23h in: inside the 24h-1h = 23h due point, so this must renew --
+        // BEFORE the key would actually expire, not after.
+        let now = issued_at + chrono::Duration::hours(23);
+        let record = renew_if_due(dir.path(), &policy(), now)
+            .unwrap()
+            .expect("must renew inside the pre-expiry window");
+        assert_eq!(record.old_key_id, original.key_id());
+        assert_ne!(record.new_key_id, original.key_id());
+
+        // The new key is active...
+        let active = load_or_create(dir.path()).unwrap();
+        assert_eq!(active.key_id(), record.new_key_id);
+
+        // ...and the archived old key still verifies a signature made
+        // before the renewal: no signing gap, no invalidated history.
+        let archived_pub = dir
+            .path()
+            .join(ARCHIVE_DIRNAME)
+            .join(format!("node-key.{}.pub.pem", original.key_id()));
+        let recovered =
+            load_verifying_key_pem(&fs::read_to_string(&archived_pub).unwrap()).unwrap();
+        recovered
+            .verify_strict(message, &sig)
+            .expect("archived key must still verify a pre-renewal signature");
+
+        // The new key's metadata clock is the caller-supplied `now`, not
+        // wall-clock time -- so the renewal cycle stays internally
+        // consistent under an injected/simulated clock.
+        let new_meta = read_metadata(dir.path()).unwrap().unwrap();
+        assert_eq!(new_meta.key_id, record.new_key_id);
+        assert_eq!(parse_issued_at(&new_meta).unwrap(), now);
+    }
+
+    #[test]
+    fn renew_if_due_is_not_immediately_due_again_right_after_renewing() {
+        let dir = tempfile::tempdir().unwrap();
+        load_or_create(dir.path()).unwrap();
+        let issued_at = parse_issued_at(&read_metadata(dir.path()).unwrap().unwrap()).unwrap();
+
+        let renew_at = issued_at + chrono::Duration::hours(23);
+        let record = renew_if_due(dir.path(), &policy(), renew_at)
+            .unwrap()
+            .expect("first renewal");
+
+        // One minute after the renewal: the NEW key's clock just started,
+        // so this must not renew again immediately.
+        let shortly_after = renew_at + chrono::Duration::minutes(1);
+        let result = renew_if_due(dir.path(), &policy(), shortly_after).unwrap();
+        assert!(result.is_none());
+
+        let active = load_or_create(dir.path()).unwrap();
+        assert_eq!(active.key_id(), record.new_key_id);
+    }
+
+    #[test]
+    fn renew_if_due_backfills_metadata_for_a_pre_tracking_key_without_renewing() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = load_or_create(dir.path()).unwrap();
+        // Simulate a key that predates metadata tracking.
+        fs::remove_file(metadata_path(dir.path())).unwrap();
+        assert!(read_metadata(dir.path()).unwrap().is_none());
+
+        let now: DateTime<Utc> = "2030-01-01T00:00:00Z".parse().unwrap();
+        let result = renew_if_due(dir.path(), &policy(), now).unwrap();
+        assert!(result.is_none(), "must not renew on first observation of an untracked key");
+
+        let active = load_or_create(dir.path()).unwrap();
+        assert_eq!(active.key_id(), original.key_id(), "must not have rotated");
+
+        let meta = read_metadata(dir.path()).unwrap().expect("metadata backfilled");
+        assert_eq!(meta.key_id, original.key_id());
+        assert_eq!(parse_issued_at(&meta).unwrap(), now);
+    }
+
+    #[test]
+    fn renew_if_due_is_a_noop_when_there_is_no_key_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+        let result = renew_if_due(dir.path(), &policy(), now).unwrap();
+        assert!(result.is_none());
+        assert!(read_metadata(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn background_renewal_cycle_renews_and_stops_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = load_or_create(dir.path()).unwrap();
+
+        // Lifetime so short that the very first tick is already inside the
+        // pre-expiry window -- proves the THREAD wrapper actually drives
+        // renew_if_due, not just the pure function tested above.
+        let fast_policy = RenewalPolicy::new(
+            chrono::Duration::milliseconds(1),
+            chrono::Duration::milliseconds(0),
+        );
+
+        let (tx, rx) = mpsc::channel();
+        let handle = spawn_background_renewal(
+            dir.path().to_path_buf(),
+            fast_policy,
+            Duration::from_millis(20),
+            move |record| {
+                let _ = tx.send(record.new_key_id);
+            },
+        );
+
+        let renewed_key_id = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("background cycle must renew within the timeout");
+        assert_ne!(renewed_key_id, original.key_id());
+
+        handle.stop();
+        let active = load_or_create(dir.path()).unwrap();
+        assert_eq!(active.key_id(), renewed_key_id);
     }
 }
