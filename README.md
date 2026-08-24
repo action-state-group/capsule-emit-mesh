@@ -480,6 +480,18 @@ Wiring a real client-contributed nonce through goose's request path is future
 work (would need a goose extension or provider-level header injection, neither
 built here).
 
+A third tier sits between those two. When mesh-llm's own local ingress mints
+the nonce one hop upstream of the sidecar — because the harness itself sent
+none — it marks its own injection with `x-capsule-nonce-origin: local_ingress`,
+and the sidecar records `client_nonce_source: "local_ingress"` rather than
+overclaiming `client_supplied`. **This is a routing hint, not authentication:**
+the header is a bare, unauthenticated value the requester's own connection
+fully controls, and nothing here Ed25519-verifies it the way
+`evaluate_bilateral_attestation` verifies bilateral request headers elsewhere
+in this file. See `docs/TRUST-MODEL.md` §2.2 (R3) for the precise trust claim
+this tier does and does not make, and why enforcing it is deliberately
+deferred until this path drives a real trust decision.
+
 **Anchoring: rehearsal runs verify locally only, by decision.** `capsule-emit
 permalink --check` verifies every capsule structurally offline (no network)
 — that's what this README's permalinks reflect, and, per Steven's explicit
