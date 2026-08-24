@@ -144,3 +144,82 @@ and its doc comment records this finding in full so it isn't silently lost.
 | Allow (unblocked, advertised model) | ✅ `allows_unblocked_advertised_model_end_to_end_through_real_host` | n/a (positive path) |
 | Malformed → fail-safe | ⚠️ host-level fail-safe verified (503, never 200); plugin's own `body_parse_failure` branch not reachable via real-host ingress — see above | ✅ `mutant-allow-malformed` still proven, but only via the direct-to-plugin `tests/interop.rs` (unaffected by this finding) |
 | evidence-unavailable | n/a — this plugin has no such state (see `DELTA.md`: body access is always fully buffered by the host on the inference-provider path, so there is no reachable `BodyAccessDenied`/evidence-unavailable analog) |
+
+## `[mesh-update-and-working]` — #1331/#1421 lifecycle-hook + capsule-producer verification (2026-08-24)
+
+`#26` ("wire capsule-producer + admission plugin + #1331 lifecycle hook into
+one e2e plugin") added two more real-host tests that hadn't been run against
+an actual host binary before this pass:
+`allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_lifecycle_event`
+(the direct proof that upstream `Mesh-LLM/mesh-llm#1421` — the `#1331`
+reference implementation, `OpenAiHookPolicy`'s `on_effective_chat_completion`
+/ `on_chat_completion_terminal` hooks — functions end-to-end with this
+plugin) and `real_host_ledger_cross_language_verifies_against_python_scitt_cose_reference`.
+
+Reproduced the same way as above, against `StevenMih/mesh-llm`'s
+`mesh1331-lifecycle-hooks` branch (PR #1421's head, OPEN/MERGEABLE at
+verification time; `mesh-llm-host-runtime`/`mesh-llm-plugin` at
+`0.76.0-rc6`; the published `mesh-llm-plugin = "0.75.0"` this plugin depends
+on built and linked against it with no wire drift). `/opt/homebrew/bin/ld64.lld`
+was present in this environment so the workspace's default linker config
+needed no override.
+
+```sh
+git clone --depth 1 --branch mesh1331-lifecycle-hooks https://github.com/StevenMih/mesh-llm.git
+cd mesh-llm && cargo build -p mesh-llm --bin mesh-llm
+# -> target/debug/mesh-llm, 350902152 bytes, built in 2m04s from a cold registry cache
+
+cd plugins/admission-policy
+AAC_PYTHON=/path/to/capsule-emit-mesh/.venv/bin/python \
+MESH_LLM_HOST_BIN=/path/to/mesh-llm/target/debug/mesh-llm \
+  cargo test --test host_runtime_e2e -- --ignored --test-threads=1
+```
+
+`AAC_PYTHON` points at a venv with `capsule-emit[mcp]` installed **editable
+against current `capsule-emit` main** (not the `>=0.4.0` PyPI floor this
+plugin's Python sibling depends on) — the point of this session's assessment
+was to check the cross-language oracle against capsule-emit's current
+surface, not its last release.
+
+Verified result (macOS/aarch64):
+
+```
+running 5 tests
+test allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_lifecycle_event ... ok
+test allows_unblocked_advertised_model_end_to_end_through_real_host ... ok
+test denies_blocked_model_end_to_end_through_real_host ... ok
+test malformed_body_fails_safe_at_the_real_host_before_reaching_the_plugin ... ok
+test real_host_ledger_cross_language_verifies_against_python_scitt_cose_reference ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 57.35s
+```
+
+The cross-language check's own JSON verdict (not just the Rust test's pass/fail):
+
+```
+{"ok": true, "count": 2, "cose_all_ok": true, "payload_bytes_all_match": true, "store_ok": true, "capsule_ids": [...], "findings": [<informational §12 unknown-registry-value notes, non-rejecting>], "error": null}
+```
+
+Mutant proof (`--features mutant-allow-blocked`, same as above): re-ran with
+this branch's binary — `denies_blocked_model_end_to_end_through_real_host`
+FAILED (`left: 200, right: 403`), the other 4 tests unaffected. Confirms this
+run's mutant discrimination independently of the earlier
+`mesh-ingress-nonce-injection` result above.
+
+**What was NOT run:** the second, independent-language leg
+(`scitt-cose-go-verify` / `veraison/go-cose`) inside
+`real_host_ledger_cross_language_verifies_against_python_scitt_cose_reference`
+is gated on `AAC_GO_VERIFY_DIR`, which was not set — the test logs
+`"AAC_GO_VERIFY_DIR not set; skipping the additional Go cross-check"` and
+still reports `ok` for the Python leg alone. This is the same
+compile-checked-but-not-exercised shape as the CI-side `#[ignore]`d jobs
+elsewhere in this repo: recorded here so "ok" isn't misread as "all three
+languages checked."
+
+**Conclusion:** `Mesh-LLM/mesh-llm#1421`'s two hooks are correctly consumed
+end-to-end by this plugin's `lifecycle_channel.rs` — the real host (built
+from the PR's own branch) independently publishes the `RawProxy`/`Terminal`
+envelope on `openai.exchange.v1` for the same exchange the plugin's own HTTP
+handler served, the plugin's `on_channel_message` receives and logs it, and
+the capsule-producer-emitted capsule for that exchange verifies offline
+under both the Rust and Python (current-capsule-emit) implementations.
