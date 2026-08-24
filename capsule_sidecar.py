@@ -568,11 +568,14 @@ def sign_capsule(state: NodeState, capsule: dict[str, Any]) -> bytes:
 
 
 def record_capsule(state: NodeState, capsule: dict[str, Any], signed_statement: bytes) -> None:
-    state.log_source.append(capsule)
-    (state.statements_dir / f"{capsule['capsule_id']}.cose").write_bytes(signed_statement)
+    # [adv-run-2-fix-batch] B3: verify BEFORE either disk write -- a capsule
+    # that fails its own verify() must never be persisted to the ledger or
+    # have a signed .cose statement written for it, even transiently.
     result = verify_capsule(capsule)
     if not result.ok:
         raise RuntimeError(f"sidecar emitted a capsule that fails its own verify(): {result.findings}")
+    state.log_source.append(capsule)
+    (state.statements_dir / f"{capsule['capsule_id']}.cose").write_bytes(signed_statement)
     state.last_capsule_id = capsule["capsule_id"]
     state.emitted.append(capsule)
     if state.checkpoint is not None:

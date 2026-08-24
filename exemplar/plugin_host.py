@@ -46,6 +46,7 @@ from __future__ import annotations
 import hashlib
 import time
 import uuid
+import warnings
 
 from exemplar.plugin_contract import (
     ABSTAIN,
@@ -183,6 +184,32 @@ class PluginLifecycleHost:
 
         return self.plugin.on_phase(ctx)
 
+    def _honor_deny(self, decision: PluginDecision) -> bool:
+        """Whether a DENY returned by the loaded plugin should actually
+        terminate the exchange.
+
+        [adv-run-2-fix-batch] B2: decision_mode is a manifest DECLARATION,
+        not previously an enforced constraint — the host checked `decision`
+        as a bare string and would honor DENY from any plugin, letting a
+        plugin declared observe_only escalate to full admission control.
+        Per SPEC_FEEDBACK["decision_mode_enforcement"]: only an
+        admission_policy plugin's DENY is honored; a DENY from any other
+        decision_mode is logged and treated as ABSTAIN so the mismatch is
+        visible rather than silently acted on.
+        """
+        if decision != DENY:
+            return False
+        if self.plugin.manifest.decision_mode == "admission_policy":
+            return True
+        warnings.warn(
+            f"plugin returned DENY but its manifest declares "
+            f"decision_mode={self.plugin.manifest.decision_mode!r}, not "
+            f"'admission_policy' -- DENY is not honored, treating as abstain",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return False
+
     # ------------------------------------------------------------------
     # Run
     # ------------------------------------------------------------------
@@ -238,7 +265,7 @@ class PluginLifecycleHost:
                 request_body, phase_name="request_received", exc=exc,
             )
 
-        if decision == DENY:
+        if self._honor_deny(decision):
             return self._terminal_policy_denied(
                 xid, phases, observations, side_events,
                 request_body, trigger="plugin denied at request_received",
@@ -265,7 +292,7 @@ class PluginLifecycleHost:
                 request_body, phase_name="backend_selected", exc=exc,
             )
 
-        if decision == DENY:
+        if self._honor_deny(decision):
             return self._terminal_policy_denied(
                 xid, phases, observations, side_events,
                 request_body, trigger="plugin denied at backend_selected",
@@ -426,11 +453,13 @@ SPEC_FEEDBACK: dict[str, str] = {
     "decision_mode_enforcement": (
         "The manifest declares decision_mode='observe_only' or "
         "'admission_policy', but #1331 does not specify whether the host "
-        "enforces this at the call site.  This exemplar's host does not prevent "
-        "an observe_only plugin from returning DENY — it checks the decision "
-        "only as a string value.  If #1331 intends observe_only as a hard "
-        "constraint (the host ignores any DENY returned by an observe_only "
-        "plugin), the enforcement point should be in the host, not a convention."
+        "enforces this at the call site.  [adv-run-2-fix-batch] This exemplar's "
+        "host now enforces it (PluginLifecycleHost._honor_deny): only an "
+        "admission_policy plugin's DENY terminates the exchange; DENY from any "
+        "other decision_mode is logged and treated as abstain.  #1331 should "
+        "still specify this as the wire-protocol requirement, not just an "
+        "exemplar convention, so every host implementation enforces it the "
+        "same way."
     ),
 
     "sanitized_headers_grant_model": (
