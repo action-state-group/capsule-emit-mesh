@@ -16,11 +16,15 @@
 //!   receipt lookup.
 //! - [`anchor`] Optional SCITT Transparency Service client
 //!   (`capsule-anchor`'s `/v1/digest` + `/v1/inclusion/{id}`).
+//! - [`anchor_queue`] Durable anchor state machine (pending / submitted /
+//!   anchored / rejected / failed) + restart-safe retry queue on top of
+//!   [`anchor`].
 //! - [`verify`] Offline (no-network) verification composing capsule_id
 //!   recomputation, COSE signature verification, and chain-parent
 //!   membership.
 
 pub mod anchor;
+pub mod anchor_queue;
 pub mod capsule;
 pub mod cose;
 pub mod jcs;
