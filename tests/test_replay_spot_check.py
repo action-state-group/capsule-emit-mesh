@@ -51,6 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
 from replay_spot_check import (  # noqa: E402  (after sys.path/stub setup)
     ADVISORY,
+    REPLAY_VOLATILE_FIELDS,
     SpotCheckResult,
     build_pinned_request,
     compare,
@@ -100,6 +101,43 @@ def test_mismatch_mutant_of_the_matched_case():
     mutated = compare(response_a, response_b)
     assert mutated.match is False
     assert mutated.digest_b != baseline.digest_b
+
+
+# ---------------------------------------------------------------------------
+# REPLAY_VOLATILE_FIELDS — two-sided: excluded fields don't cause a false
+# mismatch, non-excluded (content) fields still cause a real one.
+# ---------------------------------------------------------------------------
+
+def test_volatile_field_change_alone_still_reports_match():
+    """The reviewer's exact repro: byte-identical content, fresh id/created."""
+    response_a = _load("volatile-fields", "response_a.json")
+    response_b = _load("volatile-fields", "response_b.json")
+    assert response_a["id"] != response_b["id"]
+    assert response_a["created"] != response_b["created"]
+    assert response_a["choices"] == response_b["choices"]
+
+    result = compare(response_a, response_b)
+
+    assert result.match is True
+    assert result.digest_a == result.digest_b
+
+
+def test_content_field_change_still_reports_mismatch_alongside_volatile_change():
+    """The two-sided complement: id/created differing does not mask a real
+    content change -- exclusion narrows scope to REPLAY_VOLATILE_FIELDS and
+    nothing else."""
+    response_a = _load("volatile-fields", "response_a.json")
+    response_b = json.loads(json.dumps(_load("volatile-fields", "response_b.json")))
+    response_b["choices"][0]["message"]["content"] = "different content entirely"
+
+    result = compare(response_a, response_b)
+
+    assert result.match is False
+    assert result.digest_a != result.digest_b
+
+
+def test_replay_volatile_fields_is_exactly_id_and_created():
+    assert REPLAY_VOLATILE_FIELDS == frozenset({"id", "created"})
 
 
 # ---------------------------------------------------------------------------
@@ -207,4 +245,21 @@ def test_run_replay_live_mismatch_direction(stub_upstream):
     result = run_replay(f"http://127.0.0.1:{server.server_port}", request_body)
 
     assert result.match is False
+    assert handler.call_count == 2
+
+
+def test_run_replay_live_reports_match_with_fresh_id_and_created(stub_upstream):
+    """End-to-end reviewer repro: a stub upstream that mints a fresh id/created
+    on each call (as a real backend does) but returns byte-identical content
+    must report match: true via the live path, not a false mismatch."""
+    server, handler = stub_upstream
+    handler.responses = [
+        _load("volatile-fields", "response_a.json"),
+        _load("volatile-fields", "response_b.json"),
+    ]
+    request_body = _load("volatile-fields", "request.json")
+
+    result = run_replay(f"http://127.0.0.1:{server.server_port}", request_body)
+
+    assert result.match is True
     assert handler.call_count == 2

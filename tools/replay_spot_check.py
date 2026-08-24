@@ -16,6 +16,15 @@ over the float-stringified raw upstream response), the exact function
 function rather than reimplementing it, so there is one definition of
 "match," not two that can drift apart.
 
+`response_digest` itself is run-unique on the supported port — see
+`capsule_sidecar.forwarded_copy_record`'s docstring: backend-minted `id`/
+`created` carry a wall clock and differ across runs even for byte-identical
+model output. Two genuine replay firings would therefore mismatch on content
+they agree on. `REPLAY_VOLATILE_FIELDS`, below, is declared and excluded
+before digesting so replay-match scope is self-documenting, never implied —
+in-family with the Rust capsule-producer crate's `CHAIN_LINKAGE_FIELDS`
+exclusion from `capsule_id` (`jcs.rs`).
+
 WHAT THIS IS NOT (standing constraint — read before extending this file):
   - Not a scorer. `SpotCheckResult` has no confidence, trust, or reputation
     field, and never will — that logic is Authority-tier and explicitly out
@@ -62,7 +71,21 @@ from capsule_sidecar import digest_json  # noqa: E402  (path setup above)
 # stay constant across the two calls of a given spot-check, not globally.
 DEFAULT_SEED = 20260821
 
-DOMAIN = "response_digest (jcs-n over float-stringified raw upstream response; capsule_sidecar.digest_json)"
+# Backend-minted-fresh top-level response fields, excluded from the replay
+# digest. `id`/`created` carry a wall clock and are expected to differ
+# between two firings of an otherwise byte-identical request (see
+# `capsule_sidecar.forwarded_copy_record`'s docstring on why `response_digest`
+# is run-unique) -- including them would make this harness report a false
+# mismatch on deterministic output. In-family with the Rust capsule-producer
+# crate's `CHAIN_LINKAGE_FIELDS` (`jcs.rs`): a declared exclusion, not an
+# implied one.
+REPLAY_VOLATILE_FIELDS = frozenset({"id", "created"})
+
+DOMAIN = (
+    "response_digest (jcs-n over float-stringified raw upstream response; "
+    "capsule_sidecar.digest_json), excluding REPLAY_VOLATILE_FIELDS "
+    f"({sorted(REPLAY_VOLATILE_FIELDS)})"
+)
 
 # Fixed advisory text — see module docstring "WHAT THIS IS NOT." Never
 # computed from the comparison outcome; the same string ships on match and
@@ -87,6 +110,11 @@ class SpotCheckResult:
         return asdict(self)
 
 
+def _exclude_replay_volatile_fields(response: dict[str, Any]) -> dict[str, Any]:
+    """Drop `REPLAY_VOLATILE_FIELDS` from a response's top level before digesting."""
+    return {k: v for k, v in response.items() if k not in REPLAY_VOLATILE_FIELDS}
+
+
 def compare(response_a: dict[str, Any], response_b: dict[str, Any]) -> SpotCheckResult:
     """Compare two response bodies on the declared C2a domain.
 
@@ -94,8 +122,8 @@ def compare(response_a: dict[str, Any], response_b: dict[str, Any]) -> SpotCheck
     re-run, two capsules, or two files on disk. Firing the requests is a
     separate concern (`run_replay`, below).
     """
-    digest_a = digest_json(response_a)
-    digest_b = digest_json(response_b)
+    digest_a = digest_json(_exclude_replay_volatile_fields(response_a))
+    digest_b = digest_json(_exclude_replay_volatile_fields(response_b))
     return SpotCheckResult(
         domain=DOMAIN,
         digest_a=digest_a,
