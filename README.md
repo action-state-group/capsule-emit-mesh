@@ -380,6 +380,35 @@ output, same rationale as `ledger-checkpoint-demo/` and `ledger-live/`: so
 the claims above are checkable against a real artifact, not just this
 description.
 
+## Replay spot-check harness (C2a)
+
+`tools/replay_spot_check.py` implements the C2a mechanism from
+[`docs/TRUST-MODEL.md`](docs/TRUST-MODEL.md) §3 Class C: fire the same
+temperature-0, fixed-seed request twice and compare the two responses on the
+domain the sidecar already commits to — `response_digest`
+(`capsule_sidecar.digest_json`, jcs-n over the float-stringified raw
+response). It answers one question only — do these two runs match on that
+domain — and is deliberately not a scorer: the result carries `match: true`
+/ `false` and the two digests, never a confidence, trust, or reputation
+value. A mismatch is grounds to investigate, not a verdict (sampling
+non-determinism and cross-hardware execution are named, expected
+confounds in TRUST-MODEL.md — see the C2a discussion there before reading
+anything into a mismatch).
+
+```
+# Offline: compare two already-captured response bodies
+python3 tools/replay_spot_check.py compare response_a.json response_b.json
+
+# Live: pin a request to temperature 0 + a fixed seed, fire it twice
+# against a running upstream, and compare
+python3 tools/replay_spot_check.py live --upstream http://127.0.0.1:9337 --request request.json
+```
+
+See [`tests/replay/README.md`](tests/replay/README.md) for the vector suite
+(a matched pair and a deliberately mismatched pair — one sampled token
+flipped) and `tests/test_replay_spot_check.py` for both directions
+exercised end to end against a local stub upstream.
+
 ## Honest limitations (read this before the call)
 
 **This PoC's run history, for the record.** An earlier session built this
@@ -706,6 +735,8 @@ poc/
   run_checkpoint_demo.py          orchestrates the checkpoint demo: exchanges -> MMR -> checkpoint -> registry -> offline verify
   run_real_deployment_checkpoint_demo.sh  real mesh-llm-host-runtime + checkpointing, end to end (no goose leg)
   verify_real_deployment_checkpoint.py     offline verify + rollback-mutant proof for the real-deployment ledger
+  tools/
+    replay_spot_check.py          C2a replay spot-check harness (temp-0/fixed-seed re-run comparison; see above)
   goose/
     server.py                    capsule-emit-goose: the action-record MCP extension (tool-call boundary)
   model-package/
@@ -726,6 +757,8 @@ poc/
     test_forwarded_copy_and_keys.py  sidecar pure-function tests (streaming, key generation)
     test_bilateral_demo.py           bilateral attestation tests (rung derivation, all failure modes, e2e)
     test_checkpointing.py            Layers 1-2 tests: LogSource, cadence, reconnect self-heal, witness-honesty mutants
+    test_replay_spot_check.py        C2a replay spot-check harness tests (both directions, scope guardrail)
+    replay/                          vector suite for the replay spot-check harness (matched + mismatched pairs)
   bench/
     run_benchmark.py               A/F benchmark harness (one-command; python3 bench/run_benchmark.py)
     results/                       machine-readable JSON result files (environment-labelled, timestamped)
