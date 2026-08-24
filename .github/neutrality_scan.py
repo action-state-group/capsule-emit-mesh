@@ -36,8 +36,8 @@ import sys
 from pathlib import Path
 
 SCAN_SUFFIXES = (
-    ".html", ".py", ".go", ".md", ".rst", ".txt", ".xml", ".toml", ".cfg",
-    ".yml", ".yaml", ".json",
+    ".html", ".py", ".go", ".rs", ".md", ".rst", ".txt", ".xml", ".toml",
+    ".cfg", ".yml", ".yaml", ".json",
 )
 
 
