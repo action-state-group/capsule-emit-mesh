@@ -46,6 +46,7 @@ struct RealHost {
     child: Child,
     api_port: u16,
     home_dir: PathBuf,
+    capsule_data_dir: PathBuf,
 }
 
 impl RealHost {
@@ -91,6 +92,12 @@ args = []
         let log_path = home_dir.join("run.log");
         let log_file = std::fs::File::create(&log_path).expect("create run.log");
 
+        // Isolated per-run capsule-producer state (signing key + durable
+        // ledger + observed-lifecycle-events log) -- inherited by the
+        // plugin subprocess the host spawns, same as
+        // `ADMISSION_POLICY_BLOCKED_MODELS` already is below.
+        let capsule_data_dir = home_dir.join("capsule-data");
+
         let child = Command::new(&host_bin)
             .args([
                 "serve",
@@ -110,6 +117,7 @@ args = []
                 "ADMISSION_POLICY_BLOCKED_MODELS",
                 "blocked-test-model,allowed-test-model",
             )
+            .env("ADMISSION_POLICY_DATA_DIR", &capsule_data_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log_file.try_clone().expect("clone log fd")))
             .stderr(Stdio::from(log_file))
@@ -121,9 +129,14 @@ args = []
             child,
             api_port,
             home_dir,
+            capsule_data_dir,
         };
         host.wait_for_plugin_model("allowed-test-model").await;
         host
+    }
+
+    fn capsule_data_dir(&self) -> &std::path::Path {
+        &self.capsule_data_dir
     }
 
     /// Poll the host's own `/v1/models` until the plugin's health-probe
@@ -305,4 +318,266 @@ async fn malformed_body_fails_safe_at_the_real_host_before_reaching_the_plugin()
         reqwest::StatusCode::OK,
         "unparseable body must never be silently allowed, at the host or the plugin"
     );
+}
+
+/// (D) The #1332 integration proof: a REAL chat-completion inference event,
+/// dispatched by the real `mesh-llm` host to this plugin exactly like test
+/// (B), must produce a signed, hash-chained, ledgered AAC -- not just an
+/// admit/deny decision. Two independent things are checked, corresponding to
+/// the task's two required wiring points:
+///
+/// 1. **capsule-producer wired to the admission plugin**: the plugin's own
+///    `/v1/chat/completions` handler calls `capsule_emit::CapsuleState`
+///    directly with the real request/response bytes it exchanged; the
+///    resulting capsule must be durably ledgered and verify offline against
+///    capsule-producer's own independent `verify::verify_offline` (COSE
+///    signature, capsule_id recomputation, COSE-payload-matches-capsule).
+/// 2. **capsule-producer wired to the #1331 lifecycle hook**: the real host
+///    (built from `StevenMih/mesh-llm`'s `mesh1331-lifecycle-hooks` branch)
+///    independently publishes a `RawProxy`/`Terminal` envelope on the
+///    `openai.exchange.v1` mesh channel for this SAME exchange
+///    (`network/openai/ingress.rs::try_route_plugin_model`, wired into
+///    production, not just tested) -- the plugin's own `on_channel_message`
+///    handler must have received and logged it, proving the plugin observes
+///    the host's lifecycle broadcast independently of its own HTTP view.
+///
+/// Then adversarially mutates the observed exchange two ways and confirms
+/// both are caught: (a) flipping a signature byte on the ledgered COSE
+/// statement must fail COSE verification; (b) recomputing `capsule_id` after
+/// mutating the captured `agent_output_digest` (as an attacker forging a
+/// different response would need to) must produce a DIFFERENT id, proving
+/// the digest is bound to what was actually observed.
+#[tokio::test]
+#[ignore = "requires a real mesh-llm host binary; see MESH_LLM_HOST_BIN and REAL-HOST-VERIFICATION.md"]
+async fn allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_lifecycle_event() {
+    let host = RealHost::spawn().await;
+    let resp = host
+        .post_chat_completions(&serde_json::json!({
+            "model": "allowed-test-model",
+            "messages": [{"role": "user", "content": "hello from the real host e2e test"}],
+            "client_nonce": "e2e-real-inference-nonce-001",
+        }))
+        .await;
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.expect("valid JSON body");
+    assert_eq!(body["admission_policy"]["decision"], "allow");
+    let capsule_id = body["admission_policy"]["capsule_id"]
+        .as_str()
+        .expect("allow response carries a minted capsule_id")
+        .to_string();
+
+    // Give the plugin's async on_channel_message handler a moment to persist
+    // the host's lifecycle broadcast (delivery is fire-and-forget on the
+    // host side, same as production).
+    tokio::time::sleep(Duration::from_millis(750)).await;
+
+    // --- (1) capsule-producer <-> admission plugin: real ledger, real COSE ---
+    let keys_dir = host.capsule_data_dir().join("keys");
+    let pubkey_pem = std::fs::read_to_string(keys_dir.join("node-key.pub.pem"))
+        .expect("plugin persisted its public key");
+    let verifying_key = capsule_producer::keys::load_verifying_key_pem(&pubkey_pem)
+        .expect("parse persisted public key");
+
+    let ledger_dir = host.capsule_data_dir().join("ledger");
+    let (ledger, report) =
+        capsule_producer::ledger::Ledger::open(&ledger_dir).expect("reopen plugin's ledger");
+    assert!(
+        report.valid_entries >= 1,
+        "ledger must contain the emitted capsule"
+    );
+    let entry = ledger
+        .lookup(&capsule_id)
+        .expect("ledger lookup")
+        .expect("capsule_id from the HTTP response must be in the ledger");
+
+    let verify_report = capsule_producer::verify::verify_offline(
+        &entry.capsule,
+        &entry.signed_statement,
+        &verifying_key,
+        None,
+    );
+    assert!(
+        verify_report.ok(),
+        "real-host-produced capsule must verify offline: {:?}",
+        verify_report.findings
+    );
+    assert_eq!(entry.capsule["capsule_id"], capsule_id);
+    assert_eq!(
+        entry.capsule["model_attestation"]["model_id"],
+        "allowed-test-model"
+    );
+    assert_eq!(entry.capsule["assurance"]["effect_mode"], "confirmed");
+
+    // --- (2) capsule-producer <-> #1331 lifecycle hook: the host's own ---
+    //         terminal broadcast for this same exchange was received.
+    let lifecycle_log_path = host.capsule_data_dir().join("lifecycle-events.jsonl");
+    let lifecycle_log = std::fs::read_to_string(&lifecycle_log_path).unwrap_or_default();
+    let events: Vec<serde_json::Value> = lifecycle_log
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    assert!(
+        events.iter().any(|e| {
+            e["phase"] == "terminal"
+                && e["dispatch_path"] == "raw_proxy"
+                && e["model"] == "allowed-test-model"
+                && e["status"] == 200
+        }),
+        "expected the host's real openai.exchange.v1 terminal broadcast for \
+         allowed-test-model/200 to have been received by the plugin; got: {events:#?}"
+    );
+
+    // --- (3) adversarial mutation: tampered signature must fail verification ---
+    let mut tampered_statement = entry.signed_statement.clone();
+    let last = tampered_statement.len() - 1;
+    tampered_statement[last] ^= 0xFF;
+    let tampered_report = capsule_producer::verify::verify_offline(
+        &entry.capsule,
+        &tampered_statement,
+        &verifying_key,
+        None,
+    );
+    assert!(
+        !tampered_report.ok(),
+        "a bit-flipped signed statement must NOT verify"
+    );
+
+    // --- (4) adversarial mutation: forging a different observed response ---
+    //         must change capsule_id, not silently keep the original one.
+    let mut mutated_capsule = entry.capsule.clone();
+    mutated_capsule["model_attestation"]["compute_attestation"]["agent_output_digest"] =
+        serde_json::json!("f".repeat(64));
+    let mutated_id = capsule_producer::jcs::compute_capsule_id(&mutated_capsule)
+        .expect("recompute digest over mutated capsule");
+    assert_ne!(
+        mutated_id, capsule_id,
+        "mutating the observed response digest must change capsule_id"
+    );
+}
+
+/// Cross-language proof for the same real-host-produced ledger as above:
+/// independent of `capsule_producer::verify::verify_offline` (Rust
+/// re-verifying its own output), run the actual Python `scitt-cose` +
+/// `agent_action_capsule.verify` reference AND (when `AAC_GO_VERIFY_DIR` is
+/// also set) `scitt-cose-go-verify` -- two different implementations in two
+/// different languages, neither of which shares code with the Rust producer
+/// or with each other -- over the ledger two REAL chat-completion exchanges
+/// through the real host produced, and confirm both also say the chain and
+/// every COSE_Sign1 statement are byte-exact and valid.
+///
+/// Gated on `AAC_PYTHON` (same opt-in shape as
+/// `capsule-producer/tests/chain_ledger_conformance.rs` /
+/// `cross_language_conformance.rs`) so it degrades to a skip, not a failure,
+/// when the reference implementation isn't on this machine. Point it at a
+/// `python3` whose `PYTHONPATH` resolves `scitt_cose` to the
+/// `action-state-group/scitt-cose` `main` checkout (0.2.2) and
+/// `agent_action_capsule` to `agent-action-capsule/python` — e.g.:
+///   AAC_PYTHON=python3 \
+///   PYTHONPATH=/path/to/scitt-cose:/path/to/agent-action-capsule/python \
+///   AAC_GO_VERIFY_DIR=/path/to/scitt-cose/scitt-cose-go-verify \
+///     cargo test --test host_runtime_e2e --ignored --test-threads=1 \
+///     cross_language
+#[tokio::test]
+#[ignore = "requires a real mesh-llm host binary AND AAC_PYTHON; see REAL-HOST-VERIFICATION.md"]
+async fn real_host_ledger_cross_language_verifies_against_python_scitt_cose_reference() {
+    let Ok(python) = std::env::var("AAC_PYTHON") else {
+        eprintln!("AAC_PYTHON not set; skipping cross-language check (see module docs)");
+        return;
+    };
+
+    let host = RealHost::spawn().await;
+
+    // Two real exchanges through the real host, chained.
+    for i in 0..2 {
+        let resp = host
+            .post_chat_completions(&serde_json::json!({
+                "model": "allowed-test-model",
+                "messages": [{"role": "user", "content": format!("cross-language check #{i}")}],
+                "client_nonce": format!("cross-lang-nonce-{i}"),
+            }))
+            .await;
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let ledger_dir = host.capsule_data_dir().join("ledger");
+    let pubkey_path = host
+        .capsule_data_dir()
+        .join("keys")
+        .join("node-key.pub.pem");
+    assert!(
+        pubkey_path.is_file(),
+        "plugin must have persisted its public key"
+    );
+
+    let verify_script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../capsule-producer/tests/scripts/verify_rust_ledger.py");
+    assert!(
+        verify_script.is_file(),
+        "expected capsule-producer's own cross-language oracle at {verify_script:?}"
+    );
+
+    let output = std::process::Command::new(&python)
+        .arg(&verify_script)
+        .arg(&ledger_dir)
+        .arg(&pubkey_path)
+        .output()
+        .expect("run python cross-language verifier");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    eprintln!("cross-language ledger verifier: {stdout}");
+    let result: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("verifier prints one JSON line");
+
+    assert!(
+        output.status.success(),
+        "python scitt-cose/agent_action_capsule reference rejected a real-host-produced Rust ledger: {result}"
+    );
+    assert_eq!(result["count"], 2, "{result}");
+    assert_eq!(result["cose_all_ok"], true, "{result}");
+    assert_eq!(result["payload_bytes_all_match"], true, "{result}");
+    assert_eq!(result["store_ok"], true, "{result}");
+
+    // Second, independent language: `scitt-cose-go-verify` (veraison/go-cose)
+    // re-verifies the first capsule's own signed statement -- same idiom as
+    // `capsule-producer/tests/cross_language_conformance.rs`'s
+    // `run_go_verifier`. Optional: only the Python check above is required
+    // for this test to mean something; this is additional, not a substitute.
+    if let Ok(go_verify_dir) = std::env::var("AAC_GO_VERIFY_DIR") {
+        let first_capsule_id = result["capsule_ids"][0]
+            .as_str()
+            .expect("verifier reported at least one capsule_id");
+        let statement_path = ledger_dir
+            .join("signed-statements")
+            .join(format!("{first_capsule_id}.cose"));
+        assert!(
+            statement_path.is_file(),
+            "signed statement must exist on disk"
+        );
+
+        let go_output = std::process::Command::new("go")
+            .arg("run")
+            .arg(".")
+            .arg("-statement")
+            .arg(&statement_path)
+            .arg("-pubkey")
+            .arg(&pubkey_path)
+            .arg("-alg")
+            .arg("EdDSA")
+            .current_dir(&go_verify_dir)
+            .output()
+            .expect("run scitt-cose-go-verify");
+        let go_stdout = String::from_utf8_lossy(&go_output.stdout).to_string();
+        let go_stderr = String::from_utf8_lossy(&go_output.stderr).to_string();
+        eprintln!("go verifier: stdout={go_stdout}\nstderr={go_stderr}");
+        assert!(
+            go_output.status.success(),
+            "scitt-cose-go-verify (independent Go implementation) rejected a real-host-produced Rust statement: {go_stdout}\n{go_stderr}"
+        );
+        let go_result: serde_json::Value =
+            serde_json::from_str(go_stdout.trim()).expect("go verifier prints one JSON line");
+        assert_eq!(go_result["valid"], true, "{go_result}");
+        assert_eq!(go_result["sub"], first_capsule_id, "{go_result}");
+    } else {
+        eprintln!("AAC_GO_VERIFY_DIR not set; skipping the additional Go cross-check");
+    }
 }

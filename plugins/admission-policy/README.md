@@ -34,11 +34,50 @@ this "gRPC-native" is imprecise; see `PROTOCOL-NOTE.md`.
    `/v1/chat/completions` requests for them with an HTTP 403 and a
    deny-reason body. Malformed/unparseable request bodies are also denied
    (fail-safe), never silently allowed.
+4. Every ALLOWED exchange is turned into a signed, hash-chained, ledgered
+   Agent Action Capsule via `capsule-producer` (see below) — the
+   `capsule_id` is returned on the response's `admission_policy.capsule_id`.
 
 See `PROTOCOL-NOTE.md` for why "abstain" is realized structurally (by not
 advertising a model) rather than as a per-exchange decision, and why that is
 a real architectural difference from the exemplar contract this plugin
 replaces, not just a renaming exercise.
+
+## Capsule production (the #1332 integration)
+
+This plugin wires `../capsule-producer` (COSE-sign -> chain -> ledger, a
+previously separate, unmerged crate) into two places, closing the gap the
+`adv-mesh-1332-e2e-scorecard` review found — three real, independently-tested
+pieces with zero lines combining any two of them:
+
+1. **Its own `/v1/chat/completions` handler** (`src/capsule_emit.rs`): every
+   admitted exchange is sealed, COSE-signed, and appended to a durable local
+   ledger, with `agent_input_digest`/`agent_output_digest` computed over the
+   exact request/response bytes exchanged — mutating either changes
+   `capsule_id`. State (signing key + ledger + observed-lifecycle-events log)
+   persists under `ADMISSION_POLICY_DATA_DIR` (default `./admission-policy-data`).
+2. **The #1331 lifecycle-hook broadcast** (`src/lifecycle_channel.rs`): the
+   plugin declares `mesh_channel("openai.exchange.v1")` and receives the real
+   host's own terminal-event envelope for the *same* exchange
+   (`mesh-llm-host-runtime`'s `network/openai/ingress.rs::try_route_plugin_model`,
+   which is wired into production for the raw-proxy dispatch path this
+   plugin's `inference::provider()` registration uses — not just tested).
+   Received envelopes are logged to `lifecycle-events.jsonl` under the data
+   dir, independent of the plugin's own HTTP-handler view of the same call —
+   proof the plugin observes the host's lifecycle broadcast, not just its own
+   request handling.
+
+`tests/host_runtime_e2e.rs`'s
+`allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_lifecycle_event`
+drives a real chat-completion exchange through the real host and asserts
+both wiring points, offline-verifies the resulting capsule
+(`capsule_producer::verify::verify_offline`), and adversarially mutates the
+signature and the observed response digest to confirm both are caught.
+`real_host_ledger_cross_language_verifies_against_python_scitt_cose_reference`
+re-verifies the same real-host-produced ledger against the Python
+`scitt-cose`/`agent_action_capsule` reference and (optionally) the
+independent `scitt-cose-go-verify` Go implementation — see that test's doc
+comment for the env vars.
 
 ## Running the tests
 
