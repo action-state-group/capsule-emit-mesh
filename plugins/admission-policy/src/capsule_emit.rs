@@ -3,11 +3,17 @@
 //! admission plugin were two crates with zero shared dependency (see
 //! `adv-mesh-1332-e2e-scorecard`). Every ALLOWED chat-completion exchange
 //! this plugin itself serves is turned into a signed, chained, ledgered AAC
-//! (`x-mesh-poc-v1` mapping) -- digests are computed over the exact request/
-//! response bytes exchanged, so mutating either changes `capsule_id`.
+//! (`x-mesh-poc-v1` mapping) -- `effect_request_digest`/`effect_response_digest`
+//! are the canonical JSON-DIGEST (RFC 8785 JCS) of the parsed request/response
+//! body, matching this crate's own `jcs::json_digest` and the Python sidecar's
+//! `capsule_sidecar.digest_json` (spec §5.1) -- NOT a raw hash of the wire
+//! bytes, so reserializing the identical semantic content (key order,
+//! whitespace) does not change the digest, and it stays comparable across
+//! implementations. Mutating the actual content still changes `capsule_id`.
 
 use capsule_producer::capsule::{seal, CapsuleInput, ChainLink, MeshPocV1};
 use capsule_producer::cose::{build_signed_statement, SignedStatementInput};
+use capsule_producer::jcs;
 use capsule_producer::keys::{self, KeyPair};
 use capsule_producer::ledger::Ledger;
 use capsule_producer::timestamp::utc_now_iso8601;
@@ -15,6 +21,51 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::Mutex;
+
+/// Recursively replace JSON floats with their exact decimal-string form,
+/// mirroring `capsule_sidecar._stringify_floats` in the Python reference:
+/// the JSON-DIGEST (spec §5.1) refuses any float in a digest-bearing value
+/// (float serialization isn't cross-implementation deterministic), and
+/// OpenAI-shaped chat request/response bodies are full of floats
+/// (temperature, top_p, penalties, ...). `python_repr_f64` is not a claim of
+/// byte-parity with Python's `repr()` for every float (neither the Python
+/// docstring it mirrors makes that claim) -- it is deterministic for this
+/// plugin's own digest and matches Python for the ordinary decimal range
+/// chat-completion parameters actually use.
+fn stringify_floats(value: Value) -> Value {
+    match value {
+        Value::Number(n) => match n.as_f64() {
+            Some(f) if n.is_f64() && !(n.is_i64() || n.is_u64()) => {
+                Value::String(python_repr_f64(f))
+            }
+            _ => Value::Number(n),
+        },
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(k, v)| (k, stringify_floats(v)))
+                .collect(),
+        ),
+        Value::Array(arr) => Value::Array(arr.into_iter().map(stringify_floats).collect()),
+        other => other,
+    }
+}
+
+fn python_repr_f64(f: f64) -> String {
+    let s = format!("{f}");
+    if s.contains('.') || s.contains('e') || s.contains('E') {
+        s
+    } else {
+        format!("{s}.0")
+    }
+}
+
+/// The canonical JSON-DIGEST of a request/response body: parse as JSON,
+/// stringify floats, then `jcs::json_digest`. See the module docs for why
+/// this replaces a raw hash of the wire bytes.
+fn canonical_body_digest(bytes: &[u8]) -> anyhow::Result<String> {
+    let value: Value = serde_json::from_slice(bytes)?;
+    Ok(jcs::json_digest(&stringify_floats(value))?)
+}
 
 const CAPSULE_CONTENT_TYPE: &str =
     "application/vnd.agent-action-capsule+json; profile=draft-mih-scitt-agent-action-capsule-02";
@@ -76,8 +127,8 @@ impl CapsuleState {
         response_bytes: &[u8],
         latency_ms: f64,
     ) -> anyhow::Result<EmittedCapsule> {
-        let agent_input_digest = hex_sha256(request_bytes);
-        let agent_output_digest = hex_sha256(response_bytes);
+        let agent_input_digest = canonical_body_digest(request_bytes)?;
+        let agent_output_digest = canonical_body_digest(response_bytes)?;
 
         let mut ledger = self.ledger.lock().expect("capsule ledger mutex poisoned");
         let chain = ledger.chain_head().map(|parent| ChainLink {
@@ -157,4 +208,68 @@ impl CapsuleState {
 
 fn hex_sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [adv-run-2-fix-batch] B1 regression: two byte-different, semantically
+    /// identical request bodies (key order + whitespace only) must digest to
+    /// the SAME value. Before the fix, `emit_for_exchange` hashed the raw wire
+    /// bytes (`hex_sha256`), so this pair produced two different digests --
+    /// the exact defect this test pins closed. Reproduced against the
+    /// pre-fix `hex_sha256(bytes)` path directly, for contrast.
+    #[test]
+    fn canonical_body_digest_is_stable_across_key_order_and_whitespace() {
+        let a = br#"{"model":"m","temperature":0.7}"#;
+        let b = br#"{"temperature": 0.7, "model": "m"}"#;
+
+        let digest_a = canonical_body_digest(a).expect("digest a");
+        let digest_b = canonical_body_digest(b).expect("digest b");
+        assert_eq!(
+            digest_a, digest_b,
+            "canonical_body_digest must be format-invariant"
+        );
+
+        // contrast: the pre-fix raw-byte hash IS format-sensitive -- proves
+        // this pair is a real positive control, not a vacuous equality.
+        assert_ne!(
+            hex_sha256(a),
+            hex_sha256(b),
+            "sanity: raw hex_sha256 over wire bytes must differ for this pair \
+             (otherwise the pair doesn't exercise the bug this test guards)"
+        );
+    }
+
+    /// [adv-run-2-fix-batch] B1: Rust<->Python digest-equality. The expected
+    /// digest was computed by running the actual Python reference,
+    /// `capsule_sidecar.digest_json`, over the identical JSON value:
+    ///
+    ///   python3 -c "
+    ///   from capsule_sidecar import digest_json
+    ///   print(digest_json({
+    ///       'model': 'hermes-2-pro-mistral-7b',
+    ///       'messages': [{'role': 'user', 'content': 'hello'}],
+    ///       'temperature': 0.7,
+    ///       'top_p': 1.0,
+    ///       'max_tokens': 512,
+    ///   }))"
+    ///
+    /// `top_p: 1.0` exercises the whole-number-float edge case
+    /// (`python_repr_f64` must emit "1.0", not Rust's default "1") that a
+    /// naive float-to-string port would get wrong.
+    #[test]
+    fn canonical_body_digest_matches_python_reference_digest_json() {
+        let body = br#"{"model": "hermes-2-pro-mistral-7b", "messages": [{"role": "user", "content": "hello"}], "temperature": 0.7, "top_p": 1.0, "max_tokens": 512}"#;
+        let expected = "a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5";
+        assert_eq!(canonical_body_digest(body).expect("digest"), expected);
+    }
+
+    #[test]
+    fn python_repr_f64_keeps_the_decimal_point_python_repr_does() {
+        assert_eq!(python_repr_f64(1.0), "1.0");
+        assert_eq!(python_repr_f64(0.0), "0.0");
+        assert_eq!(python_repr_f64(0.7), "0.7");
+    }
 }
