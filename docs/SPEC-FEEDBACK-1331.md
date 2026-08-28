@@ -383,10 +383,59 @@ and is likely out of scope for the initial contract.
 
 ---
 
+## 16. Issuance side: `delegation_id` generation procedure (issuer counterpart)
+
+**What #1331 says.**
+> *include a delegation ID so revocation can be added or enforced explicitly.*
+
+Item 6 above flags that #1331 gives no `delegation_id` FORMAT. The issuer
+(`delegation_issuer.py`) forces the question the verifier could defer: the
+minting side must actually *generate* the value.
+
+**Working assumption in this issuer.** `delegation_id = "deleg-" + 16 random
+bytes as hex` (a fresh, unique, opaque identifier per issuance). Uniqueness is
+the only property the revocation check depends on; the verifier treats it as an
+opaque comparable string (item 6). The `deleg-` prefix is cosmetic.
+
+**Question for Nick.** Should `delegation_id` be host-scoped-unique, globally
+unique (UUID), or a content hash of the signed delegation bytes? A content hash
+would make the ID self-certifying (recomputable by a verifier) but would couple
+revocation identity to the exact byte layout; a random ID keeps them decoupled.
+The issuer picked a random opaque ID to match item 6's "opaque string" verifier
+assumption, but a content-hash form is the other defensible choice.
+
+## 17. Renewal reuses the plugin key; "invalidate on key change" is issuer policy
+
+**What #1331 says.**
+> *renew before expiry outside the request path;*
+> *invalidate/reissue on plugin artifact, plugin key, node identity, owner
+> identity, or relevant certificate change.*
+
+**What the issuer had to decide.** #1331 lists renewal and invalidation as
+separate obligations but does not say whether renewal itself may rotate the
+plugin key. This issuer keeps them orthogonal: `renew()` mints a fresh
+delegation for the *same* plugin key and scope (only the `delegation_id` and
+validity window change), while `reissue_on_plugin_key_change()` is the distinct
+path that revokes the old delegation and issues one bound to the new key. Node
+and owner rotations are modelled as issuer state changes
+(`rotate_node_endpoint`, `rotate_owner_key`) after which the OLD delegation no
+longer chains to the CURRENT node ownership — the verifier then rejects it at
+step 4, and a fresh `issue_delegation()` restores the chain.
+
+**Question for Nick.** Is "renew" intended to be key-preserving (rotation is a
+separate event, as modelled here), or is a renewal permitted to carry a rotated
+plugin key in one step? The distinction matters for revocation bookkeeping: a
+key-preserving renewal need not revoke its predecessor, whereas a key-rotating
+one must.
+
+---
+
 *Previous spec-feedback notes from this repo:*
 
 *Items 1–9 are in `docs/SPEC-FEEDBACK-1331.md` as produced by the
 delegation-chain verifier task (`[mesh-delegation-chain-verifier]`).
-This file adds items 10–15 from the two-mode exemplar task
-(`[mesh-exemplar-plugin-two-modes]`).  The two files will be reconciled
-into one when both PRs merge.*
+Items 10–15 are from the two-mode exemplar task
+(`[mesh-exemplar-plugin-two-modes]`).  Items 16–17 are from the
+delegation-issuance/renewal service (`[mesh-delegation-issuance]`), the
+minting counterpart to the verifier.  These will be reconciled into one file
+when the PRs merge.*
