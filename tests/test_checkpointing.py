@@ -1,21 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
 """Layer 1-2 checkpointing (checkpointing.py): the LogSource adapter, cadence-
-triggered + reconnect checkpointing, and the honest witness-state rendering.
+triggered + reconnect checkpointing, the COSE-wire checkpoint build/register
+sequence, and the honest witness-state rendering.
 
 No network calls in this file -- register_checkpoint is monkeypatched to a
 local fake. The live-anchor leg (real registration + receipt verification
-against anchor.agentactioncapsule.org) is exercised by
+against witness.agentactioncapsule.org) is exercised by
 `run_checkpoint_demo.py --register-live-anchor`, run manually and reported in
 the PR body, not in CI (see README "Checkpointing" honesty note).
 """
 from __future__ import annotations
 
+import json
+
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ed25519
 
 import checkpointing
 from capsule_emit.checkpoint import CheckpointConfig, MmrLedger, WitnessRecord
+from capsule_emit.checkpoint.cose_wire import verify_checkpoint_cose_offline
 from checkpointing import (
     CheckpointState,
     Ed25519Signer,
@@ -25,12 +27,11 @@ from checkpointing import (
 from scitt_cose import cll
 
 
-def _signer(key_id: str = "node-a") -> Ed25519Signer:
-    key = ed25519.Ed25519PrivateKey.generate()
-    pem = key.private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
-    )
-    return Ed25519Signer(key_id, pem)
+def _signer(tmp_path, key_id: str = "node-a") -> Ed25519Signer:
+    # key_id only picks this test's key FILE name -- it no longer becomes
+    # Ed25519Signer.key_id (see its docstring: that's always the real key's
+    # own raw-pubkey hex now, never an arbitrary caller label).
+    return Ed25519Signer(tmp_path / f"{key_id}.pem")
 
 
 def _fake_capsule(i: int) -> dict:
@@ -40,11 +41,15 @@ def _fake_capsule(i: int) -> dict:
 @pytest.fixture
 def fake_witness(monkeypatch):
     """Stand in for a real Transparency Service: same shape as
-    register_checkpoint's return value, no network."""
+    register_checkpoint's return value, no network. Takes the COSE-wire bytes
+    register_checkpoint's current signature expects (never a plain
+    CheckpointRecord -- the witness route is COSE-only, single-host ruling
+    2026-08-27)."""
     calls = []
 
-    def _fake_register_checkpoint(cp, ts_url, *, timeout=30.0):
-        calls.append((cp.digest(), ts_url))
+    def _fake_register_checkpoint(checkpoint_cose: bytes, ts_url, *, timeout=30.0):
+        assert isinstance(checkpoint_cose, bytes)
+        calls.append((checkpoint_cose, ts_url))
         return WitnessRecord(
             ts_url=ts_url,
             entry_hash=f"fake-entry-hash-{len(calls)}",
@@ -94,13 +99,48 @@ def test_jsonl_log_source_scan_on_missing_file_is_empty(tmp_path):
     assert list(log.scan()) == []
 
 
+# -- Ed25519Signer: real key_id, both Signer shapes ----------------------
+
+
+def test_ed25519_signer_key_id_is_the_real_public_key_not_a_label(tmp_path):
+    """Mutant guard: key_id must be the real raw Ed25519 public key, hex
+    encoded -- verify_checkpoint_signature_offline reconstructs the public
+    key straight from it, so an arbitrary label there silently breaks
+    offline verification (the bug this signer used to have)."""
+    signer = _signer(tmp_path, "node-a")
+    assert len(signer.key_id) == 64
+    bytes.fromhex(signer.key_id)  # must decode as hex; raises otherwise
+
+    # A second signer over the SAME key file recovers the identical identity.
+    reloaded = Ed25519Signer(tmp_path / "node-a.pem")
+    assert reloaded.key_id == signer.key_id
+
+
+def test_ed25519_signer_sign_round_trips_through_offline_verify(tmp_path):
+    from capsule_emit.checkpoint import CheckpointRecord
+    from capsule_emit.checkpoint.emit import verify_checkpoint_signature_offline
+
+    signer = _signer(tmp_path)
+    cp = CheckpointRecord(
+        v=1, kind="mmr_checkpoint", log_id="log-a", mmr_size=3, root="aa" * 32,
+        prev_size=0, prev_root="", key_id=signer.key_id,
+        timestamp="2026-08-21T00:00:00Z", signature="",
+    )
+    cp.signature = signer.sign(cp.digest())
+    assert verify_checkpoint_signature_offline(cp)
+
+    # mutant: a signature over the wrong bytes must not verify.
+    cp.signature = signer.sign("00" * 32)
+    assert not verify_checkpoint_signature_offline(cp)
+
+
 # -- CheckpointState: cadence + persistence ------------------------------
 
 
 def test_checkpoint_state_cadence_triggers_after_declared_count(tmp_path, fake_witness):
     log = JsonlLogSource(tmp_path / "capsules.jsonl")
     cfg = CheckpointConfig(cadence_entries=3, max_lag_entries=10, ts_urls=["https://fake-ts.example"])
-    state = CheckpointState.load(ledger_dir=tmp_path, log_source=log, cfg=cfg, signer=_signer(), log_id="log-a")
+    state = CheckpointState.load(ledger_dir=tmp_path, log_source=log, cfg=cfg, signer=_signer(tmp_path), log_id="log-a")
 
     emitted = []
     for i in range(5):
@@ -114,10 +154,39 @@ def test_checkpoint_state_cadence_triggers_after_declared_count(tmp_path, fake_w
     assert len(fake_witness) == 1  # exactly one registration call, not zero and not one-per-entry
 
 
+def test_checkpoint_state_registers_a_valid_cose_wire_checkpoint(tmp_path, fake_witness):
+    """The witness's /checkpoints route is COSE-only (single-host ruling,
+    2026-08-27): a checkpoint that only carries a JSON body is unregisterable.
+    This is the acceptance check for [mesh-plugin-cll-consume] A3: what
+    _checkpoint_now actually sends must decode and verify offline as a real
+    kind="cll-checkpoint" COSE_Sign1 statement, not just satisfy the fake's
+    call-count."""
+    log = JsonlLogSource(tmp_path / "capsules.jsonl")
+    cfg = CheckpointConfig(cadence_entries=3, max_lag_entries=10, ts_urls=["https://fake-ts.example"])
+    state = CheckpointState.load(ledger_dir=tmp_path, log_source=log, cfg=cfg, signer=_signer(tmp_path), log_id="log-a")
+
+    for i in range(3):
+        log.append(_fake_capsule(i))
+        state.record_appended()
+
+    assert len(fake_witness) == 1
+    checkpoint_cose, ts_url = fake_witness[0]
+    assert ts_url == "https://fake-ts.example"
+    result = verify_checkpoint_cose_offline(checkpoint_cose)
+    assert result.ok, result.errors
+
+    # The stamp persisted to checkpoints.jsonl carries the same COSE bytes as
+    # a sibling hex field, never folded into the JSON checkpoint's own signed
+    # body (cp.to_dict()/cp.entry_digest() coverage is unchanged).
+    last_line = (tmp_path / "checkpoints.jsonl").read_text().splitlines()[-1]
+    record = json.loads(last_line)
+    assert bytes.fromhex(record["checkpoint_cose"]) == checkpoint_cose
+
+
 def test_checkpoint_persists_across_reload(tmp_path, fake_witness):
     log = JsonlLogSource(tmp_path / "capsules.jsonl")
     cfg = CheckpointConfig(cadence_entries=2, max_lag_entries=10, ts_urls=["https://fake-ts.example"])
-    signer = _signer("node-a")
+    signer = _signer(tmp_path, "node-a")
     state = CheckpointState.load(ledger_dir=tmp_path, log_source=log, cfg=cfg, signer=signer, log_id="log-a")
     for i in range(2):
         log.append(_fake_capsule(i))
@@ -141,7 +210,7 @@ def test_reconnect_self_heals_backlog_in_one_checkpoint(tmp_path, fake_witness):
     one checkpoint per missed cadence tick."""
     log = JsonlLogSource(tmp_path / "capsules.jsonl")
     cfg = CheckpointConfig(cadence_entries=100, max_lag_entries=200, ts_urls=["https://fake-ts.example"])
-    signer = _signer("node-a")
+    signer = _signer(tmp_path, "node-a")
     state = CheckpointState.load(ledger_dir=tmp_path, log_source=log, cfg=cfg, signer=signer, log_id="log-a")
 
     for i in range(3):
@@ -162,9 +231,49 @@ def test_reconnect_self_heals_backlog_in_one_checkpoint(tmp_path, fake_witness):
     assert second_cp.prev_root == first_cp.root
     assert len(fake_witness) == 2  # one checkpoint for the whole 3-entry gap, not three
 
+    # The second checkpoint's COSE claims must carry a real consistency proof
+    # over the first (not just repeat the prev_size/prev_root fields) --
+    # checkpoint_to_cose refuses to serialize a prev_size > 0 checkpoint
+    # without one, so getting this far already proves it was supplied.
+    second_cose, _ = fake_witness[1]
+    result = verify_checkpoint_cose_offline(second_cose)
+    assert result.ok, result.errors
+
     # calling reconnect again with nothing new appended must be a no-op.
     assert state.reconnect() is None
     assert len(fake_witness) == 2
+
+
+# -- Two single-writer logs: never a second writer into a foreign ledger --
+
+
+def test_checkpoint_state_never_writes_into_a_ledger_it_does_not_own(tmp_path, fake_witness):
+    """[mesh-plugin-cll-consume] A3's core constraint: checkpointing a log
+    written by someone else (the Rust plugin, here simulated by writing
+    capsules.jsonl directly rather than through JsonlLogSource.append) must
+    never append anything back into that file -- only into the sibling
+    checkpoints.jsonl. Byte-for-byte unchanged capsules.jsonl is the mutant
+    guard for "never becomes a second writer" (§4 A2's forbidden topology)."""
+    plugin_ledger_dir = tmp_path / "plugin-ledger"
+    plugin_ledger_dir.mkdir()
+    capsules_path = plugin_ledger_dir / "capsules.jsonl"
+    lines = [json.dumps(_fake_capsule(i), sort_keys=True) for i in range(4)]
+    capsules_path.write_text("\n".join(lines) + "\n")
+    before = capsules_path.read_bytes()
+
+    # Read-only use, exactly as capsule_sidecar.py's plugin_checkpoint wiring
+    # does: .append() is never called on this source.
+    log = JsonlLogSource(capsules_path)
+    cfg = CheckpointConfig(cadence_entries=4, max_lag_entries=10, ts_urls=["https://fake-ts.example"])
+    state = CheckpointState.load(
+        ledger_dir=plugin_ledger_dir, log_source=log, cfg=cfg, signer=_signer(tmp_path), log_id="log-a-plugin"
+    )
+    cp = state.reconnect()
+    assert cp is not None
+    assert len(fake_witness) == 1
+
+    assert capsules_path.read_bytes() == before  # untouched, byte-for-byte
+    assert (plugin_ledger_dir / "checkpoints.jsonl").exists()  # the stamp landed in the sibling file instead
 
 
 # -- honesty rendering: witnessed vs self-checkpointed -------------------
@@ -226,7 +335,7 @@ def test_offline_inclusion_verify_round_trips_through_cll(tmp_path):
 
     mmr = MmrLedger(log)
     mmr.sync()
-    signer = _signer("node-a")
+    signer = _signer(tmp_path, "node-a")
     from capsule_emit.checkpoint import emit_checkpoint
 
     cp = emit_checkpoint(mmr, signer, log_id="log-a", timestamp="2026-08-21T00:00:00Z")

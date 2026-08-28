@@ -261,7 +261,8 @@ as a library — nothing here vendors or reimplements MMR/checkpoint logic:
   the same Ed25519 key that signs the node's capsules) committing everything
   appended since the previous checkpoint.
 - **Layer 3** — an independent witness (any conforming SCITT Transparency
-  Service, e.g. the free public-good tier at `anchor.agentactioncapsule.org`)
+  Service accepting the COSE-wire `kind="cll-checkpoint"` shape, e.g. the
+  free public-good, checkpoint-only tier at `witness.agentactioncapsule.org`)
   co-signs the checkpoint. Also opt-in, per URL, and never on the serving
   path: an unreachable witness leaves the checkpoint locally-committed
   (self-checkpointed), never blocks or fails the request it's attached to.
@@ -272,6 +273,15 @@ pays zero cost: no MMR is built, no extra file is written. See
 `checkpointing.py` for the adapter (`JsonlLogSource`, wrapping this repo's
 existing ledger as a `capsule_emit.checkpoint.LogSource`) and `CheckpointState`
 for the cadence + reconnect logic.
+
+**Two logs, each independently checkpointed.** A mesh node normally runs two
+separate single-writer `capsules.jsonl` ledgers — this sidecar's own, and the
+Rust plugin's (`plugins/capsule-producer`) — per the mesh build plan §4 A2/A3.
+`--checkpoint-config` opts in the sidecar's own log; `--plugin-ledger-dir`
+(plus, optionally, a dedicated `--plugin-checkpoint-config`) opts in the
+plugin's log too, checkpointed the same way but persisted to its own sibling
+`checkpoints.jsonl` — this process never writes into the plugin-owned
+`capsules.jsonl` itself (see `checkpointing.py`'s module docstring for why).
 
 **Offline nodes: latest-checkpoint-on-reconnect, not one checkpoint per missed
 tick.** A node that goes offline keeps appending to its local ledger and MMR;
@@ -322,8 +332,8 @@ proves freshness, not identity).
 
 **What was actually run.** `run_checkpoint_demo.py` exercises: N mesh
 exchanges → capsules → local MMR → cadence-triggered and reconnect-triggered
-checkpoints → registration at the live public anchor
-(`anchor.agentactioncapsule.org`) → offline inclusion + receipt verification
+checkpoints → registration at the live public witness
+(`witness.agentactioncapsule.org`) → offline inclusion + receipt verification
 via `scitt_cose.cll`, with no sidecar state in memory for the offline leg.
 Run with `--register-live-anchor` for the real Layer 3 registration (a real
 write to shared infrastructure — off by default; without the flag the demo
@@ -369,12 +379,12 @@ command to register the resulting checkpoint at the live public-good witness.
 `ledger-real-deployment/capsules.jsonl`, cadence-triggered checkpoints into
 `ledger-real-deployment/checkpoints.jsonl`, offline inclusion verify, and the
 rollback-mutant proof — is real, this run, no mocks. Live registration at
-`anchor.agentactioncapsule.org` is deliberately STAGED, not executed: this
+`witness.agentactioncapsule.org` is deliberately STAGED, not executed: this
 task's own gate reserves live-anchor writes for a separate go from the
 task-level one (see the outbox report for the exact reasoning). The staged
-command is printed by `verify_real_deployment_checkpoint.py` and is a single,
-already-correct call to `capsule_emit.checkpoint.register_checkpoint` — no
-further code work needed if/when it's authorized.
+command is printed by `verify_real_deployment_checkpoint.py` and drives the
+same `checkpointing.CheckpointState`/`capsule_emit.checkpoint` COSE-wire path
+a real node uses — no further code work needed if/when it's authorized.
 `ledger-real-deployment/` is this run's committed transcript and fixture
 output, same rationale as `ledger-checkpoint-demo/` and `ledger-live/`: so
 the claims above are checkable against a real artifact, not just this
