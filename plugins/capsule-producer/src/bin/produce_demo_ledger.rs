@@ -133,13 +133,24 @@ fn step_input(step: &Step, chain: Option<ChainLink>) -> CapsuleInput {
                 served_by_node_id: "capsule-emit-mesh-demo3-node".to_string(),
                 requesting_party: "capsule-emit-mesh-demo3-client".to_string(),
                 exchange_id: step.exchange_id.to_string(),
-                // The mesh-llm host does not expose quantization on the
-                // exchange event — recorded "unknown", never guessed.
+                // This deterministic demo ledger is generated without a live
+                // host feeding the serving-provenance block, so quantization,
+                // hardware, and model-identity stay honest defaults
+                // (`unknown`/`null`) — never fabricated. A real host run fills
+                // them from the openai.exchange.v1 terminal event.
                 quantization: "unknown".to_string(),
-                // Nor serving hardware (GPU/VRAM/device): all null, not faked.
                 hardware_gpu: None,
                 hardware_vram_bytes: None,
                 hardware_device: None,
+                hardware_is_soc: None,
+                hostname: None,
+                architecture: None,
+                context_length: None,
+                parameter_size: None,
+                layer_count: None,
+                model_identity_hash: None,
+                model_canonical_ref: None,
+                model_revision: None,
                 usage: Some(TokenUsage {
                     prompt_tokens: step.prompt_tokens,
                     completion_tokens: step.completion_tokens,
