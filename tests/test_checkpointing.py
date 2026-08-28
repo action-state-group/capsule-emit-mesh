@@ -99,6 +99,36 @@ def test_jsonl_log_source_scan_on_missing_file_is_empty(tmp_path):
     assert list(log.scan()) == []
 
 
+def test_jsonl_log_source_scan_tolerates_a_torn_trailing_line(tmp_path):
+    """[bounce 2026-08-28] A --plugin-ledger-dir source reads a ledger a
+    SEPARATE process (the Rust plugin) is concurrently appending to. A read
+    can land mid-write: the trailing line on disk may be a partial write, no
+    closing brace/newline yet. scan() must stop cleanly at the last complete
+    line rather than raising -- the complete prefix is still a valid,
+    gapless log as of that point; the torn tail is picked up whole on the
+    next scan once the writer finishes it."""
+    path = tmp_path / "capsules.jsonl"
+    complete = [json.dumps(_fake_capsule(i), sort_keys=True) for i in range(3)]
+    # No closing brace, no trailing newline -- a write caught mid-flush.
+    path.write_text("\n".join(complete) + "\n" + '{"capsule_id": "aa')
+
+    scanned = list(JsonlLogSource(path).scan())
+    assert [r.seq for r in scanned] == [1, 2, 3]
+
+    # mutant guard: real corruption NOT at the trailing line is a different
+    # failure (a gap, not a race) and must still raise, not be silently
+    # dropped.
+    corrupt_middle = tmp_path / "capsules-corrupt-middle.jsonl"
+    corrupt_middle.write_text(
+        json.dumps(_fake_capsule(0), sort_keys=True)
+        + "\nnot-json-at-all\n"
+        + json.dumps(_fake_capsule(2), sort_keys=True)
+        + "\n"
+    )
+    with pytest.raises(json.JSONDecodeError):
+        list(JsonlLogSource(corrupt_middle).scan())
+
+
 # -- Ed25519Signer: real key_id, both Signer shapes ----------------------
 
 

@@ -222,6 +222,41 @@ def test_plugin_ledger_dir_wires_a_second_read_only_checkpoint_state():
     assert (plugin_ledger_dir / "checkpoints.jsonl").exists()
 
 
+def test_record_capsule_survives_plugin_checkpoint_failure(monkeypatch):
+    """[bounce 2026-08-28] The plugin-ledger checkpoint (`state.plugin_checkpoint`,
+    read-only against a ledger a SEPARATE process -- the Rust plugin --
+    concurrently writes) can fail for reasons entirely outside this node's own
+    recording: a torn trailing line raced mid-write, or any other transient
+    read hiccup capsule_emit's own MMR indexing raises on. That must never
+    fail the exchange this sidecar is otherwise done recording -- the same
+    'checkpointing is never on the serving path' promise checkpointing.py's
+    own module docstring already makes for an unreachable witness applies
+    here too. Nothing on the safety side is at risk either way: this node's
+    OWN capsule and .cose statement are written before the plugin-checkpoint
+    call runs, and capsules.jsonl (whichever process owns it) is never
+    written to as a result of a failed read here.
+
+    Mutant: remove the try/except around
+    `state.plugin_checkpoint.record_appended()` in record_capsule and this
+    goes red (the simulated failure below propagates and the assertions
+    below it never run)."""
+    state = _make_node_state()
+    monkeypatch.setattr(cs, "verify_capsule", lambda capsule: types.SimpleNamespace(ok=True, findings=[]))
+
+    class _ExplodingPluginCheckpoint:
+        def record_appended(self):
+            raise ValueError("simulated: torn trailing line from a concurrent plugin writer")
+
+    state.plugin_checkpoint = _ExplodingPluginCheckpoint()
+
+    capsule = {"capsule_id": "aa" * 32}
+    cs.record_capsule(state, capsule, b"fake-signed-statement")
+
+    assert state.last_capsule_id == capsule["capsule_id"]
+    assert capsule in state.emitted
+    assert (state.statements_dir / f"{capsule['capsule_id']}.cose").read_bytes() == b"fake-signed-statement"
+
+
 def test_client_nonce_resolution_client_supplied():
     state = _make_node_state()
     nonce_val, nonce_src = cs._resolve_client_nonce(state, {cs.CLIENT_NONCE_HEADER.lower(): "abc-123"})

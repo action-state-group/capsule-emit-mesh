@@ -110,18 +110,31 @@ class JsonlLogSource:
         self._next_seq += 1
         return JsonlRecord(seq=seq, capsule_id=capsule["capsule_id"], capsule=capsule)
 
-    def _lines(self) -> Iterator[str]:
+    def _lines(self) -> list[str]:
         if not self._ledger_path.exists():
-            return
+            return []
         with self._ledger_path.open("r") as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    yield line
+            return [line.strip() for line in fh if line.strip()]
 
     def scan(self, query: Any = None) -> Iterator[JsonlRecord]:
-        for i, line in enumerate(self._lines(), start=1):
-            capsule = json.loads(line)
+        # [bounce 2026-08-28] For a foreign-owned ledger (--plugin-ledger-dir:
+        # the Rust plugin is this file's sole writer, a SEPARATE, concurrently
+        # running process) a read here can land mid-append: the trailing line
+        # on disk may be a partial write -- no closing brace, no newline yet.
+        # Only the LAST line gets this tolerance: stop cleanly there instead
+        # of raising, since the complete prefix already scanned is still a
+        # valid, gapless log as of that point, and the torn tail is picked up
+        # whole on the next scan once the writer finishes it. Real corruption
+        # anywhere else in the file is NOT this case and must still raise --
+        # silently dropping an interior bad line would hide a gap, not a race.
+        lines = self._lines()
+        for i, line in enumerate(lines, start=1):
+            try:
+                capsule = json.loads(line)
+            except json.JSONDecodeError:
+                if i == len(lines):
+                    return
+                raise
             yield JsonlRecord(seq=i, capsule_id=capsule["capsule_id"], capsule=capsule)
 
     def fetch(self, capsule_id: str) -> JsonlRecord | None:

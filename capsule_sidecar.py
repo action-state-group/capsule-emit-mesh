@@ -638,7 +638,22 @@ def record_capsule(state: NodeState, capsule: dict[str, Any], signed_statement: 
     # who appended, so this still catches everything the plugin wrote since
     # the last check.
     if state.plugin_checkpoint is not None:
-        state.plugin_checkpoint.record_appended()
+        try:
+            state.plugin_checkpoint.record_appended()
+        except Exception as exc:  # noqa: BLE001 -- best-effort, availability-only guard
+            # [bounce 2026-08-28] The Rust plugin is a SEPARATE process
+            # concurrently writing this ledger: a read here can race a
+            # partial (torn) trailing line, or any other transient hiccup
+            # capsule_emit's own MMR indexing raises on. Checkpointing this
+            # foreign-owned log must never fail the exchange this sidecar is
+            # otherwise done recording -- the same "never on the serving
+            # path" promise checkpointing.py's own module docstring already
+            # makes for the (unreachable-witness) registration leg applies
+            # here too. Nothing on the safety side is at risk: capsules.jsonl
+            # itself is untouched either way (record_capsule already wrote
+            # THIS node's own capsule above); a missed plugin checkpoint just
+            # means it's picked up whole on the next successful read.
+            print(f"plugin-ledger checkpoint update failed (best-effort, continuing): {exc}")
 
 
 def _resolve_client_nonce(state: NodeState, headers: dict[str, str]) -> tuple[str, str]:
