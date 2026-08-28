@@ -13,6 +13,7 @@
 #   - Remove `cbor2` → "Smoke: cbor2" fails.
 #   - Break import in goose/server.py → "Smoke: goose/server.py" fails.
 #   - Break import in capsule_sidecar.py → "Smoke: capsule_sidecar" fails.
+#   - Break import in capsule_mesh_view.py → "Smoke: capsule_mesh_view" fails.
 name: ci
 
 on:
@@ -67,6 +68,9 @@ jobs:
 
       - name: Smoke — delegation_issuer (issuance/renewal counterpart to the verifier)
         run: python -c "from delegation_issuer import DelegationIssuer, UnregisteredScope, ArbitrarySigningRejected, OwnerIdentityUnavailable; print('ok')"
+
+      - name: Smoke — capsule_mesh_view (thin ledger-view wrapper joining the plugin + sidecar logs)
+        run: python -c "import capsule_mesh_view; print('ok')"
 
       - name: Unit tests
         run: |
