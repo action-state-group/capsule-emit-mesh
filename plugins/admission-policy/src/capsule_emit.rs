@@ -107,10 +107,32 @@ pub struct EmittedCapsule {
     pub capsule: Value,
 }
 
+/// The host's serving-provenance facts for the served model, captured from the
+/// `openai.exchange.v1` terminal event (mirror `lifecycle_channel::
+/// HostServingProvenance`). Every field is `Option`: a fact the host did not
+/// report stays `None` and lands as an honest `unknown`/`null` in the capsule —
+/// never fabricated. Passed as owned data (not a borrow of the channel state)
+/// so the emit path holds no lock on the lifecycle store.
+#[derive(Clone, Default)]
+pub struct HostProvenance {
+    pub served_by_node_id: Option<String>,
+    pub hostname: Option<String>,
+    pub quantization: Option<String>,
+    pub architecture: Option<String>,
+    pub context_length: Option<u32>,
+    pub parameter_size: Option<String>,
+    pub layer_count: Option<u32>,
+    pub model_identity_hash: Option<String>,
+    pub model_canonical_ref: Option<String>,
+    pub model_revision: Option<String>,
+    pub gpu: Option<String>,
+    pub vram_bytes: Option<u64>,
+    pub is_soc: Option<bool>,
+}
+
 /// One admitted exchange to seal into a capsule — the raw request/response
 /// bytes (digested, never stored raw) plus the provenance metadata the host
 /// exposed for it. Grouped into a struct so the provenance surface can grow
-/// (a future host event carrying quantization/hardware would add a field here)
 /// without churning the `emit_for_exchange` signature.
 pub struct ExchangeRecord<'a> {
     pub model: &'a str,
@@ -125,6 +147,10 @@ pub struct ExchangeRecord<'a> {
     /// Requesting party / client identity beyond the (optional) client nonce.
     /// `None` -> `"unknown"`, never invented.
     pub requesting_party: Option<&'a str>,
+    /// The host's serving provenance for this model, captured from the
+    /// `openai.exchange.v1` terminal event. `None` when the host has published
+    /// none yet — quantization/hardware/model-digest then stay honest defaults.
+    pub host_provenance: Option<HostProvenance>,
 }
 
 impl CapsuleState {
@@ -174,7 +200,13 @@ impl CapsuleState {
             latency_ms,
             exchange_id,
             requesting_party,
-        } = *exchange;
+            host_provenance,
+        } = exchange;
+        let (model, client_nonce, request_bytes, response_bytes, latency_ms, exchange_id, requesting_party) =
+            (*model, *client_nonce, *request_bytes, *response_bytes, *latency_ms, *exchange_id, *requesting_party);
+        // Honest defaults for every host-provenance fact; each is overwritten
+        // only if the host actually reported it (never fabricated).
+        let host = host_provenance.clone().unwrap_or_default();
         let agent_input_digest = canonical_body_digest(request_bytes)?;
         let agent_output_digest = canonical_body_digest(response_bytes)?;
         let usage = parse_usage(response_bytes);
@@ -218,18 +250,36 @@ impl CapsuleState {
                 // path; the live plugin only has the request's model name.
                 model_name_digest: hex_sha256(model.as_bytes()),
                 serving_provenance: ServingProvenance {
-                    // Single-node PoC: the node that served == this node.
-                    served_by_node_id: self.node_id.clone(),
+                    // Prefer the host event's serving node id; fall back to this
+                    // emitting node (single-node PoC) when the host reported none.
+                    served_by_node_id: host
+                        .served_by_node_id
+                        .clone()
+                        .unwrap_or_else(|| self.node_id.clone()),
                     requesting_party: requesting_party.unwrap_or("unknown").to_string(),
                     exchange_id: exchange_id.unwrap_or("unknown").to_string(),
-                    // The mesh-llm host does NOT expose quantization on the
-                    // exchange event or in the response body — recorded as
-                    // "unknown", never guessed.
-                    quantization: "unknown".to_string(),
-                    // Nor serving hardware (GPU/VRAM/device): all null, not faked.
-                    hardware_gpu: None,
-                    hardware_vram_bytes: None,
+                    hostname: host.hostname.clone(),
+                    // Quantization from the host serving-provenance block when it
+                    // carried one; else "unknown" — never guessed.
+                    quantization: host
+                        .quantization
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    // Serving hardware from the host serving-provenance block.
+                    // `hardware_device` stays None (host carries is_soc, not a
+                    // cpu/cuda/metal device enum) — never fabricated.
+                    hardware_gpu: host.gpu.clone(),
+                    hardware_vram_bytes: host.vram_bytes,
                     hardware_device: None,
+                    hardware_is_soc: host.is_soc,
+                    // Model identity / fidelity from the host block.
+                    architecture: host.architecture.clone(),
+                    context_length: host.context_length,
+                    parameter_size: host.parameter_size.clone(),
+                    layer_count: host.layer_count,
+                    model_identity_hash: host.model_identity_hash.clone(),
+                    model_canonical_ref: host.model_canonical_ref.clone(),
+                    model_revision: host.model_revision.clone(),
                     // Real token counts from the response body's `usage`, if any.
                     usage,
                 },

@@ -32,28 +32,34 @@ pub struct TokenUsage {
 /// a quantization or GPU string the mesh-llm host never told us.
 ///
 /// What the host DOES expose to this plugin (verified against
-/// `mesh-llm/…/plugin/openai_exchange.rs` on the `mesh1331-lifecycle-hooks`
-/// branch and `openai-frontend`'s `ChatCompletionResponse`):
+/// `mesh-llm/…/plugin/openai_exchange.rs` on the `mesh1331-lifecycle-hooks` +
+/// `feat/serving-provenance` branch and `openai-frontend`'s
+/// `ChatCompletionResponse`):
 ///
 /// - `model` (the served model NAME) — already in `model_attestation.model_id`
 /// - `usage` (prompt/completion/total tokens) — in the response body
 /// - `exchange_id` / a per-exchange correlation id, `nonce`, `nonce_source`,
 ///   `capsule_id` marker, `status`, `dispatch_path` — on the lifecycle event
 /// - the emitting node's own id — this plugin's `node_id`
+/// - **NEW (host `serving_provenance` block):** quantization, architecture,
+///   context length, parameter size, layer count, model identity hash /
+///   canonical ref / revision, serving GPU, VRAM bytes, SoC flag, and the
+///   serving node id + hostname — read straight from the host's terminal
+///   event when it carries them.
 ///
-/// What it does NOT expose (so these stay `"unknown"`/`null`):
+/// Fields the host STILL does not expose stay honest defaults
+/// (`"unknown"`/`null`), and any host field this plugin has not yet observed
+/// for the served model likewise stays at its default — never fabricated:
 ///
-/// - `quantization` — lives only in the TUI/`mesh-llm-system` crates; never
-///   surfaced on the exchange channel or in the response body.
-/// - hardware (GPU model / VRAM / device) — same: `mesh-llm-system` has it,
-///   but it is never carried on the event this plugin observes.
-/// - a serving-peer node id DISTINCT from the requester — the PoC serves and
-///   requests from the same node, so `served_by_node_id` is that one node.
+/// - `hardware_device` — the host carries an `is_soc` flag, not a cpu/cuda/
+///   metal device enum, so this stays `null` unless a future event adds one.
+/// - a serving-peer node id DISTINCT from the requester — in the single-node
+///   PoC the host's `served_by_node_id` and the requester are the same node.
 #[derive(Clone)]
 pub struct ServingProvenance {
-    /// The node that actually served the inference. In this single-node PoC it
-    /// is the emitting plugin's own `node_id`; a multi-hop mesh would carry the
-    /// distinct serving peer here (the host event does not yet expose one).
+    /// The node that actually served the inference. Prefer the host event's
+    /// `served_by_node_id` when observed; otherwise the emitting plugin's own
+    /// `node_id` (single-node PoC).
     pub served_by_node_id: String,
     /// The requesting party / client identity for this exchange. `"unknown"`
     /// when the caller supplied no identity beyond the (optional) client nonce.
@@ -62,16 +68,32 @@ pub struct ServingProvenance {
     /// response `id` / `x-request-id` lineage), so this record can be tied back
     /// to the host's own terminal-event log for the same exchange.
     pub exchange_id: String,
-    /// Model QUANTIZATION (e.g. "Q4_K_M"). The mesh-llm host does NOT expose
-    /// this on the exchange event or in the response body, so it is recorded as
-    /// `"unknown"` here rather than guessed. Populated only if a future host
-    /// event carries it.
+    /// Model QUANTIZATION (e.g. "Q4_K_M"), read from the host's serving
+    /// provenance when present; `"unknown"` when the host reported none
+    /// (unquantized weights, or a host predating the block) — never guessed.
     pub quantization: String,
-    /// Serving hardware. All `null` today: the host does not carry GPU/VRAM/
-    /// device on the event this plugin observes. Never fabricated.
+    /// Serving hardware, populated from the host's serving-provenance block
+    /// when it carries them; `null` otherwise. `hardware_device` stays `null`
+    /// (host carries `is_soc`, not a device enum) — never fabricated.
     pub hardware_gpu: Option<String>,
     pub hardware_vram_bytes: Option<u64>,
     pub hardware_device: Option<String>,
+    /// Whether the serving host is a unified-memory SoC, from the host event.
+    pub hardware_is_soc: Option<bool>,
+    /// Serving host name, from the host event.
+    pub hostname: Option<String>,
+    /// Model IDENTITY / fidelity from the host serving-provenance block. Each
+    /// is `None` when the host did not report it — never fabricated.
+    pub architecture: Option<String>,
+    pub context_length: Option<u32>,
+    pub parameter_size: Option<String>,
+    pub layer_count: Option<u32>,
+    /// Content-addressed identity hash of the served model artifact (a digest
+    /// of the model identity, NOT of the model *name* string). `None` when the
+    /// host did not resolve one.
+    pub model_identity_hash: Option<String>,
+    pub model_canonical_ref: Option<String>,
+    pub model_revision: Option<String>,
     /// Token accounting from the response `usage`, or `None` if absent.
     pub usage: Option<TokenUsage>,
 }
@@ -90,13 +112,26 @@ impl ServingProvenance {
             "served_by_node_id": self.served_by_node_id,
             "requesting_party": self.requesting_party,
             "exchange_id": self.exchange_id,
-            // Host does not expose quantization on the exchange event today.
+            "hostname": self.hostname,
+            // Quantization: real value from the host event, or "unknown".
             "quantization": self.quantization,
-            // Host does not expose serving hardware on the exchange event today.
+            // Model identity / fidelity from the host serving-provenance block.
+            "model": {
+                "architecture": self.architecture,
+                "context_length": self.context_length,
+                "parameter_size": self.parameter_size,
+                "layer_count": self.layer_count,
+                "identity_hash": self.model_identity_hash,
+                "canonical_ref": self.model_canonical_ref,
+                "revision": self.model_revision,
+            },
+            // Serving hardware from the host serving-provenance block.
             "hardware": {
                 "gpu": self.hardware_gpu,
                 "vram_bytes": self.hardware_vram_bytes,
+                // Host carries is_soc, not a cpu/cuda/metal device enum.
                 "device": self.hardware_device,
+                "is_soc": self.hardware_is_soc,
             },
             "usage": usage,
         })
@@ -331,10 +366,19 @@ mod tests {
                     served_by_node_id: "node-under-test".to_string(),
                     requesting_party: "client-under-test".to_string(),
                     exchange_id: "exch-under-test".to_string(),
-                    quantization: "unknown".to_string(),
-                    hardware_gpu: None,
-                    hardware_vram_bytes: None,
+                    quantization: "Q4_K_M".to_string(),
+                    hardware_gpu: Some("Apple M3 Max".to_string()),
+                    hardware_vram_bytes: Some(38_654_705_664),
                     hardware_device: None,
+                    hardware_is_soc: Some(true),
+                    hostname: Some("host-under-test".to_string()),
+                    architecture: Some("llama".to_string()),
+                    context_length: Some(8192),
+                    parameter_size: Some("7B".to_string()),
+                    layer_count: Some(32),
+                    model_identity_hash: Some("a".repeat(64)),
+                    model_canonical_ref: Some("repo@rev/model.gguf".to_string()),
+                    model_revision: Some("rev".to_string()),
                     usage: Some(TokenUsage {
                         prompt_tokens: 11,
                         completion_tokens: 22,
@@ -384,11 +428,22 @@ mod tests {
         assert_eq!(prov["served_by_node_id"], "node-under-test");
         assert_eq!(prov["requesting_party"], "client-under-test");
         assert_eq!(prov["exchange_id"], "exch-under-test");
-        // Host does not expose quantization -> explicit "unknown", not invented.
-        assert_eq!(prov["quantization"], "unknown");
-        // Host does not expose hardware -> all null, not invented.
-        assert!(prov["hardware"]["gpu"].is_null());
-        assert!(prov["hardware"]["vram_bytes"].is_null());
+        assert_eq!(prov["hostname"], "host-under-test");
+        // Quantization from the host serving-provenance block (real value).
+        assert_eq!(prov["quantization"], "Q4_K_M");
+        // Model identity / fidelity from the host serving-provenance block.
+        assert_eq!(prov["model"]["architecture"], "llama");
+        assert_eq!(prov["model"]["context_length"], 8192);
+        assert_eq!(prov["model"]["parameter_size"], "7B");
+        assert_eq!(prov["model"]["layer_count"], 32);
+        assert_eq!(prov["model"]["identity_hash"], "a".repeat(64));
+        assert_eq!(prov["model"]["canonical_ref"], "repo@rev/model.gguf");
+        assert_eq!(prov["model"]["revision"], "rev");
+        // Hardware from the host serving-provenance block (real values).
+        assert_eq!(prov["hardware"]["gpu"], "Apple M3 Max");
+        assert_eq!(prov["hardware"]["vram_bytes"], 38_654_705_664u64);
+        assert_eq!(prov["hardware"]["is_soc"], true);
+        // Host carries is_soc, not a device enum -> device stays null.
         assert!(prov["hardware"]["device"].is_null());
         // Usage IS real when the response carried it.
         assert_eq!(prov["usage"]["prompt_tokens"], 11);
@@ -414,9 +469,19 @@ mod tests {
         input.mesh_poc.serving_provenance.exchange_id = "other-exch".to_string();
         assert_ne!(seal(&input).unwrap()["capsule_id"], baseline_id.as_str());
 
-        // (3) quantization
+        // (3) quantization (baseline is "Q4_K_M"; mutate to a different quant)
         let mut input = base_input(None);
-        input.mesh_poc.serving_provenance.quantization = "Q4_K_M".to_string();
+        input.mesh_poc.serving_provenance.quantization = "Q8_0".to_string();
+        assert_ne!(seal(&input).unwrap()["capsule_id"], baseline_id.as_str());
+
+        // (3b) a model-fidelity field (architecture) is also digest-bound.
+        let mut input = base_input(None);
+        input.mesh_poc.serving_provenance.architecture = Some("mistral".to_string());
+        assert_ne!(seal(&input).unwrap()["capsule_id"], baseline_id.as_str());
+
+        // (3c) a hardware field (gpu) is also digest-bound.
+        let mut input = base_input(None);
+        input.mesh_poc.serving_provenance.hardware_gpu = Some("NVIDIA H100".to_string());
         assert_ne!(seal(&input).unwrap()["capsule_id"], baseline_id.as_str());
 
         // (4) usage token counts

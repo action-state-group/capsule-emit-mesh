@@ -8,9 +8,11 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use capsule_emit::CapsuleState;
+use capsule_emit::{CapsuleState, HostProvenance};
 use decision::Decision;
-use lifecycle_channel::{ObservedLifecycleEvents, OpenAiExchangeEnvelope, OPENAI_EXCHANGE_CHANNEL};
+use lifecycle_channel::{
+    HostServingProvenance, ObservedLifecycleEvents, OpenAiExchangeEnvelope, OPENAI_EXCHANGE_CHANNEL,
+};
 use mesh_llm_plugin::{
     capability, inference, mesh_channel, plugin, plugin_server_info, PluginMetadata, PluginRuntime,
 };
@@ -55,6 +57,32 @@ fn data_dir() -> PathBuf {
 struct AppState {
     models: Arc<Vec<String>>,
     capsules: Arc<CapsuleState>,
+    /// The host serving-provenance the plugin has observed on the
+    /// `openai.exchange.v1` channel, so the seal path can read the host's real
+    /// quantization/hardware/model-digest for the served model.
+    lifecycle_events: Arc<ObservedLifecycleEvents>,
+}
+
+/// Adapt the lifecycle-channel's mirror of the host `serving_provenance` block
+/// into the capsule-emit capture struct. A straight field copy — every field
+/// stays `Option`, so a fact the host did not report remains `None` and lands
+/// as an honest `unknown`/`null` in the capsule (never fabricated here).
+fn host_provenance_from(observed: HostServingProvenance) -> HostProvenance {
+    HostProvenance {
+        served_by_node_id: observed.served_by_node_id,
+        hostname: observed.hostname,
+        quantization: observed.quantization,
+        architecture: observed.architecture,
+        context_length: observed.context_length,
+        parameter_size: observed.parameter_size,
+        layer_count: observed.layer_count,
+        model_identity_hash: observed.model_identity_hash,
+        model_canonical_ref: observed.model_canonical_ref,
+        model_revision: observed.model_revision,
+        gpu: observed.gpu,
+        vram_bytes: observed.vram_bytes,
+        is_soc: observed.is_soc,
+    }
 }
 
 async fn list_models(State(state): State<AppState>) -> Json<Value> {
@@ -108,6 +136,15 @@ async fn chat_completions(
             let response_bytes = serde_json::to_vec(&response).expect("response is valid JSON");
             let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
 
+            // The host's real quantization/hardware/model-digest for this model,
+            // as most recently observed on the openai.exchange.v1 channel. `None`
+            // when the host has published none yet -> capsule keeps honest
+            // defaults; never fabricated.
+            let host_provenance = state
+                .lifecycle_events
+                .latest_provenance_for_model(&model)
+                .map(host_provenance_from);
+
             match state.capsules.emit_for_exchange(&capsule_emit::ExchangeRecord {
                 model: &model,
                 client_nonce: client_nonce.as_deref(),
@@ -118,6 +155,7 @@ async fn chat_completions(
                 // The requesting party beyond the client nonce is not carried on
                 // this direct-serve path — recorded as "unknown", not invented.
                 requesting_party: None,
+                host_provenance,
             }) {
                 Ok(emitted) => {
                     tracing::info!(capsule_id = %emitted.capsule_id, %model, "emitted AAC for admitted exchange");
@@ -189,6 +227,7 @@ async fn main() -> anyhow::Result<()> {
     let app_state = AppState {
         models: Arc::new(models),
         capsules,
+        lifecycle_events: lifecycle_events.clone(),
     };
     tokio::spawn(serve_admission_http(listener, app_state));
 
