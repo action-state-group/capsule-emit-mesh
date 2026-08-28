@@ -5,7 +5,9 @@
 //! actually exercises the CLI wiring -- argument parsing, file I/O, JSON
 //! output shape, exit codes -- not just the library call underneath it.
 
-use capsule_producer::capsule::{seal, CapsuleInput, ChainLink, MeshPocV1};
+use capsule_producer::capsule::{
+    seal, CapsuleInput, ChainLink, MeshPocV1, ServingProvenance, TokenUsage,
+};
 use capsule_producer::cose::{build_signed_statement, SignedStatementInput};
 use capsule_producer::keys::KeyPair;
 use capsule_producer::ledger::Ledger;
@@ -31,7 +33,21 @@ fn sample_input(seed: &str, chain: Option<ChainLink>) -> CapsuleInput {
         mesh_poc: MeshPocV1 {
             client_nonce: seed.repeat(32).chars().take(32).collect(),
             client_nonce_source: "client_supplied".to_string(),
-            model_package_digest: "d".repeat(64),
+            model_name_digest: "d".repeat(64),
+            serving_provenance: ServingProvenance {
+                served_by_node_id: "verify-cli-node".to_string(),
+                requesting_party: "verify-cli-client".to_string(),
+                exchange_id: "verify-cli-exchange".to_string(),
+                quantization: "unknown".to_string(),
+                hardware_gpu: None,
+                hardware_vram_bytes: None,
+                hardware_device: None,
+                usage: Some(TokenUsage {
+                    prompt_tokens: 7,
+                    completion_tokens: 9,
+                    total_tokens: 16,
+                }),
+            },
             generation_parameters,
             latency_ms: "1.0".to_string(),
         },

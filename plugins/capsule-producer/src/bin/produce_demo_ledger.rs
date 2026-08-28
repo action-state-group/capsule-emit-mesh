@@ -22,7 +22,9 @@
 //!   2. `check_policy` — the policy check that follows it
 //!   3. `confirm`      — the confirmation that follows the check
 
-use capsule_producer::capsule::{payload_bytes, seal, CapsuleInput, ChainLink, MeshPocV1};
+use capsule_producer::capsule::{
+    payload_bytes, seal, CapsuleInput, ChainLink, MeshPocV1, ServingProvenance, TokenUsage,
+};
 use capsule_producer::cose::{build_signed_statement, SignedStatementInput};
 use capsule_producer::keys::KeyPair;
 use capsule_producer::ledger::Ledger;
@@ -53,6 +55,11 @@ struct Step {
     effect_type: &'static str,
     disposition_decision: &'static str,
     disposition_verdict_class: &'static str,
+    /// Per-exchange correlation id (mirrors the host's `exchange_id` /
+    /// `x-request-id`) and the real token counts for that exchange.
+    exchange_id: &'static str,
+    prompt_tokens: u64,
+    completion_tokens: u64,
 }
 
 fn demo_steps() -> [Step; 3] {
@@ -67,6 +74,9 @@ fn demo_steps() -> [Step; 3] {
             effect_type: "order_write",
             disposition_decision: "accept",
             disposition_verdict_class: "executed",
+            exchange_id: "chatcmpl-demo3-0001",
+            prompt_tokens: 128,
+            completion_tokens: 64,
         },
         Step {
             name: "check_policy",
@@ -76,6 +86,9 @@ fn demo_steps() -> [Step; 3] {
             effect_type: "policy_check",
             disposition_decision: "accept",
             disposition_verdict_class: "executed",
+            exchange_id: "chatcmpl-demo3-0002",
+            prompt_tokens: 96,
+            completion_tokens: 40,
         },
         Step {
             name: "confirm",
@@ -85,6 +98,9 @@ fn demo_steps() -> [Step; 3] {
             effect_type: "order_confirmation",
             disposition_decision: "accept",
             disposition_verdict_class: "executed",
+            exchange_id: "chatcmpl-demo3-0003",
+            prompt_tokens: 80,
+            completion_tokens: 24,
         },
     ]
 }
@@ -110,7 +126,26 @@ fn step_input(step: &Step, chain: Option<ChainLink>) -> CapsuleInput {
         mesh_poc: MeshPocV1 {
             client_nonce: step.nonce_char.to_string().repeat(32),
             client_nonce_source: "client_supplied".to_string(),
-            model_package_digest: "d".repeat(64),
+            // SHA-256 of the model NAME only — truthfully NOT weights/package.
+            model_name_digest: hex::encode(Sha256::digest("hermes-2-pro-mistral-7b".as_bytes())),
+            serving_provenance: ServingProvenance {
+                // Single-node demo: served-by == the demo node itself.
+                served_by_node_id: "capsule-emit-mesh-demo3-node".to_string(),
+                requesting_party: "capsule-emit-mesh-demo3-client".to_string(),
+                exchange_id: step.exchange_id.to_string(),
+                // The mesh-llm host does not expose quantization on the
+                // exchange event — recorded "unknown", never guessed.
+                quantization: "unknown".to_string(),
+                // Nor serving hardware (GPU/VRAM/device): all null, not faked.
+                hardware_gpu: None,
+                hardware_vram_bytes: None,
+                hardware_device: None,
+                usage: Some(TokenUsage {
+                    prompt_tokens: step.prompt_tokens,
+                    completion_tokens: step.completion_tokens,
+                    total_tokens: step.prompt_tokens + step.completion_tokens,
+                }),
+            },
             generation_parameters,
             latency_ms: "42.0".to_string(),
         },
