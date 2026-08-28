@@ -61,6 +61,18 @@ def test_role_ignores_a_nonsense_observation_point_value():
     assert label_role(rec, SOURCE_SIDECAR) == "served"
 
 
+def test_role_via_observation_point_alone_for_an_unrecognized_source_log():
+    # Isolates the observation_point branch from the per-source-log default:
+    # an unrecognized source_log has no entry in _DEFAULT_ROLE_BY_SOURCE (it
+    # falls back to "unknown" on its own -- see
+    # test_role_falls_back_to_unknown_for_an_unrecognized_source_log), so the
+    # only way this returns "served" is via the observation_point check.
+    # Deleting that branch flips this test red -- real mutation coverage for
+    # the "fails closed instead of silently mislabeling" claim.
+    rec = _capsule("a" * 64, "2026-08-28T00:00:00Z", observation_point="gateway_ingress")
+    assert label_role(rec, "some-future-log") == "served"
+
+
 # ---------------------------------------------------------------------------
 # label_counterparty
 # ---------------------------------------------------------------------------
@@ -99,7 +111,11 @@ def test_merges_and_sorts_by_timestamp_across_both_logs():
     assert [r["source_log"] for r in rows] == [SOURCE_SIDECAR, SOURCE_PLUGIN]
 
 
-def test_join_by_capsule_id_dedupes_a_capsule_id_seen_in_both_logs():
+def test_join_by_capsule_id_seen_in_both_logs_is_marked_witnessed_by_both():
+    # A capsule_id recorded by BOTH writers is not a duplicate to discard --
+    # it's the strongest accountability signal available (both of this
+    # machine's independent writers saw the same content). It collapses to
+    # one row (never two rows for one capsule_id) but keeps both sources.
     shared_id = "c" * 64
     plugin_records = [_capsule(shared_id, "2026-08-28T01:00:00Z")]
     sidecar_records = [_capsule(shared_id, "2026-08-28T01:00:00Z")]
@@ -109,9 +125,41 @@ def test_join_by_capsule_id_dedupes_a_capsule_id_seen_in_both_logs():
     )
 
     assert len(rows) == 1
-    # first source wins the row -- the two logs are never storage-merged;
-    # this is purely which vantage the presentation layer keeps.
-    assert rows[0]["source_log"] == SOURCE_PLUGIN
+    assert rows[0]["witnessed_by_both"] is True
+    assert rows[0]["source_logs"] == [SOURCE_PLUGIN, SOURCE_SIDECAR]
+    assert rows[0]["source_log"] == "plugin+sidecar"
+
+
+def test_witnessed_by_both_verify_ok_is_false_if_either_source_failed_verify():
+    shared_id = "c" * 64
+    plugin_records = [_capsule(shared_id, "2026-08-28T01:00:00Z")]
+    sidecar_records = [_capsule(shared_id, "2026-08-28T01:00:00Z")]
+
+    class OkResult:
+        capsule_id = shared_id
+        ok = True
+
+    class FailResult:
+        capsule_id = shared_id
+        ok = False
+
+    rows = build_machine_view(
+        [
+            (SOURCE_PLUGIN, plugin_records, [OkResult()]),
+            (SOURCE_SIDECAR, sidecar_records, [FailResult()]),
+        ]
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["witnessed_by_both"] is True
+    assert rows[0]["verify_ok"] is False
+
+
+def test_single_source_row_is_not_witnessed_by_both():
+    rec = _capsule("a" * 64, "2026-08-28T00:00:00Z")
+    rows = build_machine_view([(SOURCE_SIDECAR, [rec], None)])
+    assert rows[0]["witnessed_by_both"] is False
+    assert rows[0]["source_logs"] == [SOURCE_SIDECAR]
 
 
 def test_records_without_a_capsule_id_are_skipped_not_crashed_on():

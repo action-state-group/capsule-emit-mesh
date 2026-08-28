@@ -152,28 +152,57 @@ def build_machine_view(
     chain linkage (`prior_capsule_id`) is per single-writer log, so verifying
     an interleaved cross-writer list would break continuity for every writer
     but the first. The merge itself is keyed by each record's own
-    `capsule_id` (content address): a capsule_id already seen from an
-    earlier source is the same content by definition and is not duplicated.
+    `capsule_id` (content address).
+
+    A capsule_id seen from more than one source is not a duplicate to
+    discard -- it is the strongest accountability signal this viewer can
+    show: BOTH of this machine's writers independently recorded the same
+    content. Such a row is marked `witnessed_by_both` and keeps every
+    source's own verify result (`verify_ok` is True only if every source
+    that recorded it verified True, False if any source failed verify,
+    else None) rather than silently keeping the first source and dropping
+    the second.
     """
     seen: dict[str, dict[str, Any]] = {}
+    verify_by_source: dict[str, dict[str, bool | None]] = {}
     order: list[str] = []
     for source_log, records, verify_results in sources:
         vmap = _verify_ok_map(records, verify_results)
         for record in records:
             capsule_id = record.get("capsule_id", "")
-            if not capsule_id or capsule_id in seen:
+            if not capsule_id:
+                continue
+            verify_ok = vmap.get(capsule_id)
+            if capsule_id in seen:
+                row = seen[capsule_id]
+                if source_log not in row["source_logs"]:
+                    row["source_logs"].append(source_log)
+                verify_by_source[capsule_id][source_log] = verify_ok
                 continue
             seen[capsule_id] = {
                 "capsule_id": capsule_id,
                 "timestamp": record.get("timestamp"),
-                "source_log": source_log,
+                "source_logs": [source_log],
                 "role": label_role(record, source_log),
                 "counterparty": label_counterparty(record),
-                "verify_ok": vmap.get(capsule_id),
             }
+            verify_by_source[capsule_id] = {source_log: verify_ok}
             order.append(capsule_id)
     order.sort(key=lambda cid: seen[cid].get("timestamp") or "")
-    return [seen[cid] for cid in order]
+    rows = []
+    for cid in order:
+        row = seen[cid]
+        oks = list(verify_by_source[cid].values())
+        if any(ok is False for ok in oks):
+            row["verify_ok"] = False
+        elif all(ok is True for ok in oks):
+            row["verify_ok"] = True
+        else:
+            row["verify_ok"] = None
+        row["witnessed_by_both"] = len(row["source_logs"]) > 1
+        row["source_log"] = "+".join(row["source_logs"])
+        rows.append(row)
+    return rows
 
 
 def render_machine_view(rows: list[dict[str, Any]], *, out: Any = None) -> None:
@@ -184,7 +213,7 @@ def render_machine_view(rows: list[dict[str, Any]], *, out: Any = None) -> None:
         print("machine view: no records in either log", file=out)
         return
 
-    col_id, col_log, col_role, col_cp = 14, 8, 9, 24
+    col_id, col_log, col_role, col_cp = 14, 15, 9, 24
     print(f"\nmachine view  ({len(rows)} record(s) across both logs)\n", file=out)
     header = (
         f"  {'capsule_id':<{col_id}}  {'log':<{col_log}}  {'role':<{col_role}}  "
