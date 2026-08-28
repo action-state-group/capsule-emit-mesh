@@ -17,7 +17,7 @@
 //!   AAC_GO_VERIFY_DIR=/path/to/scitt-cose/scitt-cose-go-verify \
 //!     cargo test --test cross_language_conformance -- --ignored --nocapture
 
-use capsule_producer::capsule::{seal, CapsuleInput, MeshPocV1};
+use capsule_producer::capsule::{seal, CapsuleInput, MeshPocV1, ServingProvenance, TokenUsage};
 use capsule_producer::cose::{build_signed_statement, SignedStatementInput};
 use capsule_producer::keys::KeyPair;
 use serde_json::{json, Value};
@@ -70,7 +70,21 @@ fn sample_capsule_input() -> CapsuleInput {
         mesh_poc: MeshPocV1 {
             client_nonce: "c".repeat(32),
             client_nonce_source: "client_supplied".to_string(),
-            model_package_digest: "d".repeat(64),
+            model_name_digest: "d".repeat(64),
+            serving_provenance: ServingProvenance {
+                served_by_node_id: "conformance-node".to_string(),
+                requesting_party: "conformance-client".to_string(),
+                exchange_id: "conformance-exchange".to_string(),
+                quantization: "unknown".to_string(),
+                hardware_gpu: None,
+                hardware_vram_bytes: None,
+                hardware_device: None,
+                usage: Some(TokenUsage {
+                    prompt_tokens: 12,
+                    completion_tokens: 34,
+                    total_tokens: 46,
+                }),
+            },
             generation_parameters,
             latency_ms: "123.456".to_string(),
         },

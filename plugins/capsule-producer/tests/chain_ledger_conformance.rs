@@ -12,7 +12,9 @@
 //!   AAC_VERIFY_LEDGER_SCRIPT=$PWD/tests/scripts/verify_rust_ledger.py \
 //!     cargo test --test chain_ledger_conformance -- --ignored --nocapture
 
-use capsule_producer::capsule::{seal, CapsuleInput, ChainLink, MeshPocV1};
+use capsule_producer::capsule::{
+    seal, CapsuleInput, ChainLink, MeshPocV1, ServingProvenance, TokenUsage,
+};
 use capsule_producer::cose::{build_signed_statement, SignedStatementInput};
 use capsule_producer::keys::KeyPair;
 use capsule_producer::ledger::Ledger;
@@ -51,7 +53,21 @@ fn sample_input(seed: &str, chain: Option<ChainLink>) -> CapsuleInput {
         mesh_poc: MeshPocV1 {
             client_nonce: seed.repeat(32).chars().take(32).collect(),
             client_nonce_source: "client_supplied".to_string(),
-            model_package_digest: "d".repeat(64),
+            model_name_digest: "d".repeat(64),
+            serving_provenance: ServingProvenance {
+                served_by_node_id: "chain-ledger-node".to_string(),
+                requesting_party: "chain-ledger-client".to_string(),
+                exchange_id: "chain-ledger-exchange".to_string(),
+                quantization: "unknown".to_string(),
+                hardware_gpu: None,
+                hardware_vram_bytes: None,
+                hardware_device: None,
+                usage: Some(TokenUsage {
+                    prompt_tokens: 5,
+                    completion_tokens: 6,
+                    total_tokens: 11,
+                }),
+            },
             generation_parameters,
             latency_ms: "42.0".to_string(),
         },

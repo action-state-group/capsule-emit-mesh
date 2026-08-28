@@ -85,22 +85,40 @@ async fn chat_completions(
                 .and_then(|v| v.get("client_nonce").and_then(|n| n.as_str()))
                 .map(str::to_string);
 
+            // Stable per-exchange correlation id for the response and the
+            // capsule's `serving_provenance.exchange_id`, so both views of the
+            // same exchange share one id (mirrors the host's `x-request-id` /
+            // `exchange_id` lineage — the plugin mints its own when serving
+            // directly). `usage` is an OpenAI-shaped `usage` object so a real
+            // token count would flow straight through `parse_usage`; the stub
+            // reports zero work honestly (empty completion) rather than faking
+            // counts it did not produce.
+            let exchange_id = format!("chatcmpl-{}", agent_input_digest_short(&body));
             let mut response = json!({
-                "id": "admission-policy-allow-stub",
+                "id": exchange_id,
                 "object": "chat.completion",
                 "choices": [],
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
                 "admission_policy": {"decision": "allow"},
             });
             let response_bytes = serde_json::to_vec(&response).expect("response is valid JSON");
             let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
 
-            match state.capsules.emit_for_exchange(
-                &model,
-                client_nonce.as_deref(),
-                &body,
-                &response_bytes,
+            match state.capsules.emit_for_exchange(&capsule_emit::ExchangeRecord {
+                model: &model,
+                client_nonce: client_nonce.as_deref(),
+                request_bytes: &body,
+                response_bytes: &response_bytes,
                 latency_ms,
-            ) {
+                exchange_id: Some(&exchange_id),
+                // The requesting party beyond the client nonce is not carried on
+                // this direct-serve path — recorded as "unknown", not invented.
+                requesting_party: None,
+            }) {
                 Ok(emitted) => {
                     tracing::info!(capsule_id = %emitted.capsule_id, %model, "emitted AAC for admitted exchange");
                     response["admission_policy"]["capsule_id"] = json!(emitted.capsule_id);
@@ -126,6 +144,16 @@ async fn chat_completions(
             })),
         ),
     }
+}
+
+/// A short, deterministic per-exchange tag derived from the request body, used
+/// to mint a stable correlation id shared by the response `id` and the
+/// capsule's `serving_provenance.exchange_id`. Deterministic (not random) so
+/// the same request yields the same id — a real correlation handle, not noise.
+fn agent_input_digest_short(request_bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(request_bytes);
+    hex::encode(&digest[..8])
 }
 
 async fn serve_admission_http(listener: TcpListener, state: AppState) {

@@ -11,7 +11,9 @@
 //! whitespace) does not change the digest, and it stays comparable across
 //! implementations. Mutating the actual content still changes `capsule_id`.
 
-use capsule_producer::capsule::{seal, CapsuleInput, ChainLink, MeshPocV1};
+use capsule_producer::capsule::{
+    seal, CapsuleInput, ChainLink, MeshPocV1, ServingProvenance, TokenUsage,
+};
 use capsule_producer::cose::{build_signed_statement, SignedStatementInput};
 use capsule_producer::jcs;
 use capsule_producer::keys::{self, KeyPair};
@@ -67,6 +69,30 @@ fn canonical_body_digest(bytes: &[u8]) -> anyhow::Result<String> {
     Ok(jcs::json_digest(&stringify_floats(value))?)
 }
 
+/// Extract real token accounting from an OpenAI-shaped response body's `usage`
+/// object (`openai-frontend`'s `Usage`: `prompt_tokens` / `completion_tokens` /
+/// `total_tokens`). Returns `None` — never a fabricated zero — when the served
+/// body carried no well-formed `usage` (e.g. an allow-stub or error body). This
+/// is the only honest source of usage the plugin has: the counts come from the
+/// response the host actually produced, not from anything this plugin invents.
+fn parse_usage(response_bytes: &[u8]) -> Option<TokenUsage> {
+    let value: Value = serde_json::from_slice(response_bytes).ok()?;
+    let usage = value.get("usage")?;
+    let prompt_tokens = usage.get("prompt_tokens")?.as_u64()?;
+    let completion_tokens = usage.get("completion_tokens")?.as_u64()?;
+    // total_tokens: prefer the server-reported value; fall back to the sum only
+    // when the body omitted it (still a real derivation, not an invention).
+    let total_tokens = usage
+        .get("total_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| prompt_tokens.saturating_add(completion_tokens));
+    Some(TokenUsage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+    })
+}
+
 const CAPSULE_CONTENT_TYPE: &str =
     "application/vnd.agent-action-capsule+json; profile=draft-mih-scitt-agent-action-capsule-02";
 
@@ -79,6 +105,26 @@ pub struct CapsuleState {
 pub struct EmittedCapsule {
     pub capsule_id: String,
     pub capsule: Value,
+}
+
+/// One admitted exchange to seal into a capsule — the raw request/response
+/// bytes (digested, never stored raw) plus the provenance metadata the host
+/// exposed for it. Grouped into a struct so the provenance surface can grow
+/// (a future host event carrying quantization/hardware would add a field here)
+/// without churning the `emit_for_exchange` signature.
+pub struct ExchangeRecord<'a> {
+    pub model: &'a str,
+    pub client_nonce: Option<&'a str>,
+    pub request_bytes: &'a [u8],
+    pub response_bytes: &'a [u8],
+    pub latency_ms: f64,
+    /// Stable per-exchange correlation id — the host's `exchange_id` /
+    /// response `id` / `x-request-id` lineage, so the record ties back to the
+    /// host's own terminal-event log. `None` -> `"unknown"`, never faked.
+    pub exchange_id: Option<&'a str>,
+    /// Requesting party / client identity beyond the (optional) client nonce.
+    /// `None` -> `"unknown"`, never invented.
+    pub requesting_party: Option<&'a str>,
 }
 
 impl CapsuleState {
@@ -119,16 +165,19 @@ impl CapsuleState {
 
     /// Seal, sign, chain, and ledger one admitted exchange this plugin's own
     /// `/v1/chat/completions` handler just served.
-    pub fn emit_for_exchange(
-        &self,
-        model: &str,
-        client_nonce: Option<&str>,
-        request_bytes: &[u8],
-        response_bytes: &[u8],
-        latency_ms: f64,
-    ) -> anyhow::Result<EmittedCapsule> {
+    pub fn emit_for_exchange(&self, exchange: &ExchangeRecord) -> anyhow::Result<EmittedCapsule> {
+        let ExchangeRecord {
+            model,
+            client_nonce,
+            request_bytes,
+            response_bytes,
+            latency_ms,
+            exchange_id,
+            requesting_party,
+        } = *exchange;
         let agent_input_digest = canonical_body_digest(request_bytes)?;
         let agent_output_digest = canonical_body_digest(response_bytes)?;
+        let usage = parse_usage(response_bytes);
 
         let mut ledger = self.ledger.lock().expect("capsule ledger mutex poisoned");
         let chain = ledger.chain_head().map(|parent| ChainLink {
@@ -163,7 +212,27 @@ impl CapsuleState {
                     "sidecar_generated_fallback"
                 }
                 .to_string(),
-                model_package_digest: hex_sha256(model.as_bytes()),
+                // Renamed from the overclaiming `model_package_digest`: this is
+                // SHA-256 of the model NAME only, not the weights/package. The
+                // real package digest lives in the Python `model_identity.py`
+                // path; the live plugin only has the request's model name.
+                model_name_digest: hex_sha256(model.as_bytes()),
+                serving_provenance: ServingProvenance {
+                    // Single-node PoC: the node that served == this node.
+                    served_by_node_id: self.node_id.clone(),
+                    requesting_party: requesting_party.unwrap_or("unknown").to_string(),
+                    exchange_id: exchange_id.unwrap_or("unknown").to_string(),
+                    // The mesh-llm host does NOT expose quantization on the
+                    // exchange event or in the response body — recorded as
+                    // "unknown", never guessed.
+                    quantization: "unknown".to_string(),
+                    // Nor serving hardware (GPU/VRAM/device): all null, not faked.
+                    hardware_gpu: None,
+                    hardware_vram_bytes: None,
+                    hardware_device: None,
+                    // Real token counts from the response body's `usage`, if any.
+                    usage,
+                },
                 generation_parameters,
                 latency_ms: format!("{latency_ms:.3}"),
             },
@@ -264,6 +333,34 @@ mod tests {
         let body = br#"{"model": "hermes-2-pro-mistral-7b", "messages": [{"role": "user", "content": "hello"}], "temperature": 0.7, "top_p": 1.0, "max_tokens": 512}"#;
         let expected = "a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5";
         assert_eq!(canonical_body_digest(body).expect("digest"), expected);
+    }
+
+    /// `parse_usage` lifts REAL token counts from the response body's `usage`
+    /// object — the only honest source of usage the plugin has.
+    #[test]
+    fn parse_usage_reads_real_token_counts_from_the_response_body() {
+        let body = br#"{"id":"x","usage":{"prompt_tokens":128,"completion_tokens":64,"total_tokens":192}}"#;
+        let usage = parse_usage(body).expect("usage present");
+        assert_eq!(usage.prompt_tokens, 128);
+        assert_eq!(usage.completion_tokens, 64);
+        assert_eq!(usage.total_tokens, 192);
+    }
+
+    /// A body with no `usage` yields `None` — never a fabricated zero-usage
+    /// object. Absence of a fact is recorded as absence, not invented as zero.
+    #[test]
+    fn parse_usage_is_none_when_the_body_has_no_usage() {
+        let body = br#"{"id":"x","choices":[]}"#;
+        assert!(parse_usage(body).is_none());
+    }
+
+    /// When the body omits `total_tokens`, it is DERIVED from the two real
+    /// counts (a genuine sum), not left blank or faked.
+    #[test]
+    fn parse_usage_derives_total_from_the_two_real_counts_when_absent() {
+        let body = br#"{"usage":{"prompt_tokens":10,"completion_tokens":5}}"#;
+        let usage = parse_usage(body).expect("usage present");
+        assert_eq!(usage.total_tokens, 15);
     }
 
     #[test]
