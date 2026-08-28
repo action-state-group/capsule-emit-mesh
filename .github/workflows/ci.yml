@@ -65,6 +65,9 @@ jobs:
       - name: Smoke — exemplar admission_policy
         run: python -c "from exemplar.admission_policy import AdmissionPolicyPlugin; print('ok')"
 
+      - name: Smoke — delegation_issuer (issuance/renewal counterpart to the verifier)
+        run: python -c "from delegation_issuer import DelegationIssuer, UnregisteredScope, ArbitrarySigningRejected, OwnerIdentityUnavailable; print('ok')"
+
       - name: Unit tests
         run: |
           pip install pytest
