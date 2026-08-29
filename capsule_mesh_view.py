@@ -31,10 +31,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
+from agent_action_capsule import Finding
+from agent_action_capsule.transparent import SubstrateInputError, verify_transparent
+from agent_action_capsule.verify import verify_store
 from capsule_emit.ledger import read_ledger
-from capsule_emit.signing import verify_store_signed
+from capsule_emit.signing import verify_capsule_signature
 from capsule_emit.viewer import render_table
 
 SOURCE_PLUGIN = "plugin"
@@ -113,8 +117,58 @@ def label_counterparty(record: dict[str, Any]) -> str:
     return f"initiator:{initiator_ref[:12]}"
 
 
-def verify_results_for(records: list[dict[str, Any]]) -> list | None:
-    """Best-effort ``verify_store_signed(records)``, or None on any error.
+def _issuer_key_for(ledger_dir: Path, issuer_key: Path | None) -> Path | None:
+    """Default issuer pubkey lookup for a ledger_dir's detached statements --
+    the same convention `stranger_verify_bundle.py::_issuer_key_for` uses, so
+    both tools resolve one node's key the same way."""
+    if issuer_key is not None:
+        return issuer_key
+    candidate = ledger_dir.parent / "keys" / "node-key.pub.pem"
+    return candidate if candidate.exists() else None
+
+
+def _detached_statement_verified(ledger_dir: Path, capsule_id: str, issuer_key: Path | None) -> bool | None:
+    """Verify capsule_id's DETACHED COSE_Sign1 Signed Statement
+    (`signed-statements/<capsule_id>.cose`) -- neither the Rust plugin nor
+    the Python sidecar embeds a self-attested `signature`/`key_id` inline
+    (see `stranger_verify_bundle.py::_transparent_check`, which this
+    mirrors); the producer signature for these ledgers lives here instead.
+
+    Returns True/False on a definitive verdict, or None when there is
+    nothing to check (no statement on disk, or no issuer key resolvable) --
+    the caller then falls back to the honest "no signature evidence" False
+    rather than treating "nothing to check" as a pass.
+    """
+    if issuer_key is None:
+        return None
+    statement_path = ledger_dir / "signed-statements" / f"{capsule_id}.cose"
+    if not statement_path.exists():
+        return None
+    try:
+        report = verify_transparent(statement_path=str(statement_path), issuer_key_path=str(issuer_key))
+    except (OSError, SubstrateInputError):
+        return False
+    return bool(report.ok)
+
+
+def verify_results_for(
+    records: list[dict[str, Any]],
+    *,
+    ledger_dir: Path | None = None,
+    issuer_key: Path | None = None,
+) -> list | None:
+    """Best-effort per-record verify, or None on any error.
+
+    Content-hash/chain integrity (`agent_action_capsule.verify_store`) runs
+    first and gates everything else -- a signature over self-inconsistent
+    content is never reported ok. On top of that, two independent producer-
+    signature rungs, same split as `stranger_verify_bundle.py`: a record
+    carrying an inline `signature`/`key_id` envelope is checked in place
+    (`verify_capsule_signature`); a record with neither falls back to its
+    DETACHED `signed-statements/<capsule_id>.cose` Signed Statement, when
+    ``ledger_dir`` is given. A record with no inline envelope AND no
+    verifiable detached statement reports ok=False -- honest fail-closed,
+    not a False that only means "the viewer didn't look."
 
     Mirrors capsule-emit's own `ledger view` CLI (`_cmd_ledger_view`): verify
     is best-effort for a viewer, never fatal to rendering the ledger. Callers
@@ -124,7 +178,47 @@ def verify_results_for(records: list[dict[str, Any]]) -> list | None:
     if not records:
         return None
     try:
-        return verify_store_signed(records)
+        results = verify_store(records)
+        resolved_key = _issuer_key_for(ledger_dir, issuer_key) if ledger_dir is not None else issuer_key
+        for record, result in zip(records, results):
+            if not isinstance(record, dict):
+                result.ok = False
+                continue
+            capsule_id = record.get("capsule_id", "<none>")
+            if "signature" in record and "key_id" in record:
+                if not verify_capsule_signature(record):
+                    result.ok = False
+                    result.findings.append(
+                        Finding(
+                            code="producer_signature_invalid",
+                            detail=(
+                                f"capsule_id={capsule_id}: self-attested Ed25519 signature "
+                                "does not verify against key_id"
+                            ),
+                            severity="error",
+                        )
+                    )
+                continue
+            detached_ok = (
+                _detached_statement_verified(ledger_dir, capsule_id, resolved_key)
+                if ledger_dir is not None
+                else None
+            )
+            if detached_ok is not True:
+                result.ok = False
+                reason = (
+                    "detached signed-statements/<capsule_id>.cose did not verify"
+                    if detached_ok is False
+                    else "no inline producer signature and no verifiable detached signed statement"
+                )
+                result.findings.append(
+                    Finding(
+                        code="producer_signature_invalid",
+                        detail=f"capsule_id={capsule_id}: {reason}",
+                        severity="error",
+                    )
+                )
+        return results
     except Exception:
         return None
 
@@ -237,13 +331,20 @@ def render_machine_view(rows: list[dict[str, Any]], *, out: Any = None) -> None:
 
 
 def _cmd_view(args: argparse.Namespace) -> int:
+    issuer_key = Path(args.issuer_key) if args.issuer_key else None
     sources: list[tuple[str, str, list[dict[str, Any]], list | None]] = []
     if args.plugin_log:
         records = read_ledger(args.plugin_log)
-        sources.append((SOURCE_PLUGIN, args.plugin_log, records, verify_results_for(records)))
+        ledger_dir = Path(args.plugin_log).parent
+        sources.append(
+            (SOURCE_PLUGIN, args.plugin_log, records, verify_results_for(records, ledger_dir=ledger_dir, issuer_key=issuer_key))
+        )
     if args.sidecar_log:
         records = read_ledger(args.sidecar_log)
-        sources.append((SOURCE_SIDECAR, args.sidecar_log, records, verify_results_for(records)))
+        ledger_dir = Path(args.sidecar_log).parent
+        sources.append(
+            (SOURCE_SIDECAR, args.sidecar_log, records, verify_results_for(records, ledger_dir=ledger_dir, issuer_key=issuer_key))
+        )
 
     if not sources:
         print("capsule-mesh view: give at least one of --plugin-log / --sidecar-log", file=sys.stderr)
@@ -278,6 +379,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     view.add_argument("--plugin-log", metavar="PATH", default=None, help="the Rust plugin's JSONL ledger")
     view.add_argument("--sidecar-log", metavar="PATH", default=None, help="the Python sidecar's JSONL ledger")
+    view.add_argument(
+        "--issuer-key",
+        metavar="PATH",
+        default=None,
+        help="PEM pubkey for detached signed-statements/*.cose; defaults to "
+        "<log's dir>/../keys/node-key.pub.pem for each log",
+    )
     view.add_argument("--json", dest="as_json", action="store_true", help="raw JSON output of the machine view")
     view.add_argument(
         "--no-logs",
