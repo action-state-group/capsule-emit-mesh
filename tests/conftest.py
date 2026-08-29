@@ -7,7 +7,8 @@
 (2) test_forwarded_copy_and_keys.py and test_bilateral_demo.py both stub
     agent_action_capsule.contracts AND scitt_cose at collection time (a bare
     types.ModuleType with no `cll` submodule); import the real stack +
-    mesh_record_emitter/verifier + scitt_cose.cll HERE first so their real
+    mesh_record_emitter/verifier + mesh_coordinator_receipt_emitter +
+    scitt_cose.cll HERE first so their real
     classes/submodules resolve before any later setdefault() no-ops on top
     of them. Without this, test_checkpointing.py's `from scitt_cose import
     cll` fails whenever a stubbing test file collects first (alphabetical
@@ -48,5 +49,6 @@ import agent_action_capsule.emit  # noqa: E402,F401
 import agent_action_capsule.verify  # noqa: E402,F401
 import mesh_record_emitter  # noqa: E402,F401
 import mesh_record_verifier  # noqa: E402,F401
+import mesh_coordinator_receipt_emitter  # noqa: E402,F401
 import scitt_cose  # noqa: E402,F401
 import scitt_cose.cll  # noqa: E402,F401
