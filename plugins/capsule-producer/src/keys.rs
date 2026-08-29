@@ -15,7 +15,9 @@
 //!   itself part of the durable, chained record rather than a side channel.
 
 use ed25519_dalek::pkcs8::spki::der::pem::LineEnding;
-use ed25519_dalek::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
+use ed25519_dalek::pkcs8::{
+    DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, KeypairBytes,
+};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rand_core::OsRng;
 use sha2::{Digest, Sha256};
@@ -57,11 +59,24 @@ impl KeyPair {
 
     /// PKCS8 PEM, matching `serialization.PrivateFormat.PKCS8` /
     /// `Encoding.PEM` with no encryption on the Python side.
+    ///
+    /// Deliberately encoded as RFC 5958 **v1** `PrivateKeyInfo` (no embedded
+    /// public-key attribute): `SigningKey::to_pkcs8_pem` goes through
+    /// `pkcs8::KeypairBytes::from(&signing_key)`, which always sets
+    /// `public_key: Some(..)` and so always emits v2 `OneAsymmetricKey`.
+    /// python-cryptography (used by `capsule_sidecar`/`checkpointing.py`) plus
+    /// OpenSSL 3.0 reject that v2 form for Ed25519 with `ASN.1 parsing error:
+    /// extra data`, even though the key itself is valid. Building
+    /// `KeypairBytes` here with `public_key: None` skips that attribute, so
+    /// the encoder falls back to the plain v1 form both sides load cleanly.
     pub fn private_key_pem(&self) -> String {
-        self.signing_key
-            .to_pkcs8_pem(LineEnding::LF)
-            .expect("PKCS8 PEM encode")
-            .to_string()
+        KeypairBytes {
+            secret_key: self.signing_key.to_bytes(),
+            public_key: None,
+        }
+        .to_pkcs8_pem(LineEnding::LF)
+        .expect("PKCS8 PEM encode")
+        .to_string()
     }
 
     /// SubjectPublicKeyInfo PEM, matching
@@ -187,6 +202,36 @@ pub fn rotate(keys_dir: &Path) -> Result<RotationRecord, KeyError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression test for the node-key.pem interop bug (flagged by the
+    /// one-Mac data-inspector run): `ed25519_dalek::SigningKey::to_pkcs8_pem`
+    /// always emits RFC 5958 **v2** `OneAsymmetricKey` (it embeds the public
+    /// key), which python-cryptography + OpenSSL 3.0 refuse to load
+    /// (`ASN.1 parsing error: extra data`) even though the key is valid.
+    /// `private_key_pem` must produce plain PKCS#8 **v1** instead, so a
+    /// Rust-written `node-key.pem` loads cleanly on the Python side too.
+    #[test]
+    fn private_key_pem_is_pkcs8_v1_for_python_interop() {
+        use ed25519_dalek::pkcs8::{PrivateKeyInfo, SecretDocument};
+        use pkcs8::Version;
+
+        let keys = KeyPair::generate();
+        let pem = keys.private_key_pem();
+
+        let (label, doc) = SecretDocument::from_pem(&pem).unwrap();
+        assert_eq!(label, "PRIVATE KEY");
+        let info: PrivateKeyInfo = doc.decode_msg().unwrap();
+        assert_eq!(
+            info.version(),
+            Version::V1,
+            "node-key.pem must be PKCS#8 v1 (no embedded public key) for \
+             python-cryptography/OpenSSL 3.0 interop"
+        );
+
+        // The key must still round-trip through our own loader untouched.
+        let reloaded = load_signing_key_pem(&pem).unwrap();
+        assert_eq!(reloaded.verifying_key(), keys.verifying_key());
+    }
 
     #[test]
     fn load_or_create_generates_once_then_persists() {
