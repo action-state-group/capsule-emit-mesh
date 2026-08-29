@@ -72,6 +72,15 @@ jobs:
       - name: Smoke — capsule_mesh_view (thin ledger-view wrapper joining the plugin + sidecar logs)
         run: python -c "import capsule_mesh_view; print('ok')"
 
+      - name: Smoke — checkpoint_ledger (standalone CheckpointState CLI, no sidecar proxy needed)
+        run: python -c "import checkpoint_ledger; print('ok')"
+
+      - name: Smoke — send_bilateral_request (Move-1/Move-4 requester CLI)
+        run: python -c "import send_bilateral_request; print('ok')"
+
+      - name: Smoke — stranger_verify_bundle (disclosed-bundle stranger-verify CLI)
+        run: python -c "import stranger_verify_bundle; print('ok')"
+
       - name: Unit tests
         run: |
           pip install pytest
