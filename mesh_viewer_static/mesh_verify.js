@@ -232,8 +232,8 @@
     // "served by <node>, <model> <quant> on <gpu>"
     var sb = conv.served_by || {};
     var servedBits = [];
-    if (sb.model) servedBits.push(sb.model);
-    if (sb.quantization && sb.quantization !== "unknown") servedBits.push(sb.quantization);
+    if (entry.friendly_model) { servedBits.push(entry.friendly_model); }
+    else { if (sb.model && sb.model.indexOf("sha256") === -1) servedBits.push(sb.model); if (sb.quantization && sb.quantization !== "unknown") servedBits.push(sb.quantization); }
     var onBits = [];
     if (sb.gpu) onBits.push(sb.gpu);
     if (sb.is_soc) onBits.push("SoC");
@@ -273,9 +273,12 @@
     var r = conv.response || {};
     setTag("[data-conv-response-tag]", !!r.disclosed);
     var respEl = node.querySelector("[data-conv-response]");
-    respEl.textContent = (r.text != null && r.text !== "")
+    var _rt = (r.text != null && r.text !== "")
       ? r.text
       : "(response text not disclosed in this bundle)";
+    _rt = _rt.replace(/<\|python_tag\|>/g, "").replace(/<\|[a-z_]+\|>/g, "").trim();
+    if (_rt === "") _rt = "(the model emitted a tool call — shown below)";
+    respEl.textContent = _rt;
     if (r.tool_calls_note) {
       var tc = node.querySelector("[data-conv-toolcall]");
       tc.hidden = false;
