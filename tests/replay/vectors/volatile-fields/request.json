@@ -1,8 +1,0 @@
-{
-  "model": "hermes-2-pro-mistral-7b",
-  "temperature": 0,
-  "seed": 20260821,
-  "messages": [
-    {"role": "user", "content": "What is the capacity headroom on mesh-node-demo-1?"}
-  ]
-}

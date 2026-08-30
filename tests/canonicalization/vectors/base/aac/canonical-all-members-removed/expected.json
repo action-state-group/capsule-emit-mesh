@@ -1,6 +1,0 @@
-{
-  "kind": "canonical",
-  "capsule_id_recomputed": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
-  "exception": null,
-  "description": "After normalization all members removed; capsule_id = SHA-256(JCS({})) = SHA-256('{}')"
-}

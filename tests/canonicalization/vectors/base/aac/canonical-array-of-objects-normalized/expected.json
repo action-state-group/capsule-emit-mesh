@@ -1,6 +1,0 @@
-{
-  "kind": "canonical",
-  "capsule_id_recomputed": "933b2a170b2f20ae7aed24aa4829c840837da0dc4eb66e4bbf901a573c302af7",
-  "exception": null,
-  "description": "normalize() recurses into array elements; null member in nested object removed"
-}

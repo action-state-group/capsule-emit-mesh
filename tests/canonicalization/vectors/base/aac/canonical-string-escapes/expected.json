@@ -1,6 +1,0 @@
-{
-  "kind": "canonical",
-  "capsule_id_recomputed": "4a898caa9a2e9afef1affd89a922f49b34df06d6ea3acc6a8c6c4a4176409f91",
-  "exception": null,
-  "description": "JCS mandatory escapes: \\\" \\\\ \\b \\t \\n \\f \\r in a single string value (RFC 8785 S:3.2.2.2)"
-}

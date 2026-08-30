@@ -1,6 +1,0 @@
-{
-  "kind": "canonical",
-  "capsule_id_recomputed": null,
-  "exception": "FloatInDigestError",
-  "description": "Integral-valued float 2.0 raises FloatInDigestError: the guard is a type check, not a value check"
-}

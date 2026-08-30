@@ -1,3 +1,0 @@
-CAPSULE-EMIT-MESH-POC FIXTURE SOURCE MODEL (not a real GGUF).
-This file stands in for a downloaded source model artifact so that
-model_package_digest below is a real sha256 of real bytes.

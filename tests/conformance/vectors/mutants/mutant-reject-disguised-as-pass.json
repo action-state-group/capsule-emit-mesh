@@ -1,9 +1,0 @@
-{
-  "id": "mutant-reject-disguised-as-pass",
-  "description": "MUTANT: a REJECT input (duplicate key) presented WITHOUT must_fail=true. The harness treats it as a PASS vector. The oracle rejects the input (exits 1). The harness reports FAIL (oracle rejected a \"pass\" input). This verifies the harness correctly distinguishes pass from reject vectors.",
-  "suite": "pass",
-  "_is_mutant": true,
-  "_mutation": "must_fail omitted; input is actually a reject vector",
-  "input_bytes_hex": "7b226b6579223a227631222c226b6579223a227632227d",
-  "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-}

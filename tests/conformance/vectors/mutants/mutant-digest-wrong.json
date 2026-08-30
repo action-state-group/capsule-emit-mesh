@@ -1,9 +1,0 @@
-{
-  "id": "mutant-digest-wrong",
-  "description": "MUTANT: correct input, wrong digest (one hex character changed). The implementation computes the correct digest but the pinned digest does not match. The harness MUST report FAIL. If the harness reports PASS on this vector, it is not checking the digest.",
-  "suite": "pass",
-  "_is_mutant": true,
-  "_mutation": "last hex char of digest changed",
-  "input_bytes_hex": "7b226d6f64656c223a226865726d65732d322d70726f2d6d69737472616c2d3762222c226d65737361676573223a5b7b22726f6c65223a2275736572222c22636f6e74656e74223a225768617420697320746865206361706974616c206f66204672616e63653f227d5d7d",
-  "digest": "6c9946c17c776f125a8d9cf6015b5c4331171664b41ee0e48426d4fa9caa13e0"
-}

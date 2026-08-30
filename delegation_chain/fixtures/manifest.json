@@ -1,7 +1,0 @@
-{
-  "now_ms": 1787011200000,
-  "expected_scope": "mesh.inference.capsule.sign.v1",
-  "expected_plugin_id": "net.example.capsule-emit",
-  "expected_node_id": "6f1ca260eb2e4071280172211a041dd73be9a027288451ae54a87914e1e0ab33",
-  "note": "Fixtures are deterministic. Regenerate with: python generate_delegation_fixtures.py"
-}

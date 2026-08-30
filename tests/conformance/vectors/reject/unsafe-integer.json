@@ -1,9 +1,0 @@
-{
-  "id": "unsafe-integer",
-  "description": "REJECT: integer exceeding ±(2^53-1) = ±9007199254740991. JSON integers larger than 2^53-1 cannot be represented exactly as IEEE 754 float64 and MUST be rejected to prevent implementation-specific rounding differences from producing different pre-images.",
-  "suite": "reject",
-  "must_fail": true,
-  "failure_reason": "integer_exceeds_max_safe",
-  "input_bytes_hex": "7b22626967223a393030373139393235343734303939327d",
-  "spec_ref": "mesh-canonicalization-declaration §Number rule"
-}
