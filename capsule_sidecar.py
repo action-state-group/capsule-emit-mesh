@@ -63,15 +63,23 @@ from model_identity import load_manifest, model_package_digest
 
 # Generation parameters we carry verbatim (not digested -- these are policy
 # knobs, not prompt content, and are useful for audit as legible values).
+# These are the settings the CLIENT requested (requested, not proven-effective)
+# and are kept byte-identical to the Rust plugin's GENERATION_PARAM_KEYS
+# (plugins/admission-policy/src/capsule_emit.rs) so both capture paths seal the
+# SAME param set. Honest-by-absence is enforced at the call site: only keys
+# actually present in the request are carried (see build_capsule below).
 GENERATION_PARAM_KEYS = (
     "temperature",
     "top_p",
+    "top_k",
+    "min_p",
+    "seed",
     "max_tokens",
     "max_completion_tokens",
     "n",
-    "seed",
     "presence_penalty",
     "frequency_penalty",
+    "repeat_penalty",
     "stop",
 )
 
