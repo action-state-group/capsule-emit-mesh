@@ -219,6 +219,74 @@ class TestAdversarial:
         assert not v.ok
 
 
+class TestRecordToHopBinding:
+    """The record→hop binding hole: a verifier that only re-checks each present
+    stage's digest + AAC verify() (but never that the disclosed record is
+    ACTUALLY that hop's record) is fooled by re-citing ONE real stage record
+    under N different hop_ids — a single record inflated into a full N-stage
+    split run. These tests pin that this can no longer verify green."""
+
+    def test_one_record_three_hops_is_not_green(self):
+        topo = _topology(3)
+        # ONE real stage record, sealed for stage-0.
+        one = _seal("stage-0")
+        # Re-cite the SAME record under all three hop_ids (untrusted input:
+        # the discloser wraps a matching StageBundle.hop_id envelope around it).
+        disc = {f"stage-{i}": StageBundle(hop_id=f"stage-{i}", stage_capsule=one) for i in range(3)}
+        receipt = compose_receipt_from_disclosures(
+            coord_state(node_id="coord"), run_id=RUN, topology=topo, disclosures=disc
+        )
+        v = verify_coordinator_receipt(receipt, disc)
+        # The single real record can only satisfy its own hop.
+        assert not v.ok
+        assert v.green_count == 1
+        assert v.mismatch_count == 2
+        s0 = next(s for s in v.stages if s.hop_id == "stage-0")
+        assert s0.status == "green"
+        for hop in ("stage-1", "stage-2"):
+            s = next(x for x in v.stages if x.hop_id == hop)
+            assert s.status == "mismatch"
+            assert "not this hop's record" in s.detail
+
+    def test_envelope_hop_lie_is_caught_even_if_inner_absent(self):
+        # A disclosed bundle whose ENVELOPE hop_id matches the topology hop but
+        # whose INNER record is for a different hop is a mismatch. Also cover a
+        # record with no lifecycle block: the envelope check + digest-uniqueness
+        # still bind it, so re-cite of a non-lifecycle capsule can't inflate.
+        topo = _topology(2)
+        # A bundle presented under stage-1 but wrapping stage-0's record.
+        one = _seal("stage-0")
+        two = _seal("stage-1")
+        disc = {
+            "stage-0": StageBundle(hop_id="stage-0", stage_capsule=one),
+            # discloser claims envelope hop_id=stage-1 but the sealed record is stage-0's
+            "stage-1": StageBundle(hop_id="stage-1", stage_capsule=one),
+        }
+        receipt = compose_receipt_from_disclosures(
+            coord_state(node_id="coord"), run_id=RUN, topology=topo, disclosures=disc
+        )
+        v = verify_coordinator_receipt(receipt, disc)
+        assert not v.ok
+        s1 = next(s for s in v.stages if s.hop_id == "stage-1")
+        assert s1.status == "mismatch"
+        # sanity: an honest two-hop run with the right records stays green.
+        honest = {"stage-0": StageBundle(hop_id="stage-0", stage_capsule=one),
+                  "stage-1": StageBundle(hop_id="stage-1", stage_capsule=two)}
+        rec2 = compose_receipt_from_disclosures(
+            coord_state(node_id="coord"), run_id=RUN, topology=topo, disclosures=honest
+        )
+        v2 = verify_coordinator_receipt(rec2, honest)
+        assert v2.ok and v2.green_count == 2
+
+    def test_verdict_reports_signer_unverified(self):
+        # The receipt signer is never verified (Class-1 payload verify only);
+        # ok=True must not be read as "signed by the coordinator".
+        _, _, receipt, bundles = _honest_run(3)
+        v = verify_coordinator_receipt(receipt, bundles)
+        assert v.ok
+        assert v.signer_verified is False
+
+
 def test_bundle_digest_is_stable_64_hex():
     d = bundle_digest(StageBundle(hop_id="x", stage_capsule=_seal("x")))
     assert len(d) == 64

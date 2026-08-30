@@ -33,6 +33,9 @@ green:
      receipt's committed digest  -> caught as MISMATCH.
   B. a stage the receipt marks PRESENT is simply not disclosed to the verifier
      -> visible GAP, not a pass.
+  C. ONE real stage record is re-cited under all three hop_ids to inflate a
+     single stage into a full 3-stage run -> record→hop binding catches it:
+     only the record's true hop is green, the other two are MISMATCH.
 
 Run:  python3 examples/coordinator_3way_demo.py
 Exit code 0 iff the honest run verifies green AND both adversarial cases are
@@ -195,11 +198,30 @@ def main() -> int:
     else:
         print(f"    {RED}NOT CAUGHT — missing stage did not surface as a gap.{RESET}")
 
-    ok = honest_ok and caught_a and caught_b
+    # -------- Adversarial C: ONE real record re-cited under all 3 hop_ids --------
+    print(f"\n{BOLD}[6] Adversarial C — ONE real stage record re-cited under all 3 hop_ids{RESET}")
+    print(f"    {DIM}(a single record must not inflate into a full 3-stage split run){RESET}")
+    one_record = sealed_by_hop["stage-0"]
+    inflated_disc = {t.hop_id: StageBundle(hop_id=t.hop_id, stage_capsule=one_record) for t in TOPOLOGY}
+    inflated_receipt = compose_receipt_from_disclosures(
+        coord_state(node_id="mesh-coordinator/skippy"), run_id=RUN_ID, topology=TOPOLOGY, disclosures=inflated_disc
+    )
+    adv_c = verify_coordinator_receipt(inflated_receipt, inflated_disc)
+    print_stage_lines(adv_c)
+    # Only stage-0 (the record's true hop) may go green; the other two are
+    # record→hop binding mismatches, receipt NOT green.
+    caught_c = (not adv_c.ok) and adv_c.green_count == 1 and adv_c.mismatch_count == 2
+    if caught_c:
+        print(f"    {GREEN}CAUGHT — 1/3 green; re-cited record fails record→hop binding on the other 2 hops.{RESET}")
+    else:
+        print(f"    {RED}NOT CAUGHT — one record inflated into a full split run (false green).{RESET}")
+
+    ok = honest_ok and caught_a and caught_b and caught_c
     print(f"\n{BOLD}=== SUMMARY ==={RESET}")
     print(f"  honest 3-way run verifies green ....... {GREEN + 'PASS' + RESET if honest_ok else RED + 'FAIL' + RESET}")
     print(f"  adversarial digest-mismatch caught .... {GREEN + 'PASS' + RESET if caught_a else RED + 'FAIL' + RESET}")
     print(f"  missing stage surfaces as a gap ....... {GREEN + 'PASS' + RESET if caught_b else RED + 'FAIL' + RESET}")
+    print(f"  one-record-three-hops caught .......... {GREEN + 'PASS' + RESET if caught_c else RED + 'FAIL' + RESET}")
     print(f"\n{BOLD}{(GREEN + 'ALL GREEN' if ok else RED + 'DEMO FAILED')}{RESET}\n")
     return 0 if ok else 1
 

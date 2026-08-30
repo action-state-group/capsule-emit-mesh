@@ -21,16 +21,25 @@ kept offline-verifiable and free of any live-log access:
      A third party who holds ONLY (a) the signed coordinator receipt and (b)
      the disclosed bundles reconstructs stage order from `topology[]` and, for
      every `present` stage, recomputes the bundle digest over the disclosed
-     bytes and checks it against the digest the receipt committed to. A
-     mismatch, a missing bundle for a `present` stage, or a bundle whose own
-     capsule fails AAC verification is caught — three-state, never a false
-     green.
+     bytes, checks it against the digest the receipt committed to, re-verifies
+     the bundle's own capsule, AND binds the record to its hop (the disclosed
+     record must be *that hop's* record, and no one record may back two
+     distinct present hops). A mismatch, a missing bundle for a `present`
+     stage, a bundle whose own capsule fails AAC verification, or a record→hop
+     binding violation is caught — three-state, never a false green. The
+     receipt SIGNER is not verified here (Class-1 payload verify only); `ok`
+     asserts order↔bytes↔hop binding, never authorship.
 
 WHAT IS BOUND vs WHAT IS SELF-ATTESTED (honest gaps)
-  BOUND: stage ORDER (topology seq), and for each present stage the exact
-  bytes of that stage's sealed record (via its SHA-256 digest committed in the
-  receipt). Tampering with a disclosed bundle, dropping one, or reordering the
-  claimed topology is detectable offline.
+  BOUND: stage ORDER (topology seq); for each present stage the exact bytes of
+  that stage's sealed record (via its SHA-256 digest committed in the receipt);
+  and each present record→ITS HOP — the disclosed record must be *that hop's*
+  record (envelope hop_id == topology hop, the record's own sealed
+  `x-mesh-lifecycle-v1.hop_id`/`.exchange_id` name this hop/run, and no single
+  record may back two distinct present hops). Tampering with a disclosed
+  bundle, dropping one, reordering the claimed topology, OR re-citing one real
+  stage record under several hop_ids to inflate a single stage into a full
+  multi-stage run is detectable offline.
   NOT BOUND: node IDENTITY is self-attested unless a stage record itself
   carries a verified requester/provider commitment (mesh_record_verifier's
   cross_party_rung). The coordinator's own signature over the receipt is
@@ -219,11 +228,21 @@ class StageVerdict:
 
 @dataclass
 class ReceiptVerdict:
-    """Whole-receipt offline verdict."""
+    """Whole-receipt offline verdict.
+
+    SIGNER IS UNVERIFIED. `verify_coordinator_receipt` runs a Class-1 payload
+    verify over the receipt capsule (content-hash + chain integrity); it does
+    NOT check WHO signed the receipt. `ok=True` therefore means only "the
+    stated order binds to the disclosed stage bytes, and each present stage is
+    bound to its own hop" — it is NOT a claim that the coordinator (or anyone
+    in particular) signed this receipt. Treat the signer as self-attested
+    unless an out-of-band key/registration/witness anchors it (§8).
+    """
 
     ok: bool
     run_id: str
     ordered_hops: list[str]
+    signer_verified: bool = False  #: always False today — see class docstring
     stages: list[StageVerdict] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
@@ -238,6 +257,29 @@ class ReceiptVerdict:
     @property
     def mismatch_count(self) -> int:
         return sum(1 for s in self.stages if s.status == "mismatch")
+
+
+def _inner_record_identity(stage_capsule: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Pull (hop_id, exchange_id) from a disclosed stage record's own sealed
+    identity block (`x-mesh-lifecycle-v1`), if present.
+
+    These are the fields the record itself commits to (they travel inside
+    `capsule_id`), so they are the load-bearing statement of *which hop / which
+    run this record is for* — distinct from the untrusted `StageBundle.hop_id`
+    envelope the discloser wraps around it. Returns (None, None) for a record
+    that carries no lifecycle block (e.g. a coordinator-side or non-lifecycle
+    capsule) — binding on the inner identity is then skipped for that field,
+    but the envelope-hop and digest-uniqueness checks still apply.
+    """
+    try:
+        block = stage_capsule["model_attestation"]["compute_attestation"][
+            "x-mesh-lifecycle-v1"
+        ]
+    except (KeyError, TypeError):
+        return None, None
+    if not isinstance(block, dict):
+        return None, None
+    return block.get("hop_id"), block.get("exchange_id")
 
 
 def _read_receipt_block(receipt_capsule: dict[str, Any]) -> dict[str, Any]:
@@ -260,16 +302,36 @@ def verify_coordinator_receipt(
 ) -> ReceiptVerdict:
     """Offline: reconstruct stage order + check each present stage's inclusion.
 
-    The verifier holds ONLY the signed receipt capsule and whatever bundles
-    were disclosed to it. It:
-      1. verifies the coordinator receipt capsule itself (AAC verify()),
+    The verifier holds ONLY the receipt capsule and whatever bundles were
+    disclosed to it — both UNTRUSTED input. It:
+      1. runs a Class-1 payload verify over the receipt capsule (AAC verify();
+         content-hash + chain integrity only — this does NOT verify who signed
+         the receipt, see below),
       2. reconstructs stage order from topology[] (ordered by seq),
-      3. for every stage the receipt marks `present`, recomputes the digest
-         over the disclosed bundle bytes and checks it equals the digest the
-         receipt committed, AND re-verifies the disclosed stage capsule.
+      3. for every stage the receipt marks `present`:
+         a. recomputes the digest over the disclosed bundle bytes and checks
+            it equals the digest the receipt committed,
+         b. re-verifies the disclosed stage capsule (AAC verify()),
+         c. BINDS THE RECORD TO ITS HOP — rejects it as a mismatch if
+            * the disclosed `StageBundle.hop_id` envelope != the topology hop
+              it is presented under, or
+            * the record's OWN sealed identity (`x-mesh-lifecycle-v1.hop_id` /
+              `.exchange_id`) names a different hop / run than this
+              topology hop / receipt run_id, or
+            * the SAME record (by committed digest OR by inner exchange_id +
+              hop_id) is reused across two DISTINCT present hops — a stage
+              record must be unique to its hop, so re-citing one real record
+              under several hop_ids can no longer inflate a single stage into a
+              full multi-stage run.
 
     A `present` stage with no disclosed bundle is a GAP (visible hole), not a
-    pass. A digest mismatch or a failing disclosed capsule is a MISMATCH.
+    pass. A digest mismatch, a failing disclosed capsule, or a record→hop
+    binding violation is a MISMATCH. Genuine gaps stay visible gaps, kept
+    distinct from binding-violation mismatches (three-state honesty).
+
+    SIGNER IS UNVERIFIED: step 1 never checks who signed the receipt. A
+    returned `ok=True` asserts only order↔bytes↔hop binding, never authorship;
+    `ReceiptVerdict.signer_verified` is always False today (see its docstring).
     """
     errors: list[str] = []
 
@@ -285,6 +347,11 @@ def verify_coordinator_receipt(
     stage_index = {s["hop_id"]: s for s in block.get("stages", [])}
 
     stage_verdicts: list[StageVerdict] = []
+    # Record→hop uniqueness ledgers, populated only by GREEN-so-far present
+    # stages: a stage record must be unique to its hop, so the SAME digest (or
+    # the same inner exchange_id+hop_id) may not back two distinct present hops.
+    seen_digests: dict[str, str] = {}          # digest -> first hop that used it
+    seen_inner_ids: dict[tuple[str, str], str] = {}  # (exchange_id, hop_id) -> first hop
     for topo in topology:
         hop_id = topo["hop_id"]
         seq = topo["seq"]
@@ -334,8 +401,73 @@ def verify_coordinator_receipt(
             )
             continue
 
+        # --- record→hop binding (untrusted input: the bundle is not trusted to
+        # be for the hop it is presented under just because its digest matched
+        # the receipt the same untrusted party composed). ---
+        # (i) the disclosed envelope hop_id must be the topology hop.
+        if bundle.hop_id != hop_id:
+            stage_verdicts.append(
+                StageVerdict(
+                    hop_id, seq, claimed, "mismatch",
+                    f"disclosed bundle envelope hop_id {bundle.hop_id!r} != topology hop {hop_id!r}",
+                )
+            )
+            continue
+
+        # (ii) the record's OWN sealed identity must name this hop / this run.
+        inner_hop, inner_exch = _inner_record_identity(bundle.stage_capsule)
+        if inner_hop is not None and inner_hop != hop_id:
+            stage_verdicts.append(
+                StageVerdict(
+                    hop_id, seq, claimed, "mismatch",
+                    f"inner record hop_id {inner_hop!r} != topology hop {hop_id!r} "
+                    "(record is not this hop's record)",
+                )
+            )
+            continue
+        if inner_exch is not None and run_id and inner_exch != run_id:
+            stage_verdicts.append(
+                StageVerdict(
+                    hop_id, seq, claimed, "mismatch",
+                    f"inner record exchange_id {inner_exch!r} != receipt run_id {run_id!r} "
+                    "(record is not from this run)",
+                )
+            )
+            continue
+
+        # (iii) a record must be unique to its hop — no reuse across present hops.
+        prior = seen_digests.get(recomputed)
+        if prior is not None:
+            stage_verdicts.append(
+                StageVerdict(
+                    hop_id, seq, claimed, "mismatch",
+                    f"same record digest {recomputed[:16]}… already backs hop {prior!r} — "
+                    "one record cannot satisfy two distinct hops",
+                )
+            )
+            continue
+        if inner_exch is not None and inner_hop is not None:
+            prior_inner = seen_inner_ids.get((inner_exch, inner_hop))
+            if prior_inner is not None:
+                stage_verdicts.append(
+                    StageVerdict(
+                        hop_id, seq, claimed, "mismatch",
+                        f"same inner record identity (exchange_id={inner_exch!r}, "
+                        f"hop_id={inner_hop!r}) already backs hop {prior_inner!r} — "
+                        "one record cannot satisfy two distinct hops",
+                    )
+                )
+                continue
+
+        seen_digests[recomputed] = hop_id
+        if inner_exch is not None and inner_hop is not None:
+            seen_inner_ids[(inner_exch, inner_hop)] = hop_id
+
         stage_verdicts.append(
-            StageVerdict(hop_id, seq, claimed, "green", f"digest {recomputed[:16]}… matches, capsule verifies")
+            StageVerdict(
+                hop_id, seq, claimed, "green",
+                f"digest {recomputed[:16]}… matches, capsule verifies, bound to hop {hop_id}",
+            )
         )
 
     ok = not errors and all(s.status != "mismatch" for s in stage_verdicts)
@@ -343,6 +475,7 @@ def verify_coordinator_receipt(
         ok=ok,
         run_id=run_id,
         ordered_hops=ordered_hops,
+        signer_verified=False,
         stages=stage_verdicts,
         errors=errors,
     )

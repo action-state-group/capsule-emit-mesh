@@ -27,6 +27,11 @@ import pytest
 
 # Stub heavy deps so these tests run without installing agent-action-capsule
 # and scitt_cose (same pattern as test_forwarded_copy_and_keys.py).
+# Apply the attribute stubs ONLY to names we actually created here (the
+# not-installed path). Clobbering the real installed module's `.verify`/`.emit`
+# leaked a `verify -> None` stub into every later test in the same process and
+# broke the coordinator-receipt suite. `_stubbed` gates the clobber.
+_stubbed: set[str] = set()
 for _name in [
     "scitt_cose",
     "agent_action_capsule",
@@ -36,16 +41,23 @@ for _name in [
     "agent_action_capsule.verify",
     "model_identity",
 ]:
-    sys.modules.setdefault(_name, types.ModuleType(_name))
-sys.modules["agent_action_capsule.canonical"].json_digest = lambda v: hashlib.sha256(
-    json.dumps(v, sort_keys=True, separators=(",", ":")).encode()
-).hexdigest()
-for _n in ["Disposition", "EffectRecord"]:
-    setattr(sys.modules["agent_action_capsule.contracts"], _n, object)
-sys.modules["agent_action_capsule.emit"].emit = lambda **k: {}
-sys.modules["agent_action_capsule.verify"].verify = lambda *a, **k: None
-sys.modules["model_identity"].load_manifest = lambda p: {}
-sys.modules["model_identity"].model_package_digest = lambda m: ""
+    if _name not in sys.modules:
+        sys.modules[_name] = types.ModuleType(_name)
+        _stubbed.add(_name)
+if "agent_action_capsule.canonical" in _stubbed:
+    sys.modules["agent_action_capsule.canonical"].json_digest = lambda v: hashlib.sha256(
+        json.dumps(v, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+if "agent_action_capsule.contracts" in _stubbed:
+    for _n in ["Disposition", "EffectRecord"]:
+        setattr(sys.modules["agent_action_capsule.contracts"], _n, object)
+if "agent_action_capsule.emit" in _stubbed:
+    sys.modules["agent_action_capsule.emit"].emit = lambda **k: {}
+if "agent_action_capsule.verify" in _stubbed:
+    sys.modules["agent_action_capsule.verify"].verify = lambda *a, **k: None
+if "model_identity" in _stubbed:
+    sys.modules["model_identity"].load_manifest = lambda p: {}
+    sys.modules["model_identity"].model_package_digest = lambda m: ""
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 

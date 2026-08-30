@@ -502,23 +502,36 @@ thing that signs it, and the way it is assembled without a live log.
 3. The coordinator composes a **signed receipt binding stage ORDER to each present stage's committed
    SHA-256 digest** (the `stages[]` / `topology[]` two-array shape keeps "I routed this" separate
    from "I have proof of this"). **No payload** -- the relay never sees a token.
-4. An **independent offline verifier** holding only the receipt and the disclosed bundles
-   reconstructs stage order from `topology[]`, and for each `present` stage recomputes the digest
-   over the disclosed bytes, checks it against the committed digest, and re-verifies the disclosed
-   capsule. A tampered bundle (digest != committed) or a broken capsule is a **mismatch**; a
-   `present` stage whose bundle was not disclosed is a visible **gap** -- three-state, never a false
-   green.
+4. An **independent offline verifier** holding only the receipt and the disclosed bundles (**both
+   untrusted input**) reconstructs stage order from `topology[]`, and for each `present` stage
+   recomputes the digest over the disclosed bytes, checks it against the committed digest,
+   re-verifies the disclosed capsule, **and binds the record to its hop** -- the disclosed record
+   must be *that hop's* record (its envelope `hop_id` and its own sealed
+   `x-mesh-lifecycle-v1.hop_id`/`.exchange_id` name this hop/run) and no single record may back two
+   distinct present hops. A tampered bundle (digest != committed), a broken capsule, or a
+   record→hop binding violation is a **mismatch**; a `present` stage whose bundle was not disclosed
+   is a visible **gap** -- three-state, never a false green. **Without the record→hop binding, one
+   real stage record re-cited under N different hop_ids would verify green N/N -- a single stage
+   inflated into a full N-stage run; the binding is what forecloses that.**
 
 **What this closes.** C2 ("blamed for a node's behaviour") and C3 ("which node held which layers")
 in §2.4: correlation *and* order are now signed and offline-checkable, and a stranger with the
 disclosed bundles can reconstruct who held which slice in what order without trusting the
 coordinator.
 
-**Honest gaps.** The receipt binds **order + per-stage bytes**, not identity or payload. Node
-identity is **self-attested** unless the underlying stage record itself carries a verified
-requester/provider commitment (`mesh_record_verifier` `cross_party_rung`); the coordinator's own
-signature is self-attested unless anchored to registration/witness (§8). It proves *this bundle, at
-this position, unchanged* -- not *who* produced it beyond what each stage record independently earns.
+**Honest gaps.** The receipt binds **order + per-stage bytes + record→hop**, not identity or
+payload. Node identity is **self-attested** unless the underlying stage record itself carries a
+verified requester/provider commitment (`mesh_record_verifier` `cross_party_rung`). The receipt
+**signer is not verified by the offline verifier** -- `verify_coordinator_receipt` runs a Class-1
+payload verify only (content-hash + chain integrity); a green result asserts order↔bytes↔hop
+binding, **never authorship**, and `ReceiptVerdict.signer_verified` is always False today. The
+coordinator's own signature is therefore self-attested unless anchored to registration/witness
+(§8). What the binding DOES foreclose (fixed 2026-08-29): re-citing one real stage record under
+several hop_ids no longer satisfies multiple hops -- each present record must be *that hop's* record
+(envelope + inner `x-mesh-lifecycle-v1.hop_id`/`.exchange_id`), and no single record may back two
+distinct present hops, so one stage can no longer be inflated into a full multi-stage run. It proves
+*this bundle, at this position, for this hop, unchanged* -- not *who* produced it or *who* signed
+the receipt beyond what each stage record independently earns.
 
 
 ---
