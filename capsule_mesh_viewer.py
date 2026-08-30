@@ -49,6 +49,7 @@ from capsule_mesh_view import (
     _poc_block,
     label_counterparty,
     label_role,
+    reconcile_record,
     verify_results_for,
     _verify_ok_map,
 )
@@ -228,14 +229,56 @@ def build_role_questions(
     verified_word = {True: "verified", False: "FAILED verify", None: "not verified here"}[verify_ok]
 
     # ---- Requester -----------------------------------------------------
-    req_q1 = _q(
-        "Did I get the model / quant / hardware I asked for?",
-        ANSWERED if sp.get("model") else NOT_IN_RECORD,
-        f"Served: {plain_model_line(sp)} — {verified_word}."
-        if sp.get("model")
-        else "No serving-provenance block in this record.",
-        evidence=["serving_provenance.model", "serving_provenance.quantization", "serving_provenance.hardware"],
-    )
+    # verify-after-advertise (§12.3): reconcile the node's advertised CLAIM
+    # against what its record proves ran. Re-derived from the record's own
+    # co-carried advertisement + serving_provenance (never the producer's own
+    # verdict) so this answer is self-contained and offline.
+    reconciliation = reconcile_record(record)
+    overall = reconciliation["overall"]
+    if not sp.get("model"):
+        req_q1 = _q(
+            "Did I get the model / quant / hardware I asked for?",
+            NOT_IN_RECORD,
+            "No serving-provenance block in this record.",
+            evidence=["serving_provenance.model", "serving_provenance.quantization", "serving_provenance.hardware"],
+        )
+    elif overall == "mismatch":
+        # A broken promise, flagged loudly and named per-field (§12.3: an
+        # attributable mismatch is evidence, not a score).
+        broken = ", ".join(reconciliation["mismatches"])
+        req_q1 = _q(
+            "Did I get the model / quant / hardware I asked for?",
+            PARTIAL,
+            f"MISMATCH — the node advertised one thing and served another: {broken} "
+            f"do not match the advertisement. Served: {plain_model_line(sp)} ({verified_word}). "
+            "This is an attributable, offline-checkable broken promise, not a score.",
+            evidence=["advertisement", "serving_provenance", "advertisement_reconciliation"],
+        )
+    elif overall == "match":
+        req_q1 = _q(
+            "Did I get the model / quant / hardware I asked for?",
+            ANSWERED,
+            f"Advertised-vs-served: MATCH (no broken promise in what was both claimed and served). "
+            f"Served: {plain_model_line(sp)} — {verified_word}. "
+            "Both are self-attested by the serving node (see advertisement_self_signed).",
+            evidence=["advertisement", "serving_provenance", "advertisement_reconciliation"],
+        )
+    else:
+        # advertisement_absent / no_served_facts: an honest three-state
+        # non-pass, never rendered as a silent green (§10 Rule 1).
+        why = (
+            "the node co-carried NO advertisement to reconcile against"
+            if overall == "advertisement_absent"
+            else "the record carries no served facts to reconcile"
+        )
+        req_q1 = _q(
+            "Did I get the model / quant / hardware I asked for?",
+            PARTIAL,
+            f"Served: {plain_model_line(sp)} — {verified_word}. Advertised-vs-served: "
+            f"{overall} — {why}, so what ran is recorded but there is no kept-or-broken "
+            "promise to check (not a pass).",
+            evidence=["serving_provenance", "advertisement (absent)"],
+        )
     req_q2 = _q(
         "Can I prove to a stranger what this provider did?",
         PARTIAL,
@@ -575,6 +618,12 @@ def to_fragment_payload(
                 "operator": rec.get("operator"),
                 "verify_ok": verify_ok,
                 "serving_provenance": sp,
+                # verify-after-advertise (§12.3): the re-derived advertised-vs-
+                # served verdict travels with the offline bundle, so a third
+                # party checking this permalink has the reconciliation without
+                # re-running it (and can re-run it from `record` if they prefer
+                # not to trust this field).
+                "advertised_vs_served": reconcile_record(rec),
                 # Inference-forward: the words-first Prompt -> Response block,
                 # disclosed + digest-verified, rendered ABOVE the questions.
                 "conversation": build_conversation(rec, sp, cap_disclose),

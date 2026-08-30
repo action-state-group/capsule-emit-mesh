@@ -43,6 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from advertisement import Advertisement, reconcile_advertised_vs_served
 from agent_action_capsule.verify import verify_store
 from bilateral_demo import ClientAck, get_cross_party, verify_client_ack
 from capsule_emit.ledger import read_ledger
@@ -159,6 +160,22 @@ def verify_bundle(
                 f"served_by={prov.get('served_by_node_id')!r} "
                 f"tokens={prov.get('usage', {}).get('total_tokens')!r}"
             )
+
+        # verify-after-advertise (TRUST-MODEL.md §12.3): re-derive the advertised-
+        # vs-served reconciliation from THIS record's own bytes (advertisement +
+        # serving_provenance), not the producer's co-carried verdict. A mismatch
+        # is a first-class, attributable, offline-checkable broken promise.
+        poc = _poc_block(record)
+        advertisement = poc.get("advertisement")
+        ad = Advertisement.from_value(advertisement) if advertisement else None
+        recon = reconcile_advertised_vs_served(ad, prov)
+        if recon["overall"] == "mismatch":
+            lines.append(
+                f"    advertised_vs_served: MISMATCH — broken promise on "
+                f"{', '.join(recon['mismatches'])} (advertised != served; attributable, offline-checkable)"
+            )
+        else:
+            lines.append(f"    advertised_vs_served: {recon['overall']}")
     return all_ok, lines
 
 
