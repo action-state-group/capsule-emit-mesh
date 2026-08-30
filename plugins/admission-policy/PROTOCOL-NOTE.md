@@ -127,21 +127,51 @@ already observes on the mesh channel. So the closure is *seal-on-observe*:
    is a genuine binding to what was asked, recomputable by any verifier from the
    request body alone.
 
+4. **Response-body + tool_calls/reasoning binding (NOW CLOSED for the
+   non-streamed JSON path).** The earlier revision of this note said the host
+   streamed the response and only `usage` returned on the `Copy`
+   `RouteDispatchOutcome`, so `agent_output_digest` could bind only the observed
+   terminal facts and no `tool_calls_digest` was possible. That was true for the
+   *streamed* path but **not** for the non-streamed JSON relay: at the JSON-relay
+   delivery point (`response::json_adaptation` / `response::relay`) the host
+   still holds the complete response body in hand — it parses `usage` from it and
+   even captures it for logging. So the host now computes, at that point, three
+   digests over the REAL served body and forwards them on the terminal event:
+
+   - `response_digest`   = `json_digest(response body)`  → binds `agent_output_digest`
+   - `tool_calls_digest` = `json_digest(tool_calls)`     (absent when the model emitted none)
+   - `reasoning_digest`  = `json_digest(reasoning chunks)`(absent for a non-reasoning model)
+
+   computed with **plain RFC 8785 JCS** (no float-stringify), byte-for-byte
+   identical to the Python reference `agent_action_capsule.json_digest` and the
+   labeled sub-digests of `capsule_ledger/conversation/exchange.py`'s
+   `digest_conversation_exchange`. They ride up as a `Copy`
+   `ExchangeOutputDigests` bundle (raw sha-256 bytes) on
+   `RouteAttemptResult::Delivered → RouteDispatchOutcome::RespondedWithUsage`, so
+   the enums stay `Copy`. The plugin binds `agent_output_digest` to the forwarded
+   `response_digest` and seals `tool_calls_digest`/`reasoning_digest` (OPTIONAL,
+   absent when the model had none, never fabricated) into
+   `model_attestation.compute_attestation`.
+
+   VERIFIED: a capsule sealed from a real host-served SETI@Home / `web_search`
+   exchange carries `tool_calls_digest =
+   f294be8a53bb9c29cd94472721f0857591f34b23fe010882de79b9fb210b1395`, equal to an
+   independent Python `json_digest(tool_calls)` recompute, and verifies GREEN
+   (`agent-action-capsule verify` + the detached `.cose`).
+
 ### What is NOT fully bound yet, and exactly what full closure needs
 
-`agent_output_digest` on the host-served path binds the canonical digest of the
-**observed terminal facts** (model + real usage), *not* the served response
-body. Reason: on the host-served raw-proxy path the response is **streamed** to
-the client by `route_model_request`, and only the token `usage` returns to the
-publish site on the `Copy` `RouteDispatchOutcome` enum — the plugin (and even
-the ingress publish site) never holds the response bytes. So the output digest
-is honestly a digest of real *output accounting*, documented as such, not a
-stand-in for a body digest.
+The **STREAMED** response path is still bound only to the observed terminal facts
+(model + real usage), not the response body. On the streamed path
+(`response::stream_translation`, the pipeline/MoA gateway) the body is teed to the
+client chunk-by-chunk and never buffered whole, so no response/tool_calls/
+reasoning digest is captured — the forwarded `ExchangeOutputDigests` bundle is
+all-`None`, and the plugin falls back to the observed-terminal-facts
+`agent_output_digest`, documented as such, never a fabricated body digest.
 
-Full response-body binding would require a host-side addition beyond this
-digest-forward: `route_model_request` / the proxy streaming path would need to
-tee the response body through a hasher as it streams (without buffering it), and
-surface the resulting digest on the dispatch outcome (which today is `Copy` and
-carries only `status_code` + `TokenUsage`). That is a proxy-streaming change,
-not a one-line field-forward, and is left as follow-up. The request-side binding
-— the load-bearing one for "what was asked" — is fully closed here.
+Full closure for the streamed path needs a **streaming hasher**: the proxy would
+tee the response body through a SHA-256 as it streams (without buffering it) and
+surface the resulting digest — and, for `tool_calls_digest`, an incremental
+tool-call accumulator — on the dispatch outcome. That is a proxy-streaming
+change, left as follow-up. The non-streamed JSON path (which is what a tool-call
+exchange takes) and the request-side binding are fully closed here.

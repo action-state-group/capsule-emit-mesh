@@ -64,6 +64,8 @@ fn sample_capsule_input() -> CapsuleInput {
         provider: "mesh-llm".to_string(),
         agent_input_digest: "a".repeat(64),
         agent_output_digest: "b".repeat(64),
+        tool_calls_digest: None,
+        reasoning_digest: None,
         runtime:
             "0000000000000000000000000000000000000000000000000000000000000000:rust-milestone-1"
                 .to_string(),

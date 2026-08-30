@@ -84,6 +84,25 @@ pub struct OpenAiExchangeEnvelope {
     /// on a host predating the field / a non-JSON-body exchange -- never faked.
     #[serde(default)]
     pub request_digest: Option<String>,
+    /// The canonical JSON-DIGEST of the REAL response body the host served
+    /// (host-side `response_digest`). Lets a host-served capsule bind its
+    /// `agent_output_digest` to the real response bytes, not just the terminal
+    /// accounting facts. `None` on a host predating the field / a streamed body
+    /// -- never faked.
+    #[serde(default)]
+    pub response_digest: Option<String>,
+    /// The canonical JSON-DIGEST of the flattened `tool_calls` the model emitted
+    /// (host-side `tool_calls_digest`, byte-for-byte the Python reference
+    /// `json_digest(tool_calls)`). This is the fact that lets a host-served
+    /// capsule seal a REAL `tool_calls_digest`. `None` -- and then absent from
+    /// the capsule -- when the model emitted none, never a digest over `[]`.
+    #[serde(default)]
+    pub tool_calls_digest: Option<String>,
+    /// The canonical JSON-DIGEST of the model's `reasoning_content` (host-side
+    /// `reasoning_digest`). `None` for a non-reasoning model (honest null),
+    /// never fabricated.
+    #[serde(default)]
+    pub reasoning_digest: Option<String>,
 }
 
 /// Mirror of the host's `ExchangeUsage` (real token counts). Every field is a
@@ -264,6 +283,12 @@ struct LoggedEnvelope {
     usage: Option<MirrorUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     request_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_digest: Option<String>,
 }
 
 impl From<&OpenAiExchangeEnvelope> for LoggedEnvelope {
@@ -279,6 +304,9 @@ impl From<&OpenAiExchangeEnvelope> for LoggedEnvelope {
             serving_provenance: e.serving_provenance.clone(),
             usage: e.usage,
             request_digest: e.request_digest.clone(),
+            response_digest: e.response_digest.clone(),
+            tool_calls_digest: e.tool_calls_digest.clone(),
+            reasoning_digest: e.reasoning_digest.clone(),
         }
     }
 }
@@ -318,7 +346,7 @@ mod tests {
     /// as a sealable host-served exchange (real model identity present).
     #[test]
     fn real_host_served_terminal_carries_usage_and_request_digest_and_is_sealable() {
-        let wire = r#"{"exchange_id":"exch-7","dispatch_path":"raw_proxy","phase":"terminal","model":"local-gguf/sha256-4ff195f73917d9c2","status":200,"capsule_id":null,"nonce":null,"usage":{"prompt_tokens":41,"completion_tokens":2,"total_tokens":43},"request_digest":"a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5","serving_provenance":{"served_by_node_id":"143f4d9f8cd9a9","hostname":"Stevens-MacBook-Pro.local","architecture":"llama","context_length":131072,"parameter_size":"3B","layer_count":28,"model_identity_hash":"904548955b8a6478","gpu":"Apple M4 Max","vram_bytes":28991029248,"is_soc":true}}"#;
+        let wire = r#"{"exchange_id":"exch-7","dispatch_path":"raw_proxy","phase":"terminal","model":"local-gguf/sha256-4ff195f73917d9c2","status":200,"capsule_id":null,"nonce":null,"usage":{"prompt_tokens":41,"completion_tokens":2,"total_tokens":43},"request_digest":"a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5","response_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tool_calls_digest":"f294be8a53bb9c29cd94472721f0857591f34b23fe010882de79b9fb210b1395","serving_provenance":{"served_by_node_id":"143f4d9f8cd9a9","hostname":"Stevens-MacBook-Pro.local","architecture":"llama","context_length":131072,"parameter_size":"3B","layer_count":28,"model_identity_hash":"904548955b8a6478","gpu":"Apple M4 Max","vram_bytes":28991029248,"is_soc":true}}"#;
         let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
         let usage = env.usage.expect("real usage carried through");
         assert_eq!(usage.prompt_tokens, 41);
@@ -328,6 +356,18 @@ mod tests {
             env.request_digest.as_deref(),
             Some("a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5")
         );
+        // The host-forwarded response-body / tool_calls digests survive the
+        // deserialize -- the real tool_calls_digest is the Python-reference value.
+        assert_eq!(
+            env.response_digest.as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            env.tool_calls_digest.as_deref(),
+            Some("f294be8a53bb9c29cd94472721f0857591f34b23fe010882de79b9fb210b1395")
+        );
+        // A non-reasoning model forwarded no reasoning digest -> honest None.
+        assert!(env.reasoning_digest.is_none());
         assert_eq!(env.exchange_id.as_deref(), Some("exch-7"));
         assert!(ObservedLifecycleEvents::is_sealable_host_served(&env));
     }
@@ -379,6 +419,9 @@ mod tests {
             nonce: None,
             usage: None,
             request_digest: None,
+            response_digest: None,
+            tool_calls_digest: None,
+            reasoning_digest: None,
             serving_provenance: gpu.map(|g| HostServingProvenance {
                 served_by_node_id: Some("node-1".to_string()),
                 hostname: None,

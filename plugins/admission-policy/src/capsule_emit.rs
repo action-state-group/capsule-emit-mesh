@@ -93,6 +93,51 @@ fn parse_usage(response_bytes: &[u8]) -> Option<TokenUsage> {
     })
 }
 
+/// The OPTIONAL labeled sub-digests over one response body: `tool_calls_digest`
+/// and `reasoning_digest`, each the canonical `jcs::json_digest` (plain JCS,
+/// matching the Python reference `capsule_ledger/conversation/exchange.py`'s
+/// `digest_conversation_exchange`) of the flattened `tool_calls` /
+/// `reasoning_content` across the response's assistant message(s). Each is
+/// `None` -- and then ABSENT from the sealed capsule, never a fabricated digest
+/// over `[]` -- when the response carried none. Used by the plugin-served path,
+/// which holds the response bytes directly (the host-served observe path instead
+/// binds the digests the host forwarded). No float-stringification: tool_calls /
+/// reasoning are strings/structural JSON with no floats, so plain JCS matches
+/// the Python reference exactly.
+fn output_sub_digests(response_bytes: &[u8]) -> (Option<String>, Option<String>) {
+    let Ok(value) = serde_json::from_slice::<Value>(response_bytes) else {
+        return (None, None);
+    };
+    let mut tool_calls: Vec<Value> = Vec::new();
+    let mut reasoning: Vec<Value> = Vec::new();
+    if let Some(choices) = value.get("choices").and_then(Value::as_array) {
+        for choice in choices {
+            let Some(message) = choice.get("message") else {
+                continue;
+            };
+            if let Some(tcs) = message.get("tool_calls").and_then(Value::as_array) {
+                tool_calls.extend(tcs.iter().cloned());
+            }
+            if let Some(r) = message.get("reasoning_content").filter(|r| !r.is_null()) {
+                if !matches!(r, Value::String(s) if s.is_empty()) {
+                    reasoning.push(r.clone());
+                }
+            }
+        }
+    }
+    let tool_calls_digest = (!tool_calls.is_empty())
+        .then(|| jcs::json_digest(&Value::Array(tool_calls)))
+        .transpose()
+        .ok()
+        .flatten();
+    let reasoning_digest = (!reasoning.is_empty())
+        .then(|| jcs::json_digest(&Value::Array(reasoning)))
+        .transpose()
+        .ok()
+        .flatten();
+    (tool_calls_digest, reasoning_digest)
+}
+
 const CAPSULE_CONTENT_TYPE: &str =
     "application/vnd.agent-action-capsule+json; profile=draft-mih-scitt-agent-action-capsule-02";
 
@@ -210,6 +255,10 @@ impl CapsuleState {
         let agent_input_digest = canonical_body_digest(request_bytes)?;
         let agent_output_digest = canonical_body_digest(response_bytes)?;
         let usage = parse_usage(response_bytes);
+        // This path serves the response itself, so it holds the bytes -- compute
+        // the OPTIONAL tool_calls/reasoning sub-digests directly (absent when the
+        // model emitted none). Real digests over the real served response.
+        let (tool_calls_digest, reasoning_digest) = output_sub_digests(response_bytes);
 
         let mut ledger = self.ledger.lock().expect("capsule ledger mutex poisoned");
         let chain = ledger.chain_head().map(|parent| ChainLink {
@@ -232,6 +281,10 @@ impl CapsuleState {
             provider: "mesh-llm".to_string(),
             agent_input_digest: agent_input_digest.clone(),
             agent_output_digest: agent_output_digest.clone(),
+            // OPTIONAL labeled sub-digests over the served response body; absent
+            // when the model emitted none (never fabricated).
+            tool_calls_digest,
+            reasoning_digest,
             runtime: format!(
                 "{}:admission-policy-plugin/mesh-llm-host-runtime",
                 "0".repeat(64)
@@ -349,6 +402,22 @@ pub struct ObservedHostExchange<'a> {
     /// the capsule then records an honest "unknown-request" sentinel, never a
     /// fabricated digest.
     pub request_digest: Option<&'a str>,
+    /// Canonical JSON-DIGEST of the REAL response body, forwarded by the host
+    /// (computed at its JSON-relay delivery point). When present, the capsule's
+    /// `agent_output_digest` binds the REAL response bytes rather than merely
+    /// the terminal accounting facts. `None` on a host that did not forward one
+    /// (older host / streamed body) -- the capsule then falls back to the
+    /// observed-terminal-facts digest, documented as such, never fabricated.
+    pub response_digest: Option<&'a str>,
+    /// Canonical JSON-DIGEST of the flattened `tool_calls` the model emitted,
+    /// forwarded by the host (byte-for-byte the Python reference
+    /// `json_digest(tool_calls)`). `None` -- and then ABSENT from the capsule,
+    /// never a fabricated digest over `[]` -- when the model emitted none.
+    pub tool_calls_digest: Option<&'a str>,
+    /// Canonical JSON-DIGEST of the model's `reasoning_content`, forwarded by
+    /// the host. `None` -- and ABSENT from the capsule -- for a non-reasoning
+    /// model (honest null), never fabricated.
+    pub reasoning_digest: Option<&'a str>,
     /// The backend's real token usage from the terminal event.
     pub usage: Option<TokenUsage>,
     /// The host's serving provenance for this served model.
@@ -387,11 +456,21 @@ impl CapsuleState {
             model,
             exchange_id,
             request_digest,
+            response_digest,
+            tool_calls_digest,
+            reasoning_digest,
             usage,
             host_provenance,
         } = observed;
-        let (model, exchange_id, request_digest, usage) =
-            (*model, *exchange_id, *request_digest, usage.clone());
+        let (model, exchange_id, request_digest, response_digest, tool_calls_digest, reasoning_digest, usage) = (
+            *model,
+            *exchange_id,
+            *request_digest,
+            *response_digest,
+            *tool_calls_digest,
+            *reasoning_digest,
+            usage.clone(),
+        );
         let host = host_provenance.clone();
 
         // agent_input_digest: the host-forwarded canonical request-body digest
@@ -400,21 +479,29 @@ impl CapsuleState {
             .map(str::to_string)
             .unwrap_or_else(|| format!("unknown-request:{model}"));
 
-        // agent_output_digest: canonical digest of the observed terminal facts
-        // (model + real usage). A real digest of real observed output-accounting,
-        // documented as NOT the response-body digest (the plugin never sees the
-        // host-streamed body). Built as a normalized JSON value and digested with
-        // the same canonical `jcs::json_digest` the request path uses.
-        let mut output_facts = Map::new();
-        output_facts.insert("model".into(), Value::String(model.to_string()));
-        if let Some(u) = usage.as_ref() {
-            let mut usage_obj = Map::new();
-            usage_obj.insert("prompt_tokens".into(), Value::from(u.prompt_tokens));
-            usage_obj.insert("completion_tokens".into(), Value::from(u.completion_tokens));
-            usage_obj.insert("total_tokens".into(), Value::from(u.total_tokens));
-            output_facts.insert("usage".into(), Value::Object(usage_obj));
-        }
-        let agent_output_digest = jcs::json_digest(&Value::Object(output_facts))?;
+        // agent_output_digest: PREFER the host-forwarded canonical digest of the
+        // REAL response body (computed host-side at its JSON-relay delivery
+        // point, the same plain-JCS `json_digest` a verifier recomputes) -- this
+        // binds the capsule to what the model actually produced. When the host
+        // forwarded none (older host, or a streamed body it could not buffer),
+        // fall back to the canonical digest of the observed TERMINAL FACTS
+        // (model + real usage) -- a real digest of real observed output-
+        // accounting, documented as NOT a response-body digest, never fabricated.
+        let agent_output_digest = match response_digest {
+            Some(rd) => rd.to_string(),
+            None => {
+                let mut output_facts = Map::new();
+                output_facts.insert("model".into(), Value::String(model.to_string()));
+                if let Some(u) = usage.as_ref() {
+                    let mut usage_obj = Map::new();
+                    usage_obj.insert("prompt_tokens".into(), Value::from(u.prompt_tokens));
+                    usage_obj.insert("completion_tokens".into(), Value::from(u.completion_tokens));
+                    usage_obj.insert("total_tokens".into(), Value::from(u.total_tokens));
+                    output_facts.insert("usage".into(), Value::Object(usage_obj));
+                }
+                jcs::json_digest(&Value::Object(output_facts))?
+            }
+        };
 
         let mut ledger = self.ledger.lock().expect("capsule ledger mutex poisoned");
         let chain = ledger.chain_head().map(|parent| ChainLink {
@@ -437,6 +524,11 @@ impl CapsuleState {
             provider: "mesh-llm".to_string(),
             agent_input_digest: agent_input_digest.clone(),
             agent_output_digest: agent_output_digest.clone(),
+            // The REAL labeled sub-digests the host forwarded off the response
+            // body -- OPTIONAL, absent when the model emitted none (never
+            // fabricated). This is where the real `tool_calls_digest` lands.
+            tool_calls_digest: tool_calls_digest.map(str::to_string),
+            reasoning_digest: reasoning_digest.map(str::to_string),
             runtime: format!(
                 "{}:admission-policy-plugin/mesh-llm-host-runtime",
                 "0".repeat(64)
@@ -519,6 +611,155 @@ impl CapsuleState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PARITY PIN: `output_sub_digests` over the REAL SETI@Home / web_search
+    /// response computes a `tool_calls_digest` byte-for-byte identical to the
+    /// Python reference `agent_action_capsule.json_digest(tool_calls)` — the
+    /// value recorded requester-side in the live demo
+    /// (`_work/mesh-live-demo/b-tool_calls.json`). A non-reasoning model yields
+    /// an absent reasoning digest (honest null), never fabricated.
+    #[test]
+    fn output_sub_digests_over_real_seti_response_matches_python_reference() {
+        let body = br#"{"id":"chatcmpl-seti","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"function":{"arguments":"{\"query\": \"mesh-llm vs SETI@Home\"}","name":"web_search"},"id":"call_719a955fb46a41008dd847d412f00795","type":"function"}]},"finish_reason":"tool_calls"}]}"#;
+        let (tool_calls_digest, reasoning_digest) = output_sub_digests(body);
+        assert_eq!(
+            tool_calls_digest.as_deref(),
+            Some("f294be8a53bb9c29cd94472721f0857591f34b23fe010882de79b9fb210b1395"),
+            "plugin tool_calls_digest must equal the Python reference json_digest(tool_calls)"
+        );
+        assert!(
+            reasoning_digest.is_none(),
+            "a non-reasoning model must yield an absent reasoning digest, not a fabricated one"
+        );
+    }
+
+    /// A response with no tool call yields an absent tool_calls digest — never a
+    /// digest over `[]`.
+    #[test]
+    fn output_sub_digests_absent_when_no_tool_calls() {
+        let body = br#"{"choices":[{"message":{"role":"assistant","content":"hi"}}]}"#;
+        let (tcd, rd) = output_sub_digests(body);
+        assert!(tcd.is_none());
+        assert!(rd.is_none());
+    }
+
+    /// END-TO-END: a host-served observed exchange that forwarded a real
+    /// `tool_calls_digest` and `response_digest` seals a capsule whose
+    /// `compute_attestation.tool_calls_digest` equals the forwarded (Python-
+    /// reference) value, and whose `agent_output_digest` binds the forwarded
+    /// REAL response digest — not the terminal-facts fallback.
+    #[test]
+    fn observed_host_exchange_seals_real_tool_calls_and_response_digest() {
+        let dir = std::env::temp_dir().join(format!("cap-tcd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+
+        // The REAL served SETI@Home response body carrying the model's real
+        // web_search tool call (the exact tool_calls from the live-demo capture
+        // _work/mesh-live-demo/b-tool_calls.json), plus real usage. The host
+        // computes response_digest / tool_calls_digest over exactly this body at
+        // its JSON-relay delivery point; we reproduce those here to bind the
+        // exported capsule to real values throughout (no placeholder digests).
+        let response_body = br#"{"id":"chatcmpl-seti","object":"chat.completion","created":1788060371,"model":"llama-3.2-3b-instruct","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"function":{"arguments":"{\"query\": \"mesh-llm vs SETI@Home\"}","name":"web_search"},"id":"call_719a955fb46a41008dd847d412f00795","type":"function"}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":202,"completion_tokens":25,"total_tokens":227}}"#;
+        // Real response-body digest (host's `response_digest`) and real
+        // tool_calls_digest (host's `tool_calls_digest`) over that body.
+        let response_digest = canonical_body_digest(response_body).expect("resp digest");
+        let (tool_calls_digest_owned, reasoning_digest_owned) = output_sub_digests(response_body);
+        let tool_calls_digest = tool_calls_digest_owned.expect("real tool_calls digest");
+        // Independent sanity: the tool_calls_digest equals the Python-reference value.
+        assert_eq!(
+            tool_calls_digest,
+            "f294be8a53bb9c29cd94472721f0857591f34b23fe010882de79b9fb210b1395"
+        );
+        assert!(reasoning_digest_owned.is_none());
+        let observed = ObservedHostExchange {
+            model: "llama-3.2-3b-instruct",
+            exchange_id: Some("exch-seti"),
+            request_digest: Some(
+                "a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5",
+            ),
+            response_digest: Some(&response_digest),
+            tool_calls_digest: Some(&tool_calls_digest),
+            reasoning_digest: None,
+            usage: Some(TokenUsage {
+                prompt_tokens: 202,
+                completion_tokens: 25,
+                total_tokens: 227,
+            }),
+            host_provenance: HostProvenance {
+                architecture: Some("llama".to_string()),
+                model_identity_hash: Some("904548955b8a6478".to_string()),
+                ..Default::default()
+            },
+        };
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal observed host exchange");
+        let ca = &emitted.capsule["model_attestation"]["compute_attestation"];
+        // The REAL tool_calls_digest is sealed into the capsule.
+        assert_eq!(ca["tool_calls_digest"], tool_calls_digest);
+        // agent_output_digest binds the forwarded REAL response digest.
+        assert_eq!(ca["agent_output_digest"], response_digest);
+        // Non-reasoning model -> reasoning_digest omitted entirely (honest null).
+        assert!(ca.get("reasoning_digest").is_none());
+
+        // When AAC_CAPSULE_EXPORT_DIR is set, export the sealed capsule + its
+        // detached COSE_Sign1 statement + the signing pubkey to that dir, so an
+        // EXTERNAL verifier (agent-action-capsule / the Rust verify_capsule bin)
+        // can confirm the real-tool_calls capsule verifies GREEN out-of-process.
+        if let Ok(export_dir) = std::env::var("AAC_CAPSULE_EXPORT_DIR") {
+            let export = std::path::Path::new(&export_dir);
+            std::fs::create_dir_all(export).expect("mk export dir");
+            std::fs::write(
+                export.join("SEALED-with-tool-calls.json"),
+                serde_json::to_vec_pretty(&emitted.capsule).unwrap(),
+            )
+            .expect("write capsule");
+            let cose_src = dir
+                .join("ledger")
+                .join("signed-statements")
+                .join(format!("{}.cose", emitted.capsule_id));
+            std::fs::copy(&cose_src, export.join("SEALED-with-tool-calls.cose"))
+                .expect("copy cose");
+            std::fs::copy(
+                dir.join("keys").join("node-key.pub.pem"),
+                export.join("node-key.pub.pem"),
+            )
+            .expect("copy pubkey");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// When the host forwarded NO response digest, `agent_output_digest` falls
+    /// back to the observed-terminal-facts digest (documented as such), and a
+    /// tool_calls_digest is still absent when none was forwarded.
+    #[test]
+    fn observed_host_exchange_falls_back_when_no_response_digest_forwarded() {
+        let dir = std::env::temp_dir().join(format!("cap-fb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let observed = ObservedHostExchange {
+            model: "m",
+            exchange_id: Some("e"),
+            request_digest: Some("a".repeat(64).leak()),
+            response_digest: None,
+            tool_calls_digest: None,
+            reasoning_digest: None,
+            usage: None,
+            host_provenance: HostProvenance {
+                architecture: Some("llama".to_string()),
+                ..Default::default()
+            },
+        };
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal");
+        let ca = &emitted.capsule["model_attestation"]["compute_attestation"];
+        assert!(ca.get("tool_calls_digest").is_none());
+        // Fallback output digest is a real 64-hex digest of the terminal facts.
+        assert_eq!(ca["agent_output_digest"].as_str().unwrap().len(), 64);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// [adv-run-2-fix-batch] B1 regression: two byte-different, semantically
     /// identical request bodies (key order + whitespace only) must digest to
