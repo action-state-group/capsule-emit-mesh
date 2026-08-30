@@ -21,8 +21,10 @@ from capsule_mesh_viewer import (
     NOT_IN_RECORD,
     PARTIAL,
     build_role_questions,
+    build_verdict,
     decode_fragment,
     encode_fragment,
+    friendly_model_name,
     plain_model_line,
     render_mesh_viewer_html,
     serving_provenance,
@@ -83,6 +85,123 @@ def test_plain_model_line_is_words_first_no_digests():
     assert "f" * 64 not in line  # no digest leaks into the plain sentence
 
 
+# A raw-GGUF capsule: the only model identity is a content hash + arch + size,
+# exactly the mesh-live shape whose raw "local-gguf/sha256-…" title Steven
+# flagged as unreadable.
+def _raw_gguf_sp() -> dict:
+    return serving_provenance(
+        {
+            "model_attestation": {
+                "model_id": "local-gguf/sha256-887fbdc66ab91eb5",
+                "compute_attestation": {
+                    "x-mesh-poc-v1": {
+                        "client_nonce_source": "host_served_observed",
+                        "model_name_digest": "d" * 64,
+                        "serving_provenance": {
+                            "quantization": "Q4_K_M",
+                            "model": {
+                                "architecture": "llama",
+                                "parameter_size": "3B",
+                                "canonical_ref": "local-gguf/sha256-887fbdc66ab91eb5",
+                                "identity_hash": "d" * 64,
+                            },
+                            "hardware": {"gpu": "Apple M3", "is_soc": True},
+                            "usage": {"prompt_tokens": 73, "completion_tokens": 587, "total_tokens": 660},
+                        },
+                    }
+                },
+            }
+        }
+    )
+
+
+def test_friendly_model_name_derives_family_and_never_leaks_raw_hash():
+    sp = _raw_gguf_sp()
+    name = friendly_model_name(sp)
+    # architecture(llama) + parameter_size(3B) + quantization -> Llama-3B · Q4_K_M
+    assert name == "Llama-3B · Q4_K_M"
+    # the single biggest win: the raw local-gguf/sha256 id NEVER appears here.
+    assert "local-gguf" not in name
+    assert "sha256" not in name
+    assert "d" * 16 not in name
+
+
+def test_friendly_model_name_prefers_a_real_hf_ref_tail():
+    sp = serving_provenance(_nested_capsule(model="meta-llama/Llama-3.2-3B-Instruct"))
+    assert friendly_model_name(sp) == "Llama-3.2-3B-Instruct · Q4_K_M"
+
+
+def test_verdict_is_three_plain_lines_with_honest_marks():
+    sp = _raw_gguf_sp()
+    verdict = build_verdict(sp, verify_ok=True, has_witness_checkpoint=False, counterparty="unknown")
+    assert len(verdict) == 3
+    # line 1: really ran, green, friendly name, no raw hash
+    assert verdict[0]["mark"] == "ok"
+    assert "Really ran on Llama-3B" in verdict[0]["text"]
+    assert "recompute" in verdict[0]["text"]
+    assert "sha256" not in verdict[0]["text"]
+    # line 2: honest amber — witness receipt not in this bundle
+    assert verdict[1]["mark"] == "warn"
+    assert "witness receipt isn't in this bundle" in verdict[1]["text"]
+    # line 3: honest amber — who asked / node history not proven
+    assert verdict[2]["mark"] == "warn"
+    assert "Not yet proven" in verdict[2]["text"]
+
+
+def test_verdict_never_fakes_green_on_failed_verify():
+    sp = _raw_gguf_sp()
+    verdict = build_verdict(sp, verify_ok=False, has_witness_checkpoint=False, counterparty="unknown")
+    assert verdict[0]["mark"] == "warn"
+    assert "FAILED verification" in verdict[0]["text"]
+
+
+def test_verdict_line2_goes_green_with_a_witness_receipt():
+    sp = _raw_gguf_sp()
+    verdict = build_verdict(sp, verify_ok=True, has_witness_checkpoint=True, counterparty="unknown")
+    assert verdict[1]["mark"] == "ok"
+    assert "anchored to a public witness" in verdict[1]["text"]
+
+
+def test_entry_payload_carries_friendly_name_and_verdict_not_raw_title():
+    payload = to_fragment_payload(
+        [
+            {
+                "capsule_id": "e" * 64,
+                "timestamp": "2026-08-30T00:00:00Z",
+                "operator": "capsule-emit-mesh-poc-rust",
+                "model_attestation": {
+                    "model_id": "local-gguf/sha256-887fbdc66ab91eb5",
+                    "compute_attestation": {
+                        "x-mesh-poc-v1": {
+                            "client_nonce_source": "host_served_observed",
+                            "serving_provenance": {
+                                "quantization": "Q4_K_M",
+                                "model": {
+                                    "architecture": "llama",
+                                    "parameter_size": "3B",
+                                    "canonical_ref": "local-gguf/sha256-887fbdc66ab91eb5",
+                                },
+                                "hardware": {"gpu": "Apple M3", "is_soc": True},
+                                "usage": {"prompt_tokens": 73, "completion_tokens": 587, "total_tokens": 660},
+                            },
+                        }
+                    },
+                },
+                "effect": {"request_digest": "1" * 64, "response_digest": "2" * 64},
+                "disposition": {"decision": "accept", "verdict_class": "executed"},
+            }
+        ],
+        source_log="plugin",
+    )
+    entry = payload["entries"][0]
+    assert entry["friendly_model"] == "Llama-3B · Q4_K_M"
+    assert len(entry["verdict"]) == 3
+    # The raw hash is still carried for the auditor toggle (serving_provenance),
+    # but the friendly_model default title never contains it.
+    assert "sha256" not in entry["friendly_model"]
+    assert entry["serving_provenance"]["model_canonical_ref"].startswith("local-gguf/")
+
+
 def test_four_roles_three_questions_each():
     rq = build_role_questions(_nested_capsule(), source_log="plugin", verify_ok=True, has_witness_checkpoint=False)
     roles = rq["roles"]
@@ -119,25 +238,28 @@ def test_requester_q1_reports_failed_verify_honestly():
     assert "FAILED verify" in rq["roles"]["requester"]["questions"][0]["answer"]
 
 
-def test_disclosure_closed_by_default_digest_only():
+def test_disclosure_closed_by_default_is_inline_sealed_tag():
+    # The redundant bottom "Disclosure (sealed vs shown)" block is gone; the
+    # sealed-vs-shown state now rides inline on the conversation as a per-field
+    # `disclosed` flag (green "shown by operator" / grey "sealed — digest only").
     payload = to_fragment_payload([_nested_capsule()], source_log="plugin")
-    fields = payload["entries"][0]["disclosure"]["fields"]
-    by_label = {f["label"]: f for f in fields}
-    assert by_label["request"]["disclosed"] is False
-    assert by_label["request"]["content"] is None
-    assert by_label["request"]["digest"] == "1" * 64  # sealed to its digest
+    conv = payload["entries"][0]["conversation"]
+    assert conv["prompt"]["disclosed"] is False  # sealed — digest only
+    assert conv["response"]["disclosed"] is False
+    # And the redundant repeated-content block is no longer emitted.
+    assert "disclosure" not in payload["entries"][0]
 
 
-def test_disclosure_opens_only_the_named_field():
+def test_disclosure_opens_only_the_named_field_inline():
     cap = _nested_capsule()
     cid = cap["capsule_id"]
     payload = to_fragment_payload(
         [cap], source_log="plugin", disclose={cid: {"response": "why should I trust you — verify my record"}}
     )
-    fields = {f["label"]: f for f in payload["entries"][0]["disclosure"]["fields"]}
-    assert fields["response"]["disclosed"] is True
-    assert "trust" in fields["response"]["content"]
-    assert fields["request"]["disclosed"] is False  # the other field stays sealed
+    conv = payload["entries"][0]["conversation"]
+    assert conv["response"]["disclosed"] is True  # shown by operator
+    assert "trust" in conv["response"]["text"]
+    assert conv["prompt"]["disclosed"] is False  # the other field stays sealed
 
 
 def test_fragment_roundtrip_and_full_record_carried():

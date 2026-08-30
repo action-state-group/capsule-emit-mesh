@@ -71,6 +71,8 @@ except Exception:  # pragma: no cover - only when scitt-cose/aac isn't installed
 __all__ = [
     "serving_provenance",
     "plain_model_line",
+    "friendly_model_name",
+    "build_verdict",
     "build_role_questions",
     "served_facts_digest",
     "build_conversation",
@@ -181,6 +183,118 @@ def plain_model_line(sp: dict[str, Any]) -> str:
     if total:
         line += f", {total} tokens"
     return line
+
+
+# ---------------------------------------------------------------------------
+# Friendly model name + plain-language verdict -- the single biggest
+# readability win (Steven's feedback: "the model name is a raw hash").
+# ---------------------------------------------------------------------------
+
+# Map a raw GGUF architecture string to a human family name, when we can say it
+# truthfully. `llama` + parameter_size `3B` -> "Llama-3.2-3B" is NOT safe to
+# assert (the record does not carry the minor version), so we build the honest
+# form from what the record actually holds: architecture family + parameter
+# size, refined by the canonical_ref when it names a real HF-style model.
+_ARCH_FAMILY = {"llama": "Llama", "mistral": "Mistral", "qwen": "Qwen", "gemma": "Gemma", "phi": "Phi"}
+
+
+def friendly_model_name(sp: dict[str, Any]) -> str:
+    """A human model name derived from architecture + parameter_size (+ quant),
+    e.g. ``Llama-3.2-3B · Q4_K_M`` -- NEVER the raw ``local-gguf/sha256-…`` id
+    or the model_identity_hash. Falls back honestly when the record doesn't
+    carry enough to name a family (``model (Q4_K_M)`` / just the raw ref as a
+    last resort, since that is still the only identity present).
+
+    The raw hash/canonical_ref still travels in the payload (behind the details
+    toggle) -- this function only decides what the DEFAULT view shows.
+    """
+    ref = sp.get("model_canonical_ref") or sp.get("model") or ""
+    quant = sp.get("quantization")
+    quant = str(quant) if quant and quant != "unknown" else None
+
+    # 1) A real HF-style ref like "meta-llama/Llama-3.2-3B-Instruct" names
+    #    itself -- prefer its human tail over re-deriving.
+    if ref and not str(ref).startswith("local-gguf/") and "/" in str(ref):
+        human = str(ref).split("/")[-1]
+        return f"{human} · {quant}" if quant else human
+
+    # 2) Derive from architecture family + parameter size (the honest default
+    #    for a raw local GGUF whose only id is a content hash).
+    arch = (sp.get("architecture") or "").lower()
+    family = _ARCH_FAMILY.get(arch)
+    size = sp.get("parameter_size")
+    if family and size:
+        base = f"{family}-{size}"
+        return f"{base} · {quant}" if quant else base
+    if family:
+        return f"{family} · {quant}" if quant else family
+
+    # 3) Last resort: we could not derive a family. Do not invent one; show a
+    #    neutral placeholder + quant, never the raw sha256 in the default view.
+    return f"local model · {quant}" if quant else "local model"
+
+
+def build_verdict(
+    sp: dict[str, Any],
+    *,
+    verify_ok: bool | None,
+    has_witness_checkpoint: bool,
+    counterparty: str,
+) -> list[dict[str, str]]:
+    """Three plain-language lines that are the DEFAULT per-card read, replacing
+    the three dense role-questions. Each line is {mark, text} where mark is
+    "ok" (✓) or "warn" (⚠) -- never a fake green.
+
+    Line 1 — what really ran (green when the model+hardware facts recompute).
+    Line 2 — signed + anchored (green only if witness receipt is carried;
+             honest amber "witness receipt not in this bundle" otherwise).
+    Line 3 — the honest open gap: who asked + this node's history.
+    """
+    name = friendly_model_name(sp)
+    gpu = sp.get("gpu")
+    hw = f" on an {gpu}" if gpu else ""
+    if sp.get("is_soc") and gpu:
+        hw = f" on an {gpu} (Apple silicon)"
+
+    # Line 1 — really ran. Green when this record's own facts verify here.
+    if sp.get("model") and verify_ok is not False:
+        line1 = {
+            "mark": "ok",
+            "text": f"Really ran on {name}{hw} — and you can recompute the proof in your browser.",
+        }
+    elif sp.get("model") and verify_ok is False:
+        line1 = {
+            "mark": "warn",
+            "text": f"Claims to have run on {name}{hw}, but this record FAILED verification here.",
+        }
+    else:
+        line1 = {"mark": "warn", "text": "No serving-provenance in this record — can't say what ran."}
+
+    # Line 2 — signed + anchored. Honest amber unless a witness receipt rides along.
+    if has_witness_checkpoint:
+        line2 = {
+            "mark": "ok",
+            "text": "Signed by the provider and anchored to a public witness, so it can't be quietly changed.",
+        }
+    else:
+        line2 = {
+            "mark": "warn",
+            "text": "Provider-signed (the signature verifies here) — but the witness receipt isn't in this "
+            "bundle, so anchoring isn't shown in this view.",
+        }
+
+    # Line 3 — the open gap, stated plainly. Green only if a real counterparty
+    #          identity is present; otherwise the honest "not yet proven".
+    if counterparty and counterparty != "unknown":
+        line3 = {"mark": "ok", "text": f"Who asked is attested ({counterparty})."}
+    else:
+        line3 = {
+            "mark": "warn",
+            "text": "Not yet proven: who asked (the requester is self-attested, not named) — "
+            "and this node's track record isn't carried in a single record.",
+        }
+
+    return [line1, line2, line3]
 
 
 # ---------------------------------------------------------------------------
@@ -462,13 +576,12 @@ def build_conversation(
         "computed_digest": computed_facts,
         "matches": (computed_facts is not None and computed_facts == response_digest),
         "label": "served model + usage vs sealed response_digest",
-        # Spell out the honest boundary: the TEXT is requester-held; the sealed
-        # response_digest binds the served facts, not the streamed body.
+        # A small muted secondary line (styled tiny/grey), not a big paragraph:
+        # the honest boundary that response_digest seals the served facts, and
+        # the text is the requester's held copy.
         "note": (
-            "The host streams the response body; the observe-path capsule seals "
-            "the served model + token usage as response_digest, not the text. "
-            "The text below is the requester's held copy; the served facts it "
-            "was produced under are what verify here."
+            "response_digest seals the served facts (model + token usage); the "
+            "text is the requester's held copy."
         ),
     }
 
@@ -480,9 +593,16 @@ def build_conversation(
             "gpu": sp.get("gpu"),
             "is_soc": sp.get("is_soc"),
         },
-        "prompt": {"text": prompt_text, "verify": prompt_verify},
+        "prompt": {
+            "text": prompt_text,
+            # For the inline header tag: green "shown by operator" when the
+            # operator disclosed this field, grey "sealed — digest only" otherwise.
+            "disclosed": prompt_text is not None,
+            "verify": prompt_verify,
+        },
         "response": {
             "text": response_text,
+            "disclosed": response_text is not None,
             "tool_calls_note": disclosed.get("tool_calls_note"),
             "verify": response_verify,
         },
@@ -574,6 +694,17 @@ def to_fragment_payload(
                 "timestamp": rec.get("timestamp"),
                 "operator": rec.get("operator"),
                 "verify_ok": verify_ok,
+                # Friendly display name for the DEFAULT view (never the raw
+                # local-gguf/sha256 hash -- that stays in serving_provenance,
+                # surfaced only behind the security-checks toggle).
+                "friendly_model": friendly_model_name(sp),
+                # Three plain-language lines that ARE the default per-card read.
+                "verdict": build_verdict(
+                    sp,
+                    verify_ok=verify_ok,
+                    has_witness_checkpoint=has_witness,
+                    counterparty=label_counterparty(rec),
+                ),
                 "serving_provenance": sp,
                 # Inference-forward: the words-first Prompt -> Response block,
                 # disclosed + digest-verified, rendered ABOVE the questions.
@@ -581,7 +712,6 @@ def to_fragment_payload(
                 "role_questions": build_role_questions(
                     rec, source_log=source_log, verify_ok=verify_ok, has_witness_checkpoint=has_witness
                 ),
-                "disclosure": _disclosure_view(rec, cap_disclose),
                 # The full record travels so the browser can recompute capsule_id
                 # (hide-the-merkle, but the merkle is CHECKABLE, not just hidden).
                 "record": rec,
@@ -691,12 +821,6 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   .badge { display:inline-flex; align-items:center; gap:6px; font-size:11px; border:1px solid #E3E3DC; border-radius:100px; padding:3px 11px; color:#5C6573; }
   .badge.ok { color:#127A52; border-color:#B8DCC9; background:#E6F2EC; }
   .badge.fail { color:#B3261E; border-color:#F0C4C0; background:#FBEAE8; }
-  .roles { padding:8px 24px 20px; }
-  .role { margin-top:18px; }
-  .role-title { font-size:13px; text-transform:uppercase; letter-spacing:1.2px; color:#3A5BD9; font-weight:600; margin-bottom:8px; }
-  .qa { border:1px solid #ECECE6; border-radius:12px; padding:12px 16px; margin-bottom:8px; }
-  .q { font-size:12.5px; color:#5C6573; margin-bottom:4px; }
-  .a { font-size:14px; color:#161B25; line-height:1.55; }
   .state { font-size:10px; text-transform:uppercase; letter-spacing:1px; padding:2px 8px; border-radius:100px; margin-left:8px; vertical-align:middle; }
   .state.answered { background:#E6F2EC; color:#127A52; }
   .state.partial { background:#FBF3E2; color:#9A6B12; }
@@ -705,26 +829,47 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   details.merkle summary { cursor:pointer; color:#3A5BD9; font-family:ui-monospace,monospace; }
   .kv { display:grid; grid-template-columns:180px 1fr; gap:4px 12px; margin-top:8px; font-size:11px; color:#5C6573; word-break:break-all; }
   .kv b { color:#161B25; font-weight:500; }
-  .disc { padding:14px 24px 20px; border-top:1px solid #E3E3DC; }
-  .disc-title { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:#5C6573; margin-bottom:8px; }
-  .disc-field { font-size:12px; margin-bottom:8px; }
-  .disc-open { color:#127A52; }
-  .disc-sealed { color:#7A6355; }
-  .disc-content { display:block; margin-top:4px; padding:8px 12px; background:#F4F4F0; border-radius:8px; font-style:italic; color:#161B25; }
   .foot { font-size:11px; color:#5C6573; margin-top:20px; line-height:1.6; }
+  /* Plain-language verdict -- the DEFAULT read per card (3 human lines). */
+  .verdict { padding:16px 24px 18px; border-bottom:1px solid #E3E3DC; }
+  .vline { display:flex; align-items:flex-start; gap:10px; font-size:14.5px; line-height:1.5; color:#161B25; margin-bottom:9px; }
+  .vline:last-child { margin-bottom:0; }
+  .vline .vmark { flex:0 0 auto; font-size:15px; line-height:1.4; }
+  .vline.ok   .vmark { color:#127A52; }
+  .vline.warn .vmark { color:#9A6B12; }
+  .vline.warn { color:#5B4A2A; }
   /* Inference-forward conversation block -- lead with the exchange. */
   .conv { padding:18px 24px 6px; border-bottom:1px solid #E3E3DC; }
   .conv-served { font-size:11px; color:#5C6573; margin-bottom:12px; font-family:ui-monospace,monospace; }
   .conv-turn { margin-bottom:14px; }
-  .conv-label { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:#3A5BD9; font-weight:600; margin-bottom:4px; }
+  .conv-label { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:#3A5BD9; font-weight:600; margin-bottom:4px; display:flex; align-items:center; gap:8px; }
+  .conv-tag { font-size:9.5px; letter-spacing:0.6px; text-transform:uppercase; border-radius:100px; padding:2px 8px; font-weight:600; }
+  .conv-tag.shown  { color:#127A52; background:#E6F2EC; border:1px solid #B8DCC9; }
+  .conv-tag.sealed { color:#7A6355; background:#F1F1EC; border:1px solid #E3DDD4; }
   .conv-text { font-size:14.5px; line-height:1.6; color:#161B25; white-space:pre-wrap; background:#FBFBF9; border:1px solid #ECECE6; border-radius:10px; padding:12px 14px; }
   .conv-verify { margin-top:6px; }
   .conv-toolcall { display:block; margin-top:6px; font-size:12px; color:#9A6B12; background:#FBF3E2; border-radius:8px; padding:6px 10px; }
-  .conv-note { display:block; margin-top:6px; font-size:11px; color:#5C6573; line-height:1.5; }
+  .conv-note { display:block; margin-top:5px; font-size:10.5px; color:#8A8A80; line-height:1.45; }
   .vchip { display:inline-flex; align-items:center; font-size:11px; border-radius:100px; padding:2px 10px; border:1px solid #E3E3DC; }
   .vchip.ok { color:#127A52; border-color:#B8DCC9; background:#E6F2EC; }
   .vchip.fail { color:#B3261E; border-color:#F0C4C0; background:#FBEAE8; }
   .vchip.sealed { color:#7A6355; border-color:#E3DDD4; background:#F5F1EA; font-family:ui-monospace,monospace; }
+  /* The ONE "Show the security checks" toggle -- collapsed by default. */
+  details.checks { border-top:1px solid #E3E3DC; }
+  details.checks > summary { cursor:pointer; list-style:none; padding:12px 24px; font-size:12.5px; color:#3A5BD9; font-weight:600; display:flex; align-items:center; gap:8px; user-select:none; }
+  details.checks > summary::-webkit-details-marker { display:none; }
+  details.checks > summary::before { content:"▸"; font-size:11px; }
+  details.checks[open] > summary::before { content:"▾"; }
+  details.checks > summary .hint { font-weight:400; color:#8A8A80; font-size:11px; }
+  .checks-body { padding:4px 24px 18px; }
+  .checks-body .id-line { font-size:11px; color:#5C6573; font-family:ui-monospace,monospace; word-break:break-all; white-space:pre-wrap; line-height:1.7; margin-bottom:12px; }
+  .checks-body .id-line b { color:#161B25; font-weight:500; }
+  .roles { margin-top:6px; }
+  .role { margin-top:16px; }
+  .role-title { font-size:13px; text-transform:uppercase; letter-spacing:1.2px; color:#3A5BD9; font-weight:600; margin-bottom:8px; }
+  .qa { border:1px solid #ECECE6; border-radius:12px; padding:12px 16px; margin-bottom:8px; }
+  .q { font-size:12.5px; color:#5C6573; margin-bottom:4px; }
+  .a { font-size:14px; color:#161B25; line-height:1.55; }
   details.other-roles { margin-top:16px; border-top:1px dashed #E3E3DC; padding-top:10px; }
   details.other-roles > summary { cursor:pointer; font-size:12px; color:#5C6573; font-family:ui-monospace,monospace; }
   [hidden] { display:none !important; }
@@ -745,7 +890,7 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   </div>
 
   <h1>What my capsules <em>look like</em></h1>
-  <p class="sub">Lead with the conversation — what was sent, what came back, and a check that each is exactly the sealed bytes. The requester's accountability questions sit below; the other roles fold away.</p>
+  <p class="sub">Each card leads with a plain-language verdict — what really ran, whether it's signed, and what's still open — then shows the exchange. The security details fold behind one toggle.</p>
   <div class="meta mono" data-meta></div>
 
   <div class="empty" data-empty>
@@ -764,12 +909,15 @@ _HTML_SHELL = r"""<!DOCTYPE html>
       <span class="entry-title" data-entry-title></span>
       <span class="badge" data-verify-badge></span>
     </div>
+    <div class="verdict" data-verdict></div>
     <div data-conv-slot></div>
-    <div class="roles" data-roles></div>
-    <div class="disc" data-disc hidden>
-      <div class="disc-title">Disclosure (per-field: sealed vs shown)</div>
-      <div data-disc-fields></div>
-    </div>
+    <details class="checks">
+      <summary>Show the security checks <span class="hint">— the auditor view: recomputed id, signature, roles, raw model hash</span></summary>
+      <div class="checks-body">
+        <div class="id-line" data-id-line></div>
+        <div class="roles" data-roles></div>
+      </div>
+    </details>
   </div>
 </template>
 
@@ -777,18 +925,22 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   <div class="conv">
     <div class="conv-served" data-conv-served></div>
     <div class="conv-turn">
-      <div class="conv-label">Prompt (sent)</div>
+      <div class="conv-label">Prompt (sent) <span class="conv-tag" data-conv-prompt-tag></span></div>
       <div class="conv-text" data-conv-prompt></div>
       <div class="conv-verify" data-conv-prompt-verify></div>
     </div>
     <div class="conv-turn">
-      <div class="conv-label">Response (came back)</div>
+      <div class="conv-label">Response (came back) <span class="conv-tag" data-conv-response-tag></span></div>
       <div class="conv-text" data-conv-response></div>
       <span class="conv-toolcall" data-conv-toolcall hidden></span>
       <div class="conv-verify" data-conv-response-verify></div>
       <span class="conv-note" data-conv-response-note hidden></span>
     </div>
   </div>
+</template>
+
+<template id="verdict-line-template">
+  <div class="vline"><span class="vmark" data-vmark></span><span data-vtext></span></div>
 </template>
 
 <template id="role-template">
