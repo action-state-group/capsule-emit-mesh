@@ -242,8 +242,20 @@
     if (onBits.length) served += " on " + onBits.join(", ");
     node.querySelector("[data-conv-served]").textContent = served;
 
+    // A small inline header tag on Prompt/Response: green "shown by operator"
+    // vs grey "sealed — digest only". This replaces the redundant bottom
+    // Disclosure block (which repeated the prompt/response and read like it was
+    // "only for the last one").
+    function setTag(sel, disclosed) {
+      var t = node.querySelector(sel);
+      if (!t) return;
+      if (disclosed) { t.className = "conv-tag shown"; t.textContent = "shown by operator"; }
+      else { t.className = "conv-tag sealed"; t.textContent = "sealed — digest only"; }
+    }
+
     // ---- Prompt --------------------------------------------------------
     var p = conv.prompt || {};
+    setTag("[data-conv-prompt-tag]", !!p.disclosed);
     var promptEl = node.querySelector("[data-conv-prompt]");
     promptEl.textContent = (p.text != null && p.text !== "")
       ? p.text
@@ -259,6 +271,7 @@
 
     // ---- Response ------------------------------------------------------
     var r = conv.response || {};
+    setTag("[data-conv-response-tag]", !!r.disclosed);
     var respEl = node.querySelector("[data-conv-response]");
     respEl.textContent = (r.text != null && r.text !== "")
       ? r.text
@@ -289,40 +302,26 @@
     return node;
   }
 
-  function renderDisclosure(container, disclosure) {
-    if (!disclosure || !disclosure.fields || !disclosure.fields.length) return;
-    var wrap = container.querySelector("[data-disc]");
-    var fields = container.querySelector("[data-disc-fields]");
-    var any = false;
-    disclosure.fields.forEach(function (f) {
-      if (!f.digest && !f.disclosed) return;
-      any = true;
-      var d = document.createElement("div");
-      d.className = "disc-field";
-      var head = document.createElement("span");
-      if (f.disclosed) {
-        head.className = "disc-open";
-        head.textContent = "▸ " + f.label + " — shown (operator disclosed):";
-        d.appendChild(head);
-        var c = document.createElement("span");
-        c.className = "disc-content";
-        c.textContent = f.content;
-        d.appendChild(c);
-      } else {
-        head.className = "disc-sealed mono";
-        head.textContent = "▪ " + f.label + " — sealed, digest only: " + (f.digest ? f.digest.slice(0, 16) + "…" : "(none)");
-        d.appendChild(head);
-      }
-      fields.appendChild(d);
+
+  // Render the 3 plain-language verdict lines -- the DEFAULT per-card read.
+  function renderVerdict(container, verdict) {
+    if (!container || !verdict || !verdict.length) return;
+    verdict.forEach(function (v) {
+      var node = tmpl("verdict-line-template").cloneNode(true).querySelector(".vline");
+      node.classList.add(v.mark === "ok" ? "ok" : "warn");
+      node.querySelector("[data-vmark]").textContent = v.mark === "ok" ? "✓" : "⚠";
+      node.querySelector("[data-vtext]").textContent = v.text;
+      container.appendChild(node);
     });
-    if (any) wrap.hidden = false;
   }
 
   async function renderEntry(entry) {
     var node = tmpl("entry-template").cloneNode(true).querySelector(".entry");
     var sp = entry.serving_provenance || {};
-    var model = sp.model || "(model not named)";
-    node.querySelector("[data-entry-title]").textContent = model + " · " + shortId(entry.capsule_id);
+    // Friendly name in the DEFAULT view -- NEVER the raw local-gguf/sha256 hash.
+    // The raw ref/hash lives only behind the "Show the security checks" toggle.
+    var friendly = entry.friendly_model || "local model";
+    node.querySelector("[data-entry-title]").textContent = friendly;
 
     // In-browser capsule_id recompute -- the checkable merkle.
     var badge = node.querySelector("[data-verify-badge]");
@@ -335,7 +334,7 @@
     }
     if (idMatch === true) {
       badge.className = "badge ok";
-      badge.textContent = "✓ capsule_id recomputed";
+      badge.textContent = "✓ verified in your browser";
     } else if (idMatch === false) {
       badge.className = "badge fail";
       badge.textContent = "✗ capsule_id MISMATCH";
@@ -344,6 +343,9 @@
       badge.textContent = "— id not recomputable";
     }
 
+    // Plain-language verdict -- the DEFAULT read, above the conversation.
+    renderVerdict(node.querySelector("[data-verdict]"), entry.verdict);
+
     // Inference-forward: lead with the disclosed + digest-verified conversation.
     var convNode = await renderConversation(entry);
     if (convNode) {
@@ -351,9 +353,28 @@
       if (convSlot) convSlot.appendChild(convNode);
     }
 
-    // Role questions. Default: the REQUESTER only, inline; the other roles fold
-    // behind a collapsed "other roles" toggle (still present, not deleted).
-    // default_role === "all" renders every role inline (original layout).
+    // ---- behind the ONE "Show the security checks" toggle -----------------
+    // The raw model hash + recomputed id + signature line -- the auditor detail,
+    // never in the default view.
+    var idLine = node.querySelector("[data-id-line]");
+    if (idLine) {
+      var rawRef = sp.model_canonical_ref || sp.model || "(no raw ref)";
+      var idBits = [];
+      idBits.push("capsule_id: " + (entry.capsule_id || "(none)"));
+      idBits.push("recomputed in-browser: " + (recomputed || "(not recomputable)"));
+      idBits.push("id matches: " + (idMatch === true ? "yes" : idMatch === false ? "NO" : "n/a"));
+      idBits.push("raw model ref: " + rawRef);
+      if (sp.model_identity_hash) idBits.push("model_identity_hash: " + sp.model_identity_hash);
+      if (sp.served_by_node_id) idBits.push("served_by_node_id: " + sp.served_by_node_id);
+      // Plain text with newlines (the .id-line CSS sets white-space:pre-wrap);
+      // no DOM node APIs beyond textContent, so the headless boot harness stub
+      // (which has no createTextNode/style) works too.
+      idLine.textContent = idBits.join("\n");
+    }
+
+    // Role questions (auditor view). Default: the REQUESTER only, inline; the
+    // other roles fold behind a nested "other roles" toggle. default_role ===
+    // "all" renders every role inline (original layout).
     var rolesEl = node.querySelector("[data-roles]");
     var rq = entry.role_questions || {};
     var roles = rq.roles || {};
@@ -381,7 +402,6 @@
       }
     }
 
-    renderDisclosure(node, entry.disclosure);
     return node;
   }
 
