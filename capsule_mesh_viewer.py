@@ -71,6 +71,8 @@ except Exception:  # pragma: no cover - only when scitt-cose/aac isn't installed
 __all__ = [
     "serving_provenance",
     "plain_model_line",
+    "plain_token_split",
+    "plain_gen_params_line",
     "friendly_model_name",
     "build_verdict",
     "build_role_questions",
@@ -148,6 +150,11 @@ def serving_provenance(record: dict[str, Any]) -> dict[str, Any]:
         "prompt_tokens": usage.get("prompt_tokens"),
         "completion_tokens": usage.get("completion_tokens"),
         "total_tokens": usage.get("total_tokens"),
+        # The REAL requested sampling knobs sealed by #54 -- a sibling of
+        # serving_provenance inside the poc block. Only keys the capsule
+        # actually carried are present (absent-stays-absent); the viewer never
+        # invents a param. Empty dict when the record sealed none.
+        "generation_parameters": poc.get("generation_parameters") or {},
     }
 
 
@@ -179,10 +186,98 @@ def plain_model_line(sp: dict[str, Any]) -> str:
     line = " ".join(bits)
     if hw_bits:
         line += " on " + ", ".join(hw_bits)
-    total = sp.get("total_tokens")
-    if total:
-        line += f", {total} tokens"
+    split = plain_token_split(sp)
+    if split:
+        line += f", {split}"
     return line
+
+
+# Friendly labels for the generation parameters, in the order they read best.
+# Only params ACTUALLY present in the capsule are ever shown; a key not in this
+# map still renders (under its raw name) so a newly-sealed knob is never hidden.
+_GEN_PARAM_LABELS = {
+    "temperature": "temperature",
+    "top_p": "top-p",
+    "top_k": "top-k",
+    "min_p": "min-p",
+    "seed": "seed",
+    "max_tokens": "max_tokens",
+    "max_completion_tokens": "max_completion_tokens",
+    "n": "n",
+    "presence_penalty": "presence_penalty",
+    "frequency_penalty": "frequency_penalty",
+    "repeat_penalty": "repeat_penalty",
+    "stop": "stop",
+}
+_GEN_PARAM_ORDER = tuple(_GEN_PARAM_LABELS.keys())
+
+
+def plain_token_split(sp: dict[str, Any]) -> str | None:
+    """The input/output/total token split as one compact phrase, e.g.
+    ``73 in / 587 out / 660 total`` -- built only from the parts the record
+    actually carries. Falls back to ``N total`` if only the total is present,
+    and to ``N in`` / ``N out`` for a lone half; None when no usage at all.
+    """
+    pt = sp.get("prompt_tokens")
+    ct = sp.get("completion_tokens")
+    tt = sp.get("total_tokens")
+    parts: list[str] = []
+    if pt is not None:
+        parts.append(f"{pt} in")
+    if ct is not None:
+        parts.append(f"{ct} out")
+    if tt is not None:
+        parts.append(f"{tt} total")
+    return " / ".join(parts) if parts else None
+
+
+def plain_gen_params_line(sp: dict[str, Any]) -> str | None:
+    """One compact ``generated with: …`` line naming the sampling knobs the
+    capsule ACTUALLY sealed -- e.g. ``generated with: temperature 0, top-k 40,
+    seed 12345, max_tokens 512``. Absent params stay absent; None when the
+    record sealed no generation parameters at all.
+    """
+    gp = sp.get("generation_parameters") or {}
+    if not gp:
+        return None
+    bits: list[str] = []
+    # Known params first, in reading order; then any unrecognised keys the
+    # capsule carried, so a newly-sealed knob still shows honestly.
+    seen: set[str] = set()
+    ordered = [k for k in _GEN_PARAM_ORDER if k in gp] + [k for k in gp if k not in _GEN_PARAM_LABELS]
+    for k in ordered:
+        if k in seen:
+            continue
+        seen.add(k)
+        v = gp.get(k)
+        if v is None:
+            continue
+        label = _GEN_PARAM_LABELS.get(k, k)
+        bits.append(f"{label} {_fmt_gen_value(v)}")
+    if not bits:
+        return None
+    return "generated with: " + ", ".join(bits)
+
+
+def _fmt_gen_value(v: Any) -> str:
+    """Render a sealed param value plainly. Sealed floats travel as strings
+    (spec §5.1 stringify_floats), so ``"0.0"`` reads as ``0`` and ``"0.70"`` as
+    ``0.7`` -- without ever changing the value the capsule sealed for a param
+    that was an int or a list (e.g. a ``stop`` array)."""
+    if isinstance(v, list):
+        return ", ".join(str(x) for x in v)
+    s = str(v)
+    # Tidy a stringified float ("0.0" -> "0", "0.70" -> "0.7") for readability;
+    # leave anything non-numeric (or an int) exactly as sealed.
+    try:
+        f = float(s)
+    except (TypeError, ValueError):
+        return s
+    if "." not in s and "e" not in s.lower():
+        return s  # an integer-looking value stays as-is
+    if f == int(f):
+        return str(int(f))
+    return ("%g" % f)
 
 
 # ---------------------------------------------------------------------------
@@ -592,6 +687,11 @@ def build_conversation(
             "quantization": sp.get("quantization"),
             "gpu": sp.get("gpu"),
             "is_soc": sp.get("is_soc"),
+            # The input/output/total token split (e.g. "73 in / 587 out / 660
+            # total") and the "generated with: …" sampling-knob line -- both
+            # built only from fields the capsule actually sealed (#54).
+            "token_split": plain_token_split(sp),
+            "gen_params_line": plain_gen_params_line(sp),
         },
         "prompt": {
             "text": prompt_text,
@@ -841,6 +941,7 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   /* Inference-forward conversation block -- lead with the exchange. */
   .conv { padding:18px 24px 6px; border-bottom:1px solid #E3E3DC; }
   .conv-served { font-size:11px; color:#5C6573; margin-bottom:12px; font-family:ui-monospace,monospace; }
+  .conv-genparams { font-size:11px; color:#5C6573; margin-top:-8px; margin-bottom:12px; font-family:ui-monospace,monospace; }
   .conv-turn { margin-bottom:14px; }
   .conv-label { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:#3A5BD9; font-weight:600; margin-bottom:4px; display:flex; align-items:center; gap:8px; }
   .conv-tag { font-size:9.5px; letter-spacing:0.6px; text-transform:uppercase; border-radius:100px; padding:2px 8px; font-weight:600; }
@@ -924,6 +1025,7 @@ _HTML_SHELL = r"""<!DOCTYPE html>
 <template id="conv-template">
   <div class="conv">
     <div class="conv-served" data-conv-served></div>
+    <div class="conv-genparams" data-conv-genparams hidden></div>
     <div class="conv-turn">
       <div class="conv-label">Prompt (sent) <span class="conv-tag" data-conv-prompt-tag></span></div>
       <div class="conv-text" data-conv-prompt></div>

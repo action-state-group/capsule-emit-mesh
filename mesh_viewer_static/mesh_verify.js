@@ -240,7 +240,18 @@
     var served = "served by " + (sb.node_id ? sb.node_id.slice(0, 12) + "…" : "(node not named)");
     if (servedBits.length) served += ", " + servedBits.join(" ");
     if (onBits.length) served += " on " + onBits.join(", ");
+    // Input/output/total token split (e.g. "73 in / 587 out / 660 total"),
+    // built from exactly the usage parts the capsule sealed.
+    if (sb.token_split) served += " · " + sb.token_split;
     node.querySelector("[data-conv-served]").textContent = served;
+
+    // The "generated with: …" line -- the sampling knobs the capsule ACTUALLY
+    // sealed (#54). Absent params stay absent; hidden entirely when none.
+    var gpEl = node.querySelector("[data-conv-genparams]");
+    if (gpEl && sb.gen_params_line) {
+      gpEl.hidden = false;
+      gpEl.textContent = sb.gen_params_line;
+    }
 
     // A small inline header tag on Prompt/Response: green "shown by operator"
     // vs grey "sealed — digest only". This replaces the redundant bottom
