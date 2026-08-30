@@ -344,3 +344,116 @@ def test_client_nonce_replay_does_not_affect_fallback_path():
     _, src_1 = cs._resolve_client_nonce(state, {})
     _, src_2 = cs._resolve_client_nonce(state, {})
     assert src_1 == src_2 == "sidecar_generated_fallback"
+
+
+# ---------------------------------------------------------------------------
+# Generation-parameter capture (the CLIENT's requested sampling settings).
+# The allowlist must cover the same knob set as the Rust plugin, and only
+# params actually present in the request may be sealed (absent stays absent).
+# ---------------------------------------------------------------------------
+
+# The param set both capture paths (this sidecar + the Rust plugin) must agree on.
+_EXPECTED_GENERATION_PARAM_KEYS = {
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "seed",
+    "max_tokens",
+    "max_completion_tokens",
+    "n",
+    "presence_penalty",
+    "frequency_penalty",
+    "repeat_penalty",
+    "stop",
+}
+
+
+def test_generation_param_allowlist_covers_the_full_knob_set():
+    """The allowlist must include top_k, min_p, and repeat_penalty (the bug this
+    fix closes) alongside the previously-covered knobs -- no more, no less."""
+    assert set(cs.GENERATION_PARAM_KEYS) == _EXPECTED_GENERATION_PARAM_KEYS
+    for newly_added in ("top_k", "min_p", "repeat_penalty"):
+        assert newly_added in cs.GENERATION_PARAM_KEYS
+
+
+def _capture_generation_parameters(monkeypatch, request_json):
+    """Run the REAL build_capsule and capture the generation_parameters it
+    actually seals, by intercepting the compute_attestation handed to emit()."""
+    captured = {}
+
+    def fake_emit(**kwargs):
+        captured["compute_attestation"] = kwargs["compute_attestation"]
+        return {"capsule_id": "0" * 64}
+
+    # EffectRecord / Disposition are stubbed as bare `object` at module import
+    # (they take no kwargs); build_capsule constructs both before calling emit,
+    # so give them a lenient kwargs-accepting stand-in for this end-to-end path.
+    monkeypatch.setattr(cs, "emit", fake_emit)
+    monkeypatch.setattr(cs, "EffectRecord", lambda **k: object())
+    monkeypatch.setattr(cs, "Disposition", lambda **k: object())
+    state = _make_node_state()
+    state.manifest = {"model_id": "m"}
+    state.model_package_digest = "d" * 64
+    cs.build_capsule(
+        state,
+        client_nonce="n",
+        client_nonce_source="client_supplied",
+        request_json=request_json,
+        request_digest="a" * 64,
+        status="confirmed",
+        response_digest="b" * 64,
+        verdict_class="executed",
+        disposition_decision="accept",
+        latency_ms=1.5,
+    )
+    return captured["compute_attestation"]["x-mesh-poc-v1"]["generation_parameters"]
+
+
+def test_build_capsule_seals_all_present_sampling_knobs(monkeypatch):
+    """A request carrying top_k, repeat_penalty, min_p, seed, temperature seals
+    ALL of them. Floats are stringified (repr) for the §5.1 digest ban; ints
+    (top_k, seed) stay as JSON numbers -- matching the Rust plugin's
+    stringify_floats convention so both paths seal the same shape."""
+    gp = _capture_generation_parameters(
+        monkeypatch,
+        {
+            "model": "m",
+            "temperature": 0.7,
+            "top_p": 0.95,
+            "top_k": 40,
+            "min_p": 0.05,
+            "seed": 12345,
+            "repeat_penalty": 1.1,
+            "max_tokens": 512,
+            "stop": ["\n\n"],
+        },
+    )
+    assert gp["temperature"] == repr(0.7)
+    assert gp["min_p"] == repr(0.05)
+    assert gp["repeat_penalty"] == repr(1.1)
+    assert gp["top_k"] == 40  # int stays a JSON number
+    assert gp["seed"] == 12345
+    assert gp["max_tokens"] == 512
+    assert gp["stop"] == ["\n\n"]
+    # NOT the old fabricated Rust default.
+    assert gp["temperature"] != "0.0"
+
+
+def test_build_capsule_absent_stays_absent(monkeypatch):
+    """A request that sent ONLY temperature seals exactly temperature -- no other
+    knob is defaulted into the capsule. Absent is recorded as absent."""
+    gp = _capture_generation_parameters(monkeypatch, {"model": "m", "temperature": 0.7})
+    assert set(gp) == {"temperature"}
+    for absent in _EXPECTED_GENERATION_PARAM_KEYS - {"temperature"}:
+        assert absent not in gp, f"{absent} was not requested and must not be sealed"
+
+
+def test_build_capsule_treats_null_param_as_absent(monkeypatch):
+    """A JSON null value is treated as absent, not sealed -- matching the
+    `is not None` guard in the allowlist comprehension."""
+    gp = _capture_generation_parameters(
+        monkeypatch, {"model": "m", "temperature": 0.5, "top_p": None}
+    )
+    assert "temperature" in gp
+    assert "top_p" not in gp

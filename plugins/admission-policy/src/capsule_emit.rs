@@ -93,6 +93,55 @@ fn parse_usage(response_bytes: &[u8]) -> Option<TokenUsage> {
     })
 }
 
+/// The generation-parameter (sampling knob) keys carried verbatim in the
+/// capsule, in step with the Python reference's `GENERATION_PARAM_KEYS`
+/// (`capsule_sidecar.py`). These are the settings the CLIENT asked for in the
+/// request -- requested, not proven-effective -- and are legible policy values
+/// (not prompt content), so they ride as-is rather than digested. Kept
+/// byte-identical to the Python list so both capture paths seal the SAME param
+/// set.
+const GENERATION_PARAM_KEYS: &[&str] = &[
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "seed",
+    "max_tokens",
+    "max_completion_tokens",
+    "n",
+    "presence_penalty",
+    "frequency_penalty",
+    "repeat_penalty",
+    "stop",
+];
+
+/// Lift the generation parameters the client ACTUALLY sent in this request body
+/// into a map for the capsule, mirroring the Python sidecar's
+/// `build_capsule` allowlist comprehension. Honest-by-absence: a key that was
+/// not present in the request (or was JSON `null`) is OMITTED, never defaulted
+/// to a fabricated value -- so a request that carried only `temperature` seals
+/// exactly `temperature`, and the old hardcoded `temperature=0.0` is gone.
+/// Values are stringified through the same `stringify_floats` used for the
+/// digest path, so `0.7` -> `"0.7"` (float) while integers like `seed`/`n`
+/// stay JSON numbers -- matching the Python reference's `_stringify_floats`
+/// convention exactly, keeping the sealed shape stable across implementations.
+/// A non-JSON or non-object body yields an empty map (no params claimed).
+fn parse_generation_parameters(request_bytes: &[u8]) -> Map<String, Value> {
+    let mut out = Map::new();
+    let Ok(Value::Object(request)) = serde_json::from_slice::<Value>(request_bytes) else {
+        return out;
+    };
+    for &key in GENERATION_PARAM_KEYS {
+        match request.get(key) {
+            Some(value) if !value.is_null() => {
+                out.insert(key.to_string(), stringify_floats(value.clone()));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// The OPTIONAL labeled sub-digests over one response body: `tool_calls_digest`
 /// and `reasoning_digest`, each the canonical `jcs::json_digest` (plain JCS,
 /// matching the Python reference `capsule_ledger/conversation/exchange.py`'s
@@ -266,8 +315,10 @@ impl CapsuleState {
             relation: "follows".to_string(),
         });
 
-        let mut generation_parameters = Map::new();
-        generation_parameters.insert("temperature".into(), Value::String("0.0".into()));
+        // The REAL sampling settings the client requested, parsed straight from
+        // the request body this path holds -- only the keys actually present,
+        // never a fabricated default.
+        let generation_parameters = parse_generation_parameters(request_bytes);
 
         let input = CapsuleInput {
             action_id: format!("mesh-poc/capsule-emit-mesh-integration/{agent_input_digest}"),
@@ -509,8 +560,15 @@ impl CapsuleState {
             relation: "follows".to_string(),
         });
 
-        let mut generation_parameters = Map::new();
-        generation_parameters.insert("temperature".into(), Value::String("0.0".into()));
+        // Honest-by-absence: a host-served exchange routes host->native-runtime
+        // and never reaches this plugin's handler, so it holds NO request bytes
+        // here (only the host-forwarded request DIGEST) -- the client's sampling
+        // settings are simply not observable on this path. We therefore seal an
+        // EMPTY generation-parameter set rather than the old fabricated
+        // `temperature=0.0`; absent facts are recorded as absent, never invented.
+        // (Full generation-parameter capture on the observe path would require
+        // the host to forward them on the terminal event; see PROTOCOL-NOTE.md.)
+        let generation_parameters = Map::new();
 
         let input = CapsuleInput {
             action_id: format!("mesh-poc/capsule-emit-mesh-host-served/{agent_input_digest}"),
@@ -641,6 +699,189 @@ mod tests {
         let (tcd, rd) = output_sub_digests(body);
         assert!(tcd.is_none());
         assert!(rd.is_none());
+    }
+
+    /// A request carrying a spread of sampling knobs (float, int, and the
+    /// llama.cpp-style `top_k`/`min_p`/`repeat_penalty`) seals ALL of them, with
+    /// floats stringified (matching the digest-path convention) and ints kept as
+    /// JSON numbers. This is the direct fix for the hardcoded `temperature=0.0`.
+    #[test]
+    fn parse_generation_parameters_captures_all_present_sampling_knobs() {
+        let body = br#"{
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 0.7,
+            "top_p": 0.95,
+            "top_k": 40,
+            "min_p": 0.05,
+            "seed": 12345,
+            "repeat_penalty": 1.1,
+            "max_tokens": 512,
+            "n": 1,
+            "stop": ["\n\n"]
+        }"#;
+        let gp = parse_generation_parameters(body);
+        // Floats stringified through the same convention as the digest path.
+        assert_eq!(gp["temperature"], Value::String("0.7".into()));
+        assert_eq!(gp["top_p"], Value::String("0.95".into()));
+        assert_eq!(gp["min_p"], Value::String("0.05".into()));
+        assert_eq!(gp["repeat_penalty"], Value::String("1.1".into()));
+        // Integers stay JSON numbers.
+        assert_eq!(gp["top_k"], Value::from(40));
+        assert_eq!(gp["seed"], Value::from(12345));
+        assert_eq!(gp["max_tokens"], Value::from(512));
+        assert_eq!(gp["n"], Value::from(1));
+        // Non-numeric values (stop list) carried verbatim.
+        assert_eq!(gp["stop"], Value::Array(vec![Value::String("\n\n".into())]));
+        // NOT the old fabricated default.
+        assert_ne!(gp["temperature"], Value::String("0.0".into()));
+    }
+
+    /// Honest-by-absence: a request that sent ONLY `temperature` and `seed`
+    /// seals exactly those two keys — no other sampling knob is defaulted into
+    /// the capsule. Absent stays absent.
+    #[test]
+    fn parse_generation_parameters_absent_stays_absent() {
+        let body = br#"{"model":"m","temperature":0.2,"seed":7}"#;
+        let gp = parse_generation_parameters(body);
+        assert_eq!(gp.len(), 2, "only the two present keys are sealed");
+        assert!(gp.contains_key("temperature"));
+        assert!(gp.contains_key("seed"));
+        // None of the omitted knobs are present — not even as a zero/default.
+        for absent in [
+            "top_p",
+            "top_k",
+            "min_p",
+            "max_tokens",
+            "max_completion_tokens",
+            "n",
+            "presence_penalty",
+            "frequency_penalty",
+            "repeat_penalty",
+            "stop",
+        ] {
+            assert!(
+                !gp.contains_key(absent),
+                "{absent} was not in the request and must NOT be sealed"
+            );
+        }
+    }
+
+    /// A JSON `null` value is treated as absent (not sealed as a fabricated
+    /// value), matching the Python reference's `is not None` guard.
+    #[test]
+    fn parse_generation_parameters_treats_null_as_absent() {
+        let body = br#"{"temperature":0.5,"top_p":null}"#;
+        let gp = parse_generation_parameters(body);
+        assert!(gp.contains_key("temperature"));
+        assert!(!gp.contains_key("top_p"));
+    }
+
+    /// A non-object / non-JSON body claims NO generation parameters (empty map),
+    /// never a fabricated default.
+    #[test]
+    fn parse_generation_parameters_empty_for_non_object_body() {
+        assert!(parse_generation_parameters(b"not json").is_empty());
+        assert!(parse_generation_parameters(b"[1,2,3]").is_empty());
+    }
+
+    /// END-TO-END (served path): a real admitted exchange whose request carried
+    /// `temperature`, `top_k`, `min_p`, `repeat_penalty`, and `seed` seals a
+    /// capsule whose `x-mesh-poc-v1.generation_parameters` holds exactly those,
+    /// and NO hardcoded `temperature=0.0`.
+    #[test]
+    fn emit_for_exchange_seals_the_real_requested_generation_parameters() {
+        let dir = std::env::temp_dir().join(format!("cap-gp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+
+        let request_body = br#"{"model":"m","messages":[{"role":"user","content":"hi"}],"temperature":0.7,"top_k":40,"min_p":0.05,"repeat_penalty":1.1,"seed":99}"#;
+        let response_body = br#"{"id":"x","choices":[{"message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}"#;
+        let exchange = ExchangeRecord {
+            model: "m",
+            client_nonce: Some("nonce-1"),
+            request_bytes: request_body,
+            response_bytes: response_body,
+            latency_ms: 12.0,
+            exchange_id: Some("e-1"),
+            requesting_party: Some("party-1"),
+            host_provenance: None,
+        };
+        let emitted = state.emit_for_exchange(&exchange).expect("seal exchange");
+        let gp = &emitted.capsule["model_attestation"]["compute_attestation"]
+            ["x-mesh-poc-v1"]["generation_parameters"];
+        assert_eq!(gp["temperature"], Value::String("0.7".into()));
+        assert_eq!(gp["min_p"], Value::String("0.05".into()));
+        assert_eq!(gp["repeat_penalty"], Value::String("1.1".into()));
+        assert_eq!(gp["top_k"], Value::from(40));
+        assert_eq!(gp["seed"], Value::from(99));
+        // Only what was requested — no other knob defaulted in.
+        let obj = gp.as_object().expect("generation_parameters is an object");
+        assert_eq!(obj.len(), 5);
+        // The old fabricated default is gone.
+        assert_ne!(gp["temperature"], Value::String("0.0".into()));
+
+        // When AAC_CAPSULE_EXPORT_DIR is set, export the sealed capsule + its
+        // detached COSE_Sign1 + the pubkey so an EXTERNAL verifier (the Python
+        // agent_action_capsule / Go COSE reference) can confirm a capsule that
+        // carries REAL requested generation parameters still verifies GREEN and
+        // its capsule_id (which commits generation_parameters) is intact.
+        if let Ok(export_dir) = std::env::var("AAC_CAPSULE_EXPORT_DIR") {
+            let export = std::path::Path::new(&export_dir);
+            std::fs::create_dir_all(export).expect("mk export dir");
+            // Export the EXACT canonical payload bytes the COSE statement signs
+            // (not a pretty reserialization), so an external verifier can
+            // byte-compare the capsule.json against the COSE payload.
+            std::fs::write(
+                export.join("SEALED-with-generation-params.json"),
+                capsule_producer::capsule::payload_bytes(&emitted.capsule),
+            )
+            .expect("write capsule");
+            let cose_src = dir
+                .join("ledger")
+                .join("signed-statements")
+                .join(format!("{}.cose", emitted.capsule_id));
+            std::fs::copy(&cose_src, export.join("SEALED-with-generation-params.cose"))
+                .expect("copy cose");
+            std::fs::copy(
+                dir.join("keys").join("node-key.pub.pem"),
+                export.join("node-key.pub.pem"),
+            )
+            .expect("copy pubkey");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The host-served OBSERVE path holds no request bytes (only a forwarded
+    /// digest), so it seals an EMPTY generation-parameter set — never the old
+    /// fabricated `temperature=0.0`. Absent facts stay absent.
+    #[test]
+    fn observed_host_exchange_seals_no_fabricated_generation_parameters() {
+        let dir = std::env::temp_dir().join(format!("cap-gpo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let observed = ObservedHostExchange {
+            model: "m",
+            exchange_id: Some("e"),
+            request_digest: Some("a".repeat(64).leak()),
+            response_digest: None,
+            tool_calls_digest: None,
+            reasoning_digest: None,
+            usage: None,
+            host_provenance: HostProvenance::default(),
+        };
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal");
+        let gp = &emitted.capsule["model_attestation"]["compute_attestation"]
+            ["x-mesh-poc-v1"]["generation_parameters"];
+        let obj = gp.as_object().expect("generation_parameters is an object");
+        assert!(
+            obj.is_empty(),
+            "observe path holds no request -> no sampling knobs, and NO fabricated temperature=0.0"
+        );
+        assert!(gp.get("temperature").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// END-TO-END: a host-served observed exchange that forwarded a real
