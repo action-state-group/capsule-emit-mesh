@@ -8,10 +8,12 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use capsule_emit::{CapsuleState, HostProvenance};
+use capsule_emit::{CapsuleState, HostProvenance, ObservedHostExchange};
+use capsule_producer::capsule::TokenUsage;
 use decision::Decision;
 use lifecycle_channel::{
-    HostServingProvenance, ObservedLifecycleEvents, OpenAiExchangeEnvelope, OPENAI_EXCHANGE_CHANNEL,
+    HostServingProvenance, MirrorUsage, ObservedLifecycleEvents, OpenAiExchangeEnvelope,
+    OPENAI_EXCHANGE_CHANNEL,
 };
 use mesh_llm_plugin::{
     capability, inference, mesh_channel, plugin, plugin_server_info, PluginMetadata, PluginRuntime,
@@ -82,6 +84,49 @@ fn host_provenance_from(observed: HostServingProvenance) -> HostProvenance {
         gpu: observed.gpu,
         vram_bytes: observed.vram_bytes,
         is_soc: observed.is_soc,
+    }
+}
+
+/// Map the mirror's real token usage into the capsule-producer `TokenUsage`.
+/// A straight copy of real counts — never fabricated.
+fn token_usage_from(usage: MirrorUsage) -> TokenUsage {
+    TokenUsage {
+        prompt_tokens: usage.prompt_tokens,
+        completion_tokens: usage.completion_tokens,
+        total_tokens: usage.total_tokens,
+    }
+}
+
+/// Seal a capsule for a host-served terminal exchange this plugin only OBSERVED.
+/// Best-effort observability: a producer error is logged, never propagated (an
+/// observe-path failure must not disturb the host). The three real facts —
+/// serving provenance, usage, request digest — come straight off the terminal
+/// event; nothing is fabricated.
+fn seal_observed_host_exchange(capsules: &CapsuleState, envelope: &OpenAiExchangeEnvelope) {
+    let host_provenance = envelope
+        .serving_provenance
+        .clone()
+        .map(host_provenance_from)
+        .unwrap_or_default();
+    let usage = envelope.usage.map(token_usage_from);
+    let observed = ObservedHostExchange {
+        model: &envelope.model,
+        exchange_id: envelope.exchange_id.as_deref(),
+        request_digest: envelope.request_digest.as_deref(),
+        usage,
+        host_provenance,
+    };
+    match capsules.emit_for_observed_host_exchange(&observed) {
+        Ok(emitted) => {
+            tracing::info!(
+                capsule_id = %emitted.capsule_id,
+                model = %envelope.model,
+                "SEALED AAC for host-served (observed) exchange"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(%error, "failed to seal capsule for observed host-served exchange");
+        }
     }
 }
 
@@ -224,6 +269,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let lifecycle_events = Arc::new(ObservedLifecycleEvents::open(&data_dir)?);
 
+    let capsules_for_handler = capsules.clone();
     let app_state = AppState {
         models: Arc::new(models),
         capsules,
@@ -249,10 +295,25 @@ async fn main() -> anyhow::Result<()> {
         inference: [inference::provider(ENDPOINT_ID, address)],
         on_channel_message: move |message, _context| {
             let lifecycle_events = lifecycle_events_for_handler.clone();
+            let capsules = capsules_for_handler.clone();
             Box::pin(async move {
                 if message.channel == OPENAI_EXCHANGE_CHANNEL {
                     match serde_json::from_slice::<OpenAiExchangeEnvelope>(&message.body) {
-                        Ok(envelope) => lifecycle_events.record(envelope),
+                        Ok(envelope) => {
+                            // Seal-on-observe: a HOST-SERVED terminal exchange
+                            // (a real loaded GGUF routed host->native-runtime)
+                            // never reaches this plugin's own HTTP handler, so
+                            // nothing else produces a capsule for it. When the
+                            // observed terminal carries real served-model
+                            // identity (only a real GGUF does — the plugin's own
+                            // stub does not, so it is not double-sealed), seal a
+                            // capsule from the observed serving provenance + real
+                            // usage + host-forwarded request digest.
+                            if ObservedLifecycleEvents::is_sealable_host_served(&envelope) {
+                                seal_observed_host_exchange(&capsules, &envelope);
+                            }
+                            lifecycle_events.record(envelope);
+                        }
                         Err(error) => {
                             tracing::warn!(%error, "unparseable openai.exchange.v1 envelope");
                         }

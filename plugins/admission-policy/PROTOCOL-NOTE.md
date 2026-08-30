@@ -96,3 +96,52 @@ an admission-policy plugin on the inference-provider path needs answered.
   only as "serve this model yourself."
 - A working reference implementation is `capsule-emit-mesh/plugins/admission-policy/`
   in this PR.
+
+## Sealing a HOST-SERVED exchange (the "all three real" closure)
+
+The provider-path story above covers exchanges the plugin *serves itself*. A
+real loaded GGUF is different: the host serves it directly (host → native
+runtime), so it never reaches this plugin's HTTP handler and — before this
+change — produced **no capsule at all**. The three real facts we want in one
+sealed capsule (real model identity, real token usage, real hardware/GPU) all
+exist on the host's `openai.exchange.v1` **terminal event**, which this plugin
+already observes on the mesh channel. So the closure is *seal-on-observe*:
+
+1. **Usage on the mirror.** The host terminal event carries the served
+   backend's real `usage` (added host-side alongside `serving_provenance`). The
+   plugin's mirror envelope previously **dropped** it; it now carries it through
+   (`MirrorUsage`) so the sealed capsule holds the real token counts, not a
+   zeroed stub.
+2. **Seal-on-observe.** `ObservedLifecycleEvents::is_sealable_host_served`
+   recognizes a host-served terminal (Terminal phase, 2xx, and **real
+   served-model identity** — `architecture`/`model_identity_hash` present, which
+   only a real GGUF has, so the plugin's own synthetic stub is never
+   double-sealed) and the channel handler seals a capsule from the observed
+   provenance + usage + request digest via `emit_for_observed_host_exchange`.
+3. **Request-bytes binding.** The capsule's `agent_input_digest` must bind the
+   REAL request bytes. The host now forwards a `request_digest` on the terminal
+   event — the canonical JSON-DIGEST (RFC 8785 JCS over the profile-normalized,
+   float-stringified request body) computed host-side **byte-for-byte identical**
+   to this plugin's own `canonical_body_digest` (pinned by a shared
+   Python-reference fixture on both sides). The plugin binds it directly. This
+   is a genuine binding to what was asked, recomputable by any verifier from the
+   request body alone.
+
+### What is NOT fully bound yet, and exactly what full closure needs
+
+`agent_output_digest` on the host-served path binds the canonical digest of the
+**observed terminal facts** (model + real usage), *not* the served response
+body. Reason: on the host-served raw-proxy path the response is **streamed** to
+the client by `route_model_request`, and only the token `usage` returns to the
+publish site on the `Copy` `RouteDispatchOutcome` enum — the plugin (and even
+the ingress publish site) never holds the response bytes. So the output digest
+is honestly a digest of real *output accounting*, documented as such, not a
+stand-in for a body digest.
+
+Full response-body binding would require a host-side addition beyond this
+digest-forward: `route_model_request` / the proxy streaming path would need to
+tee the response body through a hasher as it streams (without buffering it), and
+surface the resulting digest on the dispatch outcome (which today is `Copy` and
+carries only `status_code` + `TokenUsage`). That is a proxy-streaming change,
+not a one-line field-forward, and is left as follow-up. The request-side binding
+— the load-bearing one for "what was asked" — is fully closed here.
