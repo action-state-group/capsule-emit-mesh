@@ -95,6 +95,33 @@ limits is worth more than one that claims everything is fine.**
 
 ---
 
+## A worry worth naming: "what if they swap the model?"
+
+It's the classic one: a machine advertises a big, high-quality model, then quietly
+runs a smaller, cheaper one. Can they?
+
+**At the receipt level, the model name is their claim.** The capsule records the model
+they *say* they ran (and, when the machine offers it, a reference to the exact
+package), but it does not yet *cryptographically* prove the actual weights that ran. A
+determined liar controls what they write down.
+
+**But the receipt hands you the facts to catch them:**
+
+- **The clock.** The receipt seals **how long it took** (`latency_ms`) right next to
+  the claimed model and hardware. A 70-billion-parameter model can't answer in the
+  time a 3-billion one does on the same laptop — a "big model, tiny time, modest GPU"
+  receipt is self-contradictory on its face.
+- **The behaviour.** A smaller model *answers* differently. The app-level checks below
+  — compare against other machines running the same model at the same settings — exist
+  exactly for this.
+
+So the honest shape is: **the capsule doesn't stop a swap by itself; it makes one hard
+to hide.** The claim goes on the record — signed, time-stamped, sitting beside the
+timing and the settings that all have to be consistent with it. A future hardware- or
+weights-level binding is what would turn "hard to hide" into "impossible."
+
+---
+
 ## Beyond the receipt: what apps can build *on top*
 
 The capsule is the **solid floor** — a small set of signed facts you can check
