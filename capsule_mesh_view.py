@@ -350,6 +350,40 @@ def _cmd_view(args: argparse.Namespace) -> int:
         print("capsule-mesh view: give at least one of --plugin-log / --sidecar-log", file=sys.stderr)
         return 1
 
+    if getattr(args, "html", None):
+        # Thin composition of the words-first, role-organised offline viewer.
+        # One neutral core (the fragment mechanism + capsule_mesh_view labels);
+        # this is only the label -> HTML entry point, no logic duplicated here.
+        from capsule_mesh_viewer import encode_fragment, render_mesh_viewer_html, to_fragment_payload
+
+        # Prefer the plugin log when both are given (it is the serving-side
+        # producer whose serving_provenance the roles read).
+        label, path, records, _vr = next(
+            (s for s in sources if s[0] == SOURCE_PLUGIN), sources[0]
+        )
+        witness = None
+        if args.witness:
+            with open(args.witness, encoding="utf-8") as fh:
+                text = fh.read().strip()
+            witness = json.loads(text.splitlines()[0] if "\n" in text else text)
+        payload = to_fragment_payload(
+            records,
+            source_log=label,
+            witness_checkpoint=witness,
+            operator=records[0].get("operator") if records else None,
+            ledger_dir=Path(path).parent,
+        )
+        fragment = encode_fragment(payload)
+        with open(args.html, "w", encoding="utf-8") as fh:
+            fh.write(render_mesh_viewer_html(fragment))
+        permalink = f"file://{Path(args.html).resolve()}#{fragment}"
+        if args.permalink_out:
+            with open(args.permalink_out, "w", encoding="utf-8") as fh:
+                fh.write(permalink + "\n")
+        print(f"capsule-mesh view --html: {len(records)} capsule(s) from the {label} log -> {args.html}")
+        print(f"  {permalink}")
+        return 0
+
     rows = build_machine_view([(label, records, vr) for label, _path, records, vr in sources])
 
     if args.as_json:
@@ -391,6 +425,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-logs",
         action="store_true",
         help="skip printing each log's own capsule-emit ledger view; machine view only",
+    )
+    view.add_argument(
+        "--html",
+        metavar="PATH",
+        default=None,
+        help="instead of the ASCII machine view, emit the words-first, role-organised "
+        "OFFLINE HTML viewer (4 roles x 3 questions, fragment-carried, verifies in-browser) "
+        "to PATH -- composes capsule_mesh_viewer over these logs' labels",
+    )
+    view.add_argument(
+        "--witness",
+        metavar="PATH",
+        default=None,
+        help="optional COSE checkpoint receipt (json/jsonl) to anchor the third-party "
+        "completeness answer in --html",
+    )
+    view.add_argument(
+        "--permalink-out",
+        metavar="PATH",
+        default=None,
+        help="with --html, also write the file:// permalink here",
     )
     return parser
 

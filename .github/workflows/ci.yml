@@ -84,6 +84,12 @@ jobs:
       - name: Smoke — capsule_field_inspector (data-inspector pretty-printer + fail-loud check)
         run: python -c "import capsule_field_inspector; print('ok')"
 
+      - name: Smoke — capsule_mesh_viewer (words-first role/question offline HTML viewer; composes capsule_mesh_view)
+        run: python -c "import capsule_mesh_viewer; print('ok')"
+
+      - name: Smoke — mesh_viewer_static (the inline mesh_verify.js asset package)
+        run: python -c "import mesh_viewer_static; from importlib import resources; resources.files('mesh_viewer_static').joinpath('mesh_verify.js').read_text(); print('ok')"
+
       - name: Unit tests
         run: |
           pip install pytest
