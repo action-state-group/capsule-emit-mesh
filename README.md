@@ -9,6 +9,12 @@ receipts") of
 "Explore proof of inference and model-serving attestation," and offers a threat
 model (step 1) alongside it.
 
+> **New here?** Start with the plain-language guide —
+> [**Can you trust a stranger to run your prompt?**](docs/CAN-YOU-TRUST-A-STRANGER.md)
+> — no crypto background needed. It explains, for a person deciding whether to let a
+> stranger's machine run their prompt, what you'd see about that machine, and *how
+> sure you can actually be*.
+
 Two integration paths ship here (see below): a **native Rust
 `admission-policy-plugin` + `capsule-producer`** on the serving path (primary —
 it seals the host's own `openai.exchange.v1` lifecycle event), and a **Python
