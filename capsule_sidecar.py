@@ -58,6 +58,7 @@ from agent_action_capsule.verify import verify as verify_capsule
 
 import scitt_cose
 
+from advertisement import Advertisement, compute_meter, reconcile_advertised_vs_served
 from checkpointing import CheckpointState, Ed25519Signer, JsonlLogSource, load_checkpoint_config
 from model_identity import load_manifest, model_package_digest
 
@@ -404,6 +405,14 @@ class NodeState:
     runtime_label: str
     runtime_digest: str
     ledger_dir: Path
+    #: The node's self-attested advertisement -- what it CLAIMS it can serve
+    #: (verify-after-advertise, TRUST-MODEL.md §12.3). Co-carried into every
+    #: capsule alongside serving_provenance so a third party has BOTH the claim
+    #: and the served fact from one offline artifact and can run
+    #: reconcile_advertised_vs_served() from the bundle alone. ``None`` when the
+    #: node advertised nothing -- reconciliation then reports
+    #: ``advertisement_absent`` (never a silent green; §10 Rule 1).
+    advertisement: Advertisement | None = None
     last_capsule_id: str | None = None
     emitted: list[dict[str, Any]] = field(default_factory=list)
     #: [mesh-rung12-adversarial-review] D3 — client-supplied nonces this node
@@ -517,6 +526,22 @@ def build_capsule(
         {key: request_json[key] for key in GENERATION_PARAM_KEYS if key in request_json and request_json[key] is not None}
     )
 
+    # verify-after-advertise (TRUST-MODEL.md §12.3): what THIS record can attest
+    # about what ran, in the serving_provenance shape reconcile_advertised_vs_served
+    # reads. The sidecar observes at the wire, so it honestly carries only the
+    # model identity it can see (the served model name from the manifest) plus
+    # served_by_node_id; quantization/hardware are facts the /v1 wire does not
+    # expose to a proxy, so they stay ABSENT here (never fabricated) and any
+    # advertised quant/hardware reconciles to `absent`, not a false green. The
+    # Rust producer, which sees the host serving-provenance event, fills the
+    # richer block; the reconcile function is identical over either shape.
+    served_provenance = {
+        "served_by_node_id": state.node_id,
+        "model_canonical_ref": state.manifest.get("model_id"),
+        "quantization": "unknown",
+    }
+    reconciliation = reconcile_advertised_vs_served(state.advertisement, served_provenance)
+
     compute_attestation = {
         # Sanctioned ModelAttestation.compute_attestation keys (per its own
         # docstring): best-effort I/O digests + runtime label.
@@ -536,6 +561,28 @@ def build_capsule(
             "model_package_digest": state.model_package_digest,
             "generation_parameters": generation_parameters,
             "latency_ms": f"{latency_ms:.3f}",
+            # verify-after-advertise (§12.3): the node's self-attested CLAIM,
+            # co-carried so a third party has BOTH the advertisement and the
+            # serving fact from ONE offline artifact -- the reconciliation is
+            # then self-contained (no discovery-note side channel needed to
+            # check it). `null` when the node advertised nothing; the derived
+            # `advertisement_reconciliation.overall` is then `advertisement_absent`,
+            # never a silent pass (§10 Rule 1).
+            "advertisement": state.advertisement.to_value() if state.advertisement else None,
+            # DERIVED per-field verdict (match / mismatch / not_advertised /
+            # absent). Carried so a reader that trusts neither party sees the
+            # kept-or-broken promise without re-deriving it, AND re-derivable
+            # from `advertisement` + `serving_provenance` by any verifier that
+            # would rather not trust this producer's own copy.
+            "advertisement_reconciliation": reconciliation,
+            # NEUTRAL metered facts (§12.4, §6): wall-clock time as an
+            # additional metered fact. Token usage stays sealed end-to-end via
+            # the Rust producer's serving_provenance.usage (prompt/completion/
+            # total_tokens) -- the sidecar proxies at the wire and does not
+            # re-count tokens, so it does NOT co-carry a token count it did not
+            # measure. Metering, never pricing -- no currency/rate/invoice field
+            # exists here and none is ever added (§12.4).
+            "compute_meter": compute_meter(latency_ms=latency_ms),
             # What the CALLING AGENT actually received, which is not always
             # byte-identical to what response_digest attests. response_digest
             # commits to the raw upstream object; a client-compatibility copy
@@ -1197,6 +1244,7 @@ def default_state(
     plugin_ledger_dir: Path | None = None,
     plugin_keys_dir: Path | None = None,
     plugin_checkpoint_config_path: Path | None = None,
+    advertisement: Advertisement | None = None,
 ) -> NodeState:
     signing_key_pem = load_or_create_signing_key(keys_dir)
     return NodeState(
@@ -1209,6 +1257,7 @@ def default_state(
         runtime_label=runtime_label,
         runtime_digest=runtime_digest,
         ledger_dir=ledger_dir,
+        advertisement=advertisement,
         checkpoint_config_path=checkpoint_config_path,
         plugin_ledger_dir=plugin_ledger_dir,
         plugin_keys_dir=plugin_keys_dir,
@@ -1255,7 +1304,18 @@ if __name__ == "__main__":
         "hotter than the sidecar's own request log). Falls back to --checkpoint-config when omitted; "
         "only used with --plugin-ledger-dir.",
     )
+    parser.add_argument(
+        "--advertisement",
+        help="path to a JSON advertisement -- the node's self-attested CLAIM of what it can serve "
+        "(model/quantization/hardware; see advertisement.Advertisement.to_value()). Co-carried into "
+        "every capsule and reconciled against the served record (verify-after-advertise, §12.3). Omit "
+        "to advertise nothing (reconciliation reports advertisement_absent -- never a silent pass).",
+    )
     args = parser.parse_args()
+
+    advertisement = None
+    if args.advertisement:
+        advertisement = Advertisement.from_value(json.loads(Path(args.advertisement).read_text(encoding="utf-8")))
 
     if args.runtime_artifact:
         runtime_digest = _sha256_hex(Path(args.runtime_artifact).read_bytes())
@@ -1276,6 +1336,7 @@ if __name__ == "__main__":
         plugin_checkpoint_config_path=(
             Path(args.plugin_checkpoint_config) if args.plugin_checkpoint_config else None
         ),
+        advertisement=advertisement,
     )
     if state.checkpoint is not None:
         # Latest-checkpoint-on-reconnect: catch up on anything this node

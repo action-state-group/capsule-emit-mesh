@@ -133,9 +133,12 @@ def main() -> int:
 
         # --- Step 5: stranger-verify from the disclosed copy alone ---
         issuer_key = disclosed_keys_dir / "node-key.pub.pem"
-        capsule_ok, capsule_lines = verify_bundle(disclosed_dir, {capsule_id: result["ack"]}, issuer_key=issuer_key)
+        capsule_ok, any_unverified, capsule_lines = verify_bundle(
+            disclosed_dir, {capsule_id: result["ack"]}, issuer_key=issuer_key
+        )
         print("\n".join(capsule_lines))
         assert capsule_ok, "stranger-verify of the disclosed bundle failed"
+        assert not any_unverified, "a signed statement went unverified in the disclosed bundle"
 
         rung_line = next(line for line in capsule_lines if line.startswith(f"capsule {capsule_id}"))
         assert "cross_party_rung=full_bilateral" in rung_line, f"expected full_bilateral, got: {rung_line}"

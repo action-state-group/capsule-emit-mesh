@@ -12,14 +12,29 @@ from capsule_mesh_view import (
     SOURCE_PLUGIN,
     SOURCE_SIDECAR,
     build_machine_view,
+    label_advertised_vs_served,
     label_counterparty,
     label_role,
+    reconcile_record,
     render_machine_view,
 )
 
 
-def _capsule(capsule_id: str, timestamp: str, *, cross_party: dict | None = None, observation_point: str | None = None) -> dict:
-    compute_attestation = {"x-mesh-poc-v1": {"cross_party": cross_party}}
+def _capsule(
+    capsule_id: str,
+    timestamp: str,
+    *,
+    cross_party: dict | None = None,
+    observation_point: str | None = None,
+    advertisement: dict | None = None,
+    serving_provenance: dict | None = None,
+) -> dict:
+    poc: dict = {"cross_party": cross_party}
+    if advertisement is not None:
+        poc["advertisement"] = advertisement
+    if serving_provenance is not None:
+        poc["serving_provenance"] = serving_provenance
+    compute_attestation = {"x-mesh-poc-v1": poc}
     if observation_point is not None:
         compute_attestation["x-mesh-lifecycle-v1"] = {"observation_point": observation_point}
     return {
@@ -93,6 +108,64 @@ def test_counterparty_labels_initiator_ref_when_present():
         cross_party={"initiator_ref": "4212f4bc8dbf48b5e81c2a6b8971b3cd53964f80cf15b5781a77e2cb39cd5442"},
     )
     assert label_counterparty(rec) == "initiator:4212f4bc8dbf"
+
+
+# ---------------------------------------------------------------------------
+# label_advertised_vs_served / reconcile_record (verify-after-advertise §12.3)
+# ---------------------------------------------------------------------------
+
+_AD_LLAMA_Q4 = {
+    "node_id": "mesh-node-demo-1",
+    "model_canonical_ref": "meta/Llama-3.2-3B",
+    "quantization": "Q4_K_M",
+}
+
+
+def test_view_flags_a_mismatch_loudly_and_names_the_broken_fields():
+    served = {
+        "served_by_node_id": "mesh-node-demo-1",
+        "quantization": "Q8_0",
+        "model": {"canonical_ref": "mistralai/Mistral-7B"},
+    }
+    rec = _capsule("a" * 64, "2026-08-28T00:00:00Z", advertisement=_AD_LLAMA_Q4, serving_provenance=served)
+    label = label_advertised_vs_served(rec)
+    assert label.startswith("mismatch(")
+    assert "quantization" in label
+    assert "model_canonical_ref" in label
+
+
+def test_view_reports_advertisement_absent_not_a_silent_green():
+    served = {"served_by_node_id": "mesh-node-demo-1", "quantization": "Q4_K_M"}
+    rec = _capsule("a" * 64, "2026-08-28T00:00:00Z", serving_provenance=served)
+    assert label_advertised_vs_served(rec) == "advertisement_absent"
+
+
+def test_view_reports_match_for_a_kept_promise():
+    served = {
+        "served_by_node_id": "mesh-node-demo-1",
+        "quantization": "Q4_K_M",
+        "model": {"canonical_ref": "meta/Llama-3.2-3B"},
+    }
+    rec = _capsule("a" * 64, "2026-08-28T00:00:00Z", advertisement=_AD_LLAMA_Q4, serving_provenance=served)
+    assert label_advertised_vs_served(rec) == "match"
+
+
+def test_reconcile_record_uses_the_records_own_bytes_not_a_co_carried_verdict():
+    # Even if a producer co-carried a lying "match" verdict, reconcile_record
+    # re-derives from advertisement + serving_provenance and catches the mismatch.
+    served = {"served_by_node_id": "mesh-node-demo-1", "quantization": "Q8_0"}
+    rec = _capsule("a" * 64, "2026-08-28T00:00:00Z", advertisement=_AD_LLAMA_Q4, serving_provenance=served)
+    rec["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"][
+        "advertisement_reconciliation"
+    ] = {"overall": "match"}  # a forged, over-claiming co-carried verdict
+    assert reconcile_record(rec)["overall"] == "mismatch"
+
+
+def test_machine_view_row_carries_advertised_vs_served():
+    served = {"served_by_node_id": "mesh-node-demo-1", "quantization": "Q8_0"}
+    rec = _capsule("a" * 64, "2026-08-28T00:00:00Z", advertisement=_AD_LLAMA_Q4, serving_provenance=served)
+    rows = build_machine_view([(SOURCE_SIDECAR, [rec], None)])
+    assert rows[0]["advertised_vs_served"].startswith("mismatch(")
 
 
 # ---------------------------------------------------------------------------

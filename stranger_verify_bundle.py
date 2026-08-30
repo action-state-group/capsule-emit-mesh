@@ -43,6 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from advertisement import Advertisement, reconcile_advertised_vs_served
 from agent_action_capsule.verify import verify_store
 from bilateral_demo import ClientAck, get_cross_party, verify_client_ack
 from capsule_emit.ledger import read_ledger
@@ -68,10 +69,29 @@ def _load_ack(path: Path) -> ClientAck:
 
 
 def _issuer_key_for(ledger_dir: Path, issuer_key: Path | None) -> Path | None:
+    """Resolve the issuer pubkey for the detached .cose signed statements.
+
+    Explicit --issuer-key always wins. Otherwise auto-discover, broadened
+    (2026-08-29) so the DEFAULT invocation actually verifies a self-contained
+    disclosed bundle: a disclosed bundle commonly carries its pubkey INSIDE the
+    ledger dir (there is no sibling `keys/` once it has been copied out), so a
+    verifier that only looked at `<ledger>/../keys/node-key.pub.pem` would skip
+    signature verification and still print PASS. Search, in order:
+      1. `<ledger>/../keys/node-key.pub.pem`  (original sibling-keys layout)
+      2. `<ledger>/node-key.pub.pem`          (pubkey shipped in the bundle)
+      3. `<ledger>/*.pub.pem`                  (any in-bundle pubkey, sorted)
+    """
     if issuer_key is not None:
         return issuer_key
-    candidate = ledger_dir.parent / "keys" / "node-key.pub.pem"
-    return candidate if candidate.exists() else None
+    sibling = ledger_dir.parent / "keys" / "node-key.pub.pem"
+    if sibling.exists():
+        return sibling
+    in_bundle = ledger_dir / "node-key.pub.pem"
+    if in_bundle.exists():
+        return in_bundle
+    for candidate in sorted(ledger_dir.glob("*.pub.pem")):
+        return candidate
+    return None
 
 
 def _transparent_check(ledger_dir: Path, capsule_id: str, issuer_key: Path | None) -> str | None:
@@ -86,7 +106,11 @@ def _transparent_check(ledger_dir: Path, capsule_id: str, issuer_key: Path | Non
     if not statement_path.exists():
         return None
     if issuer_key is None:
-        return "signed statement present but no issuer pubkey given (pass --issuer-key or put node-key.pub.pem in a sibling keys/ dir)"
+        # A signed statement is present but NO key was found to check it. This
+        # is NOT a pass: the caller degrades verify.ok for this capsule and the
+        # top line becomes UNVERIFIED. The "UNVERIFIED:" prefix is the signal
+        # the caller keys on (kept distinct from a hard "error"/"False").
+        return "UNVERIFIED: signed statement present but no issuer pubkey found (pass --issuer-key, or put node-key.pub.pem in the bundle or a sibling keys/ dir) — signature NOT checked"
     from agent_action_capsule.transparent import SubstrateInputError, verify_transparent
 
     try:
@@ -101,9 +125,16 @@ def verify_bundle(
     acks_by_capsule_id: dict[str, ClientAck],
     *,
     issuer_key: Path | None = None,
-) -> tuple[bool, list[str]]:
+) -> tuple[bool, bool, list[str]]:
     """Capsule-level stranger-verify + cross_party_rung derivation, from
-    ledger_dir's bytes alone. Returns (all_ok, report_lines).
+    ledger_dir's bytes alone. Returns (all_ok, any_unverified, report_lines).
+
+    `any_unverified` is True iff at least one capsule carried a signed
+    statement that was NOT cryptographically checked because no issuer key was
+    found. A bundle that CARRIES signatures must never read PASS without those
+    signatures being verified: such a capsule's own `verify.ok` is degraded to
+    False here, and the caller renders the top line as UNVERIFIED (not PASS,
+    not a hard FAIL) so a human reading it is not misled.
 
     Two independent layers, matching `agent-action-capsule verify --store`
     (content-hash + chain integrity) and `... --transparent --issuer-key`
@@ -113,13 +144,14 @@ def verify_bundle(
     can use (this repo's writers never embed a `signature`/`key_id`
     producer envelope inline)."""
     lines: list[str] = []
+    any_unverified = False
     capsules_path = ledger_dir / "capsules.jsonl"
     if not capsules_path.exists():
-        return False, [f"NO capsules.jsonl at {ledger_dir} -- nothing to verify"]
+        return False, False, [f"NO capsules.jsonl at {ledger_dir} -- nothing to verify"]
 
     records = read_ledger(capsules_path)
     if not records:
-        return False, ["capsules.jsonl is empty -- no exchange recorded"]
+        return False, False, ["capsules.jsonl is empty -- no exchange recorded"]
 
     issuer_key = _issuer_key_for(ledger_dir, issuer_key)
     results = verify_store(records)
@@ -127,7 +159,6 @@ def verify_bundle(
     for record, result in zip(records, results):
         capsule_id = record.get("capsule_id", "<missing>")
         ok = bool(result.ok)
-        all_ok = all_ok and ok
         cross_party = get_cross_party(record)
         ack = acks_by_capsule_id.get(capsule_id)
         ack_ok = False
@@ -137,17 +168,31 @@ def verify_bundle(
         rung = derive_cross_party_rung(cross_party, has_verified_ack=ack_ok)
         caveat = identity_limitation_for_rung(rung)
 
+        # The transparent (detached .cose signature) layer is computed BEFORE
+        # we finalize this capsule's reported verify.ok, because a signed
+        # statement that was NOT checked (no key) degrades this capsule's ok:
+        # a capsule that carries a signature can never read verify.ok=True
+        # while that signature is unchecked.
+        transparent_line = _transparent_check(ledger_dir, capsule_id, issuer_key)
+        capsule_unverified = False
+        if transparent_line is not None:
+            if transparent_line.startswith("UNVERIFIED:"):
+                capsule_unverified = True
+                any_unverified = True
+                ok = False  # signature present but not checked -> not ok
+            elif "signature_verified=False" in transparent_line or "error" in transparent_line:
+                ok = False
+
+        all_ok = all_ok and ok
+
         lines.append(f"capsule {capsule_id}: verify.ok={ok} cross_party_rung={rung}")
-        if not ok:
+        if not ok and not capsule_unverified:
             for f in result.findings:
                 lines.append(f"    finding: {f.check} -- {f.detail}")
         if caveat:
             lines.append(f"    identity_limitation: {caveat}")
-        transparent_line = _transparent_check(ledger_dir, capsule_id, issuer_key)
         if transparent_line:
             lines.append(f"    {transparent_line}")
-            if "signature_verified=False" in transparent_line or "error" in transparent_line:
-                all_ok = False
 
         prov = _poc_block(record).get("serving_provenance")
         if prov:
@@ -159,7 +204,23 @@ def verify_bundle(
                 f"served_by={prov.get('served_by_node_id')!r} "
                 f"tokens={prov.get('usage', {}).get('total_tokens')!r}"
             )
-    return all_ok, lines
+
+        # verify-after-advertise (TRUST-MODEL.md §12.3): re-derive the advertised-
+        # vs-served reconciliation from THIS record's own bytes (advertisement +
+        # serving_provenance), not the producer's co-carried verdict. A mismatch
+        # is a first-class, attributable, offline-checkable broken promise.
+        poc = _poc_block(record)
+        advertisement = poc.get("advertisement")
+        ad = Advertisement.from_value(advertisement) if advertisement else None
+        recon = reconcile_advertised_vs_served(ad, prov)
+        if recon["overall"] == "mismatch":
+            lines.append(
+                f"    advertised_vs_served: MISMATCH — broken promise on "
+                f"{', '.join(recon['mismatches'])} (advertised != served; attributable, offline-checkable)"
+            )
+        else:
+            lines.append(f"    advertised_vs_served: {recon['overall']}")
+    return all_ok, any_unverified, lines
 
 
 def run_checkpoint_verify(ledger_dir: Path) -> tuple[bool, str]:
@@ -208,7 +269,7 @@ def tamper_check(ledger_dir: Path, issuer_key: Path | None) -> bool:
         lines[0] = json.dumps(first, sort_keys=True)
         capsules_path.write_text("\n".join(lines) + "\n")
 
-        tampered_ok, report = verify_bundle(scratch, {}, issuer_key=issuer_key)
+        tampered_ok, _tampered_unverified, report = verify_bundle(scratch, {}, issuer_key=issuer_key)
         capsule_detected = not tampered_ok
         print(f"tamper-check 1/2 (capsule_id): flipped {original_id} -> {flipped} in a SCRATCH COPY")
         print("\n".join(report))
@@ -241,7 +302,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("ledger_dir")
     parser.add_argument("--client-ack", action="append", default=[], dest="client_acks", help="a Move-4 client-ack-*.json file (repeatable)")
-    parser.add_argument("--issuer-key", default=None, help="PEM pubkey for the .cose signed statements; defaults to <ledger_dir>/../keys/node-key.pub.pem")
+    parser.add_argument("--issuer-key", default=None, help="PEM pubkey for the .cose signed statements; auto-discovers <ledger_dir>/../keys/node-key.pub.pem, then <ledger_dir>/node-key.pub.pem, then <ledger_dir>/*.pub.pem")
     parser.add_argument("--tamper-check", action="store_true", help="also prove a corrupted COPY fails verify")
     args = parser.parse_args(argv)
 
@@ -253,9 +314,17 @@ def main(argv: list[str] | None = None) -> int:
         acks_by_capsule_id[ack.action_capsule_id] = ack
 
     print(f"=== stranger-verify: {ledger_dir} ===")
-    capsule_ok, capsule_lines = verify_bundle(ledger_dir, acks_by_capsule_id, issuer_key=issuer_key)
+    capsule_ok, any_unverified, capsule_lines = verify_bundle(
+        ledger_dir, acks_by_capsule_id, issuer_key=issuer_key
+    )
     print("\n".join(capsule_lines))
     print(f"\nall capsules verify.ok: {capsule_ok}")
+    if any_unverified:
+        print(
+            "NOTE: at least one capsule carries a signed statement that was NOT checked "
+            "(no issuer key found). A bundle carrying signatures cannot read PASS while "
+            "those signatures are unverified."
+        )
 
     print("\n=== checkpoint / witness verify ===")
     checkpoint_ok, checkpoint_report = run_checkpoint_verify(ledger_dir)
@@ -266,6 +335,14 @@ def main(argv: list[str] | None = None) -> int:
         print("\n=== adversarial: tamper-a-byte-fails ===")
         tamper_ok = tamper_check(ledger_dir, issuer_key)
 
+    # Three-state top line: PASS only when everything verified; UNVERIFIED when
+    # a signed statement was present but unchecked (never silently PASS); FAIL
+    # for a hard failure. any_unverified already forced capsule_ok False, but we
+    # render UNVERIFIED distinctly so a human is not misled into reading a hard
+    # cryptographic failure where there was merely a missing key.
+    if any_unverified and checkpoint_ok and tamper_ok:
+        print("\nOVERALL: UNVERIFIED")
+        return 2
     overall = capsule_ok and checkpoint_ok and tamper_ok
     print(f"\nOVERALL: {'PASS' if overall else 'FAIL'}")
     return 0 if overall else 1

@@ -34,6 +34,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from advertisement import Advertisement, reconcile_advertised_vs_served
 from agent_action_capsule import Finding
 from agent_action_capsule.transparent import SubstrateInputError, verify_transparent
 from agent_action_capsule.verify import verify_store
@@ -115,6 +116,42 @@ def label_counterparty(record: dict[str, Any]) -> str:
     if not initiator_ref:
         return "unknown"
     return f"initiator:{initiator_ref[:12]}"
+
+
+def reconcile_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Re-derive the advertised-vs-served reconciliation from a record's OWN bytes.
+
+    verify-after-advertise (TRUST-MODEL.md §12.3): a node's ``advertisement``
+    (its CLAIM) and its ``serving_provenance`` (what ran) are co-carried in the
+    same ``x-mesh-poc-v1`` block, so this reconciliation is self-contained --
+    it never trusts the producer's own co-carried ``advertisement_reconciliation``
+    verdict, it RE-DERIVES it here from the advertisement + serving_provenance,
+    exactly what an offline third party would do (§10 Rule 3: the advertised
+    name is a claim; the record says which it holds).
+
+    Returns the ``reconcile_advertised_vs_served`` dict -- ``overall`` is
+    ``advertisement_absent`` when the record co-carries no advertisement (a
+    missing claim is NOT a silent green; §10 Rule 1).
+    """
+    poc = _poc_block(record)
+    advertisement = poc.get("advertisement")
+    ad = Advertisement.from_value(advertisement) if advertisement else None
+    return reconcile_advertised_vs_served(ad, poc.get("serving_provenance"))
+
+
+def label_advertised_vs_served(record: dict[str, Any]) -> str:
+    """Compact one-word-ish label for the machine-view row.
+
+    ``mismatch(field,...)`` names the broken-promise fields loudly (never a
+    silent green); ``match`` is a kept promise in what was both claimed and
+    served; ``advertisement_absent`` / ``no_served_facts`` are the honest
+    three-state non-passes.
+    """
+    result = reconcile_record(record)
+    overall = result["overall"]
+    if overall == "mismatch":
+        return "mismatch(" + ",".join(result["mismatches"]) + ")"
+    return overall
 
 
 def _issuer_key_for(ledger_dir: Path, issuer_key: Path | None) -> Path | None:
@@ -279,6 +316,10 @@ def build_machine_view(
                 "source_logs": [source_log],
                 "role": label_role(record, source_log),
                 "counterparty": label_counterparty(record),
+                # verify-after-advertise (§12.3): the compact advertised-vs-served
+                # verdict, re-derived from this record's own advertisement +
+                # serving_provenance (never the co-carried producer verdict).
+                "advertised_vs_served": label_advertised_vs_served(record),
             }
             verify_by_source[capsule_id] = {source_log: verify_ok}
             order.append(capsule_id)
@@ -307,22 +348,24 @@ def render_machine_view(rows: list[dict[str, Any]], *, out: Any = None) -> None:
         print("machine view: no records in either log", file=out)
         return
 
-    col_id, col_log, col_role, col_cp = 14, 15, 9, 24
+    col_id, col_log, col_role, col_cp, col_avs = 14, 15, 9, 20, 22
     print(f"\nmachine view  ({len(rows)} record(s) across both logs)\n", file=out)
     header = (
         f"  {'capsule_id':<{col_id}}  {'log':<{col_log}}  {'role':<{col_role}}  "
-        f"{'counterparty':<{col_cp}}  verify  timestamp"
+        f"{'counterparty':<{col_cp}}  {'advertised_vs_served':<{col_avs}}  verify  timestamp"
     )
     print(header, file=out)
     print("-" * len(header), file=out)
     for row in rows:
         vok = row["verify_ok"]
         v_str = "✓" if vok is True else ("✗" if vok is False else "—")
+        avs = row.get("advertised_vs_served") or "—"
         print(
             f"  {row['capsule_id'][:col_id]:<{col_id}}  "
             f"{row['source_log']:<{col_log}}  "
             f"{row['role']:<{col_role}}  "
             f"{row['counterparty'][:col_cp]:<{col_cp}}  "
+            f"{avs[:col_avs]:<{col_avs}}  "
             f"{v_str:<6}  "
             f"{row.get('timestamp') or ''}",
             file=out,

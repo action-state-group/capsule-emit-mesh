@@ -367,7 +367,15 @@ def test_legacy_flat_shape_still_names_the_model():
     sp = serving_provenance(flat)
     assert "Hermes-2-Pro-Mistral-7B" in sp["model"]
     rq = build_role_questions(flat, source_log="sidecar", verify_ok=None, has_witness_checkpoint=False)
-    assert rq["roles"]["requester"]["questions"][0]["state"] == ANSWERED
+    # verify-after-advertise (§12.3) changed Requester Q1's semantics: a record
+    # that NAMES a served model but co-carries NO advertisement can no longer
+    # read as a clean green -- there is no advertised claim to reconcile against,
+    # so the honest state is PARTIAL (advertisement_absent), never a silent
+    # ANSWERED. The served model is still named in the answer text.
+    q1 = rq["roles"]["requester"]["questions"][0]
+    assert q1["state"] == PARTIAL
+    assert "advertisement_absent" in q1["answer"]
+    assert "Hermes-2-Pro-Mistral-7B" in q1["answer"]
 
 
 # ---------------------------------------------------------------------------
