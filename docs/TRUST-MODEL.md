@@ -118,7 +118,7 @@ inside the mesh's own console is not evidence to anyone who matters in a dispute
 | R7 | I cannot tell which node this was | Receipt key bound to node and owner identity | Specified in #1331; not built |
 | R8 | Output behaves nothing like the claimed model | Fingerprints, as confidence not verdict (step 4) | Not built |
 | R9 | **My prompt is read, retained, or repurposed** | Nothing in the record layer — §5 | Unaddressed; #1346 is the first attempt |
-| R10 | Split across strangers, and I cannot see who held what | Per-stage receipts plus a coordinator receipt over stage order | Partly built — a requester_commitment bound to `exchange_id` and `request_digest` lets a verifier confirm the SAME requester is present, independently verified, in every hop's record (ingress and completion shown bound in both halves); a coordinator receipt over stage order itself is still not built |
+| R10 | Split across strangers, and I cannot see who held what | Per-stage receipts plus a coordinator receipt over stage order | Partly built — a requester_commitment bound to `exchange_id` and `request_digest` lets a verifier confirm the SAME requester is present, independently verified, in every hop's record (ingress and completion shown bound in both halves); the coordinator receipt over stage order is now built — a signed receipt binds ordered `stage_index -> per-stage bundle digest`, assembled by disclosure-on-request and checked by an independent offline verifier (§4.4, `mesh_coordinator_bundle_flow.py`, `examples/coordinator_3way_demo.py`). It binds order + per-stage bytes, not identity: node identity stays self-attested unless a stage record carries a verified commitment |
 | R11 | Charged for more work than I authorized | Authorization bound and consumption as two separate facts (§6) | Not built |
 
 ### 2.3 What the provider fears — the half not yet written down
@@ -479,6 +479,47 @@ and the composition model explicitly allows that: not every action populates eve
   `claude`, `pi` — plus curl and every OpenAI-compatible SDK. A request-signing step placed in
   one harness reaches one client; a serving contract expressed on the mesh-llm side reaches all.
   This is the operative constraint behind §12 Q2.
+
+### 4.4 The coordinator receipt, built by disclosure-on-request
+
+§4.3 says the split-inference receipt "cites [stage records] by typed reference and commits to
+execution order." §2.4 named what was missing: the correlation spine (`topology_id`, `stage_index`,
+`run_id`, `request_id`, ...) already travels with every stage message -- *"everything a commitment
+would need to cover already exists as data; what is missing is that nothing signs it."* This is the
+thing that signs it, and the way it is assembled without a live log.
+
+**The flow (reference: `mesh_coordinator_receipt_emitter.py`, `mesh_coordinator_bundle_flow.py`,
+`examples/coordinator_3way_demo.py`).**
+
+1. The coordinator plans an ordered topology and routes stages to N provider nodes. Each node runs
+   its own slice and **seals its own stage record** (`mesh_record_emitter`) -- no payload shared.
+2. The coordinator **asks each node for its bundle** (*disclosure-on-request*). The coordinator has
+   **standing** because it is a party to the run. Each node **chooses** to disclose a bounded,
+   self-contained `StageBundle` -- its sealed record bytes plus any inclusion proof -- or declines.
+   This is **not** a live query into the node's log: the node returns an object; the coordinator
+   never reaches in. A decline is `absent`, a stage never asked is `not_requested`, neither is ever
+   a false `present`.
+3. The coordinator composes a **signed receipt binding stage ORDER to each present stage's committed
+   SHA-256 digest** (the `stages[]` / `topology[]` two-array shape keeps "I routed this" separate
+   from "I have proof of this"). **No payload** -- the relay never sees a token.
+4. An **independent offline verifier** holding only the receipt and the disclosed bundles
+   reconstructs stage order from `topology[]`, and for each `present` stage recomputes the digest
+   over the disclosed bytes, checks it against the committed digest, and re-verifies the disclosed
+   capsule. A tampered bundle (digest != committed) or a broken capsule is a **mismatch**; a
+   `present` stage whose bundle was not disclosed is a visible **gap** -- three-state, never a false
+   green.
+
+**What this closes.** C2 ("blamed for a node's behaviour") and C3 ("which node held which layers")
+in §2.4: correlation *and* order are now signed and offline-checkable, and a stranger with the
+disclosed bundles can reconstruct who held which slice in what order without trusting the
+coordinator.
+
+**Honest gaps.** The receipt binds **order + per-stage bytes**, not identity or payload. Node
+identity is **self-attested** unless the underlying stage record itself carries a verified
+requester/provider commitment (`mesh_record_verifier` `cross_party_rung`); the coordinator's own
+signature is self-attested unless anchored to registration/witness (§8). It proves *this bundle, at
+this position, unchanged* -- not *who* produced it beyond what each stage record independently earns.
+
 
 ---
 
