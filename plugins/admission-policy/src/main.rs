@@ -113,6 +113,12 @@ fn seal_observed_host_exchange(capsules: &CapsuleState, envelope: &OpenAiExchang
         model: &envelope.model,
         exchange_id: envelope.exchange_id.as_deref(),
         request_digest: envelope.request_digest.as_deref(),
+        // The host-forwarded digests over the REAL response body: bind
+        // agent_output_digest to the real response, and seal the real
+        // tool_calls_digest / reasoning_digest (absent when the model had none).
+        response_digest: envelope.response_digest.as_deref(),
+        tool_calls_digest: envelope.tool_calls_digest.as_deref(),
+        reasoning_digest: envelope.reasoning_digest.as_deref(),
         usage,
         host_provenance,
     };

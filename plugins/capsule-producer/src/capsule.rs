@@ -211,6 +211,20 @@ pub struct CapsuleInput {
     pub provider: String,
     pub agent_input_digest: String,
     pub agent_output_digest: String,
+    /// OPTIONAL labeled sub-digest over the flattened `tool_calls` the model
+    /// emitted for this exchange, mirroring the Python reference
+    /// `capsule_ledger/conversation/exchange.py`'s `digest_conversation_exchange`
+    /// (`tool_calls_digest = json_digest(tool_calls) if tool_calls else None`).
+    /// `None` — and then ABSENT from the sealed capsule, never a fabricated
+    /// digest over `[]` — when the model emitted no tool call, so a reader can
+    /// never misread the record as asserting "zero tool calls". Rides inside
+    /// `model_attestation.compute_attestation` alongside `agent_output_digest`.
+    pub tool_calls_digest: Option<String>,
+    /// OPTIONAL labeled sub-digest over the model's `reasoning_content` chunk(s)
+    /// (same reference/shape as `tool_calls_digest`). `None` — and ABSENT from
+    /// the capsule — when the model surfaced no reasoning (the honest null for a
+    /// non-reasoning model like Llama-3.2), never fabricated.
+    pub reasoning_digest: Option<String>,
     pub runtime: String,
     pub mesh_poc: MeshPocV1,
     pub effect_status: String,
@@ -260,17 +274,34 @@ pub fn seal(input: &CapsuleInput) -> Result<Value, crate::jcs::JcsError> {
     if let Some(p) = &input.provenance {
         body.insert("provenance".into(), json!(p));
     }
+    // compute_attestation carries the mandatory input/output digests plus the
+    // OPTIONAL labeled sub-digests `tool_calls_digest`/`reasoning_digest` —
+    // inserted ONLY when present, exactly as the Python reference
+    // `digest_conversation_exchange`/`build_conversation_exchange_capsule`
+    // does (absent, never a fabricated digest, when the model had none). Placing
+    // them beside `agent_output_digest` makes tier-2 fold-scoped disclosure
+    // possible: a holder can later disclose just the tool-call bytes without the
+    // prompt/reasoning, because each is committed under its own label.
+    let mut compute_attestation = Map::new();
+    compute_attestation.insert("agent_input_digest".into(), json!(input.agent_input_digest));
+    compute_attestation.insert(
+        "agent_output_digest".into(),
+        json!(input.agent_output_digest),
+    );
+    if let Some(tcd) = &input.tool_calls_digest {
+        compute_attestation.insert("tool_calls_digest".into(), json!(tcd));
+    }
+    if let Some(rd) = &input.reasoning_digest {
+        compute_attestation.insert("reasoning_digest".into(), json!(rd));
+    }
+    compute_attestation.insert("runtime".into(), json!(input.runtime));
+    compute_attestation.insert("x-mesh-poc-v1".into(), input.mesh_poc.to_value());
     body.insert(
         "model_attestation".into(),
         json!({
             "model_id": input.model_id,
             "provider": input.provider,
-            "compute_attestation": {
-                "agent_input_digest": input.agent_input_digest,
-                "agent_output_digest": input.agent_output_digest,
-                "runtime": input.runtime,
-                "x-mesh-poc-v1": input.mesh_poc.to_value(),
-            },
+            "compute_attestation": Value::Object(compute_attestation),
         }),
     );
     body.insert(
@@ -357,6 +388,8 @@ mod tests {
             provider: "p".to_string(),
             agent_input_digest: "a".repeat(64),
             agent_output_digest: "b".repeat(64),
+            tool_calls_digest: None,
+            reasoning_digest: None,
             runtime: "runtime".to_string(),
             mesh_poc: MeshPocV1 {
                 client_nonce: "c".repeat(32),
@@ -449,6 +482,53 @@ mod tests {
         assert_eq!(prov["usage"]["prompt_tokens"], 11);
         assert_eq!(prov["usage"]["completion_tokens"], 22);
         assert_eq!(prov["usage"]["total_tokens"], 33);
+    }
+
+    /// The OPTIONAL `tool_calls_digest`/`reasoning_digest` sub-digests ride
+    /// inside `compute_attestation` beside `agent_output_digest` when present,
+    /// mirroring the Python reference shape. This is the slot a real
+    /// tool_calls_digest lands in.
+    #[test]
+    fn capsule_carries_optional_tool_calls_and_reasoning_digests_when_present() {
+        let mut input = base_input(None);
+        input.tool_calls_digest = Some("f".repeat(64));
+        input.reasoning_digest = Some("e".repeat(64));
+        let capsule = seal(&input).unwrap();
+        let ca = &capsule["model_attestation"]["compute_attestation"];
+        assert_eq!(ca["tool_calls_digest"], "f".repeat(64));
+        assert_eq!(ca["reasoning_digest"], "e".repeat(64));
+        // The mandatory digests are still present alongside them.
+        assert_eq!(ca["agent_output_digest"], "b".repeat(64));
+    }
+
+    /// ABSENT, not null: when the model had no tool calls / no reasoning, the
+    /// keys are omitted entirely from the sealed capsule — never a fabricated
+    /// digest over an empty list — exactly as the Python reference
+    /// `build_conversation_exchange_capsule` omits them.
+    #[test]
+    fn capsule_omits_optional_sub_digests_when_absent() {
+        let capsule = seal(&base_input(None)).unwrap();
+        let ca = &capsule["model_attestation"]["compute_attestation"];
+        assert!(
+            ca.get("tool_calls_digest").is_none(),
+            "an absent tool_calls_digest must be omitted, not null"
+        );
+        assert!(
+            ca.get("reasoning_digest").is_none(),
+            "an absent reasoning_digest must be omitted, not null"
+        );
+    }
+
+    /// The sub-digests are digest-bound: setting a real `tool_calls_digest`
+    /// changes `capsule_id`, so an attester cannot swap the tool calls out of a
+    /// sealed record without breaking the content address.
+    #[test]
+    fn setting_tool_calls_digest_changes_capsule_id() {
+        let baseline = seal(&base_input(None)).unwrap();
+        let baseline_id = baseline["capsule_id"].as_str().unwrap().to_string();
+        let mut input = base_input(None);
+        input.tool_calls_digest = Some("f".repeat(64));
+        assert_ne!(seal(&input).unwrap()["capsule_id"], baseline_id.as_str());
     }
 
     /// Mutating ANY provenance field changes `capsule_id` — the record is
