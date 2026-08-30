@@ -37,7 +37,10 @@ When the answer comes back, the receipt tells you, in plain terms:
 - **What you asked** — your prompt.
 - **Who ran it** — which machine (a stable name for it).
 - **What was running** — the model, its "size/quality" setting (the quantization),
+  and the **settings the answer was generated with**: the temperature, the top-p, the
+  random seed, the length limit — the knobs that actually shape what comes out. Plus
   the graphics chip and memory it used, and how much work it took (the token counts).
+  Everything that shapes an answer is in the receipt, not just the answer itself.
 - **The answer** — and it's tied to that record, so it can't be quietly swapped for a
   different one.
 
@@ -70,17 +73,54 @@ which. Here's the ladder.
 ### ⚠️ Things you *can't* be fully sure of yet — and the receipt says so, out loud
 
 - **Who they really are.** The machine signs with a key it generated itself — a
-  **consistent pseudonym**, not a verified real-world identity. You can tell it's the
-  *same* machine each time; you can't (yet) tie it to a named person or company.
+  **consistent pseudonym**, not a verified real-world identity.
+  *What you can still do:* confirm it's the **same machine every time** (the key stays
+  constant across exchanges, so a good history can't be quietly inherited by someone
+  else), and — if you need a real name behind it — prefer a machine that's part of a
+  **vouched group**; the receipt shows whether it is one.
 - **That the hardware is exactly as claimed.** The machine *reports* its own chip and
-  memory. Nothing yet forces it to *prove* that at the hardware level — so the
-  hardware line is a signed claim, not a hardware-rooted fact.
-- **Its track record.** One receipt is **one data point**, not a history. A first
-  exchange with a stranger can't tell you how they've behaved over time.
+  memory; nothing yet forces it to *prove* that at the hardware level.
+  *What you can still do:* **sanity-check that the claim is even possible** — a model
+  of a given size and context length has to *fit* the memory it claims, so an
+  impossible combination is a tell — and if the machine offers a hardware attestation,
+  that upgrades the line from claim to proof.
+- **Its track record.** One receipt is **one data point**, not a history.
+  *What you can still do:* **ask for more** — a machine can hand you a bundle of its
+  past receipts to inspect, and the neutral logbook shows how long and how consistently
+  it's been anchoring. One exchange becomes a history you can actually read.
 
 The receipt never dresses these up as green checkmarks. It says "we don't yet know
 who asked," "self-attested," "not anchored yet" — plainly. **A receipt that admits its
 limits is worth more than one that claims everything is fine.**
+
+---
+
+## Beyond the receipt: what apps can build *on top*
+
+The capsule is the **solid floor** — a small set of signed facts you can check
+yourself. It deliberately doesn't try to judge everything. But once you have that
+floor, an **app** (your client, a marketplace, an auditor's tool) can add smarter
+checks *on top* — not baked into the record, but **unlocked** by the evidence in it:
+
+- **Does the behaviour match the claim?** The receipt says the quality setting was,
+  say, `Q4_K_M`, and records the exact generation settings (temperature, seed, and so
+  on). An app can check whether the answer's *quality and behaviour are consistent*
+  with that setting — and with **other machines serving the same model at the same
+  setting**. A node claiming a high-quality setting but behaving like a heavily
+  cut-down one is a flag you can raise, using the receipt's own recorded facts.
+- **Do independent machines agree?** Because the receipt records the **seed and
+  temperature**, an app can send the *same* prompt, pinned to the same settings, to
+  several machines claiming the same model — and compare. Consistent answers build
+  confidence; an outlier stands out.
+- **Statistical fingerprints.** More advanced tools can compare a machine's outputs
+  against a known fingerprint of the claimed model (issue #1233 calls this "step 4") —
+  a *confidence* signal that rides alongside the receipt as a typed reference, not a
+  verdict.
+
+The pattern is always the same: **the capsule gives you checkable facts; apps turn
+those facts into higher-level confidence.** The floor stays small and honest; the
+smarts live above it, where anyone can build them — and every one of them still traces
+back to evidence you could check yourself.
 
 ---
 
