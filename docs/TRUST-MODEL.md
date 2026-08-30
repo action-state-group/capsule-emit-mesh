@@ -719,7 +719,125 @@ specifics, route descriptors, nonce source, FHE parameters, fingerprint confiden
 
 ---
 
-## 12. Open questions
+## 12. Earned trust: from first contact to a track record
+
+Every section so far treats a record in isolation — one exchange, one proof. But trust between
+strangers is not established in a single exchange; it is **earned across many, and it starts at
+nothing.** mesh-llm already models this, in code. This section connects the per-record assurance
+classes to the trust that accrues over a relationship, and names the one check that turns an
+advertisement into evidence.
+
+### 12.1 mesh-llm already has a trust gradient — and states its own limits
+
+Trust in the running system is not binary and never begins at full. Two native mechanisms already
+express a gradient:
+
+- **The transport handshake starts cold.** A peer is unknown on first contact; the connection layer
+  carries per-peer liveness (`last_seen`, round-trip time) and warms a peer only as it proves itself
+  over repeated contact. This is trust-on-first-use raised by continuity — earned by a long-lived,
+  re-verified connection, not asserted at introduction.
+- **Local reputation routes away from misbehaviour.** A node keeps a *local* reputation on each
+  target from observed outcomes and steers work away from nodes that misbehave. `NODE_REP.md` is
+  emphatic about what this is **not**: *not gossiped, not persisted as a network-wide score, and not
+  used to prove peer identity, model honesty, owner attestation, or release provenance* (§7). It is
+  routing-safety, ephemeral and local by construction.
+
+So the native gradient is real but bounded: it protects the router's own next decision. It does not
+travel, does not survive as evidence, and cannot be shown to a third party. **That boundary is
+exactly the seam a record fills** — not by replacing the local signal, but by making its inputs
+portable.
+
+### 12.2 What a record adds: portability, and proof
+
+The same outcome that nudges a local reputation counter can be **sealed**: a signed, content-addressed
+record of what actually ran (Class C), optionally with the requester bound in (Class D), optionally
+witnessed to a log the node does not control (§8). That converts an ephemeral local signal into a
+portable, third-party-checkable one — a node's track record becomes **a set of records anyone verifies
+offline, not a number one party computes.** It is §7's discipline extended over time: evidence is
+presented, policy decides, and nobody is the authority for the computation.
+
+The gradient, restated in these terms:
+
+| When | What trust rests on | Available to |
+|---|---|---|
+| **First contact** | what *this* record proves (Class C) + the neutral witness (§8) | a stranger with no shared history |
+| **Across interactions** | an accruing set of anchored records — a real track record | any relying party, offline |
+| **In the open system** | the same, plus mesh-llm's live transport/reputation gradient (§12.1) | the router, locally, now |
+
+Trust deepens on evidence, never on the machine's word or ours. A first exchange rests on the two
+layers a stranger can check unaided; a relationship's worth of anchored records is what lets a relying
+party weigh a history. **The record layer does not compute the trust — it supplies the portable,
+checkable inputs the native gradient never keeps.**
+
+### 12.3 The advertisement is a promise; the record is whether it was kept
+
+This is **verify-after-advertise** — the "after" half of the coordinator's C1 fear ("I route work to a
+node not running what it advertises"), made explicit.
+
+A node advertises what it can serve — models, quantization, VRAM — in its discovery note. Per Rule 3
+(§10) an advertised model name is a **claim, not evidence**; admission acts on it as coarse
+availability, deliberately not as proof. The `serving_provenance` record is the evidence of what
+**actually** ran: served model descriptor, quantization, hardware. Setting the advertisement beside the
+record is a **reconciliation** — did the node serve what it advertised?
+
+- **Match, repeated** → a kept promise, accruing as track record (§12.2).
+- **Mismatch** → not a score decrement but an **attributable, portable evidence item**: this node
+  advertised X and a signed record shows it served Y. A relying party, or a coordinator with standing,
+  can act on it; a third party verifies it offline. This is the difference between *"the router noticed
+  and routed away"* (local, ephemeral) and *"anyone can show the node broke its advertisement"*
+  (portable, evidence).
+
+**Honest status.** For the reconciliation to be checkable after the fact, the advertised descriptor
+must be **carried into or alongside the record** — today the record proves what ran but does not
+co-carry what was advertised, so a mismatch is detectable only by a party that separately holds the
+advertisement. Co-carrying the advertised descriptor (or a signed announce-record) into the bundle is
+the small addition that turns C1's "after" half into a standalone check. Until then, verify-after-
+advertise is *supported by the evidence the record already seals* but not *self-contained in it* —
+and the record should say so rather than imply the check is closed.
+
+### 12.4 Metering across a relationship
+
+Over many interactions a relying party sums metered consumption — input/output tokens, compute time,
+wall-clock (§6). The boundary holds at every scale: the record **counts**, it does not **price.** A
+relationship's worth of records is a verifiable consumption history that still carries no currency;
+pricing stays in whatever commercial layer a deployment runs, and this document proposes none. "Do we
+have cost?" resolves to: we have the **metered facts cost is derived from**, bound to a signed request,
+and we deliberately do not embed the price — because one embedded rate would encode one market's design
+into a neutral record every other market would have to disagree with.
+
+### 12.5 The coordinator across a split, and disclosure
+
+In a split run the coordinator holds the global view and the most exposure (C2–C7). The same accrual
+applies per stage: each stage's record is evidence, and a coordinator receipt over stage order (not
+built — C2/C3) would bind the graph the stages ran on. Cross-party reads stay **disclosure-based, never
+live**: no party queries another's running log. A relying party receives a **bundle the counterparty
+chose to disclose** (offline-verifiable), checks the **public witness** checkpoint, or — *with standing*
+(a party to the run, or membership) — reads the **coordinator graph**. Standing, not surveillance: a
+coordinator may ask a node to disclose the bundle for a run it coordinated, and that disclosure is a
+bounded, offline-verifiable artifact, not a channel into the node's live history.
+
+### 12.6 What stays honest
+
+The multiplier from §0 applies hardest here: a record that shows what it **cannot** prove is worth more
+than one that hides the gap. The accrual in this section is only usable because its limits travel with
+it.
+
+| Layer of the gradient | Built | Honest gap |
+|---|---|---|
+| This reply (Class C) | serving_provenance seals model/quant/hardware/usage; verifies offline | identity self-attested (§1); key not hardware-rooted |
+| Advertised-vs-served (C1 after-half) | the record proves what ran | advertised descriptor **not co-carried** — reconciliation needs the counterparty's note (§12.3) |
+| Machine history (§7) | records are portable, anchorable inputs | the reputation **predicate over them is deferred** — this section supplies inputs, not the computation |
+| Native transport/reputation (§12.1) | live in mesh-llm | local and ephemeral; our records do **not** yet consume `PeerInfo` continuity |
+| Coordinator graph (§12.5) | correlation spine + disclosure model | receipt **binding** stage order not built (C2/C3) |
+| Witness (§8) | checkpoint→receipt verified live | unwitnessed window is a rewrite window; weight records inside it differently |
+
+Nobody in this model asserts trust. It starts at unknown, climbs on evidence each party can check for
+itself, and rests at the top on an anchor no party — including us — controls the outcome of. The honest
+gaps are not a weakness of that story; they are what makes it one a stranger can rely on.
+
+---
+
+## 13. Open questions
 
 1. **Does §2.3 match what node operators actually tell you?** It is the half with the least evidence
    behind it — reasoned, not researched. If your list differs, the section should be rewritten rather
