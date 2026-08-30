@@ -54,6 +54,10 @@ def _demo_capsule():
             "hardware": {"gpu": "Apple M3", "vram_bytes": 11453251584, "is_soc": True},
             "usage": {"prompt_tokens": 46, "completion_tokens": 39, "total_tokens": 85},
         },
+        # The REAL requested sampling knobs sealed by #54 -- a sibling of
+        # serving_provenance inside the poc block. Floats travel as strings
+        # (spec §5.1 stringify_floats); seed/max_tokens as ints.
+        "generation_parameters": {"temperature": "0.0", "top_k": 40, "seed": 12345, "max_tokens": 512},
     }
     cap = {
         "spec_version": "draft-mih-scitt-agent-action-capsule-02",
@@ -173,7 +177,12 @@ def test_delivered_file_boots_clean_and_renders_conversations(tmp_path):
               const ok=body.querySelectorAll(".vchip.ok").length;
               const fail=body.querySelectorAll(".vchip.fail").length;
               const entries=body.querySelectorAll(".entry").length;
-              process.stdout.write(JSON.stringify({{entries, convs, ok, fail}}));
+              const servedEl=body.querySelector("[data-conv-served]");
+              const gpEl=body.querySelector("[data-conv-genparams]");
+              const served=servedEl?servedEl.textContent:"";
+              const genparams=gpEl?gpEl.textContent:"";
+              const genparamsShown=gpEl?!gpEl.hidden:false;
+              process.stdout.write(JSON.stringify({{entries, convs, ok, fail, served, genparams, genparamsShown}}));
               process.exit(0);
             }}, 400);
             """
@@ -187,3 +196,9 @@ def test_delivered_file_boots_clean_and_renders_conversations(tmp_path):
     assert out["convs"] == 1, "the conversation block must render"
     assert out["ok"] == 1, "the served-facts digest must recompute to the sealed response_digest"
     assert out["fail"] == 0, "no digest mismatch"
+    # The input/output/total token split renders in the served-facts line.
+    assert "46 in / 39 out / 85 total" in out["served"], out["served"]
+    # The generation-parameters line renders, showing ONLY sealed knobs, with
+    # the stringified-float temperature tidied ("0.0" -> "0").
+    assert out["genparamsShown"], "gen-params line must be visible when params were sealed"
+    assert out["genparams"] == "generated with: temperature 0, top-k 40, seed 12345, max_tokens 512", out["genparams"]

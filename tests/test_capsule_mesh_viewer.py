@@ -34,7 +34,8 @@ from capsule_mesh_viewer import (
 
 # A nested-shape mesh capsule (capsule-producer/0.2.0), the real-capture shape.
 def _nested_capsule(*, model="Llama-3.2-3B", quant="Q4_K_M", gpu="Apple M4 Max", vram=28991029248,
-                    total_tokens=43, cross_party=None, chained=False) -> dict:
+                    total_tokens=43, cross_party=None, chained=False,
+                    generation_parameters=None) -> dict:
     poc = {
         "client_nonce_source": "client_supplied",
         "model_name_digest": "f" * 64,
@@ -49,6 +50,11 @@ def _nested_capsule(*, model="Llama-3.2-3B", quant="Q4_K_M", gpu="Apple M4 Max",
             "usage": {"prompt_tokens": 41, "completion_tokens": 2, "total_tokens": total_tokens},
         },
     }
+    # The REAL requested sampling knobs sealed by #54 -- a sibling of
+    # serving_provenance inside the poc block. Absent by default so the
+    # absent-stays-absent tests can control it explicitly.
+    if generation_parameters is not None:
+        poc["generation_parameters"] = generation_parameters
     if cross_party is not None:
         poc["cross_party"] = cross_party
     cap = {
@@ -74,15 +80,68 @@ def test_serving_provenance_flattens_nested_shape():
     assert sp["vram_bytes"] == 28991029248
     assert sp["is_soc"] is True
     assert sp["total_tokens"] == 43
+    assert sp["prompt_tokens"] == 41
+    assert sp["completion_tokens"] == 2
+    # No generation parameters sealed in the default fixture -> empty map, never None.
+    assert sp["generation_parameters"] == {}
 
 
-def test_plain_model_line_is_words_first_no_digests():
+def test_serving_provenance_carries_sealed_generation_parameters():
+    sp = serving_provenance(_nested_capsule(generation_parameters={"temperature": "0.0", "top_k": 40}))
+    assert sp["generation_parameters"] == {"temperature": "0.0", "top_k": 40}
+
+
+def test_plain_model_line_shows_in_out_total_token_split_not_just_total():
     line = plain_model_line(serving_provenance(_nested_capsule()))
     assert "Llama-3.2-3B" in line
     assert "Q4_K_M" in line
     assert "Apple M4 Max" in line
-    assert "43 tokens" in line
+    # The split, not a bare "N tokens": prompt / completion / total.
+    assert "41 in / 2 out / 43 total" in line
+    assert "43 tokens" not in line
     assert "f" * 64 not in line  # no digest leaks into the plain sentence
+
+
+def test_plain_token_split_builds_only_from_parts_present():
+    from capsule_mesh_viewer import plain_token_split
+    assert plain_token_split({"prompt_tokens": 73, "completion_tokens": 587, "total_tokens": 660}) == "73 in / 587 out / 660 total"
+    # Absent halves stay absent -- honest by omission, never a fabricated 0.
+    assert plain_token_split({"total_tokens": 42}) == "42 total"
+    assert plain_token_split({"prompt_tokens": 5}) == "5 in"
+    assert plain_token_split({}) is None
+
+
+def test_plain_gen_params_line_shows_only_sealed_knobs_absent_stays_absent():
+    from capsule_mesh_viewer import plain_gen_params_line
+    sp = serving_provenance(
+        _nested_capsule(generation_parameters={"temperature": "0.0", "top_k": 40, "seed": 12345, "max_tokens": 512})
+    )
+    line = plain_gen_params_line(sp)
+    # Friendly labels; stringified-float temperature tidied "0.0" -> "0"; order stable.
+    assert line == "generated with: temperature 0, top-k 40, seed 12345, max_tokens 512"
+    # A param the capsule did NOT carry is never printed.
+    assert "top-p" not in line
+    assert "top_p" not in line
+    assert "frequency_penalty" not in line
+
+
+def test_plain_gen_params_line_is_none_when_no_params_sealed():
+    from capsule_mesh_viewer import plain_gen_params_line
+    # The observe path seals an empty map; a thin capsule may carry none.
+    assert plain_gen_params_line(serving_provenance(_nested_capsule())) is None
+    assert plain_gen_params_line(serving_provenance(_nested_capsule(generation_parameters={}))) is None
+
+
+def test_plain_gen_params_line_tidies_stringified_floats_but_keeps_lists():
+    from capsule_mesh_viewer import plain_gen_params_line
+    sp = serving_provenance(
+        _nested_capsule(generation_parameters={"temperature": "0.70", "top_p": "0.95", "stop": ["</s>", "\n\n"]})
+    )
+    line = plain_gen_params_line(sp)
+    assert "temperature 0.7" in line
+    assert "top-p 0.95" in line
+    # A stop array renders its members, not a Python repr.
+    assert "stop </s>, \n\n" in line
 
 
 # A raw-GGUF capsule: the only model identity is a content hash + arch + size,
@@ -377,8 +436,11 @@ def test_conversation_block_leads_with_verified_inference():
     # prompt + response shown (words-first)
     assert conv["prompt"]["text"] == "how great is mesh-llm"
     assert "mesh-llm" in conv["response"]["text"]
-    # served-by names node/model/gpu
+    # served-by names node/model/gpu + the in/out/total token split
     assert conv["served_by"]["model"] == "Llama-3.2-3B"
+    assert conv["served_by"]["token_split"] == "41 in / 2 out / 43 total"
+    # No gen params sealed in this fixture -> None (absent stays absent).
+    assert conv["served_by"]["gen_params_line"] is None
     # the response verify is over the served FACTS and MATCHES the sealed digest
     rv = conv["response"]["verify"]
     assert rv["kind"] == "served_facts"
@@ -386,6 +448,23 @@ def test_conversation_block_leads_with_verified_inference():
     assert rv["matches"] is True
     # honest boundary spelled out: the text is requester-held, not the sealed body
     assert "requester" in rv["note"].lower()
+
+
+def test_conversation_served_by_carries_gen_params_line_when_sealed():
+    cap = _nested_capsule(generation_parameters={"temperature": "0.0", "top_k": 40, "seed": 12345})
+    conv = build_conversation(cap, serving_provenance(cap), {"request": "hi", "response": "hey"})
+    assert conv["served_by"]["gen_params_line"] == "generated with: temperature 0, top-k 40, seed 12345"
+    assert conv["served_by"]["token_split"] == "41 in / 2 out / 43 total"
+
+
+def test_entry_payload_gen_params_flow_through_serving_provenance():
+    cap = _nested_capsule(generation_parameters={"temperature": "0.0", "top_k": 40})
+    payload = to_fragment_payload([cap], source_log="plugin")
+    entry = payload["entries"][0]
+    # The raw sealed map travels behind the auditor toggle...
+    assert entry["serving_provenance"]["generation_parameters"] == {"temperature": "0.0", "top_k": 40}
+    # ...and the friendly display line rides on the conversation's served-by.
+    assert entry["conversation"]["served_by"]["gen_params_line"] == "generated with: temperature 0, top-k 40"
 
 
 def test_conversation_response_mismatch_is_shown_honestly():
