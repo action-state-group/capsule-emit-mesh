@@ -9,11 +9,15 @@ receipts") of
 "Explore proof of inference and model-serving attestation," and offers a threat
 model (step 1) alongside it.
 
-> **New here?** Start with the plain-language guide —
-> [**Can you trust a stranger to run your prompt?**](docs/CAN-YOU-TRUST-A-STRANGER.md)
-> — no crypto background needed. It explains, for a person deciding whether to let a
-> stranger's machine run their prompt, what you'd see about that machine, and *how
-> sure you can actually be*.
+> **New here?** Three layers, from plain to formal:
+> 1. [**Can you trust a stranger to run your prompt?**](docs/CAN-YOU-TRUST-A-STRANGER.md)
+>    — plain-language, no crypto background: what you'd see about a stranger's machine
+>    and *how sure you can actually be*.
+> 2. [**The verification chain: what each link proves, and how**](docs/VERIFICATION-CHAIN.md)
+>    — the cryptographic chain link by link (hash → signature → checkpoint → witness
+>    receipt), with the RFCs.
+> 3. [**TRUST-MODEL.md**](docs/TRUST-MODEL.md) — the full threat model, assurance
+>    classes, and per-role questions (§2.2–2.5).
 
 Two integration paths ship here (see below): a **native Rust
 `admission-policy-plugin` + `capsule-producer`** on the serving path (primary —

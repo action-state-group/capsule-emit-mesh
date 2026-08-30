@@ -183,6 +183,10 @@ you can, and how you'd know."**
 
 ---
 
-*Want the technical version? See [`TRUST-MODEL.md`](TRUST-MODEL.md) — including §2.2–2.5
-for the specific questions each party (requester, provider, coordinator, third-party)
-wants answered, and the evidence that addresses each.*
+*Want the next level down? [**The verification chain: what each link proves, and
+how**](VERIFICATION-CHAIN.md) walks the actual cryptographic chain — from the record's
+hash, through the signature, up to the witness receipt — stating, for each link, what
+it proves and by what mechanism (with RFCs). And the full threat model is
+[`TRUST-MODEL.md`](TRUST-MODEL.md) — including §2.2–2.5 for the specific questions each
+party (requester, provider, coordinator, third-party) wants answered, and the evidence
+that addresses each.*
