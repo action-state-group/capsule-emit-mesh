@@ -58,15 +58,37 @@ try:  # read_ledger is the same reader capsule_mesh_view uses for its CLI.
 except Exception:  # pragma: no cover - only when capsule-emit isn't installed
     read_ledger = None  # type: ignore[assignment]
 
+# The canonical JSON-DIGEST (RFC 8785 JCS + float-stringify, spec §5.1) used by
+# the Rust admission-policy plugin's `canonical_body_digest` AND its
+# host-served `emit_for_observed_host_exchange` output-facts digest. Reused
+# verbatim (never reforked) so the viewer's server-facts verification is the
+# SAME digest the capsule sealed. `digest_json` = json_digest(stringify_floats).
+try:
+    from capsule_sidecar import digest_json as _digest_json
+except Exception:  # pragma: no cover - only when scitt-cose/aac isn't installed
+    _digest_json = None  # type: ignore[assignment]
+
 __all__ = [
     "serving_provenance",
     "plain_model_line",
     "build_role_questions",
+    "served_facts_digest",
+    "build_conversation",
     "to_fragment_payload",
     "encode_fragment",
     "decode_fragment",
     "render_mesh_viewer_html",
+    "ROLE_KEYS",
+    "DEFAULT_ROLE",
 ]
+
+# Which role(s) the viewer renders inline, and which is the default. The user's
+# feedback: "just the requester only". So the requester's questions are the
+# DEFAULT inline view and the other three roles go behind a collapsed "other
+# roles" toggle -- still carried in the payload, never deleted. `--role all`
+# restores the original 4-roles-x-3-questions layout inline.
+ROLE_KEYS = ("requester", "provider", "coordinator", "third_party")
+DEFAULT_ROLE = "requester"
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +346,150 @@ def build_role_questions(
 
 
 # ---------------------------------------------------------------------------
+# Inference-forward conversation block -- lead with the exchange, disclosed +
+# verified against exactly the digest the capsule actually sealed.
+#
+# The honest crypto boundary (documented in the seal path,
+# admission-policy/src/capsule_emit.rs::emit_for_observed_host_exchange, and in
+# this demo's b-tool_calls.json artifact): on the host-served observe path the
+# plugin NEVER sees the streamed response BODY. It seals:
+#   - `request_digest`  = canonical JSON-DIGEST of the REAL request body
+#                         (host-forwarded, byte-identical to canonical_body_digest).
+#   - `response_digest` = canonical JSON-DIGEST of the observed TERMINAL FACTS
+#                         `{model, usage:{prompt,completion,total}}` -- NOT the
+#                         response text.
+# So a disclosed response TEXT is requester-held and CANNOT be checked against
+# `response_digest`; what CAN be checked, and is, is that the `{model, usage}`
+# the viewer shows recomputes to the sealed `response_digest`. A disclosed
+# request BODY (when the requester supplies the exact bytes) DOES verify against
+# `request_digest`. We show each check for what it is and never claim a match we
+# can't prove.
+# ---------------------------------------------------------------------------
+
+
+def served_facts_digest(sp: dict[str, Any]) -> str | None:
+    """Recompute the host-served ``response_digest`` from the observed terminal
+    facts ``{model, usage:{prompt,completion,total}}``.
+
+    Mirrors ``emit_for_observed_host_exchange``'s ``output_facts`` digest
+    exactly (same key set, same canonical JSON-DIGEST). Returns None when the
+    JCS reference isn't importable or the facts are incomplete -- never a
+    fabricated value.
+    """
+    if _digest_json is None:
+        return None
+    model = sp.get("model")
+    pt, ct, tt = sp.get("prompt_tokens"), sp.get("completion_tokens"), sp.get("total_tokens")
+    if model is None or pt is None or ct is None or tt is None:
+        return None
+    facts = {"model": model, "usage": {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}}
+    try:
+        return _digest_json(facts)
+    except Exception:  # pragma: no cover - defensive; never fabricate a digest
+        return None
+
+
+def _request_body_digest(request_body: dict[str, Any] | None) -> str | None:
+    """Canonical digest of a disclosed request BODY, comparable to the sealed
+    ``request_digest``. Returns None when no body was supplied or the reference
+    isn't importable."""
+    if _digest_json is None or request_body is None:
+        return None
+    try:
+        return _digest_json(request_body)
+    except Exception:  # pragma: no cover
+        return None
+
+
+def build_conversation(
+    record: dict[str, Any],
+    sp: dict[str, Any],
+    disclosed: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build the words-first Prompt -> Response block for one capsule.
+
+    ``disclosed`` (per capsule_id) may carry:
+      - ``request``       : the requester's plain prompt text (shown, not
+                            digest-checkable on its own -- the request BODY is
+                            what ``request_digest`` seals).
+      - ``request_body``  : the exact request JSON body, if the requester holds
+                            it; when present it is digest-verified against
+                            ``request_digest``.
+      - ``response``      : the response text (shown; the served FACTS are what
+                            verify against ``response_digest``).
+      - ``tool_calls_note``: a short note (e.g. "a web_search tool_call was
+                            made") carried verbatim.
+
+    Every ``verify`` sub-object states which sealed digest it checks and the
+    outcome, so the reader sees BOTH the words and the proof-or-honest-gap.
+    """
+    disclosed = disclosed or {}
+    effect = record.get("effect", {}) or {}
+    request_digest = effect.get("request_digest")
+    response_digest = effect.get("response_digest")
+
+    # ---- prompt side ---------------------------------------------------
+    prompt_text = disclosed.get("request")
+    request_body = disclosed.get("request_body")
+    body_digest = _request_body_digest(request_body)
+    if request_body is not None:
+        # The requester holds the exact request bytes -> a real digest check.
+        prompt_verify = {
+            "kind": "request_body",
+            "sealed_digest": request_digest,
+            "computed_digest": body_digest,
+            "matches": (body_digest is not None and body_digest == request_digest),
+            "label": "request body vs sealed request_digest",
+        }
+    else:
+        # Only the human-readable prompt is held; the request BODY (system
+        # prompt + tools + params, prompt_tokens worth) is not in this bundle,
+        # so request_digest stays sealed -- stated, never faked as a match.
+        prompt_verify = {
+            "kind": "request_sealed",
+            "sealed_digest": request_digest,
+            "computed_digest": None,
+            "matches": None,
+            "label": "request body not held in this bundle — request_digest sealed",
+        }
+
+    # ---- response side -------------------------------------------------
+    response_text = disclosed.get("response")
+    computed_facts = served_facts_digest(sp)
+    response_verify = {
+        "kind": "served_facts",
+        "sealed_digest": response_digest,
+        "computed_digest": computed_facts,
+        "matches": (computed_facts is not None and computed_facts == response_digest),
+        "label": "served model + usage vs sealed response_digest",
+        # Spell out the honest boundary: the TEXT is requester-held; the sealed
+        # response_digest binds the served facts, not the streamed body.
+        "note": (
+            "The host streams the response body; the observe-path capsule seals "
+            "the served model + token usage as response_digest, not the text. "
+            "The text below is the requester's held copy; the served facts it "
+            "was produced under are what verify here."
+        ),
+    }
+
+    return {
+        "served_by": {
+            "node_id": sp.get("served_by_node_id"),
+            "model": sp.get("model"),
+            "quantization": sp.get("quantization"),
+            "gpu": sp.get("gpu"),
+            "is_soc": sp.get("is_soc"),
+        },
+        "prompt": {"text": prompt_text, "verify": prompt_verify},
+        "response": {
+            "text": response_text,
+            "tool_calls_note": disclosed.get("tool_calls_note"),
+            "verify": response_verify,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Selective disclosure -- per-field shown vs digest-only.
 # ---------------------------------------------------------------------------
 
@@ -373,9 +539,10 @@ def to_fragment_payload(
     *,
     source_log: str = SOURCE_SIDECAR,
     witness_checkpoint: dict[str, Any] | None = None,
-    disclose: dict[str, dict[str, str]] | None = None,
+    disclose: dict[str, dict[str, Any]] | None = None,
     operator: str | None = None,
     ledger_dir: Any = None,
+    default_role: str = DEFAULT_ROLE,
 ) -> dict[str, Any]:
     """Build the fragment payload for a list of mesh capsules.
 
@@ -399,26 +566,36 @@ def to_fragment_payload(
     for rec in records:
         cid = rec.get("capsule_id", "")
         verify_ok = vmap.get(cid)
+        sp = serving_provenance(rec)
+        cap_disclose = (disclose or {}).get(cid)
         entries.append(
             {
                 "capsule_id": cid,
                 "timestamp": rec.get("timestamp"),
                 "operator": rec.get("operator"),
                 "verify_ok": verify_ok,
-                "serving_provenance": serving_provenance(rec),
+                "serving_provenance": sp,
+                # Inference-forward: the words-first Prompt -> Response block,
+                # disclosed + digest-verified, rendered ABOVE the questions.
+                "conversation": build_conversation(rec, sp, cap_disclose),
                 "role_questions": build_role_questions(
                     rec, source_log=source_log, verify_ok=verify_ok, has_witness_checkpoint=has_witness
                 ),
-                "disclosure": _disclosure_view(rec, (disclose or {}).get(cid)),
+                "disclosure": _disclosure_view(rec, cap_disclose),
                 # The full record travels so the browser can recompute capsule_id
                 # (hide-the-merkle, but the merkle is CHECKABLE, not just hidden).
                 "record": rec,
             }
         )
+    if default_role not in ROLE_KEYS and default_role != "all":
+        default_role = DEFAULT_ROLE
     return {
-        "view_version": "mesh-role-1",
+        "view_version": "mesh-role-2",
         "operator": operator or (records[0].get("operator") if records else None),
         "source_log": source_log,
+        # Which role renders inline by default; the rest fold behind a toggle.
+        # "all" renders every role inline (the original layout).
+        "default_role": default_role,
         "witness": _witness_summary(witness_checkpoint),
         "entries": entries,
     }
@@ -460,8 +637,31 @@ def render_mesh_viewer_html(fragment: str) -> str:
     4 roles x 3 questions words-first.
     """
     verify_js = _load_verify_js()
-    embed = json.dumps(fragment)
-    return _HTML_SHELL.replace("@@VERIFY_JS@@", verify_js).replace("@@FRAGMENT@@", embed)
+    # The self-contained embed: the base64url fragment must land ONLY in the
+    # `window.__MESH_FRAGMENT_B64U__` placeholder -- NEVER anywhere else. The
+    # verify.js boot guard tests `embedded !== "@@FRAGMENT_SENTINEL@@"` (a
+    # DISTINCT token that is not the placeholder), so it is never overwritten by
+    # the fragment. The earlier bug replaced a shared token in BOTH the
+    # placeholder and the guard condition, jamming the base64 into
+    # `if (embedded && embedded !== "...")` -> a JS syntax error that blanked the
+    # page (see mesh-live-demo-permalink.html.bak). Order matters: inline the JS
+    # first, THEN substitute the single placeholder, and assert the fragment
+    # appears exactly once in the output.
+    embed = json.dumps(fragment)  # a JSON string literal: "<base64url>"
+    shell = _HTML_SHELL.replace("@@VERIFY_JS@@", verify_js)
+    if "@@FRAGMENT@@" not in shell or shell.count("@@FRAGMENT@@") != 1:
+        raise RuntimeError(
+            "embed invariant broken: exactly one @@FRAGMENT@@ placeholder must "
+            f"exist in the shell, found {shell.count('@@FRAGMENT@@')}"
+        )
+    html = shell.replace("@@FRAGMENT@@", embed)
+    # Belt-and-suspenders: the base64 must appear ONLY in the placeholder
+    # assignment, never in the boot guard.
+    if fragment and (f'!== "{fragment}"' in html or f"!=='{fragment}'" in html):
+        raise RuntimeError(
+            "embed invariant broken: fragment leaked into the boot guard condition"
+        )
+    return html
 
 
 # The shell is data-free chrome + templates; mesh_verify.js fills it in.
@@ -512,6 +712,21 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   .disc-sealed { color:#7A6355; }
   .disc-content { display:block; margin-top:4px; padding:8px 12px; background:#F4F4F0; border-radius:8px; font-style:italic; color:#161B25; }
   .foot { font-size:11px; color:#5C6573; margin-top:20px; line-height:1.6; }
+  /* Inference-forward conversation block -- lead with the exchange. */
+  .conv { padding:18px 24px 6px; border-bottom:1px solid #E3E3DC; }
+  .conv-served { font-size:11px; color:#5C6573; margin-bottom:12px; font-family:ui-monospace,monospace; }
+  .conv-turn { margin-bottom:14px; }
+  .conv-label { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:#3A5BD9; font-weight:600; margin-bottom:4px; }
+  .conv-text { font-size:14.5px; line-height:1.6; color:#161B25; white-space:pre-wrap; background:#FBFBF9; border:1px solid #ECECE6; border-radius:10px; padding:12px 14px; }
+  .conv-verify { margin-top:6px; }
+  .conv-toolcall { display:block; margin-top:6px; font-size:12px; color:#9A6B12; background:#FBF3E2; border-radius:8px; padding:6px 10px; }
+  .conv-note { display:block; margin-top:6px; font-size:11px; color:#5C6573; line-height:1.5; }
+  .vchip { display:inline-flex; align-items:center; font-size:11px; border-radius:100px; padding:2px 10px; border:1px solid #E3E3DC; }
+  .vchip.ok { color:#127A52; border-color:#B8DCC9; background:#E6F2EC; }
+  .vchip.fail { color:#B3261E; border-color:#F0C4C0; background:#FBEAE8; }
+  .vchip.sealed { color:#7A6355; border-color:#E3DDD4; background:#F5F1EA; font-family:ui-monospace,monospace; }
+  details.other-roles { margin-top:16px; border-top:1px dashed #E3E3DC; padding-top:10px; }
+  details.other-roles > summary { cursor:pointer; font-size:12px; color:#5C6573; font-family:ui-monospace,monospace; }
   [hidden] { display:none !important; }
 </style>
 </head>
@@ -530,7 +745,7 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   </div>
 
   <h1>What my capsules <em>look like</em></h1>
-  <p class="sub">Organised around the questions each mesh role actually asks — words first, digests tucked away.</p>
+  <p class="sub">Lead with the conversation — what was sent, what came back, and a check that each is exactly the sealed bytes. The requester's accountability questions sit below; the other roles fold away.</p>
   <div class="meta mono" data-meta></div>
 
   <div class="empty" data-empty>
@@ -549,10 +764,29 @@ _HTML_SHELL = r"""<!DOCTYPE html>
       <span class="entry-title" data-entry-title></span>
       <span class="badge" data-verify-badge></span>
     </div>
+    <div data-conv-slot></div>
     <div class="roles" data-roles></div>
     <div class="disc" data-disc hidden>
       <div class="disc-title">Disclosure (per-field: sealed vs shown)</div>
       <div data-disc-fields></div>
+    </div>
+  </div>
+</template>
+
+<template id="conv-template">
+  <div class="conv">
+    <div class="conv-served" data-conv-served></div>
+    <div class="conv-turn">
+      <div class="conv-label">Prompt (sent)</div>
+      <div class="conv-text" data-conv-prompt></div>
+      <div class="conv-verify" data-conv-prompt-verify></div>
+    </div>
+    <div class="conv-turn">
+      <div class="conv-label">Response (came back)</div>
+      <div class="conv-text" data-conv-response></div>
+      <span class="conv-toolcall" data-conv-toolcall hidden></span>
+      <div class="conv-verify" data-conv-response-verify></div>
+      <span class="conv-note" data-conv-response-note hidden></span>
     </div>
   </div>
 </template>
@@ -618,13 +852,22 @@ def _cmd_html(args: argparse.Namespace) -> int:
         print(f"capsule-mesh view --html: no records in {args.ledger}", file=sys.stderr)
         return 1
     witness = _read_first_json(args.witness) if args.witness else None
-    disclose: dict[str, dict[str, str]] = {}
+    disclose: dict[str, dict[str, Any]] = {}
     if args.disclose:
-        # --disclose CAPSULE_ID:FIELD=TEXT  (FIELD is request|response)
+        # --disclose CAPSULE_ID:FIELD=TEXT  (FIELD is request|response|
+        # tool_calls_note). Everything not named here stays digest-only.
         for spec in args.disclose:
             head, _, text = spec.partition("=")
             cid, _, field = head.partition(":")
             disclose.setdefault(cid, {})[field] = text
+    if args.disclose_file:
+        # --disclose-file CAPSULE_ID:FIELD=PATH  -- for multi-line content
+        # (a full response body/refusal) that a shell arg can't carry cleanly.
+        for spec in args.disclose_file:
+            head, _, path = spec.partition("=")
+            cid, _, field = head.partition(":")
+            with open(path, encoding="utf-8") as fh:
+                disclose.setdefault(cid, {})[field] = fh.read()
 
     import os
 
@@ -635,6 +878,7 @@ def _cmd_html(args: argparse.Namespace) -> int:
         disclose=disclose or None,
         operator=args.operator,
         ledger_dir=os.path.dirname(os.path.abspath(args.ledger)),
+        default_role=args.role,
     )
     fragment = encode_fragment(payload)
     html = render_mesh_viewer_html(fragment)
@@ -672,11 +916,26 @@ def _build_parser() -> argparse.ArgumentParser:
     html.add_argument("--operator", default=None, help="operator label for the view header")
     html.add_argument("--permalink-out", metavar="PATH", default=None, help="write the file:// permalink here")
     html.add_argument(
+        "--role",
+        default=DEFAULT_ROLE,
+        choices=list(ROLE_KEYS) + ["all"],
+        help="which role's questions render inline by default (default: requester); "
+        "the other roles fold behind a collapsed 'other roles' toggle. 'all' shows "
+        "every role inline (the original layout).",
+    )
+    html.add_argument(
         "--disclose",
         action="append",
         metavar="CID:FIELD=TEXT",
-        help="open one disclosable field (FIELD is request|response); repeatable. "
-        "Everything else stays digest-only.",
+        help="open one disclosable field (FIELD is request|response|tool_calls_note); "
+        "repeatable. Everything else stays digest-only.",
+    )
+    html.add_argument(
+        "--disclose-file",
+        action="append",
+        metavar="CID:FIELD=PATH",
+        help="like --disclose but reads the content from a file (for multi-line "
+        "response bodies); repeatable.",
     )
     return parser
 

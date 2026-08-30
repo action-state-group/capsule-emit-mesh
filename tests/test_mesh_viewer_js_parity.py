@@ -113,3 +113,51 @@ def test_js_recompute_matches_python_reference(tmp_path):
     assert js_ids == py_ids == stored, (
         f"JS/Python/stored capsule_id divergence:\n js={js_ids}\n py={py_ids}\n stored={stored}"
     )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available; JS parity is a local/CI-with-node check")
+def test_js_served_facts_digest_matches_python_seal_construction(tmp_path):
+    """The conversation block's response verify recomputes response_digest in
+    the browser. It must be the SAME digest the Rust seal path binds
+    (JCS of {model, usage}). Drive the real mesh_verify.js under node and
+    compare to the Python `served_facts_digest`."""
+    from capsule_mesh_viewer import served_facts_digest
+
+    sp = {
+        "model": "local-gguf/sha256-887fbdc66ab91eb5",
+        "prompt_tokens": 46,
+        "completion_tokens": 39,
+        "total_tokens": 85,
+    }
+    py_digest = served_facts_digest(sp)
+    assert py_digest is not None
+
+    harness = tmp_path / "facts.mjs"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            import fs from "fs";
+            import vm from "vm";
+            import crypto from "crypto";
+            const js = fs.readFileSync({json.dumps(str(JS))}, "utf8");
+            const sandbox = {{
+              window: {{}},
+              document: {{ readyState:"complete", addEventListener(){{}}, querySelector(){{return null;}}, getElementById(){{return null;}} }},
+              location: {{ hash:"", href:"" }},
+              crypto: {{ subtle: {{ async digest(a,b){{ const h=crypto.createHash("sha256"); h.update(Buffer.from(b)); return h.digest().buffer; }} }} }},
+              TextEncoder, TextDecoder, atob:(s)=>Buffer.from(s,"base64").toString("binary"), console,
+            }};
+            vm.createContext(sandbox);
+            vm.runInContext(js, sandbox);
+            const sp = {json.dumps(sp)};
+            const d = await sandbox.window.__mesh_servedFactsDigest(sp);
+            process.stdout.write(d);
+            """
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(["node", str(harness)], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == py_digest, (
+        f"JS served-facts digest != Python: js={result.stdout.strip()} py={py_digest}"
+    )

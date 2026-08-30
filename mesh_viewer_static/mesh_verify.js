@@ -147,6 +147,33 @@
   function shortId(cid) { return cid ? cid.slice(0, 12) + "…" : "(no id)"; }
 
   var ROLE_ORDER = ["requester", "provider", "coordinator", "third_party"];
+  var ROLE_TITLES = {
+    requester: "Requester", provider: "Provider",
+    coordinator: "Coordinator", third_party: "Third party (auditor / court)"
+  };
+
+  // The canonical JSON-DIGEST (JCS + SHA-256) of an object whose digest-bearing
+  // values are strings/integers only -- the shape of the served terminal facts
+  // {model, usage:{prompt,completion,total}}. This is the SAME digest the Rust
+  // seal path computes for response_digest, recomputed here in-browser so the
+  // conversation block's "matches sealed digest" is proven, not asserted.
+  async function digestFacts(obj) {
+    return sha256Hex(utf8Bytes(jcsValue(obj)));
+  }
+
+  function servedFactsFor(sp) {
+    if (!sp) return null;
+    if (sp.model == null || sp.prompt_tokens == null ||
+        sp.completion_tokens == null || sp.total_tokens == null) return null;
+    return {
+      model: sp.model,
+      usage: {
+        prompt_tokens: sp.prompt_tokens,
+        completion_tokens: sp.completion_tokens,
+        total_tokens: sp.total_tokens
+      }
+    };
+  }
 
   function renderQA(qa) {
     var node = tmpl("qa-template").cloneNode(true).querySelector(".qa");
@@ -176,6 +203,89 @@
     node.querySelector("[data-role-title]").textContent = role.title;
     var qs = node.querySelector("[data-role-qs]");
     role.questions.forEach(function (qa) { qs.appendChild(renderQA(qa)); });
+    return node;
+  }
+
+  // A small verify chip: recompute the sealed digest the check names, compare,
+  // render "✓ matches sealed digest" / "✗ mismatch" / an honest "sealed" note.
+  function verifyChip(v, ok) {
+    var chip = document.createElement("span");
+    chip.className = "vchip";
+    if (v.matches === true || ok === true) {
+      chip.classList.add("ok");
+      chip.textContent = "✓ matches sealed digest";
+    } else if (v.matches === false || ok === false) {
+      chip.classList.add("fail");
+      chip.textContent = "✗ mismatch — does NOT match sealed digest";
+    } else {
+      chip.classList.add("sealed");
+      chip.textContent = "▪ " + (v.label || "sealed, digest only");
+    }
+    return chip;
+  }
+
+  async function renderConversation(entry) {
+    var conv = entry.conversation;
+    if (!conv) return null;
+    var node = tmpl("conv-template").cloneNode(true).querySelector(".conv");
+
+    // "served by <node>, <model> <quant> on <gpu>"
+    var sb = conv.served_by || {};
+    var servedBits = [];
+    if (sb.model) servedBits.push(sb.model);
+    if (sb.quantization && sb.quantization !== "unknown") servedBits.push(sb.quantization);
+    var onBits = [];
+    if (sb.gpu) onBits.push(sb.gpu);
+    if (sb.is_soc) onBits.push("SoC");
+    var served = "served by " + (sb.node_id ? sb.node_id.slice(0, 12) + "…" : "(node not named)");
+    if (servedBits.length) served += ", " + servedBits.join(" ");
+    if (onBits.length) served += " on " + onBits.join(", ");
+    node.querySelector("[data-conv-served]").textContent = served;
+
+    // ---- Prompt --------------------------------------------------------
+    var p = conv.prompt || {};
+    var promptEl = node.querySelector("[data-conv-prompt]");
+    promptEl.textContent = (p.text != null && p.text !== "")
+      ? p.text
+      : "(prompt text not disclosed in this bundle)";
+    var pv = p.verify || {};
+    var pOk = null;
+    if (pv.kind === "request_body" && pv.sealed_digest != null) {
+      // We hold the request BODY -> recompute and compare in-browser.
+      // (kept for completeness; this demo discloses prompt text, not body.)
+      pOk = (pv.computed_digest != null && pv.computed_digest === pv.sealed_digest);
+    }
+    node.querySelector("[data-conv-prompt-verify]").appendChild(verifyChip(pv, pOk));
+
+    // ---- Response ------------------------------------------------------
+    var r = conv.response || {};
+    var respEl = node.querySelector("[data-conv-response]");
+    respEl.textContent = (r.text != null && r.text !== "")
+      ? r.text
+      : "(response text not disclosed in this bundle)";
+    if (r.tool_calls_note) {
+      var tc = node.querySelector("[data-conv-toolcall]");
+      tc.hidden = false;
+      tc.textContent = "🛈 " + r.tool_calls_note;
+    }
+    // Recompute the served-facts digest in-browser and compare to the sealed
+    // response_digest -- proof, not assertion.
+    var rv = r.verify || {};
+    var rOk = null;
+    var facts = servedFactsFor(entry.serving_provenance);
+    if (facts && rv.sealed_digest != null) {
+      try {
+        var computed = await digestFacts(facts);
+        rOk = (computed === rv.sealed_digest);
+        rv = Object.assign({}, rv, { computed_digest: computed, matches: rOk });
+      } catch (e) { rOk = null; }
+    }
+    node.querySelector("[data-conv-response-verify]").appendChild(verifyChip(rv, rOk));
+    if (rv.note) {
+      var noteEl = node.querySelector("[data-conv-response-note]");
+      noteEl.hidden = false;
+      noteEl.textContent = rv.note;
+    }
     return node;
   }
 
@@ -234,12 +344,42 @@
       badge.textContent = "— id not recomputable";
     }
 
+    // Inference-forward: lead with the disclosed + digest-verified conversation.
+    var convNode = await renderConversation(entry);
+    if (convNode) {
+      var convSlot = node.querySelector("[data-conv-slot]");
+      if (convSlot) convSlot.appendChild(convNode);
+    }
+
+    // Role questions. Default: the REQUESTER only, inline; the other roles fold
+    // behind a collapsed "other roles" toggle (still present, not deleted).
+    // default_role === "all" renders every role inline (original layout).
     var rolesEl = node.querySelector("[data-roles]");
     var rq = entry.role_questions || {};
     var roles = rq.roles || {};
-    ROLE_ORDER.forEach(function (k) {
-      if (roles[k]) rolesEl.appendChild(renderRole(k, roles[k]));
-    });
+    var defaultRole = (arguments.length > 1 && arguments[1]) || "requester";
+
+    if (defaultRole === "all") {
+      ROLE_ORDER.forEach(function (k) {
+        if (roles[k]) rolesEl.appendChild(renderRole(k, roles[k]));
+      });
+    } else {
+      var primary = roles[defaultRole] ? defaultRole : "requester";
+      if (roles[primary]) rolesEl.appendChild(renderRole(primary, roles[primary]));
+      // The remaining roles behind a collapsed <details> — carried, not shown.
+      var others = ROLE_ORDER.filter(function (k) { return k !== primary && roles[k]; });
+      if (others.length) {
+        var det = document.createElement("details");
+        det.className = "other-roles";
+        var sum = document.createElement("summary");
+        sum.textContent = "other roles (" + others.map(function (k) {
+          return (ROLE_TITLES[k] || k);
+        }).join(", ") + ")";
+        det.appendChild(sum);
+        others.forEach(function (k) { det.appendChild(renderRole(k, roles[k])); });
+        rolesEl.appendChild(det);
+      }
+    }
 
     renderDisclosure(node, entry.disclosure);
     return node;
@@ -249,7 +389,15 @@
     var payload = null;
     try {
       var embedded = (typeof window !== "undefined" && window.__MESH_FRAGMENT_B64U__) || "";
-      if (embedded && embedded !== "@@FRAGMENT@@") payload = decodeFragment(embedded);
+      // The un-filled placeholder sentinel, built by concatenation so this guard
+      // NEVER contains the literal placeholder token the renderer substitutes.
+      // The self-contained embed fills only the `window.__MESH_FRAGMENT_B64U__`
+      // placeholder; because this string is assembled at runtime it can never be
+      // overwritten by that substitution -- the exact bug that jammed base64 into
+      // this condition (`if (embedded && embedded !== ""<base64>...`) and blanked
+      // the page. See mesh-live-demo-permalink.html.bak.
+      var UNFILLED = "@@" + "FRAGMENT" + "@@";
+      if (embedded && embedded !== UNFILLED) payload = decodeFragment(embedded);
       var hash = location.hash.slice(1);
       if (hash) payload = decodeFragment(hash); // an explicit #fragment wins
     } catch (e) {
@@ -267,9 +415,10 @@
       (w ? " · witness " + (w.log_id || "?") + " size=" + (w.size != null ? w.size : "?") + (w.cose_present ? " (COSE)" : "")
          : " · no witness checkpoint in this view");
 
+    var defaultRole = payload.default_role || "requester";
     var container = el("[data-entries]");
     for (var i = 0; i < payload.entries.length; i++) {
-      container.appendChild(await renderEntry(payload.entries[i]));
+      container.appendChild(await renderEntry(payload.entries[i], defaultRole));
     }
 
     var foot = el("[data-foot]");
@@ -303,5 +452,13 @@
     window.__mesh_recomputeCapsuleId = recomputeCapsuleId;
     window.__mesh_jcsValue = jcsValue;
     window.__mesh_normalize = normalize;
+    // The served-facts (response_digest) port, so the parity test can prove the
+    // conversation block's "matches sealed digest" recomputes the SAME digest
+    // the Rust seal path binds.
+    window.__mesh_servedFactsDigest = async function (sp) {
+      var facts = servedFactsFor(sp);
+      return facts ? digestFacts(facts) : null;
+    };
+    window.__mesh_boot = boot;
   }
 })();

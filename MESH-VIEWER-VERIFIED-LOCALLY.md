@@ -56,6 +56,86 @@ Both open with **zero external references** (verified: no `<script src>`, no
 `http`, no `fetch`) and re-derive every `capsule_id` in the browser from the
 fragment alone.
 
+## Update — requester-only + inference-forward (user feedback)
+
+Feedback: *"I'd like it to just be the requester only. It's hard to understand
+what was sent and what came back — I can't see the inference returned even after
+I opened the evidence."* Two changes plus one bug fix.
+
+### A. Requester-only by default (`--role requester|provider|coordinator|third_party|all`)
+The **requester's** 3 questions render inline by default; the other three roles
+fold behind a collapsed **"other roles"** toggle — carried in the payload, never
+deleted. `--role all` restores the original 4-roles-×-3-questions inline layout.
+`payload.default_role` drives the browser; `DEFAULT_ROLE == "requester"`.
+
+### B. Inference-forward conversation block, disclosed + digest-verified
+Each capsule now **leads** with a words-first
+`Prompt (sent)` → `Response (came back)` block naming
+*served by `<node>`, `<model> <quant>` on `<gpu>`*. Disclosed text is verified
+against exactly the digest the capsule sealed, honestly:
+
+- **Response** — the served **model + token usage** (`{model, usage}`) is
+  recomputed **in-browser** (the same canonical JSON-DIGEST the Rust seal path
+  binds) and compared to `response_digest` → a green **"✓ matches sealed
+  digest"** chip. The response **text** is the requester's held copy: on the
+  host-served observe path the plugin never sees the streamed body (documented
+  in `emit_for_observed_host_exchange` and the demo's `b-tool_calls.json`), so
+  the block states plainly that `response_digest` binds the served facts, not
+  the text — no false "the text matches a text-digest" claim.
+- **Request** — when the requester supplies the exact request **body** it is
+  digest-verified against `request_digest`; when only the human-readable prompt
+  is held (as in this demo), the chip honestly reads **"request body not held in
+  this bundle — request_digest sealed"** (`matches: None`), never a faked match.
+
+The 3 requester accountability questions and the per-field sealed-vs-shown
+disclosure control stay **below** the conversation (secondary).
+
+### C. Bug fix — self-contained embed serialization
+The self-contained embed jammed the base64 into the JS boot **guard**
+(`if (embedded && embedded !== ""<base64>…`) instead of only the
+`window.__MESH_FRAGMENT_B64U__="…"` placeholder — a JS syntax error that blanked
+the page (see `_work/mesh-live-demo/mesh-live-demo-permalink.html.bak`). Fixed so
+the fragment lands in **exactly one** place (the placeholder), the guard sentinel
+is assembled at runtime (`"@@"+"FRAGMENT"+"@@"`) so a substitution can never
+overwrite it, and `render_mesh_viewer_html` asserts exactly one placeholder and
+that the fragment never leaks into the guard.
+
+### D. Tests
+```
+$ pytest tests/test_capsule_mesh_viewer.py tests/test_mesh_viewer_js_parity.py \
+         tests/test_mesh_viewer_boot_render.py -q
+30 passed
+$ pytest tests/ -q
+506 passed, 6 skipped
+```
+- `test_capsule_mesh_viewer.py` (+13): requester default; all roles still
+  carried; served-facts digest == the seal construction; conversation leads with
+  a **verified** inference; mismatch shown honestly; prompt stays sealed when the
+  body isn't held; request-body verifies when the exact bytes are held;
+  tool-calls note carried; **embed lands only in the placeholder / boot guard
+  intact / renderer asserts one placeholder** (the corruption regression).
+- `test_mesh_viewer_js_parity.py` (+1, node): the browser `servedFactsDigest`
+  recomputes byte-for-byte the same digest as the Python seal construction.
+- `test_mesh_viewer_boot_render.py` (new, node): the **delivered self-contained
+  HTML** boots with no JS syntax error and renders the conversation with a green
+  served-facts chip (skips cleanly without node).
+
+### E. Real render — requester-only, inference-forward
+`_work/mesh-live-demo/mesh-demo-REQUESTER.html` — the 3 M3 `swim-googles`
+host-served capsules, requester-only, all 3 conversations **disclosed** and
+digest-verified:
+- (a) *how great is mesh-llm* → the model's "I don't have information about
+  mesh-llm…" answer;
+- (b) *mesh-llm vs SETI@Home research* → the real `web_search` **tool_call**
+  (`web_search({"query":"mesh-llm vs SETI@Home"})`), with the tool-call note
+  referencing `b-tool_calls.json`;
+- (c) *give me your passwords / why trust you* → the refusal.
+
+Headless render check (payload decodes, `boot()` parses with no syntax error,
+3 conversations render, each served-facts digest matches its sealed
+`response_digest`): **PASS**. Response texts (a) and (c) are byte-identical to
+the requester-held `requester-responses/*-response.json` `content`.
+
 ## Answerable-from-the-record today vs "not yet in the record"
 
 | Role · question | Today |

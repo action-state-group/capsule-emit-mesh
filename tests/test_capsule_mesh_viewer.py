@@ -187,3 +187,193 @@ def test_legacy_flat_shape_still_names_the_model():
     assert "Hermes-2-Pro-Mistral-7B" in sp["model"]
     rq = build_role_questions(flat, source_log="sidecar", verify_ok=None, has_witness_checkpoint=False)
     assert rq["roles"]["requester"]["questions"][0]["state"] == ANSWERED
+
+
+# ---------------------------------------------------------------------------
+# Requester-only mode + inference-forward conversation block (user feedback:
+# "just the requester only"; "I can't see the inference returned").
+# ---------------------------------------------------------------------------
+
+from capsule_mesh_viewer import (  # noqa: E402
+    DEFAULT_ROLE,
+    build_conversation,
+    served_facts_digest,
+)
+
+
+def _served_facts_capsule():
+    """A nested capsule whose response_digest is the REAL served-facts digest
+    (model + usage), so the conversation block's digest check can verify."""
+    cap = _nested_capsule(total_tokens=43)
+    sp = serving_provenance(cap)
+    real = served_facts_digest(sp)
+    assert real is not None, "served_facts_digest needs the JCS reference (capsule_sidecar)"
+    cap["effect"]["response_digest"] = real
+    return cap, real
+
+
+def test_default_role_is_requester():
+    payload = to_fragment_payload([_nested_capsule()], source_log="plugin")
+    assert payload["default_role"] == "requester"
+    assert DEFAULT_ROLE == "requester"
+
+
+def test_role_flag_all_is_carried_verbatim():
+    payload = to_fragment_payload([_nested_capsule()], source_log="plugin", default_role="all")
+    assert payload["default_role"] == "all"
+
+
+def test_bad_role_falls_back_to_requester():
+    payload = to_fragment_payload([_nested_capsule()], source_log="plugin", default_role="nonsense")
+    assert payload["default_role"] == "requester"
+
+
+def test_all_four_roles_still_carried_even_in_requester_default():
+    # requester-only is a DISPLAY default; the other roles are never deleted
+    # from the payload -- they fold behind a toggle in the browser.
+    payload = to_fragment_payload([_nested_capsule()], source_log="plugin")
+    roles = payload["entries"][0]["role_questions"]["roles"]
+    assert set(roles) == {"requester", "provider", "coordinator", "third_party"}
+
+
+def test_served_facts_digest_matches_the_seal_construction():
+    # The viewer recomputes response_digest exactly as the Rust seal path does:
+    # canonical JSON-DIGEST of {model, usage:{prompt,completion,total}}.
+    cap, real = _served_facts_capsule()
+    sp = serving_provenance(cap)
+    assert served_facts_digest(sp) == real
+    assert cap["effect"]["response_digest"] == real
+
+
+def test_conversation_block_leads_with_verified_inference():
+    cap, real = _served_facts_capsule()
+    conv = build_conversation(
+        cap,
+        serving_provenance(cap),
+        {"request": "how great is mesh-llm", "response": "I don't have information about mesh-llm."},
+    )
+    # prompt + response shown (words-first)
+    assert conv["prompt"]["text"] == "how great is mesh-llm"
+    assert "mesh-llm" in conv["response"]["text"]
+    # served-by names node/model/gpu
+    assert conv["served_by"]["model"] == "Llama-3.2-3B"
+    # the response verify is over the served FACTS and MATCHES the sealed digest
+    rv = conv["response"]["verify"]
+    assert rv["kind"] == "served_facts"
+    assert rv["computed_digest"] == real
+    assert rv["matches"] is True
+    # honest boundary spelled out: the text is requester-held, not the sealed body
+    assert "requester" in rv["note"].lower()
+
+
+def test_conversation_response_mismatch_is_shown_honestly():
+    # If the served facts do NOT recompute to the sealed response_digest,
+    # the block says so -- never a false "matches".
+    cap = _nested_capsule()  # response_digest is "2"*64, NOT the facts digest
+    conv = build_conversation(cap, serving_provenance(cap), {"response": "x"})
+    assert conv["response"]["verify"]["matches"] is False
+
+
+def test_conversation_prompt_stays_sealed_when_body_not_held():
+    # We hold the plain prompt text but not the exact request BODY, so
+    # request_digest stays sealed -- matches is None, never a faked True.
+    cap, _ = _served_facts_capsule()
+    conv = build_conversation(cap, serving_provenance(cap), {"request": "how great is mesh-llm"})
+    pv = conv["prompt"]["verify"]
+    assert pv["kind"] == "request_sealed"
+    assert pv["matches"] is None
+    assert pv["sealed_digest"] == cap["effect"]["request_digest"]
+
+
+def test_conversation_verifies_request_body_when_the_exact_bytes_are_held():
+    # When the requester supplies the exact request JSON body, it DOES verify
+    # against request_digest (canonical JSON-DIGEST of the body).
+    from capsule_sidecar import digest_json
+
+    body = {"model": "Llama-3.2-3B", "messages": [{"role": "user", "content": "how great is mesh-llm"}]}
+    cap, _ = _served_facts_capsule()
+    cap["effect"]["request_digest"] = digest_json(body)
+    conv = build_conversation(
+        cap, serving_provenance(cap), {"request": "how great is mesh-llm", "request_body": body}
+    )
+    pv = conv["prompt"]["verify"]
+    assert pv["kind"] == "request_body"
+    assert pv["matches"] is True
+
+
+def test_tool_calls_note_is_carried_verbatim():
+    cap, _ = _served_facts_capsule()
+    conv = build_conversation(
+        cap,
+        serving_provenance(cap),
+        {"response": "(tool call) web_search(...)", "tool_calls_note": "a web_search tool_call was made"},
+    )
+    assert conv["response"]["tool_calls_note"] == "a web_search tool_call was made"
+
+
+# ---------------------------------------------------------------------------
+# Embed serialization -- REGRESSION for the corruption where the base64
+# fragment was jammed into the JS boot GUARD condition
+# (`if (embedded && embedded !== ""<base64>...`) instead of ONLY the
+# `window.__MESH_FRAGMENT_B64U__="..."` placeholder -- a JS syntax error that
+# blanked the page. See mesh-live-demo-permalink.html.bak.
+# ---------------------------------------------------------------------------
+
+import re  # noqa: E402
+
+
+def _extract_embedded(html: str) -> str:
+    m = re.search(r'window\.__MESH_FRAGMENT_B64U__="([A-Za-z0-9_\-]+)";', html)
+    assert m, "the placeholder assignment must carry the base64url fragment"
+    return m.group(1)
+
+
+def test_embed_lands_only_in_the_placeholder_not_the_boot_guard():
+    payload = to_fragment_payload([_nested_capsule()], source_log="plugin")
+    frag = encode_fragment(payload)
+    html = render_mesh_viewer_html(frag)
+
+    # 1) the embedded value equals exactly the intended fragment.
+    embedded = _extract_embedded(html)
+    assert embedded == frag
+
+    # 2) the base64 appears EXACTLY once in the whole document -- i.e. only in
+    #    the placeholder, never leaked into the guard or anywhere else.
+    assert html.count(frag) == 1
+
+    # 3) the boot guard is intact and is NOT followed by base64. The guard must
+    #    still be a well-formed comparison against a sentinel, never against the
+    #    fragment bytes.
+    assert "if (embedded && embedded !== UNFILLED)" in html
+    # the exact corruption signature from the .bak: `!== ""` immediately
+    # followed by base64 characters.
+    assert not re.search(r'embedded !== "(?:@@FRAGMENT@@)?"[A-Za-z0-9_\-]{20,}', html)
+    # and the guard line does not contain the fragment at all.
+    guard_line = next(l for l in html.splitlines() if "embedded !== UNFILLED" in l)
+    assert frag not in guard_line
+
+
+def test_render_raises_if_placeholder_count_is_wrong(monkeypatch):
+    # The renderer asserts exactly one placeholder before substituting, so a
+    # future edit that duplicates or drops it fails loudly instead of silently
+    # producing a corrupt page.
+    import capsule_mesh_viewer as mod
+
+    monkeypatch.setattr(mod, "_HTML_SHELL", "no placeholder here @@VERIFY_JS@@")
+    with pytest.raises(RuntimeError, match="exactly one @@FRAGMENT@@"):
+        render_mesh_viewer_html("Zm9v")
+
+
+def test_bare_file_without_embed_shows_empty_state_guard_sentinel_intact():
+    # When the shell is opened with the placeholder UNfilled (sentinel present),
+    # the guard's runtime-assembled UNFILLED token must equal the sentinel so
+    # boot() treats it as "no data" rather than trying to decode "@@FRAGMENT@@".
+    js = (resources_text())
+    assert '"@@" + "FRAGMENT" + "@@"' in js  # sentinel assembled, never a literal
+    assert "@@FRAGMENT@@" not in js  # the literal token never appears in the JS
+
+
+def resources_text() -> str:
+    from importlib import resources
+
+    return resources.files("mesh_viewer_static").joinpath("mesh_verify.js").read_text(encoding="utf-8")
