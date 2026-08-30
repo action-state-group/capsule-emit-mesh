@@ -43,9 +43,12 @@ Nothing here asserts adoption by anyone.
 
 ## A ledger of witnessed capsules — what it gives a Mesh-LLM node
 
-A capsule is a signed, content-addressed record of a single served exchange. The
-point is not one receipt; it is the **history** that accumulates, and what each
-of Mesh-LLM's own roles can do with it.
+A capsule is a signed, **contemporaneous** record of a single served exchange —
+made at the moment the node serves it, not reconstructed afterward, which is what
+lets it stand as *evidence* rather than a later account. It is *content-addressed*
+(the `capsule_id` is a hash of the record's own bytes, so changing any field
+changes the id). The point is not one receipt; it is the **history** that
+accumulates, and what each of Mesh-LLM's own roles can do with it.
 
 **`seal()` captures the machine's serving profile automatically.** When a node
 serves a request, the seal picks up — *from the exchange itself* — the **model**,
@@ -74,8 +77,9 @@ below.
   received is the response the node signed. The answer is bound to the record;
   nobody has to take the node's word for it.
 - **Provider / sharer** — a durable, signed record of exactly what you served is
-  *your own defence* in a dispute. Non-repudiation is symmetric: the same receipt
-  a requester checks you with is the proof you served honestly. Your record, not
+  *your own defence* in a dispute — **non-repudiation that cuts both ways**
+  (neither side can later deny what happened). The same contemporaneous receipt a
+  requester checks you with is the proof you served honestly: your record, not
   someone else's word (see [`docs/TRUST-MODEL.md`](docs/TRUST-MODEL.md) §2.3
   P2/P6).
 - **Coordinator (Skippy)** — the ledger is **evidence for or against a node**:
@@ -92,6 +96,11 @@ below.
     **evidence, not claims**. Today a topology is "a serialized structure with no
     signature and no issuer" (`docs/TRUST-MODEL.md` §2.4 C2); the accountability
     layer is what signs it.
+
+Those four roles — and the **specific questions each one wants answered**, with the
+evidence that addresses each — are set out in full in the threat model:
+[`docs/TRUST-MODEL.md`](docs/TRUST-MODEL.md) **§2.2** (requester), **§2.3**
+(provider), **§2.4** (coordinator), **§2.5** (third-party auditor / court).
 
 **History is evidence a relying party computes over — not a reputation score we
 compute.** This is a neutrality invariant (`docs/TRUST-MODEL.md` §7; and
