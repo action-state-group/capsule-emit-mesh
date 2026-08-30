@@ -49,6 +49,13 @@ pub enum Phase {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct OpenAiExchangeEnvelope {
+    /// Stable per-exchange id the host mints for this raw-proxy exchange
+    /// (`OpenAiExchangeEnvelope::exchange_id` host-side). Carried through so a
+    /// host-served capsule can attest the host's own correlation id rather than
+    /// invent one. `#[serde(default)]` for forward-compat with a host that
+    /// predates the field (it then stays `None` -> "unknown", never faked).
+    #[serde(default)]
+    pub exchange_id: Option<String>,
     pub dispatch_path: DispatchPath,
     pub phase: Phase,
     pub model: String,
@@ -63,6 +70,30 @@ pub struct OpenAiExchangeEnvelope {
     /// predates the block, and on non-terminal / non-served envelopes.
     #[serde(default)]
     pub serving_provenance: Option<HostServingProvenance>,
+    /// The REAL token usage the host-served backend reported for this exchange
+    /// (host-side `ExchangeUsage`). Previously DROPPED by this mirror -- carried
+    /// through now so a host-served capsule seals the backend's real counts, not
+    /// a zeroed stub. `None` on effective-request envelopes and wherever the
+    /// dispatch produced no usage (plugin-served stub, denial) -- never zeroed.
+    #[serde(default)]
+    pub usage: Option<MirrorUsage>,
+    /// The canonical JSON-DIGEST of the REAL request body the host dispatched
+    /// (host-side `request_digest`, computed the same way as this plugin's
+    /// `canonical_body_digest`). This is the one fact that lets a host-served
+    /// capsule bind its `agent_input_digest` to the real request bytes. `None`
+    /// on a host predating the field / a non-JSON-body exchange -- never faked.
+    #[serde(default)]
+    pub request_digest: Option<String>,
+}
+
+/// Mirror of the host's `ExchangeUsage` (real token counts). Every field is a
+/// real count the host read off the served backend's `usage` object; this
+/// plugin never fabricates one.
+#[derive(Debug, Clone, Copy, Deserialize, serde::Serialize, PartialEq, Eq)]
+pub struct MirrorUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
 }
 
 /// Hand-mirror of the host's `ServingProvenance` (same repo/module note as
@@ -118,6 +149,36 @@ impl ObservedLifecycleEvents {
             events: Mutex::new(Vec::new()),
             log_path: data_dir.join("lifecycle-events.jsonl"),
         })
+    }
+
+    /// Whether this observed envelope is a HOST-SERVED terminal exchange this
+    /// plugin should seal a capsule for -- the gap this closes. A host-served
+    /// real-weights exchange (a loaded GGUF, routed host->native-runtime) never
+    /// reaches this plugin's own HTTP handler, so nothing else seals it.
+    ///
+    /// It is distinguished from this plugin's OWN plugin-served stub (which the
+    /// handler already seals, and which must NOT be double-sealed here) by a
+    /// real served-model descriptor: a host-loaded GGUF carries `architecture`
+    /// and/or `model_identity_hash` in its serving provenance, while the
+    /// synthetic plugin-advertised endpoint has neither (no loaded weights ->
+    /// those fields are `null`). That is the honest discriminator -- a real
+    /// model-identity fact only a real served model has -- not a heuristic.
+    ///
+    /// Requires: a `Terminal` phase, a 2xx status (a served success), a
+    /// serving-provenance block, and real model identity in it.
+    pub fn is_sealable_host_served(envelope: &OpenAiExchangeEnvelope) -> bool {
+        if envelope.phase != Phase::Terminal {
+            return false;
+        }
+        if !matches!(envelope.status, Some(200..=299)) {
+            return false;
+        }
+        match envelope.serving_provenance.as_ref() {
+            Some(prov) => {
+                prov.architecture.is_some() || prov.model_identity_hash.is_some()
+            }
+            None => false,
+        }
     }
 
     pub fn record(&self, envelope: OpenAiExchangeEnvelope) {
@@ -187,6 +248,8 @@ impl ObservedLifecycleEvents {
 /// wire type itself.
 #[derive(serde::Serialize)]
 struct LoggedEnvelope {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exchange_id: Option<String>,
     dispatch_path: DispatchPath,
     phase: Phase,
     model: String,
@@ -197,11 +260,16 @@ struct LoggedEnvelope {
     /// serving provenance was received (in-memory state isn't visible to it).
     #[serde(skip_serializing_if = "Option::is_none")]
     serving_provenance: Option<HostServingProvenance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<MirrorUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_digest: Option<String>,
 }
 
 impl From<&OpenAiExchangeEnvelope> for LoggedEnvelope {
     fn from(e: &OpenAiExchangeEnvelope) -> Self {
         Self {
+            exchange_id: e.exchange_id.clone(),
             dispatch_path: e.dispatch_path.clone(),
             phase: e.phase.clone(),
             model: e.model.clone(),
@@ -209,6 +277,8 @@ impl From<&OpenAiExchangeEnvelope> for LoggedEnvelope {
             capsule_id: e.capsule_id.clone(),
             nonce: e.nonce.clone(),
             serving_provenance: e.serving_provenance.clone(),
+            usage: e.usage,
+            request_digest: e.request_digest.clone(),
         }
     }
 }
@@ -242,6 +312,45 @@ mod tests {
         assert!(prov.model_identity_hash.is_none());
     }
 
+    /// A REAL host-served terminal event now carries the backend's real `usage`
+    /// AND the host-forwarded canonical `request_digest` — previously the mirror
+    /// dropped both. Both survive the deserialize, and the event is recognized
+    /// as a sealable host-served exchange (real model identity present).
+    #[test]
+    fn real_host_served_terminal_carries_usage_and_request_digest_and_is_sealable() {
+        let wire = r#"{"exchange_id":"exch-7","dispatch_path":"raw_proxy","phase":"terminal","model":"local-gguf/sha256-4ff195f73917d9c2","status":200,"capsule_id":null,"nonce":null,"usage":{"prompt_tokens":41,"completion_tokens":2,"total_tokens":43},"request_digest":"a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5","serving_provenance":{"served_by_node_id":"143f4d9f8cd9a9","hostname":"Stevens-MacBook-Pro.local","architecture":"llama","context_length":131072,"parameter_size":"3B","layer_count":28,"model_identity_hash":"904548955b8a6478","gpu":"Apple M4 Max","vram_bytes":28991029248,"is_soc":true}}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
+        let usage = env.usage.expect("real usage carried through");
+        assert_eq!(usage.prompt_tokens, 41);
+        assert_eq!(usage.completion_tokens, 2);
+        assert_eq!(usage.total_tokens, 43);
+        assert_eq!(
+            env.request_digest.as_deref(),
+            Some("a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5")
+        );
+        assert_eq!(env.exchange_id.as_deref(), Some("exch-7"));
+        assert!(ObservedLifecycleEvents::is_sealable_host_served(&env));
+    }
+
+    /// The plugin's OWN plugin-served stub terminal event (a synthetic endpoint
+    /// with no loaded GGUF -> null architecture / model_identity_hash) is NOT
+    /// recognized as sealable-on-observe: its capsule is already produced by the
+    /// plugin's own HTTP handler, and sealing it here too would double-seal.
+    #[test]
+    fn plugin_served_stub_terminal_is_not_sealed_on_observe() {
+        let wire = r#"{"dispatch_path":"raw_proxy","phase":"terminal","model":"allowed-test-model","status":200,"capsule_id":null,"nonce":null,"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0},"serving_provenance":{"served_by_node_id":"node","hostname":"h","architecture":null,"model_identity_hash":null,"gpu":"Apple M4 Max","vram_bytes":28991029248,"is_soc":true}}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
+        assert!(!ObservedLifecycleEvents::is_sealable_host_served(&env));
+    }
+
+    /// An effective-request (non-terminal) envelope is never sealed on observe.
+    #[test]
+    fn effective_request_is_not_sealable() {
+        let wire = r#"{"dispatch_path":"raw_proxy","phase":"effective_request","model":"local-gguf/x","status":null}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
+        assert!(!ObservedLifecycleEvents::is_sealable_host_served(&env));
+    }
+
     /// A host predating the serving_provenance block (its terminal event omits
     /// the field entirely) still deserializes -- the mirror is forward/backward
     /// compatible, and the block is simply `None`.
@@ -261,12 +370,15 @@ mod tests {
         let store = ObservedLifecycleEvents::open(&dir).expect("open store");
 
         let event = |model: &str, gpu: Option<&str>| OpenAiExchangeEnvelope {
+            exchange_id: None,
             dispatch_path: DispatchPath::RawProxy,
             phase: Phase::Terminal,
             model: model.to_string(),
             status: Some(200),
             capsule_id: None,
             nonce: None,
+            usage: None,
+            request_digest: None,
             serving_provenance: gpu.map(|g| HostServingProvenance {
                 served_by_node_id: Some("node-1".to_string()),
                 hostname: None,

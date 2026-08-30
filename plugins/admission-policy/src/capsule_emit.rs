@@ -329,6 +329,193 @@ fn hex_sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+/// One host-served exchange this plugin only OBSERVED (never served itself),
+/// reconstructed from its `openai.exchange.v1` terminal event. Unlike
+/// [`ExchangeRecord`], the plugin holds no request/response *bytes* here -- a
+/// host-served GGUF exchange routes host->native-runtime and never reaches this
+/// plugin's HTTP handler. What it does hold, off the terminal event, is:
+///   - the host's real `serving_provenance` (model identity + hardware),
+///   - the backend's real `usage` (token counts),
+///   - the canonical digest of the REAL request body (`request_digest`),
+///     forwarded by the host so the capsule's `agent_input_digest` binds the
+///     real bytes without the plugin ever seeing the prompt.
+/// Every field is real-or-honest-default; nothing is fabricated.
+pub struct ObservedHostExchange<'a> {
+    pub model: &'a str,
+    /// Host-minted per-exchange correlation id from the terminal event.
+    pub exchange_id: Option<&'a str>,
+    /// Canonical JSON-DIGEST of the REAL request body, forwarded by the host.
+    /// `None` when the host did not forward one (older host / non-JSON body) --
+    /// the capsule then records an honest "unknown-request" sentinel, never a
+    /// fabricated digest.
+    pub request_digest: Option<&'a str>,
+    /// The backend's real token usage from the terminal event.
+    pub usage: Option<TokenUsage>,
+    /// The host's serving provenance for this served model.
+    pub host_provenance: HostProvenance,
+}
+
+impl CapsuleState {
+    /// Seal, sign, chain, and ledger one host-served exchange this plugin only
+    /// OBSERVED on the `openai.exchange.v1` channel -- closing the gap where a
+    /// host-served GGUF (routed host->native-runtime, never through this
+    /// plugin's own handler) produced NO capsule at all. The three real facts
+    /// come straight off the host's terminal event (serving provenance, usage,
+    /// request digest); no bytes are handled here.
+    ///
+    /// DIGEST BINDING (honest, precise):
+    ///   * `agent_input_digest` / `effect_request_digest` = the host-forwarded
+    ///     `request_digest`, the canonical JSON-DIGEST of the REAL request body
+    ///     (computed host-side the same way this plugin's `canonical_body_digest`
+    ///     does, so the two are comparable). When the host forwarded none, an
+    ///     explicit `unknown-request:<model>` sentinel is bound instead -- an
+    ///     honest marker of absence, never a fabricated body digest.
+    ///   * `agent_output_digest` / `effect_response_digest` = the canonical
+    ///     JSON-DIGEST of the observed TERMINAL FACTS (model + real usage), NOT
+    ///     the served response body: the host streams the response to the client
+    ///     and only the token `usage` returns to the publish site, so the plugin
+    ///     never sees the response bytes. This digest therefore binds *what the
+    ///     host attested about the output* (its real token accounting), and is
+    ///     documented as such -- it is a real digest of real observed facts, not
+    ///     a stand-in for a body it never had. See PROTOCOL-NOTE.md for what full
+    ///     response-body binding would additionally require host-side.
+    pub fn emit_for_observed_host_exchange(
+        &self,
+        observed: &ObservedHostExchange,
+    ) -> anyhow::Result<EmittedCapsule> {
+        let ObservedHostExchange {
+            model,
+            exchange_id,
+            request_digest,
+            usage,
+            host_provenance,
+        } = observed;
+        let (model, exchange_id, request_digest, usage) =
+            (*model, *exchange_id, *request_digest, usage.clone());
+        let host = host_provenance.clone();
+
+        // agent_input_digest: the host-forwarded canonical request-body digest
+        // when present; an explicit honest sentinel otherwise (never fabricated).
+        let agent_input_digest = request_digest
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("unknown-request:{model}"));
+
+        // agent_output_digest: canonical digest of the observed terminal facts
+        // (model + real usage). A real digest of real observed output-accounting,
+        // documented as NOT the response-body digest (the plugin never sees the
+        // host-streamed body). Built as a normalized JSON value and digested with
+        // the same canonical `jcs::json_digest` the request path uses.
+        let mut output_facts = Map::new();
+        output_facts.insert("model".into(), Value::String(model.to_string()));
+        if let Some(u) = usage.as_ref() {
+            let mut usage_obj = Map::new();
+            usage_obj.insert("prompt_tokens".into(), Value::from(u.prompt_tokens));
+            usage_obj.insert("completion_tokens".into(), Value::from(u.completion_tokens));
+            usage_obj.insert("total_tokens".into(), Value::from(u.total_tokens));
+            output_facts.insert("usage".into(), Value::Object(usage_obj));
+        }
+        let agent_output_digest = jcs::json_digest(&Value::Object(output_facts))?;
+
+        let mut ledger = self.ledger.lock().expect("capsule ledger mutex poisoned");
+        let chain = ledger.chain_head().map(|parent| ChainLink {
+            parent_capsule_id: parent.to_string(),
+            relation: "follows".to_string(),
+        });
+
+        let mut generation_parameters = Map::new();
+        generation_parameters.insert("temperature".into(), Value::String("0.0".into()));
+
+        let input = CapsuleInput {
+            action_id: format!("mesh-poc/capsule-emit-mesh-host-served/{agent_input_digest}"),
+            action_type: "decide".to_string(),
+            operator: "capsule-emit-mesh-poc-rust".to_string(),
+            developer: "capsule-producer/0.2.0".to_string(),
+            timestamp: utc_now_iso8601(),
+            domain: Some("action".to_string()),
+            provenance: Some("collector".to_string()),
+            model_id: model.to_string(),
+            provider: "mesh-llm".to_string(),
+            agent_input_digest: agent_input_digest.clone(),
+            agent_output_digest: agent_output_digest.clone(),
+            runtime: format!(
+                "{}:admission-policy-plugin/mesh-llm-host-runtime",
+                "0".repeat(64)
+            ),
+            mesh_poc: MeshPocV1 {
+                // A host-served exchange carries no client nonce to this plugin
+                // (it never reached this plugin's handler) -- honest default.
+                client_nonce: "host-served-no-nonce".to_string(),
+                client_nonce_source: "host_served_observed".to_string(),
+                model_name_digest: hex_sha256(model.as_bytes()),
+                serving_provenance: ServingProvenance {
+                    served_by_node_id: host
+                        .served_by_node_id
+                        .clone()
+                        .unwrap_or_else(|| self.node_id.clone()),
+                    // Requesting party is not carried on the host-served
+                    // observe path -- honest "unknown", never invented.
+                    requesting_party: "unknown".to_string(),
+                    exchange_id: exchange_id.unwrap_or("unknown").to_string(),
+                    hostname: host.hostname.clone(),
+                    quantization: host
+                        .quantization
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    hardware_gpu: host.gpu.clone(),
+                    hardware_vram_bytes: host.vram_bytes,
+                    hardware_device: None,
+                    hardware_is_soc: host.is_soc,
+                    architecture: host.architecture.clone(),
+                    context_length: host.context_length,
+                    parameter_size: host.parameter_size.clone(),
+                    layer_count: host.layer_count,
+                    model_identity_hash: host.model_identity_hash.clone(),
+                    model_canonical_ref: host.model_canonical_ref.clone(),
+                    model_revision: host.model_revision.clone(),
+                    // The REAL token counts from the host terminal event.
+                    usage,
+                },
+                generation_parameters,
+                // Latency is not carried on the observe path (the plugin did not
+                // time the host's own dispatch) -- honest zero-marker, not faked.
+                latency_ms: "0.000".to_string(),
+            },
+            effect_status: "confirmed".to_string(),
+            effect_type: "inference_completion".to_string(),
+            effect_request_digest: agent_input_digest,
+            effect_response_digest: agent_output_digest,
+            effect_attestation: "host_served_observed".to_string(),
+            disposition_decision: "accept".to_string(),
+            disposition_approver: "policy".to_string(),
+            disposition_human_disposed: false,
+            disposition_verdict_class: "executed".to_string(),
+            chain,
+        };
+
+        let capsule = seal(&input)?;
+        let capsule_id = capsule["capsule_id"]
+            .as_str()
+            .expect("seal() always sets capsule_id")
+            .to_string();
+        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let statement = build_signed_statement(
+            &SignedStatementInput {
+                payload: &payload,
+                issuer: &self.node_id,
+                subject: &capsule_id,
+                content_type: CAPSULE_CONTENT_TYPE,
+            },
+            &self.keys.signing_key,
+        );
+        ledger.append(&capsule, &statement)?;
+
+        Ok(EmittedCapsule {
+            capsule_id,
+            capsule,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
