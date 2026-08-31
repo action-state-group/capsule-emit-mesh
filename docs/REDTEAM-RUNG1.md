@@ -49,10 +49,21 @@ it faithfully pins is *the whole* history:
   happened (the requester) can notice its absence. That is **B6a**.
 - **Attack 2's residual** (replay across restart/node) is a narrower coverage-ish
   gap in the *anti-replay* property and is closed by persistence/sharing of the
-  seen-nonce set, not by anything in the checkpoint machinery.
+  seen-nonce set, not by anything in the checkpoint machinery. This is the **same
+  residual `chunk-6`'s `FileNoncePeriodLedger` already solved** in the compiler
+  context — whoever closes it should reuse that pattern, not reinvent a store.
 
 Neither residual weakens the caught/labeled results above — they bound exactly
 where the rung-1 guarantee stops, which is the useful output of a red-team.
+
+### Scope boundary — attack 1 vs a *refusing* witness (future 5th row)
+
+Attack 1's "a second history is unforgeable" is proven against the **math** (root
+divergence → `verify_checkpoint_consistency` RED), **not** against a *refusing*
+witness: today's honest witness signs whatever checkpoint it is handed. When the
+**stage-2 checkpoint-aware witness** lands, a natural fifth row appears —
+*equivocation attempted at submission → refused by the witness itself* — closing
+the gap at the submission boundary rather than only at verification time.
 
 ---
 
