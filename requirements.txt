@@ -23,3 +23,10 @@ capsule-emit[mcp]>=0.5.1
 scitt-cose>=0.2.2
 cbor2
 mcp<2
+# nostr_account.py signs account-capsule events with BIP-340 Schnorr over
+# secp256k1 (NIP-01) -- the curve Nostr uses, which the stdlib and `cryptography`
+# do not expose. coincurve provides sign_schnorr / PublicKeyXOnly. The account
+# capsule build path and the mock-relay publish path load without it; only the
+# real Schnorr signing key (SchnorrNostrKey) needs it, and the tests skip if
+# it is absent.
+coincurve>=18
