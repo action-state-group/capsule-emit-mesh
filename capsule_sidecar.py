@@ -61,6 +61,13 @@ import scitt_cose
 from advertisement import Advertisement, compute_meter, reconcile_advertised_vs_served
 from checkpointing import CheckpointState, Ed25519Signer, JsonlLogSource, load_checkpoint_config
 from model_identity import load_manifest, model_package_digest
+from node_ownership import (
+    SignedNodeOwnership,
+    load_signed_node_ownership,
+    owner_provenance_block,
+    recheck_ownership_validity,
+    seal_identity_capsule,
+)
 
 # Generation parameters we carry verbatim (not digested -- these are policy
 # knobs, not prompt content, and are useful for audit as legible values).
@@ -443,6 +450,21 @@ class NodeState:
     #: policy for both logs); give a dedicated file for the "independent
     #: checkpoint cadence (serving runs hotter)" case rev 3 calls out.
     plugin_checkpoint_config_path: Path | None = None
+    #: [b4-who-did] WHO+DID binding. mesh-llm's OPT-IN owner-identity cert
+    #: (``SignedNodeOwnership``), loaded from ``~/.mesh-llm/node-ownership.json``
+    #: or an override path. ``None`` (the DEFAULT) means owner identity is off —
+    #: serving capsules then seal ``served_by_node_id`` only and mark the owner
+    #: ABSENT (never fabricated). See node_ownership.py.
+    node_ownership: SignedNodeOwnership | None = None
+    #: The 32-byte-hex node endpoint id the cert binds to (the cert's
+    #: ``node_endpoint_id``, distinct from the human ``node_id`` on the wire).
+    #: The first-serve re-check confirms the cert binds THIS endpoint. Defaults
+    #: to the cert's own claim when a cert is loaded, so a matching cert
+    #: re-checks green out of the box.
+    owner_node_endpoint_id: str | None = None
+    #: capsule_id of the sealed identity capsule (the "who"), cited by every
+    #: serving capsule whose owner re-check passes (the "did" cites the "who").
+    identity_capsule_id: str | None = None
 
     def __post_init__(self) -> None:
         self.manifest = load_manifest(self.manifest_path)
@@ -451,6 +473,12 @@ class NodeState:
         self.ledger_path = self.ledger_dir / "capsules.jsonl"
         self.statements_dir = self.ledger_dir / "signed-statements"
         self.statements_dir.mkdir(parents=True, exist_ok=True)
+
+        # [b4-who-did] Default the expected endpoint id from the loaded cert, so
+        # a matching cert re-checks green without extra config. When no cert is
+        # loaded this stays None and the owner block is simply ABSENT.
+        if self.owner_node_endpoint_id is None and self.node_ownership is not None:
+            self.owner_node_endpoint_id = self.node_ownership.claim.node_endpoint_id
 
         self.log_source = JsonlLogSource(self.ledger_path)
         self.checkpoint: CheckpointState | None = None
@@ -625,6 +653,23 @@ def build_capsule(
             "identity_limitation": (
                 IDENTITY_LIMITATION_CAVEAT
             ) if bilateral_eval and bilateral_eval.present else None,
+            # [b4-who-did] WHO+DID binding. served_by_node_id (in
+            # serving_provenance above) is the "did" — this endpoint served this
+            # exchange. This block binds the "who" — the node OWNER's identity —
+            # into that same record, and (when a valid cert is present) cites the
+            # sealed identity capsule (identity_capsule_id) as the signed "who"
+            # record. Reuses the existing citation/caveat seam
+            # (requester_commitment.py's cross_party block); no new machinery.
+            # Owner identity is OPT-IN and self-asserted: node_ownership is None
+            # by default, in which case owner_status="absent" and no owner is
+            # ever fabricated. owner_provenance_block() runs the cheap
+            # first-serve validity re-check and carries the identity_limitation
+            # honesty grade whenever a cert is present. See node_ownership.py.
+            "owner": owner_provenance_block(
+                state.node_ownership,
+                expected_node_endpoint_id=state.owner_node_endpoint_id or "",
+                identity_capsule_id=state.identity_capsule_id,
+            ),
         },
     }
 
@@ -709,6 +754,40 @@ def record_capsule(state: NodeState, capsule: dict[str, Any], signed_statement: 
             # THIS node's own capsule above); a missed plugin checkpoint just
             # means it's picked up whole on the next successful read.
             print(f"plugin-ledger checkpoint update failed (best-effort, continuing): {exc}")
+
+
+def maybe_seal_identity_capsule(state: NodeState) -> str | None:
+    """[b4-who-did] Seal + record the identity capsule (the "who") for this node.
+
+    Called once at startup when a cert is present. Sets
+    ``state.identity_capsule_id`` so serving capsules can cite it. The capsule is
+    ALWAYS sealed when a cert exists (it is a faithful record of the cert,
+    including an expired one), but serving capsules only CITE it as a live owner
+    binding when the first-serve re-check passes — see owner_provenance_block().
+
+    Returns the identity capsule_id, or None if no cert is present.
+    """
+    if state.node_ownership is None:
+        return None
+    identity_capsule = seal_identity_capsule(
+        state.node_ownership,
+        operator=state.operator,
+        developer=state.developer,
+        signing_node_id=state.node_id,
+    )
+    signed = sign_capsule(state, identity_capsule)
+    record_capsule(state, identity_capsule, signed)
+    state.identity_capsule_id = identity_capsule["capsule_id"]
+    recheck = recheck_ownership_validity(
+        state.node_ownership,
+        expected_node_endpoint_id=state.owner_node_endpoint_id or "",
+    )
+    print(
+        f"[b4-who-did] identity capsule sealed: {state.identity_capsule_id} "
+        f"owner_id={state.node_ownership.claim.owner_id} recheck_valid={recheck.valid} "
+        f"({recheck.reason})"
+    )
+    return state.identity_capsule_id
 
 
 def _resolve_client_nonce(state: NodeState, headers: dict[str, str]) -> tuple[str, str]:
@@ -1245,6 +1324,7 @@ def default_state(
     plugin_keys_dir: Path | None = None,
     plugin_checkpoint_config_path: Path | None = None,
     advertisement: Advertisement | None = None,
+    node_ownership: SignedNodeOwnership | None = None,
 ) -> NodeState:
     signing_key_pem = load_or_create_signing_key(keys_dir)
     return NodeState(
@@ -1262,6 +1342,7 @@ def default_state(
         plugin_ledger_dir=plugin_ledger_dir,
         plugin_keys_dir=plugin_keys_dir,
         plugin_checkpoint_config_path=plugin_checkpoint_config_path,
+        node_ownership=node_ownership,
     )
 
 
@@ -1311,6 +1392,17 @@ if __name__ == "__main__":
         "every capsule and reconciled against the served record (verify-after-advertise, §12.3). Omit "
         "to advertise nothing (reconciliation reports advertisement_absent -- never a silent pass).",
     )
+    parser.add_argument(
+        "--node-ownership",
+        help="[b4-who-did] path to mesh-llm's signed owner-identity cert "
+        "(node-ownership.json, written by `mesh-llm auth init`). OPT-IN / off by "
+        "default: without it, serving capsules seal served_by_node_id only and "
+        "mark the owner ABSENT (never fabricated). With it, an identity capsule "
+        "(the 'who') is sealed at startup and every serving capsule's provenance "
+        "binds owner_id + cites that capsule (the 'did' cites the 'who'), after a "
+        "cheap first-serve validity re-check. Owner identity is self-asserted -- "
+        "see node_ownership.IDENTITY_LIMITATION_CAVEAT.",
+    )
     args = parser.parse_args()
 
     advertisement = None
@@ -1322,6 +1414,14 @@ if __name__ == "__main__":
     else:
         runtime_digest = "0" * 64
         print("WARNING: no --runtime-artifact given; runtime_digest is a placeholder. See README.")
+
+    # [b4-who-did] Load mesh-llm's opt-in owner cert if a path was given. Absent
+    # (the default) degrades gracefully to did-only, owner ABSENT.
+    node_ownership = None
+    if args.node_ownership:
+        node_ownership = load_signed_node_ownership(Path(args.node_ownership))
+        if node_ownership is None:
+            print(f"WARNING: --node-ownership {args.node_ownership!r} missing or malformed; owner identity ABSENT (did-only).")
 
     keys_dir = Path(__file__).parent / "keys"
     state = default_state(
@@ -1337,7 +1437,15 @@ if __name__ == "__main__":
             Path(args.plugin_checkpoint_config) if args.plugin_checkpoint_config else None
         ),
         advertisement=advertisement,
+        node_ownership=node_ownership,
     )
+
+    # [b4-who-did] Seal the identity capsule (the "who") ONCE at startup, if a
+    # cert is present. Serving capsules then cite its capsule_id. Only cited when
+    # the first-serve re-check passes, so an expired/mismatched cert is sealed as
+    # a record but never presented as a live owner binding.
+    if state.node_ownership is not None:
+        maybe_seal_identity_capsule(state)
     if state.checkpoint is not None:
         # Latest-checkpoint-on-reconnect: catch up on anything this node
         # accrued locally while this process wasn't running, in one shot.

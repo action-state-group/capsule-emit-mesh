@@ -241,8 +241,53 @@ deployment properties.
 |---|---|---|---|
 | B0 Anonymous key | Internal consistency | Which node or owner | — |
 | B1 Self-attested | A stable issuer | Any binding to a node or accountable owner | Built — current prototype |
-| B2 Owner-delegated | Receipt key → scoped delegation → owner key → ownership certificate → same node | That signing happened *on* that machine; a software key remains exportable | Specified in #1331 |
+| B2 Owner-delegated | Receipt key → scoped delegation → owner key → ownership certificate → same node | That signing happened *on* that machine; a software key remains exportable | Specified in #1331; **owner→node leg built opt-in (§B.1)** |
 | B3 Hardware-bound | Non-exportable key bound to measured hardware | That the measured program is correct | Reserved |
+
+#### B.1 Built: WHO+DID binding — the owner→node leg (opt-in, self-asserted)
+
+Our serving capsules already seal `served_by_node_id` — the *did*: this endpoint
+served this exchange. They did not carry the node *owner's* identity — the *who*.
+mesh-llm ships an **opt-in, off-by-default** owner-identity layer (`mesh-llm auth
+init`): it generates an Ed25519 `OwnerKeypair` and signs a time-bounded,
+revocable `SignedNodeOwnership` cert binding an owner to a node endpoint
+(`mesh-llm-identity/src/ownership.rs`). `node_ownership.py` binds that "who" into
+our capsules, reusing the same citation/caveat seam the cross-party block already
+established (§4.1a) — no new machinery:
+
+1. **Seal an identity capsule (the "who").** When a node has a cert, we seal one
+   capsule whose subject *is* the owner→node claim (owner_id, endpoint_id,
+   expiry, label), with the signed cert echoed verbatim so a reader re-derives
+   validity from the bytes alone. This is `seal_identity_capsule()`, emitted once
+   at startup / `auth init`.
+2. **Bind who into did.** Every serving capsule's provenance carries an `owner`
+   block: `owner_id` plus a reference to the sealed identity capsule
+   (`identity_capsule_id`) — the *did* cites the *who* — riding inside the same
+   `x-mesh-poc-v1` block as the cross-party evidence.
+3. **Cheap validity re-check at first serve.** Certs expire and rotate before some
+   nodes ever serve. `recheck_ownership_validity()` re-confirms — cheaply, never
+   raising — that the cert's own signature verifies, the endpoint matches *this*
+   node, and the cert is unexpired, before a serving capsule cites it as a live
+   binding.
+
+**Honesty grade — owner identity here is OPT-IN and SELF-ASSERTED.** The owner
+key is self-generated and self-held; the cert is signed under the owner's *own*
+key with no third-party-issued credential or trusted root behind it. We verify
+the cert's own signature and expiry (that the claim is internally consistent and
+live) — we do **not** and **cannot** verify that the owner_id corresponds to any
+real person or organisation. An `identity_limitation` caveat
+(`node_ownership.IDENTITY_LIMITATION_CAVEAT`) is carried **into the identity
+capsule itself** (on the owner→node subject) **and** into every serving capsule
+that cites it — exactly as §4.1a carries its caveat for the cross-party block.
+Reputation is only as durable as identity; never imply the owner binding is
+externally verified. This realizes the owner→node leg of B2 only — the receipt-key
+→ owner-key delegation and hardware binding remain future work.
+
+**Graceful absent path (the default).** With no cert on the node, the serving
+capsule seals `served_by_node_id` only and marks the owner **absent**
+(`owner_status="absent"`, `owner_id=null`, no caveat). An owner is **never
+fabricated**. An expired or mismatched cert re-checks to `owner_status="invalid"`
+and is **never cited** as a live binding.
 
 ### Class C — Execution
 
