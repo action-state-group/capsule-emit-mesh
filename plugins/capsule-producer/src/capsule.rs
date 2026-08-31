@@ -158,6 +158,14 @@ pub struct MeshPocV1 {
     /// digest-bearing fields) — e.g. `{"temperature": "0.7"}`.
     pub generation_parameters: Map<String, Value>,
     pub latency_ms: String,
+    /// The runtime/binary attestation rung (task B3): a signed, `self_measured`
+    /// reference to the serving binary the node actually runs, or `None` when
+    /// the binary could not be measured (graceful degradation — the
+    /// `binary_attestation` evidence slot is then recorded empty, never
+    /// fabricated). See [`crate::runtime_attest`] for the honesty grade: this is
+    /// SELF-measured (the node hashed its own binary) and is only trustworthy up
+    /// to an OS/TEE that independently measures it.
+    pub binary_attestation: Option<crate::runtime_attest::BinaryAttestation>,
 }
 
 impl MeshPocV1 {
@@ -172,9 +180,28 @@ impl MeshPocV1 {
             // Typed reference fields, present-but-empty (issue #1233 steps 4/5 —
             // statistical fingerprint / TEE evidence — are future work that
             // upgrades these slots without changing the record shape).
+            //
+            // `binary_attestation` (task B3) is the runtime/binary-attestation
+            // rung: a SIGNED, `self_measured` reference to the serving binary the
+            // node runs. When the binary could not be measured (unresolvable
+            // path / unreadable file) the slot degrades to the same empty shape
+            // as the other future slots — recorded ABSENT, never fabricated.
             "evidence_refs": {
                 "statistical_fingerprint": {"type": "statistical_fingerprint", "digest": null, "context": null},
                 "tee_attestation": {"type": "tee_attestation", "digest": null, "context": null},
+                "binary_attestation": match &self.binary_attestation {
+                    Some(att) => att.to_value(),
+                    // Honest empty slot: no binary was measured, so no
+                    // measurement is claimed. `measurement_class` stays null so a
+                    // reader never mistakes an unmeasured node for a self_measured
+                    // one.
+                    None => json!({
+                        "type": "binary_attestation",
+                        "measurement_class": null,
+                        "digest": null,
+                        "context": "binary not measured (path unresolvable or file unreadable); recorded absent, never fabricated",
+                    }),
+                },
             },
         })
     }
@@ -420,6 +447,7 @@ mod tests {
                 },
                 generation_parameters,
                 latency_ms: "1.0".to_string(),
+                binary_attestation: None,
             },
             effect_status: "confirmed".to_string(),
             effect_type: "inference_completion".to_string(),

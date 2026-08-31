@@ -98,6 +98,7 @@ fn sample_capsule_input() -> CapsuleInput {
             },
             generation_parameters,
             latency_ms: "123.456".to_string(),
+            binary_attestation: None,
         },
         effect_status: "confirmed".to_string(),
         effect_type: "inference_completion".to_string(),
