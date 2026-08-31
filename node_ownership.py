@@ -334,6 +334,7 @@ def seal_identity_capsule(
     developer: str,
     signing_node_id: str,
     provider: str = "mesh-llm",
+    tee_key_custody: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Seal an identity capsule whose subject is the owner->node claim.
 
@@ -347,6 +348,13 @@ def seal_identity_capsule(
     or 'decide', and an informational who-record is 'fyi'. The owner cert is
     carried verbatim so a verifier can independently re-run
     recheck_ownership_validity() from the capsule bytes alone.
+
+    ``tee_key_custody`` (rung 3b, ADDITIVE — optional, defaults to None so
+    existing callers are unaffected) is the Secure-Enclave-or-labeled-software
+    key-custody attestation from ``sep_attestation.tee_key_custody_block()``,
+    binding this node's Ed25519 identity to a hardware-custodied (or honestly
+    labeled software) co-signature. It does not change the owner cert's own
+    signature or verification — see sep_attestation.TEE_KEY_CUSTODY_LABEL.
     """
     owner_subject = build_owner_subject(ownership.claim)
     compute_attestation = {
@@ -370,6 +378,10 @@ def seal_identity_capsule(
             "owner_subject": owner_subject,
             # HONESTY GRADE at the top of the block too, so it is unmissable.
             "identity_limitation": IDENTITY_LIMITATION_CAVEAT,
+            # [rung3b-tee-key] ADDITIVE key-custody co-signature; None when the
+            # caller doesn't supply one (older callers / standalone use of
+            # this module without sep_attestation) -- never fabricated.
+            "tee_key_custody": tee_key_custody,
         },
     }
 

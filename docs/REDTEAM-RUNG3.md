@@ -2,20 +2,28 @@
 <!-- Rung 1 (transport/ledger, B5a) is REDTEAM-RUNG1.md; rung 2+ (config/identity/
      self-measured binary attestation, B5b) is REDTEAM-RUNG2.md. -->
 
-# Red-team of the independent-measurer rungs (RUNG 3)
+# Red-team of rung 3
 
-**What "rung 3" is here.** The rungs that move binary/model measurement OFF
-the process being measured and BELOW it, closing the residual RUNG2 attack 8
-(`docs/REDTEAM-RUNG2.md`) named explicitly: self-measurement has no root of
+**What "rung 3" is here.** Two independent axes on top of the owner->node
+binding (B4, REDTEAM-RUNG2.md attacks 9-10): rungs that move binary/model
+measurement OFF the process being measured and BELOW it (closing the
+residual RUNG2 attack 8 named explicitly: self-measurement has no root of
 trust beneath the measurer, so a root-compromised host can sign a decoy hash
 under the honest `self_measured` label and a verifier cannot tell the
-difference.
+difference), and a rung that hardens WHO SIGNED rather than what ran. These
+are independent claims — each section below says so explicitly where they
+could otherwise be conflated.
 
 - **Rung 3a — `os_measured`** (`plugins/capsule-producer/src/runtime_attest.rs`):
   on macOS, the KERNEL (AMFI) independently computes and validates the
   running process's code-directory hash (cdhash) at `exec`, read via
   `csops(2) CS_OPS_CDHASH` and bound into the same signature as the
   self-measured digest. **This section's findings cover rung 3a.**
+- **Rung 3b — Secure Enclave key custody (`tee_protected`)**
+  (`sep_attestation.py`): a Secure-Enclave-resident P-256 key co-signs the
+  node's existing Ed25519 identity, additive to and non-breaking of the B4
+  owner cert. Hardens WHO SIGNED, not what ran. **This section's findings
+  cover rung 3b.**
 - **Rung 3c — `tee_measured`** (`plugins/capsule-producer/src/tee_attest.rs`
   + `tee_verify.rs`): a TEE — here, an Intel TDX Confidential VM — measures
   MRTD/RTMR[0..3] into hardware registers before the guest OS or serving
@@ -174,3 +182,58 @@ MRTD/RTMR the way it could forge a `self_measured` hash — while the
 FRESHNESS of that hardware root's trustworthiness (TCB state, revocation)
 remains an explicit, named, closable-but-not-yet-closed gap, exactly the way
 `self_measured`'s ceiling was stated in-band rather than concealed.
+
+---
+
+## Rung 3b — Secure Enclave key custody (`tee_protected`)
+
+**Scope note.** Rung 3b hardens WHO SIGNED, not what ran — an entirely
+different axis from 3a/3c above. A Secure-Enclave-resident P-256 key
+co-signs the node's existing Ed25519 identity (`sep_attestation.py`),
+additive to and non-breaking of the B4 owner cert: the Ed25519 wire format
+and verifier are untouched.
+
+**Method** is identical to B5a/B5b/3a/3c: each attack is backed by a
+runnable harness —
+[`tests/test_redteam_rung3.py`](../tests/test_redteam_rung3.py) — against
+real Secure Enclave hardware on an Apple Silicon host (the hardware-only
+attacks are skipped, not faked, on hosts without one; see the table below),
+with the same **caught / labeled / residual (uncaught)** vocabulary as the
+other red-team docs.
+
+Run the evidence:
+
+```
+python3 -m pytest tests/test_redteam_rung3.py -v
+```
+
+**The headline finding.** The Secure Enclave's own non-exportability
+guarantee holds — attempting to read the raw bytes of an SEP-resident
+private key fails at the hardware/OS level, not merely because our code
+chooses not to ask. But `tee_protected` is a **key-custody** claim only: it
+says a compromised host cannot exfiltrate or clone this signing key. It says
+nothing about which *party* the `owner_id` string belongs to (that gap is
+already documented for B4 and simply persists here — a SEP key raises the
+cost of impersonation, it does not close the identity gap), and nothing
+about the *running binary or model* (that's 3a/3c, not 3b).
+
+### Weak-links table — rung 3b
+
+| # | Attack | Mechanism | Outcome | Evidence (test) | What closes it |
+|---|--------|-----------|---------|-----------------|----------------|
+| 20 | **Key-extraction attempt** | Ask Security.framework for the raw private-key bytes of the SEP-resident P-256 key (`SecKeyCopyExternalRepresentation` on the PRIVATE key, not the public key). | **CAUGHT** | `test_attack11_key_extraction_attempt_is_caught` (real Apple Silicon SEP), `test_attack11b_helper_output_never_carries_private_material` (defence in depth) | The Secure Enclave refuses at the hardware/OS level (`errSecUnimplemented`: "export not implemented for this key") — not an application-level choice `sep_attestation.py` makes. Confirmed on real hardware, not simulated. |
+| 21 | **Attacker's-own-SEP-key claiming the node's `owner_id`** | An attacker generates their OWN Secure-Enclave (or software) P-256 key and signs a `tee_key_custody` binding claiming the SAME `owner_id` string as the real node, with a different Ed25519 key / node_endpoint_id. | **LABELED** | `test_attack12_attacker_own_key_claiming_owner_id_is_labeled` | Both the genuine and the forged block are internally consistent and independently verify — `tee_key_custody_block()` only proves "this P-256 key signed these bytes," never that `owner_id` is externally bound to that key. This is the SAME documented gap as B4's attack #10 (key-substitution): `sep_attestation.TEE_KEY_CUSTODY_LABEL` states plainly this is a key-custody claim, not a party-binding one, and travels with every block, attacker's included. Closed only by a third-party-issued credential / trusted root (out of scope, same as attack #10). |
+| 22 | **Secure-Enclave-absent host silently downgraded** | Run on a host with no Secure Enclave (VM, non-Apple hardware, missing `swift` toolchain) or make the helper crash/time out/return malformed output. | **LABELED, never faked** | `test_attack13_sep_absent_downgrade_is_labeled_never_faked`, `test_attack13b_helper_reporting_ok_true_is_required_for_hardware_claim` | `sep_attestation.py` falls back to an in-process software P-256 key. `custody` is always `"software"` and `tee_protected` is always `False` in this path, with `software_fallback_reason` naming why — verified for the clean-unavailable case AND for a helper that crashes/returns garbage (both degrade the same way, never silently upgrade). |
+
+### What rung 3b does and does not prove
+
+- **Proves:** the P-256 key that co-signed this node's identity was
+  generated in, and never left, the Secure Enclave (when `custody ==
+  "secure_enclave"`) — a compromised host cannot exfiltrate or clone it.
+- **Does not prove:** that `owner_id` belongs to any real, externally
+  verified party (attack #21 — same gap as B4); that the running binary is
+  unmodified (`os_measured` / `self_measured`, rung 3a); that a specific
+  model is loaded (`tee_measured`, rung 3c). Key custody and code/model
+  measurement are independent claims — see
+  `sep_attestation.TEE_KEY_CUSTODY_LABEL`, carried inline in every
+  `tee_key_custody` block this rung produces.

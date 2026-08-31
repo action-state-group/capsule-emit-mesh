@@ -68,6 +68,7 @@ from node_ownership import (
     recheck_ownership_validity,
     seal_identity_capsule,
 )
+from sep_attestation import tee_key_custody_block
 
 # Generation parameters we carry verbatim (not digested -- these are policy
 # knobs, not prompt content, and are useful for audit as legible values).
@@ -532,6 +533,44 @@ class NodeState:
         if self.owner_node_endpoint_id is None and self.node_ownership is not None:
             self.owner_node_endpoint_id = self.node_ownership.claim.node_endpoint_id
 
+        # [rung3b-tee-key] Secure Enclave key-custody attestation for this
+        # node's Ed25519 signing key (self.signing_key_pem). Signed ONCE here
+        # and cached to <keys_dir>/node-key-tee-binding.json -- every serving
+        # capsule below cites this SAME block rather than re-signing. Binds
+        # whatever owner_id is currently CLAIMED (node_ownership may still be
+        # unverified at this point); the per-record owner re-check in
+        # owner_provenance_block is the trust decision, this block only ties
+        # the P-256 co-signature to that claimed identity. See
+        # sep_attestation.TEE_KEY_CUSTODY_LABEL for the tee_protected honesty
+        # grade (key custody, NOT binary/model measurement).
+        #
+        # signing_key_pem is not always a real PEM here -- some test fixtures
+        # pass a placeholder because they never call sign_capsule() (the only
+        # other reader of this field). A malformed key degrades to
+        # tee_key_custody=None, the same "never fabricate, degrade to absent"
+        # discipline as node_ownership's malformed-cert handling, rather than
+        # taking down capsule construction.
+        from cryptography.hazmat.primitives import serialization
+
+        self.tee_key_custody = None
+        try:
+            ed25519_public_key_hex = serialization.load_pem_private_key(
+                self.signing_key_pem, password=None
+            ).public_key().public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw,
+            ).hex()
+        except (ValueError, TypeError):
+            ed25519_public_key_hex = None
+
+        if ed25519_public_key_hex is not None:
+            self.tee_key_custody = tee_key_custody_block(
+                self.signing_key_path.parent,
+                ed25519_public_key_hex=ed25519_public_key_hex,
+                node_endpoint_id=self.owner_node_endpoint_id or self.node_id,
+                owner_id=self.node_ownership.claim.owner_id if self.node_ownership else None,
+            )
+
         self.log_source = JsonlLogSource(self.ledger_path)
         self.checkpoint: CheckpointState | None = None
         if self.checkpoint_config_path is not None:
@@ -771,6 +810,14 @@ def build_capsule(
                 expected_node_endpoint_id=state.owner_node_endpoint_id or "",
                 identity_capsule_id=state.identity_capsule_id,
             ),
+            # [rung3b-tee-key] Secure-Enclave (or, absent a Secure Enclave,
+            # honestly-labeled software) key-custody co-signature over this
+            # node's Ed25519 identity. Signed ONCE at startup (see
+            # NodeState.__post_init__) and CITED here, not re-signed per
+            # capsule. tee_protected is a KEY CUSTODY claim only -- see
+            # sep_attestation.TEE_KEY_CUSTODY_LABEL carried inside the block
+            # itself for why this is not a binary/model measurement.
+            "tee_key_custody": state.tee_key_custody,
         },
     }
 
@@ -875,6 +922,7 @@ def maybe_seal_identity_capsule(state: NodeState) -> str | None:
         operator=state.operator,
         developer=state.developer,
         signing_node_id=state.node_id,
+        tee_key_custody=state.tee_key_custody,
     )
     signed = sign_capsule(state, identity_capsule)
     record_capsule(state, identity_capsule, signed)

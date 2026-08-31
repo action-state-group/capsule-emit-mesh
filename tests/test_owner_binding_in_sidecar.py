@@ -73,7 +73,7 @@ def _make_state(**overrides) -> cs.NodeState:
             }
         )
     )
-    state = cs.NodeState(
+    kwargs = dict(
         node_id="mesh-node-demo-1",
         operator="op",
         developer="dev",
@@ -83,9 +83,9 @@ def _make_state(**overrides) -> cs.NodeState:
         runtime_label="rt",
         runtime_digest="0" * 64,
         ledger_dir=d / "ledger",
-        **overrides,
     )
-    return state
+    kwargs.update(overrides)
+    return cs.NodeState(**kwargs)
 
 
 def _build(state) -> dict:
@@ -205,3 +205,63 @@ def test_maybe_seal_identity_capsule_records_and_sets_id(monkeypatch):
     # No cert -> returns None, sets nothing.
     state2 = _make_state()
     assert cs.maybe_seal_identity_capsule(state2) is None
+
+
+# ── rung 3b: tee_key_custody wiring ──────────────────────────────────────────
+
+def _real_signing_key_pem() -> bytes:
+    """_make_state()'s default `b"unused"` is not a parseable PEM (fine for
+    tests that never touch signing); rung 3b needs a real Ed25519 key so
+    tee_key_custody actually gets computed."""
+    key = Ed25519PrivateKey.generate()
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
+def _tee_block(capsule) -> dict:
+    return capsule["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["tee_key_custody"]
+
+
+def test_serving_capsule_cites_tee_key_custody_computed_once():
+    """A real signing key -> state.tee_key_custody is populated at
+    __post_init__ time, and build_capsule() CITES that same block (does not
+    re-sign per capsule)."""
+    state = _make_state(signing_key_pem=_real_signing_key_pem())
+    assert state.tee_key_custody is not None
+    assert state.tee_key_custody["custody"] in ("secure_enclave", "software")
+    assert "tee_protected" in state.tee_key_custody
+
+    cap1 = _build(state)
+    cap2 = _build(state)
+    assert _tee_block(cap1) == state.tee_key_custody
+    assert _tee_block(cap2) == state.tee_key_custody, "must cite the SAME cached attestation, not re-sign"
+
+
+def test_placeholder_signing_key_degrades_to_no_tee_block():
+    """The `b"unused"` placeholder used by tests that never sign must not
+    crash NodeState construction -- it degrades to tee_key_custody=None,
+    never a fabricated claim."""
+    state = _make_state()  # default signing_key_pem=b"unused" (not a real PEM)
+    assert state.tee_key_custody is None
+    cap = _build(state)
+    assert _tee_block(cap) is None
+
+
+def test_identity_capsule_carries_tee_key_custody(monkeypatch):
+    """The sealed "who" identity capsule also carries the tee_key_custody
+    block (rung 3b binds the node identity itself, not only serving
+    capsules)."""
+    recorded = {}
+    monkeypatch.setattr(cs, "sign_capsule", lambda state, capsule: b"signed-bytes")
+    monkeypatch.setattr(cs, "record_capsule", lambda state, capsule, signed: recorded.update(capsule=capsule))
+
+    cert = _cert()
+    state = _make_state(node_ownership=cert, signing_key_pem=_real_signing_key_pem())
+    cs.maybe_seal_identity_capsule(state)
+
+    who = recorded["capsule"]["model_attestation"]["compute_attestation"][no.OWNERSHIP_SUBJECT_KEY]
+    assert who["tee_key_custody"] == state.tee_key_custody
+    assert who["tee_key_custody"]["tee_protected"] in (True, False)
