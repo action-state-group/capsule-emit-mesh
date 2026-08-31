@@ -76,6 +76,16 @@ __all__ = [
 KIND_MESH_DISCOVERY = 31990
 #: The account-capsule kind — one above discovery, parameterized-replaceable
 #: (30000–39999) so it updates in place per (pubkey, d-tag).
+#:
+#: PROVISIONAL. 31991 is currently UNASSIGNED in the NIPs registry (verified
+#: 2026-08-31), but it sits in the NIP-89 handler neighborhood (31989 = handler
+#: recommendation, 31990 = handler information — the latter is the discovery
+#: listing convention mesh-llm already uses). Because 31991 is adjacent to that
+#: convention, this number is PROVISIONAL pending confirmation / coordination
+#: with the mesh-llm maintainers (who own the 31990 convention) and, ideally, a
+#: NIPs registry entry. Treat it as a NAMED CONSTANT that may change: reference
+#: KIND_ACCOUNT_CAPSULE everywhere and never hardcode the literal 31991 elsewhere,
+#: so a reassignment is a one-line change here.
 KIND_ACCOUNT_CAPSULE = 31991
 #: The ``d`` tag value that makes the account replaceable in place. A node keeps
 #: exactly one live account listing (same discipline as mesh-llm's ``d=mesh-llm``
@@ -224,6 +234,7 @@ def build_account_event(
     account: AccountCapsule,
     key: SchnorrNostrKey,
     *,
+    sealed_capsule_id: str | None = None,
     created_at: int | None = None,
 ) -> NostrEvent:
     """Serialize an account capsule as a signed, parameterized-replaceable
@@ -234,6 +245,14 @@ def build_account_event(
     ``coverage`` root), not the relay, is the durable layer. The ``d`` tag makes
     it replaceable in place; ``k``/``account_digest``/``coverage_root`` tags let
     a reader filter and cross-check without parsing the content.
+
+    ``sealed_capsule_id`` is the ``capsule_id`` of the account capsule as SEALED
+    into the node's own ledger (`account_capsule.seal_account_capsule`). Carrying
+    it — in the content (``sealed_capsule_id``) and as a ``sealed_capsule_id``
+    tag — lets a reader pull the SEALED capsule from the node's ledger and
+    cross-check the Nostr copy against the on-the-record capsule. The Nostr event
+    mirrors a sealed capsule; it is not the account's system of record (the ledger
+    + witness are).
     """
     content_obj = dict(account.to_value())
     content_obj["durability"] = (
@@ -242,6 +261,14 @@ def build_account_event(
         "durable layer is the WITNESS: cross-check the coverage.checkpoint_root "
         "against the witness, do not rely on this relay copy."
     )
+    if sealed_capsule_id is not None:
+        content_obj["sealed_capsule_id"] = sealed_capsule_id
+        content_obj["sealed_note"] = (
+            "This account is SEALED as a capsule in the node's own ledger under "
+            "capsule_id=" + sealed_capsule_id + ". Pull that capsule from the "
+            "node's capsules.jsonl and cross-check it against this listing; the "
+            "ledgered capsule (not this relay copy) is the on-the-record assertion."
+        )
     content = json.dumps(content_obj, sort_keys=True, separators=(",", ":"))
     tags = [
         ["d", ACCOUNT_D_TAG],  # parameterized-replaceable key
@@ -251,6 +278,8 @@ def build_account_event(
         ["node_id", account.node_id],
         ["witnessed", "1" if account.coverage_witnessed else "0"],
     ]
+    if sealed_capsule_id is not None:
+        tags.append(["sealed_capsule_id", sealed_capsule_id])
     evt = NostrEvent(
         pubkey=key.pubkey_hex,
         created_at=int(created_at if created_at is not None else time.time()),
@@ -363,6 +392,7 @@ def publish_account_capsule(
     key: SchnorrNostrKey,
     relay: RelayClient,
     *,
+    sealed_capsule_id: str | None = None,
     created_at: int | None = None,
 ) -> tuple[NostrEvent, dict[str, Any]]:
     """Build, sign, and publish an account-capsule event to `relay`.
@@ -371,7 +401,11 @@ def publish_account_capsule(
     is `MockRelay`; tests use it exclusively. There is deliberately no default
     relay URL — publishing to a public relay is a separate gated act performed
     outside this module.
+
+    `sealed_capsule_id` carries the ledger `capsule_id` of the SEALED account
+    capsule (`account_capsule.seal_account_capsule`) into the published event so
+    a reader can cross-check the relay copy against the on-the-record capsule.
     """
-    event = build_account_event(account, key, created_at=created_at)
+    event = build_account_event(account, key, sealed_capsule_id=sealed_capsule_id, created_at=created_at)
     result = relay.send_event(event)
     return event, result

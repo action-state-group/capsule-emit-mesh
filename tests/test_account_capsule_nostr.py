@@ -28,6 +28,7 @@ from checkpointing import CheckpointState, Ed25519Signer, JsonlLogSource
 
 import account_capsule as ac
 import nostr_account as na
+from agent_action_capsule.verify import verify as verify_capsule
 
 coincurve = pytest.importorskip("coincurve", reason="Nostr Schnorr signing needs coincurve")
 
@@ -215,8 +216,10 @@ def test_event_is_replaceable_kind_with_d_tag(tmp_path, fake_witness):
     account = _account(tmp_path)
     key = na.SchnorrNostrKey.generate()
     evt = na.build_account_event(account, key)
-    assert evt.kind == na.KIND_ACCOUNT_CAPSULE == 31991
-    assert na.KIND_ACCOUNT_CAPSULE == na.KIND_MESH_DISCOVERY + 1  # adjacent to mesh-llm's 31990
+    assert evt.kind == na.KIND_ACCOUNT_CAPSULE
+    # PROVISIONAL kind: pin it via adjacency to mesh-llm's 31990 discovery listing,
+    # not the literal 31991 (which may change — see KIND_ACCOUNT_CAPSULE's comment).
+    assert na.KIND_ACCOUNT_CAPSULE == na.KIND_MESH_DISCOVERY + 1
     assert 30000 <= evt.kind <= 39999  # parameterized-replaceable range
     d_tags = [t for t in evt.tags if t[0] == "d"]
     assert d_tags == [["d", na.ACCOUNT_D_TAG]]
@@ -256,7 +259,7 @@ def test_pubkey_must_match_signing_key(tmp_path, fake_witness):
     account = _account(tmp_path)
     key = na.SchnorrNostrKey.generate()
     other = na.SchnorrNostrKey.generate()
-    evt = na.NostrEvent(pubkey=other.pubkey_hex, created_at=1, kind=31991, tags=[["d", "x"]], content="{}")
+    evt = na.NostrEvent(pubkey=other.pubkey_hex, created_at=1, kind=na.KIND_ACCOUNT_CAPSULE, tags=[["d", "x"]], content="{}")
     with pytest.raises(ValueError):
         evt.finalize(key)
 
@@ -328,3 +331,126 @@ def test_merge_into_listing_adds_transparency_nondestructively():
     assert block["payload_retention"] == "zero"
     assert block["sybil_residual"] == ac.SYBIL_RESIDUAL_TEXT
     assert "betrayal" in block["transparency_declaration"]
+
+
+# --------------------------------------------------------------------------- #
+# Seal closure: the account is SEALED as a capsule into the node's own ledger  #
+# --------------------------------------------------------------------------- #
+def _seal_into_ledger(ledger_path, account, *, prior_id=None):
+    """Seal an account capsule (fyi self-assertion) and APPEND it to a real
+    capsules.jsonl, exactly as a node would. Returns the sealed capsule dict."""
+    cap = ac.seal_account_capsule(
+        account,
+        operator="op",
+        developer="dev",
+        signing_node_id=account.node_id,
+        prior_account_capsule_id=prior_id,
+    )
+    log = JsonlLogSource(ledger_path)
+    log.append(cap)
+    return cap
+
+
+def test_account_is_sealed_as_capsule_into_ledger(tmp_path, fake_witness):
+    on_disk, cp = _build_witnessed_ledger(tmp_path, [_served_capsule(1), _served_capsule(2)])
+    account = ac.build_account_capsule(node_id="node-b7", capsules=on_disk, latest_checkpoint=cp)
+
+    cap = ac.seal_account_capsule(
+        account, operator="op", developer="dev", signing_node_id="node-b7"
+    )
+    # It is a real capsule: fyi self-assertion, real capsule_id, passes verify().
+    assert cap["action_type"] == "fyi"
+    assert isinstance(cap["capsule_id"], str) and len(cap["capsule_id"]) == 64
+    assert verify_capsule(cap).ok
+    # The account fold + coverage rides verbatim as the subject.
+    subj = cap["model_attestation"]["compute_attestation"][ac.ACCOUNT_SUBJECT_KEY]
+    assert subj["account"] == account.to_value()
+    assert subj["account_digest"] == account.digest()
+    assert subj["sybil_residual"] == ac.SYBIL_RESIDUAL_TEXT
+    assert "no self-reference" in subj["coverage_ordering"].lower()
+
+
+def test_sealed_account_lands_in_capsules_jsonl_like_any_capsule(tmp_path, fake_witness):
+    # Build a real witnessed ledger, then seal the account back INTO that same
+    # capsules.jsonl — it must land as one more line, indistinguishable in shape
+    # from any other capsule (real capsule_id, verifiable).
+    ledger_dir = tmp_path / "ledger"
+    ledger_dir.mkdir()
+    ledger_path = ledger_dir / "capsules.jsonl"
+    log = JsonlLogSource(ledger_path)
+    for c in [_served_capsule(1), _served_capsule(2)]:
+        log.append(c)
+    on_disk = [json.loads(l) for l in ledger_path.read_text().splitlines() if l.strip()]
+
+    cfg = CheckpointConfig(cadence_entries=1, ts_urls=["https://ts.example"])
+    signer = Ed25519Signer(tmp_path / "node-key.pem")
+    state = CheckpointState.load(ledger_dir=ledger_dir, log_source=log, cfg=cfg, signer=signer, log_id="log-seal")
+    state.reconnect()
+    cp = state.last_checkpoint
+
+    account = ac.build_account_capsule(node_id="node-b7", capsules=on_disk, latest_checkpoint=cp)
+    cap = _seal_into_ledger(ledger_path, account)
+
+    lines = [json.loads(l) for l in ledger_path.read_text().splitlines() if l.strip()]
+    assert len(lines) == 3  # the two exchanges + the sealed account capsule
+    last = lines[-1]
+    assert last["capsule_id"] == cap["capsule_id"]
+    assert last["action_type"] == "fyi"
+    assert verify_capsule(last).ok
+    # Honest ordering: the account's coverage is the checkpoint BEFORE this seal;
+    # the seal is only covered by the NEXT checkpoint (no self-reference).
+    assert account.coverage_mmr_size == cp.mmr_size
+    assert last["model_attestation"]["compute_attestation"][ac.ACCOUNT_SUBJECT_KEY]["account"]["coverage"]["mmr_size"] == cp.mmr_size
+
+
+def test_second_account_supersedes_first_both_in_log(tmp_path, fake_witness):
+    on_disk, cp = _build_witnessed_ledger(tmp_path, [_served_capsule(1), _served_capsule(2)])
+    ledger_path = tmp_path / "ledger" / "capsules.jsonl"
+
+    account1 = ac.build_account_capsule(node_id="node-b7", capsules=on_disk, latest_checkpoint=cp)
+    cap1 = _seal_into_ledger(ledger_path, account1)
+
+    # A later account (e.g. after more history) supersedes the first, citing it.
+    account2 = ac.build_account_capsule(node_id="node-b7", capsules=on_disk, latest_checkpoint=cp)
+    cap2 = _seal_into_ledger(ledger_path, account2, prior_id=cap1["capsule_id"])
+
+    # BOTH remain in the append-only log.
+    lines = [json.loads(l) for l in ledger_path.read_text().splitlines() if l.strip()]
+    ids = [l["capsule_id"] for l in lines]
+    assert cap1["capsule_id"] in ids and cap2["capsule_id"] in ids
+    # The later cites the earlier with the supersedes relation.
+    assert cap1.get("chain") is None  # first account has no prior
+    assert cap2["chain"]["parent_capsule_id"] == cap1["capsule_id"]
+    assert cap2["chain"]["relation"] == ac.ACCOUNT_SUPERSEDES_RELATION == "supersedes"
+    assert verify_capsule(cap2).ok
+
+
+def test_nostr_event_carries_sealed_capsule_id(tmp_path, fake_witness):
+    on_disk, cp = _build_witnessed_ledger(tmp_path, [_served_capsule(1), _served_capsule(2)])
+    account = ac.build_account_capsule(node_id="node-b7", capsules=on_disk, latest_checkpoint=cp)
+    cap = ac.seal_account_capsule(account, operator="op", developer="dev", signing_node_id="node-b7")
+
+    key = na.SchnorrNostrKey.generate()
+    evt = na.build_account_event(account, key, sealed_capsule_id=cap["capsule_id"])
+    # The sealed capsule_id flows into both the content and a first-class tag so a
+    # reader can pull the ledgered capsule and cross-check it.
+    content = json.loads(evt.content)
+    assert content["sealed_capsule_id"] == cap["capsule_id"]
+    assert cap["capsule_id"] in content["sealed_note"]
+    tag_map = {t[0]: t[1:] for t in evt.tags}
+    assert tag_map["sealed_capsule_id"] == [cap["capsule_id"]]
+    assert na.NostrEvent.verify_value(evt.to_value()) is True
+
+
+def test_publish_carries_sealed_capsule_id_to_mock_relay(tmp_path, fake_witness):
+    on_disk, cp = _build_witnessed_ledger(tmp_path, [_served_capsule(1)])
+    account = ac.build_account_capsule(node_id="node-b7", capsules=on_disk, latest_checkpoint=cp)
+    cap = ac.seal_account_capsule(account, operator="op", developer="dev", signing_node_id="node-b7")
+
+    key = na.SchnorrNostrKey.generate()
+    relay = na.MockRelay()
+    evt, result = na.publish_account_capsule(account, key, relay, sealed_capsule_id=cap["capsule_id"])
+    assert result["ok"] is True
+    stored = relay.latest_for(key.pubkey_hex)
+    assert stored is not None
+    assert {t[0]: t[1:] for t in stored.tags}["sealed_capsule_id"] == [cap["capsule_id"]]

@@ -57,24 +57,42 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
+
+from agent_action_capsule.emit import emit
 
 from capsule_emit.checkpoint import CheckpointRecord
 from capsule_emit.checkpoint import leaf_count as _leaf_count_at_size
 
 __all__ = [
     "ACCOUNT_CAPSULE_SCHEMA",
+    "ACCOUNT_SUBJECT_KEY",
+    "ACCOUNT_SUPERSEDES_RELATION",
     "SYBIL_RESIDUAL_TEXT",
     "AccountFold",
     "AccountCapsule",
     "build_account_capsule",
+    "seal_account_capsule",
     "example_predicate",
 ]
 
 #: Schema tag on the serialized account capsule. Versioned so a consumer can
 #: refuse an account shape it does not understand rather than mis-read it.
 ACCOUNT_CAPSULE_SCHEMA = "mesh-account-capsule/1"
+
+#: Capsule marker for the account capsule's account-of-history subject block,
+#: mirroring node_ownership.OWNERSHIP_SUBJECT_KEY. This is the compute-attestation
+#: key under which the account fold + coverage rides inside the sealed capsule.
+ACCOUNT_SUBJECT_KEY = "x-mesh-account-v1"
+
+#: The registry-governed chain relation a NEWER account capsule uses to point at
+#: the account capsule it supersedes. Both stay in the log (append-only); the
+#: later one cites the earlier as `supersedes` so a reader folds forward to the
+#: authoritative (latest) account while the earlier remains auditable. This is
+#: the same "supersedes" relation §5.4.4 / §6 verify store-level checks read.
+ACCOUNT_SUPERSEDES_RELATION = "supersedes"
 
 #: The Sybil / identity-reset residual, in one place, carried verbatim into
 #: every account capsule (`sybil_residual`) AND into the Nostr listing's
@@ -302,6 +320,88 @@ def build_account_capsule(
         coverage_timestamp=latest_checkpoint.timestamp,
         coverage_witnesses=witnesses,
         coverage_witnessed=bool(witnesses),
+    )
+
+
+def seal_account_capsule(
+    account: AccountCapsule,
+    *,
+    operator: str,
+    developer: str,
+    signing_node_id: str,
+    prior_account_capsule_id: str | None = None,
+    provider: str = "mesh-llm",
+) -> dict[str, Any]:
+    """Seal an account capsule INTO the node's own ledger — mirror of
+    node_ownership.seal_identity_capsule (the B4 "who" self-assertion).
+
+    The account is not a signed JSON summary that lives only on a Nostr relay: it
+    is a CAPSULE, sealed like any other into the node's `capsules.jsonl` under the
+    node's Ed25519 ledger key (the caller signs + appends the returned dict, e.g.
+    via `capsule_sidecar.record_capsule`). That puts the assertion act ON THE
+    RECORD: it gets a `capsule_id`, chains to the ledger head, and folds into the
+    NEXT witnessed checkpoint like every other capsule.
+
+    action_type="fyi": the account capsule ASSERTS a fact (this node accounts for
+    its own witnessed history) rather than deciding or running an inference — the
+    same informational self-assertion grade as the identity capsule. The subject
+    is the account fold + coverage, carried verbatim (via `account.to_value()`) so
+    a verifier recomputes the fold from the node's ledger and cross-checks the
+    coverage root against the witness, from these bytes alone.
+
+    **Supersede model.** A later account capsule SUPERSEDES an earlier one: pass
+    the earlier account capsule's `capsule_id` as `prior_account_capsule_id` and
+    this capsule chains to it with `relation="supersedes"`. BOTH stay in the
+    append-only log — the earlier remains auditable, the later is authoritative
+    (§5.4.4: the earliest supersedes over a given parent is authoritative, and a
+    reader folds forward to the latest account).
+
+    **Honest coverage ordering — no self-reference paradox.** Sealing the account
+    APPENDS an entry to the ledger, so this account capsule's own ledger position
+    is NOT covered by the checkpoint it summarizes: its `coverage` root is the
+    checkpoint BEFORE it, and the sealing act itself is only covered by the NEXT
+    checkpoint. An account capsule never summarizes a range that includes itself;
+    the coverage always trails the seal by one checkpoint. This is recorded in the
+    subject's `coverage_ordering` note so a reader is not surprised.
+    """
+    account_subject = dict(account.to_value())
+    compute_attestation = {
+        ACCOUNT_SUBJECT_KEY: {
+            # The account, verbatim — selection / derivation (fold) / coverage /
+            # sybil_residual — so a reader recomputes and cross-checks from these
+            # bytes, never from our say-so.
+            "account": account_subject,
+            # The digest a Nostr listing pins, sealed alongside the account so the
+            # relay copy and the ledgered capsule are provably the same account.
+            "account_digest": account.digest(),
+            # Sybil residual at the top of the block too, so it is unmissable and
+            # can never be silently dropped from the sealed record.
+            "sybil_residual": account.sybil_residual,
+            "coverage_ordering": (
+                "Sealing this account appends a ledger entry, so this capsule's "
+                "own position is covered by the NEXT witnessed checkpoint, not "
+                "the one in `coverage` (which is the checkpoint BEFORE this "
+                "seal). An account never summarizes a range that includes "
+                "itself — no self-reference."
+            ),
+            "not_a_score": (
+                "An account of facts + a witness handle to verify them, not a "
+                "score or routing recommendation."
+            ),
+        },
+    }
+
+    return emit(
+        action_id=f"mesh-poc/account/{signing_node_id}/{uuid.uuid4()}",
+        action_type="fyi",
+        operator=operator,
+        developer=developer,
+        provider=provider,
+        compute_attestation=compute_attestation,
+        prior_capsule_id=prior_account_capsule_id,
+        chain_relation=ACCOUNT_SUPERSEDES_RELATION if prior_account_capsule_id else None,
+        domain="action",
+        provenance="collector",
     )
 
 
