@@ -50,10 +50,11 @@ sidecar and the Rust plugin loads two independent `CheckpointState`s, one per
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from capsule_emit.checkpoint import (
     DEFAULT_TS_URL,
@@ -226,6 +227,23 @@ class CheckpointState:
     last_checkpoint: CheckpointRecord | None = None
     entries_since_checkpoint: int = 0
 
+    #: Monotonic clock, injectable for tests. A monotonic source (not wall
+    #: time) is deliberate: the age leg of the cadence measures elapsed time
+    #: since the first unwitnessed entry, which must not jump backward on an
+    #: NTP step or DST change and must not double-anchor because the wall
+    #: clock was corrected.
+    clock: Callable[[], float] = field(default=time.monotonic, repr=False)
+    #: Monotonic timestamp of the FIRST currently-unwitnessed entry, or None
+    #: when the log is fully caught up (nothing pending). This is what the
+    #: age-based cadence measures against -- "300s since activity resumed",
+    #: not "300s since the last checkpoint" -- so an idle node never anchors
+    #: (only-if-new-activity) and the 5-minute clock only starts ticking once
+    #: there is something new to anchor. Reset to None every time a checkpoint
+    #: clears the backlog. Not restored across a restart: on load, any
+    #: on-disk backlog is treated as pending-as-of-now, and reconnect() (which
+    #: ignores the age leg) is the restart catch-up path, so nothing is lost.
+    _pending_since: float | None = field(default=None, repr=False)
+
     @classmethod
     def load(
         cls,
@@ -235,6 +253,7 @@ class CheckpointState:
         cfg: CheckpointConfig,
         signer: Ed25519Signer,
         log_id: str,
+        clock: Callable[[], float] = time.monotonic,
     ) -> "CheckpointState":
         mmr = MmrLedger(log_source)
         mmr.sync()
@@ -250,17 +269,71 @@ class CheckpointState:
             checkpoints_path=checkpoints_path,
             last_checkpoint=last_checkpoint,
             entries_since_checkpoint=entries_since,
+            clock=clock,
+            # A pre-existing on-disk backlog is pending as of load time; the
+            # age clock starts now. reconnect() commits it immediately anyway.
+            _pending_since=(clock() if entries_since > 0 else None),
         )
 
     def record_appended(self) -> CheckpointRecord | None:
         """Call once a new capsule has landed in the wrapped ledger. Folds it
-        into the MMR and checkpoints if the declared cadence says it's due.
-        Returns the new checkpoint if one was emitted, else None."""
+        into the MMR and checkpoints if the declared entry-count cadence says
+        it's due. Returns the new checkpoint if one was emitted, else None.
+
+        This is the per-append leg (entry count only): it never fires the
+        time-based cadence -- that's `tick()`'s job, driven by a clock off the
+        serving path. Keeping the two separate means a hot serving loop can
+        call `record_appended()` on every capsule (cheap: an MMR fold + a
+        count compare) without a `time.monotonic()` syscall per request, while
+        the ~5-minute anchor clock runs in the background daemon. The privacy
+        rationale (requirement 2) lives on the time leg: batching the witness
+        anchor on a clock, never per-call, is what keeps activity timing/rate
+        from leaking to the witness.
+        """
         added = self.mmr.sync()
-        self.entries_since_checkpoint += added
+        self._note_pending(added)
         if due_for_checkpoint(self.cfg, self.entries_since_checkpoint):
             return self._checkpoint_now()
         return None
+
+    def tick(self) -> CheckpointRecord | None:
+        """The ~5-minute clock leg, called by the background daemon on its
+        interval (never on the serving path). Syncs the MMR, then checkpoints
+        if EITHER the entry-count cadence (`cadence_entries`) OR the age
+        cadence (`cadence_seconds`, default 900 upstream / 300 for a mesh
+        node) is due -- whichever comes first.
+
+        Only-if-new-activity is structural, not a special case: `_pending_since`
+        is None whenever the log is fully caught up, and `due_for_checkpoint`
+        returns False for `entries_since_checkpoint == 0` regardless of age, so
+        an idle interval anchors NOTHING (no empty-interval witness traffic, no
+        heartbeat that would leak "this node is up but silent"). The clock only
+        starts counting from the first unwitnessed entry, so a burst of activity
+        at t=0 is anchored ~`cadence_seconds` later in one batch, not per call.
+        """
+        added = self.mmr.sync()
+        self._note_pending(added)
+        seconds_since = None if self._pending_since is None else self.clock() - self._pending_since
+        if due_for_checkpoint(self.cfg, self.entries_since_checkpoint, seconds_since_last=seconds_since):
+            return self._checkpoint_now()
+        return None
+
+    def checkpoint_on_shutdown(self) -> CheckpointRecord | None:
+        """Anchor any uncommitted backlog on a clean shutdown, so a node's
+        final interval isn't lost between the last clock tick and process exit.
+        Same self-healing semantics as `reconnect()` (ignore cadence, one
+        checkpoint for the whole tail); a no-op when nothing is pending.
+        Registration is still best-effort: an unreachable witness leaves the
+        tail self-checkpointed locally, never blocks shutdown."""
+        return self.reconnect()
+
+    def _note_pending(self, added: int) -> None:
+        """Fold `added` new leaves into the pending count and start the age
+        clock at the first unwitnessed entry (only-if-new-activity: the clock
+        does not run while the log is caught up)."""
+        self.entries_since_checkpoint += added
+        if self.entries_since_checkpoint > 0 and self._pending_since is None:
+            self._pending_since = self.clock()
 
     def reconnect(self) -> CheckpointRecord | None:
         """Latest-checkpoint-on-reconnect (mesh architecture doc §4): an
@@ -271,7 +344,7 @@ class CheckpointState:
         cadence tick. Ignores cadence: emits immediately if anything is
         uncommitted. Call once at startup, not per-request."""
         added = self.mmr.sync()
-        self.entries_since_checkpoint += added
+        self._note_pending(added)
         if self.mmr.leaf_count() == 0:
             return None
         if self.last_checkpoint is not None:
@@ -331,6 +404,11 @@ class CheckpointState:
             fh.write(json.dumps(record, sort_keys=True) + "\n")
         self.last_checkpoint = cp
         self.entries_since_checkpoint = 0
+        # Backlog cleared: stop the age clock. It restarts (at that moment)
+        # only when the next new entry lands -- so the ~5-minute window is
+        # measured from the first NEW activity after this anchor, never as a
+        # free-running heartbeat.
+        self._pending_since = None
         return cp
 
     def witness_status(self) -> str:
