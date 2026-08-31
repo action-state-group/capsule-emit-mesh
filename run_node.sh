@@ -15,6 +15,22 @@
 # attaches the checkpointer to the ledger those write. Run it as a sibling
 # process to your node, e.g. from the same supervisor / tmux / login script.
 #
+# BOTH REQUESTOR AND SHARER (on by default). A first-class node seals BOTH
+# halves of the exchanges it takes part in, so it can corroborate as well as be
+# corroborated:
+#   * SHARER half -- the provider-side capture, in front of your serving node:
+#         capsule_sidecar.py --role provider  (the default)
+#     or the native Rust admission-policy plugin (Path 1 in the README).
+#   * REQUESTOR half -- the requester-side capture, your OWN outbound proxy for
+#     requests this node MAKES:
+#         capsule_sidecar.py --role requester --upstream <endpoint-you-call>
+#     It seals your own half (model requested, gen-params, your nonce, the
+#     response you received). The two halves of ONE exchange line up for a third
+#     party via serving_provenance.exchange_id (the response-id lineage) -- see
+#     the README "Both halves of an exchange" section. Point THIS daemon at each
+#     ledger (provider and requester) to checkpoint both by default; a quiet
+#     ledger makes no witness traffic.
+#
 # Defaults, all overridable by env var:
 #   NODE_HOME       ~/asg-mesh          (the node's home dir)
 #   LEDGER_DIR      $NODE_HOME/data/ledger   (where capsules.jsonl lives)

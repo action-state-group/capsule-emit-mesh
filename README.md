@@ -215,6 +215,54 @@ python3 capsule_sidecar.py --upstream http://127.0.0.1:9337 --listen-port 8089 \
 # point your OpenAI client at http://127.0.0.1:8089/v1 instead of :9337/v1
 ```
 
+#### Both halves of an exchange — `--role provider` (default) and `--role requester`
+
+The sidecar seals **one half** of an exchange, and which half is set by `--role`:
+
+- **`--role provider`** (the default, shown above) — the **sharer's** sidecar,
+  in front of its own serving node. Its capsule attests **what it served**
+  (`serving_provenance.role == "provider"`, `served_by_node_id` = this node).
+- **`--role requester`** — the **requestor's own outbound** sidecar. Point your
+  OpenAI client at it and point *it* at whatever upstream endpoint you are
+  calling. Its capsule attests the requestor's **own half**: the model it
+  requested, the generation parameters and its nonce, and **the response it
+  received** (`serving_provenance.role == "requester"`, `requesting_party` =
+  this node; `served_by_node_id` records `"unknown"`, because a requester's
+  outbound proxy does not see the serving node's id at the `/v1` wire — it is
+  never fabricated).
+
+A node that both consumes and serves runs **one sidecar per role** and is thus
+**both requestor and sharer** — this is on by default in the node bring-up (see
+`run_node.sh` / the checkpoint-by-default writeup).
+
+```bash
+# The requestor's own-half seal: client -> requester sidecar -> some upstream.
+python3 capsule_sidecar.py --role requester \
+    --upstream https://some-upstream-endpoint/ --listen-port 8091 \
+    --ledger-dir "$HOME/asg-mesh/data/requester-ledger"
+# point your OpenAI client at http://127.0.0.1:8091/v1
+```
+
+**exchange_id correlation — the field that ties the two halves.** Both the
+provider-half capsule and the requester-half capsule carry
+`serving_provenance.exchange_id`, and both derive it from the **same source**:
+the OpenAI response `id` (e.g. `chatcmpl-…`) observed at the wire — the host's
+terminal-event / response-id lineage, the **same** field the native Rust
+admission-policy plugin uses for its `serving_provenance.exchange_id`. Because
+both halves observe the same response object, both record the **identical**
+`exchange_id`, so a third party holding both capsules **lines up the two halves
+of one exchange** by joining on that field (and tells them apart by
+`serving_provenance.role`). When the upstream returned no id (an error object or
+a truncated stream) the correlator records `"unknown"` with
+`exchange_id_source: "unavailable"` — never a fabricated value, so
+"not-correlatable" stays distinct from a real correlator.
+
+This is the **requester-seals-its-own-half + exchange_id correlation** rung
+(rung-1/2 mechanics). It is deliberately **not** the acknowledgment leg
+(`full_bilateral`): the requester's own-half capsule is an independent
+half-record sharing a correlator, and it does **not** sign or reference the
+provider's `capsule_id`. That upgrade is spec-gated and out of scope here.
+
 ### Why not "the same pattern as your metrics plugin" (the original framing)
 
 Steven's #1233 comment framed this as "the same capability-plugin pattern as your

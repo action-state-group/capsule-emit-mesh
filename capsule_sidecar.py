@@ -99,6 +99,45 @@ CLIENT_NONCE_ORIGIN_HEADER = "x-capsule-nonce-origin"
 CLIENT_NONCE_ORIGIN_LOCAL_INGRESS = "local_ingress"
 SIG_ALG = "EdDSA"
 
+# [b6a-requester-seal] The two half-of-exchange roles a sidecar can seal.
+# provider = the sharer's sidecar (attests what it SERVED); requester = the
+# requestor's own outbound sidecar (attests its OWN half — what it requested +
+# the response it received). Both halves of ONE exchange are lined up by a
+# third party via the shared exchange_id (see EXCHANGE_ID_SOURCE below).
+ROLE_PROVIDER = "provider"
+ROLE_REQUESTER = "requester"
+ROLES = (ROLE_PROVIDER, ROLE_REQUESTER)
+
+#: How exchange_id is derived, recorded honestly in the capsule so a reader
+#: knows it is the wire-observed response id, not a host-minted correlator this
+#: proxy cannot see. Both the provider and requester sidecars observe the SAME
+#: response object at the wire, so both record the SAME exchange_id — that is
+#: what makes the two halves joinable. Matches the Rust admission-policy
+#: plugin's serving_provenance.exchange_id lineage ("the host's exchange_id /
+#: response `id` / x-request-id"), so a single verifier joins across both
+#: capture paths uniformly.
+EXCHANGE_ID_SOURCE = "response_id"
+
+
+def exchange_id_from_response(response_json: dict[str, Any]) -> tuple[str, str]:
+    """Derive the per-exchange correlator both halves share, from the response.
+
+    Returns ``(exchange_id, source)``. The correlator is the OpenAI response
+    ``id`` (e.g. ``chatcmpl-...``) — the field the serving host mints once per
+    exchange and returns verbatim to the requester, so provider-side and
+    requester-side sidecars observing the same exchange record the SAME value.
+
+    When the upstream returns no ``id`` (an error object, or a truncated
+    stream), the correlator is ``"unknown"`` and the source is
+    ``"unavailable"`` — never fabricated, so a verifier can tell "not
+    correlatable" apart from a real id. This mirrors the Rust plugin's
+    ``exchange_id.unwrap_or("unknown")`` discipline.
+    """
+    resp_id = response_json.get("id")
+    if isinstance(resp_id, str) and resp_id:
+        return resp_id, EXCHANGE_ID_SOURCE
+    return "unknown", "unavailable"
+
 # Bilateral request attestation headers (Move 1 of draft-mih-agent-bilateral-attestation-01).
 # Lowercased — HTTP/1.1 headers are case-insensitive; the handler normalises them before lookup.
 BILATERAL_RA_HEADER = "x-capsule-request-attestation"
@@ -412,6 +451,19 @@ class NodeState:
     runtime_label: str
     runtime_digest: str
     ledger_dir: Path
+    #: [b6a-requester-seal] Which half of an exchange this sidecar seals.
+    #: ``"provider"`` (default) — the sharer's sidecar, in front of its own
+    #: serving node; the capsule attests what it SERVED. ``"requester"`` — the
+    #: requestor's own outbound sidecar; the capsule attests what it REQUESTED
+    #: and the response it RECEIVED (its own half). A single node runs one
+    #: sidecar per role and is thus both requestor and sharer; the two halves of
+    #: one exchange are lined up by a third party via the shared ``exchange_id``
+    #: (the response ``id`` lineage — see build_capsule). This is rung-1/2
+    #: mechanics only: the requester seals its OWN half. It is NOT the Move-4
+    #: acknowledgment leg / ``full_bilateral`` upgrade (spec-gated, out of
+    #: scope here) — the requester never signs an ack of the provider's
+    #: capsule_id, it only seals its own-half record independently.
+    role: str = "provider"
     #: The node's self-attested advertisement -- what it CLAIMS it can serve
     #: (verify-after-advertise, TRUST-MODEL.md §12.3). Co-carried into every
     #: capsule alongside serving_provenance so a third party has BOTH the claim
@@ -542,6 +594,8 @@ def build_capsule(
     verdict_class: str,
     disposition_decision: str,
     latency_ms: float,
+    exchange_id: str = "unknown",
+    exchange_id_source: str = "unavailable",
     forwarded_copy: dict[str, Any] | None = None,
     bilateral_eval: "BilateralEvalResult | None" = None,
 ) -> dict[str, Any]:
@@ -563,12 +617,47 @@ def build_capsule(
     # advertised quant/hardware reconciles to `absent`, not a false green. The
     # Rust producer, which sees the host serving-provenance event, fills the
     # richer block; the reconcile function is identical over either shape.
-    served_provenance = {
-        "served_by_node_id": state.node_id,
+    #
+    # [b6a-requester-seal] serving_provenance is now EMITTED into the capsule
+    # (previously it was a local reconcile-only var and never sealed on the
+    # Python path). It carries the shared exchange_id + the role of this half,
+    # so a third party can line up the requester's own-half capsule and the
+    # provider's served-half capsule for ONE exchange. served_by_node_id and
+    # requesting_party name the two ends honestly per role:
+    #   provider  — served_by_node_id = this node; requesting_party = the
+    #               counterparty (from the bilateral request attestation when
+    #               present, else "unknown" — a proxy cannot name a caller it
+    #               was given no attested identity for).
+    #   requester — requesting_party = this node (it IS the requester);
+    #               served_by_node_id = "unknown" (the requester's outbound
+    #               sidecar sees the served MODEL but not the serving node's
+    #               id at the /v1 wire — never fabricated).
+    if state.role == ROLE_REQUESTER:
+        served_by_node_id: str | None = "unknown"
+        requesting_party = state.node_id
+    else:
+        served_by_node_id = state.node_id
+        requesting_party = (
+            bilateral_eval.initiator_ref
+            if bilateral_eval and bilateral_eval.valid and bilateral_eval.initiator_ref
+            else "unknown"
+        )
+    serving_provenance = {
+        "served_by_node_id": served_by_node_id,
+        "requesting_party": requesting_party,
+        # The per-exchange correlator BOTH halves record identically (the wire
+        # response id). exchange_id_source names how it was derived so a reader
+        # never mistakes an "unknown" for a fabricated correlator (§10 Rule 1).
+        "exchange_id": exchange_id,
+        "exchange_id_source": exchange_id_source,
+        # Which half of the exchange this record is — provider (served) or
+        # requester (own half). A verifier reads this to know which side it is
+        # holding before joining on exchange_id.
+        "role": state.role,
         "model_canonical_ref": state.manifest.get("model_id"),
         "quantization": "unknown",
     }
-    reconciliation = reconcile_advertised_vs_served(state.advertisement, served_provenance)
+    reconciliation = reconcile_advertised_vs_served(state.advertisement, serving_provenance)
 
     compute_attestation = {
         # Sanctioned ModelAttestation.compute_attestation keys (per its own
@@ -589,6 +678,18 @@ def build_capsule(
             "model_package_digest": state.model_package_digest,
             "generation_parameters": generation_parameters,
             "latency_ms": f"{latency_ms:.3f}",
+            # [b6a-requester-seal] The observed serving facts for THIS half,
+            # including the shared exchange_id both halves record identically
+            # and the role of this record. Emitted on the Python path (was
+            # reconcile-only before) so the same field the Rust plugin fills is
+            # present on both capture paths — capsule_mesh_viewer.serving_
+            # provenance() reads exactly this block, and a third party joins the
+            # requester's own-half capsule to the provider's served-half capsule
+            # on serving_provenance.exchange_id. This is rung-1/2 correlation
+            # ONLY: independent half-records sharing a correlator, NOT the
+            # Move-4 ack leg (the requester does not sign the provider's
+            # capsule_id here — that upgrade is spec-gated and out of scope).
+            "serving_provenance": serving_provenance,
             # verify-after-advertise (§12.3): the node's self-attested CLAIM,
             # co-carried so a third party has BOTH the advertisement and the
             # serving fact from ONE offline artifact -- the reconciliation is
@@ -848,6 +949,9 @@ def _seal_chat_completion(
     bilateral_eval: "BilateralEvalResult | None" = None,
 ) -> dict[str, Any]:
     response_digest = digest_json(response_json)
+    # [b6a-requester-seal] The shared per-exchange correlator, off the response
+    # id — recorded identically by whichever role's sidecar seals this half.
+    exchange_id, exchange_id_source = exchange_id_from_response(response_json)
     if 200 <= status_code < 300:
         capsule = build_capsule(
             state,
@@ -860,6 +964,8 @@ def _seal_chat_completion(
             verdict_class="executed",
             disposition_decision="accept",
             latency_ms=latency_ms,
+            exchange_id=exchange_id,
+            exchange_id_source=exchange_id_source,
             forwarded_copy=forwarded_copy,
             bilateral_eval=bilateral_eval,
         )
@@ -877,6 +983,8 @@ def _seal_chat_completion(
             verdict_class="errored",
             disposition_decision="reject",
             latency_ms=latency_ms,
+            exchange_id=exchange_id,
+            exchange_id_source=exchange_id_source,
             forwarded_copy=forwarded_copy,
             bilateral_eval=bilateral_eval,
         )
@@ -1087,6 +1195,9 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
     # normalizer was active (same field as in the streaming path).
     _, _, upstream_ids = build_forwarded_copy(response_json)
     forwarded_copy = forwarded_copy_record(response_json, [], upstream_ids)
+    # [b6a-requester-seal] Shared correlator off the response id (see
+    # _seal_chat_completion / the streaming twin — same derivation everywhere).
+    exchange_id, exchange_id_source = exchange_id_from_response(response_json)
 
     if 200 <= status_code < 300:
         capsule = build_capsule(
@@ -1100,6 +1211,8 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
             verdict_class="executed",
             disposition_decision="accept",
             latency_ms=latency_ms,
+            exchange_id=exchange_id,
+            exchange_id_source=exchange_id_source,
             forwarded_copy=forwarded_copy,
             bilateral_eval=bilateral_eval,
         )
@@ -1125,6 +1238,8 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
             verdict_class="errored",
             disposition_decision="reject",
             latency_ms=latency_ms,
+            exchange_id=exchange_id,
+            exchange_id_source=exchange_id_source,
             forwarded_copy=forwarded_copy,
             bilateral_eval=bilateral_eval,
         )
@@ -1325,10 +1440,14 @@ def default_state(
     plugin_checkpoint_config_path: Path | None = None,
     advertisement: Advertisement | None = None,
     node_ownership: SignedNodeOwnership | None = None,
+    role: str = ROLE_PROVIDER,
+    node_id: str = "mesh-node-demo-1",
 ) -> NodeState:
+    if role not in ROLES:
+        raise ValueError(f"role must be one of {ROLES}, got {role!r}")
     signing_key_pem = load_or_create_signing_key(keys_dir)
     return NodeState(
-        node_id="mesh-node-demo-1",
+        node_id=node_id,
         operator="capsule-emit-mesh-poc-demo",
         developer="capsule-emit-mesh-poc-sidecar/0.1.0",
         signing_key_pem=signing_key_pem,
@@ -1337,6 +1456,7 @@ def default_state(
         runtime_label=runtime_label,
         runtime_digest=runtime_digest,
         ledger_dir=ledger_dir,
+        role=role,
         advertisement=advertisement,
         checkpoint_config_path=checkpoint_config_path,
         plugin_ledger_dir=plugin_ledger_dir,
@@ -1356,6 +1476,29 @@ if __name__ == "__main__":
     parser.add_argument("--upstream", default="http://127.0.0.1:9337")
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--listen-port", type=int, default=8089)
+    parser.add_argument(
+        "--role",
+        choices=ROLES,
+        default=ROLE_PROVIDER,
+        help=(
+            "which half of an exchange this sidecar seals. 'provider' (default): "
+            "the sharer's sidecar, in front of its own serving node — the capsule "
+            "attests what it SERVED. 'requester': the requestor's OWN outbound "
+            "sidecar — the capsule attests its own half (model requested, "
+            "gen-params, its nonce, the response it received). A node that is both "
+            "requestor and sharer runs one sidecar per role; a third party lines up "
+            "the two halves of one exchange via the shared exchange_id (the response "
+            "id lineage). rung-1/2 correlation ONLY — NOT the Move-4 acknowledgment "
+            "leg / full_bilateral upgrade (spec-gated, not built here)."
+        ),
+    )
+    parser.add_argument(
+        "--node-id",
+        default=None,
+        help="stable node id for this sidecar (defaults per role: mesh-node-demo-1 "
+        "for provider, mesh-requester-demo-1 for requester). On the requester role "
+        "this is the requesting_party recorded in serving_provenance.",
+    )
     parser.add_argument("--ledger-dir", default=str(Path(__file__).parent / "ledger"))
     parser.add_argument("--manifest", default=str(Path(__file__).parent / "model-package" / "model-package.json"))
     parser.add_argument("--runtime-label", default="unspecified-real-node")
@@ -1423,6 +1566,9 @@ if __name__ == "__main__":
         if node_ownership is None:
             print(f"WARNING: --node-ownership {args.node_ownership!r} missing or malformed; owner identity ABSENT (did-only).")
 
+    node_id = args.node_id or (
+        "mesh-requester-demo-1" if args.role == ROLE_REQUESTER else "mesh-node-demo-1"
+    )
     keys_dir = Path(__file__).parent / "keys"
     state = default_state(
         ledger_dir=Path(args.ledger_dir),
@@ -1438,6 +1584,8 @@ if __name__ == "__main__":
         ),
         advertisement=advertisement,
         node_ownership=node_ownership,
+        role=args.role,
+        node_id=node_id,
     )
 
     # [b4-who-did] Seal the identity capsule (the "who") ONCE at startup, if a
@@ -1458,7 +1606,13 @@ if __name__ == "__main__":
             print(f"plugin-ledger reconnect checkpoint emitted: {state.plugin_checkpoint.witness_status()}")
     server = run_sidecar(listen_host=args.listen_host, listen_port=args.listen_port, upstream_base=args.upstream, state=state)
     print(f"capsule sidecar listening on http://{args.listen_host}:{args.listen_port} -> upstream {args.upstream}")
-    print(f"node_id={state.node_id} model_package_digest={state.model_package_digest}")
+    print(f"role={state.role} node_id={state.node_id} model_package_digest={state.model_package_digest}")
+    if state.role == ROLE_REQUESTER:
+        print(
+            "  requester role: sealing this node's OWN-HALF capsule per request "
+            "(its request + the response it received). Correlate with the "
+            "provider's served-half capsule on serving_provenance.exchange_id."
+        )
     if state.checkpoint is not None:
         print(f"checkpointing enabled: log_id={state.checkpoint.log_id} {state.checkpoint.witness_status()}")
     if state.plugin_checkpoint is not None:
