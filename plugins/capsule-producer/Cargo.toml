@@ -24,7 +24,18 @@ anyhow = "1"
 thiserror = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ureq = { version = "2", features = ["json"] }
+base64 = "0.22"
+# rung 3c (tee_measured): TD quote cert-chain (x509-cert/der) and signature
+# (p256 = attestation key / PCK certs, p384 = Intel Trust Authority ES384 JWTs)
+# verification. No network client added here — verification is purely local
+# cryptography against caller-supplied quote/cert bytes.
+x509-cert = { version = "0.2", default-features = false, features = ["std", "pem"] }
+der = "0.7"
+p256 = { version = "0.13", features = ["ecdsa"] }
+p384 = { version = "0.13", features = ["ecdsa"] }
+ecdsa = { version = "0.16", features = ["der"] }
 
 [dev-dependencies]
 tempfile = "3"
-base64 = "0.22"
+rcgen = "0.13"
+rustls-pki-types = "1"

@@ -166,6 +166,14 @@ pub struct MeshPocV1 {
     /// SELF-measured (the node hashed its own binary) and is only trustworthy up
     /// to an OS/TEE that independently measures it.
     pub binary_attestation: Option<crate::runtime_attest::BinaryAttestation>,
+    /// The `tee_measured` rung (rung 3c): a parsed, hardware-signed TDX quote
+    /// binding MRTD/RTMR[0..3] to this exchange, or `None` on a host without
+    /// TDX (graceful degradation, same contract as `binary_attestation` —
+    /// the `tee_attestation` evidence slot is then recorded empty, never
+    /// fabricated). See [`crate::tee_attest`]/[`crate::tee_verify`]: this is
+    /// the strongest measurement grade this codebase names, produced by the
+    /// TDX module beneath the guest OS rather than the process itself.
+    pub tee_attestation: Option<crate::tee_attest::TeeAttestation>,
 }
 
 impl MeshPocV1 {
@@ -177,18 +185,31 @@ impl MeshPocV1 {
             "serving_provenance": self.serving_provenance.to_value(),
             "generation_parameters": self.generation_parameters,
             "latency_ms": self.latency_ms,
-            // Typed reference fields, present-but-empty (issue #1233 steps 4/5 —
-            // statistical fingerprint / TEE evidence — are future work that
-            // upgrades these slots without changing the record shape).
+            // Typed reference fields, present-but-empty (issue #1233 step 4,
+            // statistical fingerprint, is future work that upgrades this slot
+            // without changing the record shape).
             //
             // `binary_attestation` (task B3) is the runtime/binary-attestation
             // rung: a SIGNED, `self_measured` reference to the serving binary the
             // node runs. When the binary could not be measured (unresolvable
             // path / unreadable file) the slot degrades to the same empty shape
             // as the other future slots — recorded ABSENT, never fabricated.
+            //
+            // `tee_attestation` (rung 3c) is the `tee_measured` rung: a parsed
+            // TDX quote binding MRTD/RTMR[0..3] to this exchange. Absent on any
+            // host without TDX hardware (the overwhelming majority today) —
+            // recorded empty, never fabricated. See `crate::tee_attest`.
             "evidence_refs": {
                 "statistical_fingerprint": {"type": "statistical_fingerprint", "digest": null, "context": null},
-                "tee_attestation": {"type": "tee_attestation", "digest": null, "context": null},
+                "tee_attestation": match &self.tee_attestation {
+                    Some(att) => att.to_value(),
+                    None => json!({
+                        "type": "tee_attestation",
+                        "measurement_class": null,
+                        "digest": null,
+                        "context": "no TEE quote measured (no TDX hardware on this host, or the producer leg has not run here); recorded absent, never fabricated",
+                    }),
+                },
                 "binary_attestation": match &self.binary_attestation {
                     Some(att) => att.to_value(),
                     // Honest empty slot: no binary was measured, so no
@@ -448,6 +469,7 @@ mod tests {
                 generation_parameters,
                 latency_ms: "1.0".to_string(),
                 binary_attestation: None,
+                tee_attestation: None,
             },
             effect_status: "confirmed".to_string(),
             effect_type: "inference_completion".to_string(),
