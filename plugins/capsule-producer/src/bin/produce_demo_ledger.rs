@@ -162,6 +162,7 @@ fn step_input(step: &Step, chain: Option<ChainLink>) -> CapsuleInput {
             generation_parameters,
             latency_ms: "42.0".to_string(),
             binary_attestation: None,
+            tee_attestation: None,
         },
         effect_status: "confirmed".to_string(),
         effect_type: step.effect_type.to_string(),

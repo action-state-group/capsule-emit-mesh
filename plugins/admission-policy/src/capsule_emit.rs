@@ -401,6 +401,10 @@ impl CapsuleState {
                 generation_parameters,
                 latency_ms: format!("{latency_ms:.3}"),
                 binary_attestation,
+                // rung 3c (tee_measured) producer leg is HW-gated (Intel TDX
+                // Confidential VM only) and not wired in on this path -- honest
+                // absence, never fabricated. See `capsule_producer::tee_attest`.
+                tee_attestation: None,
             },
             effect_status: "confirmed".to_string(),
             effect_type: "inference_completion".to_string(),
@@ -685,6 +689,10 @@ impl CapsuleState {
                 // time the host's own dispatch) -- honest zero-marker, not faked.
                 latency_ms: "0.000".to_string(),
                 binary_attestation,
+                // rung 3c (tee_measured) producer leg is HW-gated (Intel TDX
+                // Confidential VM only) and not wired in on this path -- honest
+                // absence, never fabricated. See `capsule_producer::tee_attest`.
+                tee_attestation: None,
             },
             effect_status: "confirmed".to_string(),
             effect_type: "inference_completion".to_string(),

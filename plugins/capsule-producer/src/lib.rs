@@ -17,6 +17,12 @@
 //! - [`runtime_attest`] The runtime/binary attestation rung: hash the running
 //!   serving binary and record a signed, HONESTLY-LABELED (`self_measured`)
 //!   reference to it, shaped like executable code-signing.
+//! - [`tee_attest`] The `tee_measured` rung (rung 3c): record shape and
+//!   hardware-independent structural parser for an Intel TDX DCAP quote,
+//!   binding it to one capsule exchange via a domain-tagged REPORTDATA field.
+//! - [`tee_verify`] Local (network-free) verification of a parsed TDX quote:
+//!   the REPORTDATA binding, the DCAP cert-chain + signature path, and an
+//!   optional Intel Trust Authority token path.
 //! - [`anchor`] Optional SCITT Transparency Service client
 //!   (`capsule-anchor`'s `/v1/digest` + `/v1/inclusion/{id}`).
 //! - [`verify`] Offline (no-network) verification composing capsule_id
@@ -30,5 +36,7 @@ pub mod jcs;
 pub mod keys;
 pub mod ledger;
 pub mod runtime_attest;
+pub mod tee_attest;
+pub mod tee_verify;
 pub mod timestamp;
 pub mod verify;
