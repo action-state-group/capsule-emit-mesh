@@ -102,6 +102,16 @@ below.
     §12.3). An advertised model name is a *claim*; the `serving_provenance`
     record is the *evidence* of what actually ran. A mismatch is an attributable,
     portable evidence item, not a score decrement.
+  - **Is the output even plausible for the config it claims?** A separate,
+    harder question that reconciliation does *not* answer. Answering it well
+    needs a statistical reference model of expected output per
+    `(model, quant, hardware)` — out of scope. What ships today is only
+    **scaffolding**: a typed seam `check_output_against_config(...)` plus a
+    **trivial** token-rate / output-shape baseline behind it. Every result is a
+    `prototype_cross_check` — **probabilistic, a prototype, NOT "verified", and
+    it NEVER "gets caught"**: it raises or lowers confidence, never a pass/fail
+    verdict. Built to be attacked before the real model is (see
+    [`docs/PROTOTYPE-CROSS-CHECK.md`](docs/PROTOTYPE-CROSS-CHECK.md)).
   - **In a split, which node held which stage / layer range** — the coordinator
     receipt (a *shape*, see the honesty note below) is built to cite each hop's
     bundle in stage order.
