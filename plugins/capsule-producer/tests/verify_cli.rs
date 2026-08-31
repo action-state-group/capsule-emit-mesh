@@ -61,6 +61,7 @@ fn sample_input(seed: &str, chain: Option<ChainLink>) -> CapsuleInput {
             },
             generation_parameters,
             latency_ms: "1.0".to_string(),
+            binary_attestation: None,
         },
         effect_status: "confirmed".to_string(),
         effect_type: "inference_completion".to_string(),

@@ -14,6 +14,9 @@
 //! - [`cose`] COSE_Sign1 producer/verifier matching `scitt_cose`'s wire shape.
 //! - [`ledger`] Durable local ledger: append, restart-safe chain recovery,
 //!   receipt lookup.
+//! - [`runtime_attest`] The runtime/binary attestation rung: hash the running
+//!   serving binary and record a signed, HONESTLY-LABELED (`self_measured`)
+//!   reference to it, shaped like executable code-signing.
 //! - [`anchor`] Optional SCITT Transparency Service client
 //!   (`capsule-anchor`'s `/v1/digest` + `/v1/inclusion/{id}`).
 //! - [`verify`] Offline (no-network) verification composing capsule_id
@@ -26,5 +29,6 @@ pub mod cose;
 pub mod jcs;
 pub mod keys;
 pub mod ledger;
+pub mod runtime_attest;
 pub mod timestamp;
 pub mod verify;
