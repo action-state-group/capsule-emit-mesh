@@ -320,13 +320,15 @@ impl CapsuleState {
         // never a fabricated default.
         let generation_parameters = parse_generation_parameters(request_bytes);
 
-        // Runtime/binary attestation rung (task B3): SELF-measure the serving
-        // binary this node runs (hash its own executable) and sign the hash with
-        // the node key. `None` when the binary path is unresolvable/unreadable --
-        // the rung then degrades gracefully (empty evidence slot + placeholder
-        // runtime field), never a fabricated hash. HONESTY: this is
-        // `self_measured` -- see `capsule_producer::runtime_attest` for why it is
-        // only trustworthy up to an OS/TEE that independently measures the node.
+        // Runtime/binary attestation rung (task B3, extended by rung 3a): measure
+        // the serving binary this node runs and sign the hash with the node key.
+        // On macOS this upgrades to `os_measured` (the kernel independently
+        // reports the running process's cdhash via csops(2)); elsewhere it stays
+        // `self_measured`. `None` when the binary path is unresolvable/unreadable
+        // -- the rung then degrades gracefully (empty evidence slot + placeholder
+        // runtime field), never a fabricated hash. See
+        // `capsule_producer::runtime_attest` for the honesty grades and their
+        // trust ceilings.
         let binary_attestation =
             capsule_producer::runtime_attest::measure_self(&self.keys, utc_now_iso8601());
 
@@ -346,10 +348,10 @@ impl CapsuleState {
             // when the model emitted none (never fabricated).
             tool_calls_digest,
             reasoning_digest,
-            // The REAL self-measured serving-binary hash + its `self_measured`
-            // grade when the binary was measurable; the old `0*64` placeholder
-            // ONLY when it was not (graceful degradation, never a fabricated
-            // hash).
+            // The REAL measured serving-binary hash + its honesty grade
+            // (`os_measured` on macOS, else `self_measured`) when the binary
+            // was measurable; the old `0*64` placeholder ONLY when it was not
+            // (graceful degradation, never a fabricated hash).
             runtime: runtime_field(&binary_attestation),
             mesh_poc: MeshPocV1 {
                 client_nonce: client_nonce.unwrap_or("sidecar-generated").to_string(),
@@ -450,10 +452,10 @@ fn hex_sha256(bytes: &[u8]) -> String {
 }
 
 /// The `compute_attestation.runtime` value for the SERVED path: the real
-/// self-measured serving-binary hash + `self_measured` grade when the binary
-/// was measurable, else the honest legacy `0*64` placeholder (graceful
-/// degradation — never a fabricated hash). Runtime name identifies the serving
-/// runtime this plugin fronts.
+/// measured serving-binary hash + its honesty grade (`os_measured` on macOS,
+/// else `self_measured`) when the binary was measurable, else the honest
+/// legacy `0*64` placeholder (graceful degradation — never a fabricated
+/// hash). Runtime name identifies the serving runtime this plugin fronts.
 fn runtime_field(
     att: &Option<capsule_producer::runtime_attest::BinaryAttestation>,
 ) -> String {
@@ -621,9 +623,10 @@ impl CapsuleState {
         // inference is the mesh-llm HOST's native runtime, which this plugin
         // never runs and cannot hash -- so this attestation is of the OBSERVING/
         // EMITTING binary (this admission-policy plugin), NOT the serving one.
-        // It is still `self_measured` (the emitting node hashed its own binary)
-        // and is labeled as the observer's binary via the runtime name, so no
-        // reader can mistake it for a measurement of the host serving runtime.
+        // It is still self_measured/os_measured OF THE EMITTING NODE'S OWN
+        // BINARY (never the host's), and is labeled as the observer's binary
+        // via the runtime name, so no reader can mistake it for a measurement
+        // of the host serving runtime.
         // Degrades to `None` (empty slot) when unmeasurable, never fabricated.
         let binary_attestation =
             capsule_producer::runtime_attest::measure_self(&self.keys, utc_now_iso8601());
@@ -1153,14 +1156,22 @@ mod tests {
         assert_eq!(python_repr_f64(0.7), "0.7");
     }
 
-    /// [B3] The runtime/binary-attestation rung: a real sealed exchange records
-    /// the SELF-MEASURED hash of the serving binary (the running test binary,
-    /// via `current_exe`) in BOTH the `evidence_refs.binary_attestation` slot and
-    /// the `compute_attestation.runtime` field, and carries the `self_measured`
-    /// honesty label plus a node-key signature that verifies. This is the
-    /// end-to-end proof the rung ships the hash + the label, not just the unit.
+    /// [B3, extended by rung 3a] The runtime/binary-attestation rung: a real
+    /// sealed exchange records the measured hash of the serving binary (the
+    /// running test binary, via `current_exe`) in BOTH the
+    /// `evidence_refs.binary_attestation` slot and the
+    /// `compute_attestation.runtime` field, carrying an honesty label plus a
+    /// node-key signature that verifies. This is the end-to-end proof the
+    /// rung ships the hash + the label, not just the unit.
+    ///
+    /// The label itself is HOST-DEPENDENT and this test does not hardcode it:
+    /// on macOS with a working kernel query the rung upgrades to
+    /// `os_measured` (rung 3a — see `runtime_attest.rs`); elsewhere it is
+    /// `self_measured`. What must hold regardless of platform: a real digest,
+    /// a verifying signature, and an in-band trust-ceiling `context` naming
+    /// whichever grade was actually produced.
     #[test]
-    fn emit_for_exchange_records_self_measured_binary_attestation_rung() {
+    fn emit_for_exchange_records_binary_attestation_rung_honestly() {
         let dir = std::env::temp_dir().join(format!("cap-b3-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
@@ -1185,10 +1196,15 @@ mod tests {
             &emitted.capsule["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"];
         let att = &mesh_poc["evidence_refs"]["binary_attestation"];
 
-        // THE honesty label ships, in the evidence slot.
-        assert_eq!(
-            att["measurement_class"], "self_measured",
-            "the rung MUST label itself self_measured (the node hashed its own binary)"
+        // THE honesty label ships, in the evidence slot — self_measured or
+        // os_measured, whichever this host's kernel query actually produced.
+        let measurement_class = att["measurement_class"]
+            .as_str()
+            .expect("measurement_class present")
+            .to_string();
+        assert!(
+            measurement_class == "self_measured" || measurement_class == "os_measured",
+            "the rung must label itself one of the two grades it can honestly produce, got: {measurement_class}"
         );
         assert_eq!(att["type"], "binary_attestation");
 
@@ -1210,14 +1226,20 @@ mod tests {
             "runtime field carries the real measured binary hash, not the 0*64 placeholder"
         );
         assert!(
-            runtime.contains("self_measured"),
-            "runtime field carries the self_measured grade"
+            runtime.contains(&measurement_class),
+            "runtime field carries whichever grade was actually produced"
         );
 
-        // The trust ceiling is stated IN the sealed record (not only in docs).
+        // The trust ceiling is stated IN the sealed record (not only in docs),
+        // whichever grade actually shipped.
         let context = att["context"].as_str().expect("context present");
-        assert!(context.contains("self-measured"));
-        assert!(context.contains("untampered before hashing"));
+        if measurement_class == "os_measured" {
+            assert!(context.contains("os_measured"));
+            assert!(context.contains("SIP"));
+        } else {
+            assert!(context.contains("self-measured"));
+            assert!(context.contains("untampered before hashing"));
+        }
 
         // The node-key signature over the hex digest verifies under the same key
         // the capsule is signed with (code-signing gesture, end to end).

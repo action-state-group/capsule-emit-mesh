@@ -1,5 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Rung 1 — the transport/ledger red-team (B5a) — is in REDTEAM-RUNG1.md. -->
+<!-- Rung 3 — the independent-measurer rungs (os_measured / tee_measured) that
+     close attack 8 below — is in REDTEAM-RUNG3.md. -->
 
 # Red-team of the config / identity rungs (B5b, RUNG 2+)
 
