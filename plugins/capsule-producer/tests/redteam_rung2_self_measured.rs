@@ -6,7 +6,7 @@
 //! on-disk executable and signs the digest with the node key. Its module docs
 //! already state the ceiling — "does NOT prove the running binary was un-tampered
 //! before it hashed itself." This test turns that stated weakness into
-//! EXECUTABLE evidence for the findings table (`docs/REDTEAM-RUNG1.md`).
+//! EXECUTABLE evidence for the findings table (`docs/REDTEAM-RUNG2.md`).
 //!
 //! Outcome vocabulary (matches the Python harness):
 //!   CAUGHT   — rejected.

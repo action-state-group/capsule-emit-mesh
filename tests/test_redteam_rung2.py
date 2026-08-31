@@ -12,7 +12,7 @@ alone buys, this module attacks the rungs stacked ON TOP of it:
               (`plugins/capsule-producer/src/runtime_attest.rs`, B3). The Rust
               side is red-teamed in that crate's own tests
               (`redteam_rung2_self_measured.rs`); the residual is RESTATED here
-              so the single findings table (`docs/REDTEAM-RUNG1.md`) is complete.
+              so the rung-2+ findings table (`docs/REDTEAM-RUNG2.md`) is complete.
   * RUNG 2+ — the owner->node binding (`node_ownership.recheck_ownership_validity`,
               B4). Here we DEMAND the defence hold: forged / expired / mismatched
               certs must be CAUGHT/LABELED and never cited as a live owner.
@@ -38,7 +38,7 @@ THE HEADLINE FINDING (stated up front, proven below):
 
   Owner-binding attacks, by contrast, are CAUGHT/LABELED — B4 holds.
 
-The findings table is `docs/REDTEAM-RUNG1.md` (rung-2+ section). Each test below
+The findings table is `docs/REDTEAM-RUNG2.md`. Each test below
 is the executable evidence for one row; the docstrings and the table must agree.
 
 NEUTRALITY: this harness reads metered facts (token counts, wall-clock ms) and
