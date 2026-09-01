@@ -39,6 +39,7 @@ from mesh_record_emitter import (  # noqa: E402
     make_transcript_summary,
 )
 from mesh_record_verifier import (  # noqa: E402
+    ACKNOWLEDGED_RECEIPT,
     FULL_BILATERAL,
     UNILATERAL_FALLBACK,
     verify_record_bytes,
@@ -49,10 +50,35 @@ from requester_commitment import (  # noqa: E402
     make_requester_commitment,
     verify_requester_commitment,
 )
+from requester_identity_binding import (  # noqa: E402
+    RequesterIdentityKey,
+    make_requester_identity_binding,
+)
 
 
 REQUEST_DIGEST = "a" * 64
 EXCHANGE_ID = "exchange-rung2-0001"
+NOW_MS = 1_800_000_000_000
+FAR_FUTURE_MS = NOW_MS + 365 * 24 * 60 * 60 * 1000
+
+
+def _bound_commitment_and_binding(*, request_digest=REQUEST_DIGEST, exchange_id=EXCHANGE_ID, owner_id="requester-owner-1"):
+    """A genuinely-bound pair: a fresh commitment key, and a persistent
+    identity key whose binding cites that exact commitment key. This is the
+    "registered identity" case — the ONLY way to reach full_bilateral now."""
+    commitment_key = RequesterKey.generate()
+    commitment = make_requester_commitment(
+        commitment_key, request_digest=request_digest, exchange_id=exchange_id
+    )
+    identity_key = RequesterIdentityKey.generate()
+    binding = make_requester_identity_binding(
+        identity_key,
+        owner_id=owner_id,
+        commitment_public_key=commitment["public_key"],
+        issued_at_unix_ms=NOW_MS,
+        expires_at_unix_ms=FAR_FUTURE_MS,
+    )
+    return commitment, binding
 
 
 # ===========================================================================
@@ -156,7 +182,7 @@ class TestCommitmentUnit:
 # ===========================================================================
 
 class TestAssuranceLabelNeverSilentlyUpgraded:
-    def _emit(self, *, node, requester_commitment=None, request_digest=REQUEST_DIGEST):
+    def _emit(self, *, node, requester_commitment=None, requester_identity_binding=None, request_digest=REQUEST_DIGEST):
         return emit_lifecycle_record(
             node,
             terminal_state="completed",
@@ -165,6 +191,7 @@ class TestAssuranceLabelNeverSilentlyUpgraded:
             transcript=make_transcript_summary(3, 3),
             request_digest=request_digest,
             requester_commitment=requester_commitment,
+            requester_identity_binding=requester_identity_binding,
         )
 
     def test_no_commitment_stays_unilateral_fallback(self) -> None:
@@ -176,31 +203,59 @@ class TestAssuranceLabelNeverSilentlyUpgraded:
         assert verdict.requester_commitment_present is False
         assert verdict.requester_commitment_valid is False
 
-    def test_valid_commitment_reaches_full_bilateral(self) -> None:
+    def test_valid_commitment_alone_reaches_only_acknowledged_receipt(self) -> None:
+        """[requester-identity-binding] AFTER: a valid commitment with no
+        identity binding behind its key no longer reaches full_bilateral —
+        see TestIdentityBindingClosesTheSelfMintGap for the exact
+        [mesh-rung12-adversarial-review] repro this closes."""
         node = default_node_state()
         key = RequesterKey.generate()
         commitment = make_requester_commitment(
             key, request_digest=REQUEST_DIGEST, exchange_id=EXCHANGE_ID
         )
         capsule = self._emit(node=node, requester_commitment=commitment)
-        verdict = verify_record_bytes(capsule_to_bytes(capsule))
+        verdict = verify_record_bytes(capsule_to_bytes(capsule), now_unix_ms=NOW_MS)
 
-        assert verdict.cross_party_rung == FULL_BILATERAL, verdict.requester_commitment_reason
+        assert verdict.cross_party_rung == ACKNOWLEDGED_RECEIPT, verdict.requester_commitment_reason
         assert verdict.requester_commitment_present is True
         assert verdict.requester_commitment_valid is True
+        assert verdict.requester_identity_binding_present is False
+        assert verdict.identity_limitation is None
+
+    def test_commitment_plus_identity_binding_reaches_full_bilateral(self) -> None:
+        """A valid commitment WHOSE key is cited by a verified, persistent
+        identity binding reaches full_bilateral — the only path there now."""
+        node = default_node_state()
+        commitment, binding = _bound_commitment_and_binding()
+        capsule = self._emit(
+            node=node, requester_commitment=commitment, requester_identity_binding=binding
+        )
+        verdict = verify_record_bytes(capsule_to_bytes(capsule), now_unix_ms=NOW_MS)
+
+        assert verdict.cross_party_rung == FULL_BILATERAL, verdict.requester_identity_binding_reason
+        assert verdict.requester_commitment_valid is True
+        assert verdict.requester_identity_binding_present is True
+        assert verdict.requester_identity_binding_valid is True
+        assert verdict.requester_identity_owner_id == "requester-owner-1"
 
 
 class TestIdentityLimitationCaveat:
     """[mesh-rung12-adversarial-review] D1 — a lone node can self-mint a
     fully self-consistent requester_commitment (fresh keypair, signs over
     its own record's request_digest/exchange_id) with no real requester
-    ever involved, and still reach full_bilateral -- this is inherent
-    without an external identity anchor (out of scope here), so the honest
-    fix is disclosure: full_bilateral must never be reported without this
-    caveat, at both the emitted-record layer and the verifier layer.
+    ever involved.
+
+    [requester-identity-binding, 2026-09-01] BEFORE this change that
+    self-minted commitment reached full_bilateral outright (inherent, no
+    external anchor — the fix was disclosure only, via this caveat). AFTER:
+    a commitment with no requester_identity_binding behind its key now
+    grades at acknowledged_receipt, never full_bilateral — see
+    TestIdentityBindingClosesTheSelfMintGap below for the exact repro and
+    what remains open. This class now covers the caveat's OWN behavior
+    (present exactly when full_bilateral is reached, never otherwise).
     """
 
-    def _emit(self, *, node, requester_commitment=None, request_digest=REQUEST_DIGEST):
+    def _emit(self, *, node, requester_commitment=None, requester_identity_binding=None, request_digest=REQUEST_DIGEST):
         return emit_lifecycle_record(
             node,
             terminal_state="completed",
@@ -209,27 +264,25 @@ class TestIdentityLimitationCaveat:
             transcript=make_transcript_summary(3, 3),
             request_digest=request_digest,
             requester_commitment=requester_commitment,
+            requester_identity_binding=requester_identity_binding,
         )
 
-    def test_self_minted_commitment_still_reaches_full_bilateral_but_is_labeled(self) -> None:
-        """The exact D1 repro: the node mints its own fresh key and signs a
-        self-consistent commitment -- no real requester involved. The rung
-        cannot be prevented (inherent, no external anchor); the caveat MUST
-        be present so a reader is not misled into thinking it proves an
-        independent party."""
-        node = default_node_state("attacker-node")
-        node_self_key = RequesterKey.generate()
-        self_minted = make_requester_commitment(
-            node_self_key, request_digest=REQUEST_DIGEST, exchange_id=EXCHANGE_ID
+    def test_full_bilateral_via_identity_binding_carries_the_verifier_caveat(self) -> None:
+        """A commitment reaching full_bilateral through a verified identity
+        binding still carries a caveat — even a verified binding cannot
+        prove owner_id corresponds to a real, independent party (see
+        requester_identity_binding.IDENTITY_LIMITATION_CAVEAT)."""
+        node = default_node_state()
+        commitment, binding = _bound_commitment_and_binding()
+        capsule = self._emit(
+            node=node, requester_commitment=commitment, requester_identity_binding=binding
         )
-        capsule = self._emit(node=node, requester_commitment=self_minted)
-        verdict = verify_record_bytes(capsule_to_bytes(capsule))
+        verdict = verify_record_bytes(capsule_to_bytes(capsule), now_unix_ms=NOW_MS)
 
         assert verdict.cross_party_rung == FULL_BILATERAL
-        assert verdict.identity_limitation == IDENTITY_LIMITATION_CAVEAT, (
-            "a full_bilateral verdict must always carry the identity-limitation "
-            "caveat -- it is not disclosed only when the producer happens to "
-            "include it"
+        assert verdict.identity_limitation is not None, (
+            "a full_bilateral verdict must always carry an identity-limitation "
+            "caveat -- reaching this rung still never proves an independent party"
         )
 
     def test_emitted_record_carries_the_caveat_on_its_own_bytes(self) -> None:
@@ -332,13 +385,11 @@ class TestIdentityLimitationCaveat:
 class TestTwoNodeExchange:
     def test_ingress_and_completion_both_carry_the_requester(self) -> None:
         """One exchange_id, two records (ingress + completion, different
-        observation_point/hop), the SAME requester commitment (same
-        exchange_id and request_digest — one request travels through both
-        hops) bound into both halves and independently verified in each."""
-        key = RequesterKey.generate()
-        commitment = make_requester_commitment(
-            key, request_digest=REQUEST_DIGEST, exchange_id=EXCHANGE_ID
-        )
+        observation_point/hop), the SAME requester commitment AND identity
+        binding (same exchange_id and request_digest — one request travels
+        through both hops) bound into both halves and independently
+        verified in each."""
+        commitment, binding = _bound_commitment_and_binding()
 
         gateway_node = default_node_state("gateway-A")
         host_node = default_node_state("serving-host-A")
@@ -353,6 +404,7 @@ class TestTwoNodeExchange:
             transcript=make_transcript_summary(1, 1),
             request_digest=REQUEST_DIGEST,
             requester_commitment=commitment,
+            requester_identity_binding=binding,
         )
         completion = emit_lifecycle_record(
             host_node,
@@ -364,10 +416,11 @@ class TestTwoNodeExchange:
             transcript=make_transcript_summary(3, 3),
             request_digest=REQUEST_DIGEST,
             requester_commitment=commitment,
+            requester_identity_binding=binding,
         )
 
-        ingress_verdict = verify_record_bytes(capsule_to_bytes(ingress))
-        completion_verdict = verify_record_bytes(capsule_to_bytes(completion))
+        ingress_verdict = verify_record_bytes(capsule_to_bytes(ingress), now_unix_ms=NOW_MS)
+        completion_verdict = verify_record_bytes(capsule_to_bytes(completion), now_unix_ms=NOW_MS)
 
         # Joinable: same exchange.
         assert ingress_verdict.is_joinable_with(completion_verdict)
@@ -403,3 +456,196 @@ class TestTwoNodeExchange:
 
         assert verdict.cross_party_rung == UNILATERAL_FALLBACK
         assert "exchange_id mismatch" in verdict.requester_commitment_reason
+
+
+# ===========================================================================
+# 4. [requester-identity-binding] IDENTITY BINDING CLOSES THE SELF-MINT GAP
+#
+# TRUST-MODEL.md §4.1a / [mesh-rung12-adversarial-review] D1 disclosed that a
+# lone node can mint a fresh requester_commitment keypair inline, sign a
+# fully self-consistent commitment, and reach full_bilateral with no real
+# requester ever involved. This section proves the exact repro now fails to
+# reach full_bilateral, a genuinely-bound identity DOES reach it, a revoked
+# or unrecognized identity binding degrades, and states plainly what remains
+# open (an attacker who ALSO self-registers an identity — see
+# requester_identity_binding.IDENTITY_LIMITATION_CAVEAT).
+# ===========================================================================
+
+class TestIdentityBindingClosesTheSelfMintGap:
+    def _emit(self, *, node, requester_commitment, requester_identity_binding=None):
+        return emit_lifecycle_record(
+            node,
+            terminal_state="completed",
+            exchange_id=EXCHANGE_ID,
+            local_peer_id="serving-host-A",
+            transcript=make_transcript_summary(3, 3),
+            request_digest=REQUEST_DIGEST,
+            requester_commitment=requester_commitment,
+            requester_identity_binding=requester_identity_binding,
+        )
+
+    def test_exact_d1_self_mint_repro_no_longer_reaches_full_bilateral(self) -> None:
+        """The exact [mesh-rung12-adversarial-review] D1 repro: the node
+        mints its own fresh commitment key and signs a self-consistent
+        commitment -- no identity binding at all, no real requester ever
+        involved. BEFORE this change: full_bilateral (labeled). AFTER: this
+        is precisely acknowledged_receipt -- the zero-effort attack fails to
+        reach full_bilateral."""
+        node = default_node_state("attacker-node")
+        node_self_key = RequesterKey.generate()
+        self_minted = make_requester_commitment(
+            node_self_key, request_digest=REQUEST_DIGEST, exchange_id=EXCHANGE_ID
+        )
+        capsule = self._emit(node=node, requester_commitment=self_minted)
+        verdict = verify_record_bytes(capsule_to_bytes(capsule), now_unix_ms=NOW_MS)
+
+        assert verdict.cross_party_rung == ACKNOWLEDGED_RECEIPT, (
+            f"the exact D1 self-mint repro must not reach full_bilateral -- "
+            f"got {verdict.cross_party_rung!r}"
+        )
+        assert verdict.cross_party_rung != FULL_BILATERAL
+        assert verdict.requester_identity_binding_present is False
+
+    def test_genuinely_bound_identity_reaches_full_bilateral(self) -> None:
+        """A commitment key cited by a persistent, independently-signed
+        identity binding -- the honest positive case -- reaches
+        full_bilateral."""
+        node = default_node_state()
+        commitment, binding = _bound_commitment_and_binding(owner_id="requester-owner-real")
+        capsule = self._emit(node=node, requester_commitment=commitment, requester_identity_binding=binding)
+        verdict = verify_record_bytes(capsule_to_bytes(capsule), now_unix_ms=NOW_MS)
+
+        assert verdict.cross_party_rung == FULL_BILATERAL, verdict.requester_identity_binding_reason
+        assert verdict.requester_identity_binding_valid is True
+        assert verdict.requester_identity_owner_id == "requester-owner-real"
+
+    def test_revoked_identity_binding_degrades_to_acknowledged_receipt(self) -> None:
+        """A structurally valid, unexpired identity binding whose cert_id is
+        on the caller-supplied revocation set must not reach full_bilateral
+        -- revocation is the operator's live decision (never fabricated
+        here), but once supplied it must be enforced."""
+        node = default_node_state()
+        commitment_key = RequesterKey.generate()
+        commitment = make_requester_commitment(
+            commitment_key, request_digest=REQUEST_DIGEST, exchange_id=EXCHANGE_ID
+        )
+        identity_key = RequesterIdentityKey.generate()
+        binding = make_requester_identity_binding(
+            identity_key,
+            owner_id="requester-owner-revoked",
+            commitment_public_key=commitment["public_key"],
+            cert_id="cert-revoked-0001",
+            issued_at_unix_ms=NOW_MS,
+            expires_at_unix_ms=FAR_FUTURE_MS,
+        )
+        capsule = self._emit(node=node, requester_commitment=commitment, requester_identity_binding=binding)
+        verdict = verify_record_bytes(
+            capsule_to_bytes(capsule),
+            now_unix_ms=NOW_MS,
+            revoked_identity_cert_ids=frozenset({"cert-revoked-0001"}),
+        )
+
+        assert verdict.cross_party_rung == ACKNOWLEDGED_RECEIPT
+        assert verdict.requester_identity_binding_present is True
+        assert verdict.requester_identity_binding_valid is False
+        assert "revoked" in verdict.requester_identity_binding_reason
+
+    def test_unrecognized_identity_binding_degrades_to_acknowledged_receipt(self) -> None:
+        """A present-but-unrecognized identity binding (unsupported version
+        -- e.g. a future format this verifier does not understand) must not
+        be treated as a trust upgrade. Unknown evidence gets no partial
+        credit, same rule as an invalid requester_commitment."""
+        node = default_node_state()
+        commitment_key = RequesterKey.generate()
+        commitment = make_requester_commitment(
+            commitment_key, request_digest=REQUEST_DIGEST, exchange_id=EXCHANGE_ID
+        )
+        identity_key = RequesterIdentityKey.generate()
+        binding = make_requester_identity_binding(
+            identity_key,
+            owner_id="requester-owner-unknown-version",
+            commitment_public_key=commitment["public_key"],
+            issued_at_unix_ms=NOW_MS,
+            expires_at_unix_ms=FAR_FUTURE_MS,
+        )
+        binding["version"] = 999  # a version this verifier does not understand
+        capsule = self._emit(node=node, requester_commitment=commitment, requester_identity_binding=binding)
+        verdict = verify_record_bytes(capsule_to_bytes(capsule), now_unix_ms=NOW_MS)
+
+        assert verdict.cross_party_rung == ACKNOWLEDGED_RECEIPT
+        assert verdict.requester_identity_binding_valid is False
+        assert "unsupported" in verdict.requester_identity_binding_reason
+
+    def test_expired_identity_binding_degrades_to_acknowledged_receipt(self) -> None:
+        node = default_node_state()
+        commitment_key = RequesterKey.generate()
+        commitment = make_requester_commitment(
+            commitment_key, request_digest=REQUEST_DIGEST, exchange_id=EXCHANGE_ID
+        )
+        identity_key = RequesterIdentityKey.generate()
+        binding = make_requester_identity_binding(
+            identity_key,
+            owner_id="requester-owner-expired",
+            commitment_public_key=commitment["public_key"],
+            issued_at_unix_ms=NOW_MS - 2_000,
+            expires_at_unix_ms=NOW_MS - 1_000,  # already expired at NOW_MS
+        )
+        capsule = self._emit(node=node, requester_commitment=commitment, requester_identity_binding=binding)
+        verdict = verify_record_bytes(capsule_to_bytes(capsule), now_unix_ms=NOW_MS)
+
+        assert verdict.cross_party_rung == ACKNOWLEDGED_RECEIPT
+        assert verdict.requester_identity_binding_valid is False
+        assert "expired" in verdict.requester_identity_binding_reason
+
+    def test_binding_for_a_different_commitment_key_cannot_be_replayed(self) -> None:
+        """A binding minted for ONE commitment key must not upgrade a
+        record carrying a DIFFERENT commitment key -- the binding-to-key
+        replay case, mirroring the commitment-to-request replay guard
+        above."""
+        node = default_node_state()
+        this_commitment_key = RequesterKey.generate()
+        this_commitment = make_requester_commitment(
+            this_commitment_key, request_digest=REQUEST_DIGEST, exchange_id=EXCHANGE_ID
+        )
+        other_commitment_key = RequesterKey.generate()
+        other_commitment = make_requester_commitment(
+            other_commitment_key, request_digest=REQUEST_DIGEST, exchange_id=EXCHANGE_ID
+        )
+        identity_key = RequesterIdentityKey.generate()
+        binding_for_other_key = make_requester_identity_binding(
+            identity_key,
+            owner_id="requester-owner-1",
+            commitment_public_key=other_commitment["public_key"],
+            issued_at_unix_ms=NOW_MS,
+            expires_at_unix_ms=FAR_FUTURE_MS,
+        )
+        capsule = self._emit(
+            node=node, requester_commitment=this_commitment, requester_identity_binding=binding_for_other_key
+        )
+        verdict = verify_record_bytes(capsule_to_bytes(capsule), now_unix_ms=NOW_MS)
+
+        assert verdict.cross_party_rung == ACKNOWLEDGED_RECEIPT
+        assert verdict.requester_identity_binding_valid is False
+        assert "commitment_public_key mismatch" in verdict.requester_identity_binding_reason
+
+    def test_still_open_attacker_who_also_self_mints_the_identity_binding(self) -> None:
+        """HONEST RESIDUAL, documented rather than hidden (same discipline as
+        REDTEAM-RUNG2.md's B4 key-substitution case): this module closes the
+        ZERO-EFFORT self-mint (no binding at all). It does NOT and cannot
+        close a more determined attacker who generates BOTH a fresh
+        commitment key AND a fresh identity key and signs a binding between
+        them -- the identity is still self-asserted, exactly as
+        node_ownership.py's owner cert is. That still reaches full_bilateral.
+        Closing THIS residual requires an external anchor (the Authority
+        tier), out of scope for this record layer -- see TRUST-MODEL.md
+        §4.1a. This test exists so the residual is proven and visible, not
+        silently assumed away."""
+        node = default_node_state("attacker-node")
+        commitment, binding = _bound_commitment_and_binding(owner_id="attacker-self-registered")
+        capsule = self._emit(node=node, requester_commitment=commitment, requester_identity_binding=binding)
+        verdict = verify_record_bytes(capsule_to_bytes(capsule), now_unix_ms=NOW_MS)
+
+        assert verdict.cross_party_rung == FULL_BILATERAL, (
+            "documenting the known-open residual: a fully self-registered "
+            "identity still reaches full_bilateral -- see TRUST-MODEL.md §4.1a"
+        )

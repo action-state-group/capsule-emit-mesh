@@ -471,7 +471,9 @@ exchange in §4's opening paragraph:
   otherwise, **never** silently upgraded on absent or invalid evidence. Because the same commitment can
   travel unmodified with the request across every hop of a split exchange, an ingress record and a
   completion record sharing one `exchange_id` are each independently verified as carrying the same
-  requester — closing part of R10 without needing a coordinator receipt.
+  requester — closing part of R10 without needing a coordinator receipt. **Updated 2026-09-01 (§4.1b):**
+  a third rung, `acknowledged_receipt`, now sits between the two — a valid commitment whose key carries
+  no verified `requester_identity_binding` grades there, not `full_bilateral`. See §4.1b.
 - **What it deliberately does not do**: it does not implement Moves 2–4 of
   draft-mih-agent-bilateral-attestation-01 (constraint evaluation, action attestation referencing the
   request attestation, or a client acknowledgment of the completion). The separate #1233 receipt tuple
@@ -498,7 +500,60 @@ exchange in §4's opening paragraph:
   was made and matches this record*, never *that an independent party made it* — attached at the
   emitted-record layer (`mesh_record_emitter.py`) and re-derived independently at the verifier layer
   (`mesh_record_verifier.py` / `capsule_sidecar.identity_limitation_for_rung()`) so a reader is never
-  solely dependent on the producer having chosen to disclose it.
+  solely dependent on the producer having chosen to disclose it. **This bullet remains the accurate,
+  unmodified description of the #1233 receipt tuple (`capsule_sidecar.py` / `bilateral_demo.py`) —
+  that mechanism's gap is still open. For the exchange_id-correlated record family described in this
+  section, §4.1b (2026-09-01) below narrows it: disclosure-only is no longer the whole story.**
+
+### 4.1b Built: requester identity binding narrows the self-mint gap for the
+exchange_id-correlated family (2026-09-01)
+
+`requester_identity_binding.py` adds a second, independent piece of evidence — checked *in
+addition to* `requester_commitment.py`'s signature-over-request-bytes — that the exchange_id-correlated
+record family's `derive_cross_party_rung()` (`mesh_record_verifier.py`) now requires before granting
+`full_bilateral`. It reuses the exact pattern §B.1 already established for `node_ownership.py`: a
+persistent, self-signed, time-bounded, revocable cert — applied here to the *requester's* commitment
+key rather than the node owner's endpoint.
+
+- **What it does.** A requester holds a persistent `RequesterIdentityKey`, separate from (and
+  longer-lived than) the per-commitment key. That identity key signs a binding: *"the commitment key
+  embedded in THIS `requester_commitment` belongs to identity `owner_id`."* The binding cites the
+  commitment's own public key, so it cannot be replayed onto a different commitment. The verifier
+  re-checks the binding's own signature, its expiry, the key match, and — when the caller supplies a
+  revocation set (the operator's live decision, never fabricated here, same discipline
+  `node_ownership.recheck_ownership_validity()` follows for its own cert) — that the `cert_id` has not
+  been revoked.
+- **The rung is now three-valued for this mechanism.** `unilateral_fallback` (no valid commitment) <
+  `acknowledged_receipt` (a valid commitment, no verified identity binding behind its key) <
+  `full_bilateral` (a valid commitment **and** a verified identity binding citing that exact key). The
+  middle rung reuses the vocabulary §4.1a already noted was shared with the #1233 receipt tuple's own
+  three-valued ladder (`unilateral_fallback` / `acknowledged_receipt` / `full_bilateral`,
+  `capsule_sidecar.derive_cross_party_rung()`) — the two mechanisms now use the SAME three labels for
+  an analogous shape of evidence (a signed commitment plus a second, independent binding), though the
+  underlying checks remain mechanism-specific and are not interchangeable claims (§4.1a's caution about
+  comparing `full_bilateral` across mechanisms still applies).
+- **What this closes.** The [mesh-rung12-adversarial-review] D1 repro exactly as documented above — a
+  node minting a fresh commitment keypair inline, with nothing behind it — now grades at
+  `acknowledged_receipt`, never `full_bilateral`. Before this change that repro reached `full_bilateral`
+  outright (labeled with a caveat, never prevented). After: the zero-effort, single-artifact self-mint
+  no longer reaches the top rung at all. Proved in
+  `tests/test_requester_commitment.py::TestIdentityBindingClosesTheSelfMintGap` (the exact repro,
+  a genuinely-bound identity reaching `full_bilateral`, and a revoked or version-unrecognized binding
+  degrading) and `tests/test_requester_identity_binding.py` (unit/mutant coverage of the binding
+  mechanism itself).
+- **What remains open — stated as precisely as §4.1a states its own gap, not glossed over.** A more
+  determined attacker who generates **both** a fresh commitment key **and** a fresh identity key, and
+  signs a binding between them, still reaches `full_bilateral` — the identity itself is still
+  self-asserted, exactly as `node_ownership.py`'s owner cert is (§B.1). This is proved, not assumed,
+  by `test_still_open_attacker_who_also_self_mints_the_identity_binding`. Closing *that* residual is
+  the same unclosed problem §4.1a already named: it requires a third-party-issued credential or a
+  trusted root a relying party accepts — the Authority tier, out of scope for this record layer. What
+  changed is the shape of the residual: before, *any* commitment key reached `full_bilateral`; now,
+  reaching it requires a **second, persistent artifact** an attacker must additionally produce and
+  bind correctly — closing the inline, single-artifact case while leaving the fully-determined,
+  two-artifact self-registration case open, honestly disclosed via
+  `requester_identity_binding.IDENTITY_LIMITATION_CAVEAT`, carried into every `full_bilateral` verdict
+  exactly as §4.1a's caveat was.
 
 ### 4.2 Where this sits in the composition model
 
