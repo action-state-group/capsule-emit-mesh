@@ -68,6 +68,8 @@ __all__ = [
     "StageBundle",
     "bundle_digest",
     "bundle_ref_for",
+    "stage_bundle_to_dict",
+    "stage_bundle_from_dict",
     "ask_stage_for_bundle",
     "collect_disclosed_bundles",
     "compose_receipt_from_disclosures",
@@ -113,6 +115,35 @@ def bundle_digest(bundle: StageBundle) -> str:
 def bundle_ref_for(bundle: StageBundle) -> dict[str, Any]:
     """Build the CPB typed digest ref the receipt cites for a present stage."""
     return {"type": "capsule", "digest_alg": _DIGEST_ALG, "digest": bundle_digest(bundle)}
+
+
+def stage_bundle_to_dict(bundle: StageBundle) -> dict[str, Any]:
+    """The wire/file shape a disclosed StageBundle is carried in off-process.
+
+    Shared by `capsule_disclosure_endpoint.py` (serves this) and
+    `capsule_coordinator_verify.py` (reads this, whether from a local file or
+    fetched over HTTP) so both sides of the ask/verify quickstart agree on one
+    JSON shape instead of each inventing their own.
+    """
+    return {
+        "hop_id": bundle.hop_id,
+        "stage_capsule": bundle.stage_capsule,
+        "inclusion_proof": bundle.inclusion_proof,
+    }
+
+
+def stage_bundle_from_dict(data: dict[str, Any]) -> StageBundle:
+    """Inverse of `stage_bundle_to_dict` — untrusted input, no extra checks
+
+    beyond what `StageBundle`'s own fields require; the offline verifier
+    downstream (`verify_coordinator_receipt`) is what actually load-bears on
+    this bundle's contents.
+    """
+    return StageBundle(
+        hop_id=data["hop_id"],
+        stage_capsule=data["stage_capsule"],
+        inclusion_proof=data.get("inclusion_proof"),
+    )
 
 
 # ---------------------------------------------------------------------------

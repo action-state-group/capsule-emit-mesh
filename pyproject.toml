@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "capsule-emit-mesh-sidecar"
+version = "0.1.0"
+description = "Ask-and-verify quickstart + sidecar packaging for capsule-emit-mesh (a neutral accountability PoC for Mesh-LLM)."
+readme = "QUICKSTART.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+dependencies = [
+    # capsule_sidecar.py imports capsule_emit.checkpoint / capsule_emit.signing (via checkpointing.py)
+    # and agent_action_capsule directly; capsule-emit itself depends on agent-action-capsule, but the
+    # verify/mesh modules import agent_action_capsule directly too, so it's pinned explicitly here.
+    "agent-action-capsule>=0.2.0",
+    "capsule-emit>=0.5.1",
+    # scitt-cose and cryptography are NOT pulled by plain capsule-emit; capsule_sidecar.py imports
+    # scitt_cose directly, and requester_commitment.py / node_ownership.py import cryptography directly.
+    "scitt-cose>=0.2.2",
+    "cryptography",
+]
+
+[project.urls]
+Homepage = "https://github.com/action-state-group/capsule-emit-mesh"
+
+[project.scripts]
+# The native-plugin path (StevenMih/mesh-llm PRs #1/#2/#3 on top of upstream #1437) has no Python
+# side to package -- it's Rust, built inside mesh-llm itself. These three cover the sidecar-now path.
+capsule-sidecar = "capsule_sidecar:main"
+capsule-coordinator-verify = "capsule_coordinator_verify:main"
+capsule-disclosure-endpoint = "capsule_disclosure_endpoint:main"
+
+[tool.setuptools]
+# Flat module layout (no package directory) -- listed explicitly rather than relying on setuptools'
+# flat-layout auto-discovery, which refuses to guess among this many top-level modules. Exactly the
+# transitive closure the three console scripts above need; the repo's other top-level scripts
+# (demos, red-team fixtures, the Rust plugin harness, etc.) are dev-only and stay out of the wheel.
+py-modules = [
+    "capsule_sidecar",
+    "advertisement",
+    "checkpointing",
+    "model_identity",
+    "node_ownership",
+    "mesh_coordinator_bundle_flow",
+    "mesh_coordinator_receipt_emitter",
+    "mesh_record_emitter",
+    "mesh_record_verifier",
+    "requester_commitment",
+    "capsule_coordinator_verify",
+    "capsule_disclosure_endpoint",
+]

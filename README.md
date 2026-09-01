@@ -1,5 +1,8 @@
 # capsule-emit-mesh
 
+> **Already running Mesh-LLM and just want to test this?** [QUICKSTART.md](QUICKSTART.md) —
+> `pip install`, then ask a node "what did you do?" and verify the answer offline.
+
 Neutral accountability for [Mesh-LLM](https://github.com/Mesh-LLM/mesh-llm):
 emit signed, hash-chained **Agent Action Capsules** for every request a Mesh-LLM
 node serves — a durable, offline-verifiable inference receipt bound to the bytes
