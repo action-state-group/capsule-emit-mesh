@@ -69,6 +69,9 @@ jobs:
       - name: Smoke — delegation_issuer (issuance/renewal counterpart to the verifier)
         run: python -c "from delegation_issuer import DelegationIssuer, UnregisteredScope, ArbitrarySigningRejected, OwnerIdentityUnavailable; print('ok')"
 
+      - name: Smoke — sep_attestation (rung 3b key-custody; ubuntu-latest exercises its software fallback tier)
+        run: python -c "import sep_attestation; print('ok')"
+
       - name: Smoke — capsule_mesh_view (thin ledger-view wrapper joining the plugin + sidecar logs)
         run: python -c "import capsule_mesh_view; print('ok')"
 
