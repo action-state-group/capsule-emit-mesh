@@ -18,12 +18,19 @@
 # capsule-emit's removed emit() verb -- so the full suite passes and the
 # committed ledger/ fixtures verify clean with no migration.
 #
-# Floor is now 0.6.1 (the current release): capsule-emit#128/#135 fixed a bug
-# where a float-typed tool argument dropped the planned capsule at the digest
-# layer instead of chaining it. No fixtures here carry float tool-args, so no
-# regeneration was needed for this bump. The floor is pinned at the tested
-# release to prevent silent resolution back to an older, unpatched line.
-capsule-emit[mcp]>=0.6.1
+# Floor was 0.6.1: capsule-emit#128/#135 fixed a bug where a float-typed tool
+# argument dropped the planned capsule at the digest layer instead of chaining
+# it. No fixtures here carry float tool-args, so no regeneration was needed
+# for that bump.
+#
+# Floor is now 0.7.0 (the current release): the CLL/MMR core (checkpoint
+# logging + Merkle Mountain Range) graduated out of capsule-emit into its own
+# package, checkpointed-local-log>=0.1.0, which capsule-emit[mcp] now pulls
+# transitively as a core (non-extra) dependency -- no separate pin needed
+# here. 0.7.0 also folds in the 0.6.1 float tool-arg canonicalization fix.
+# The floor is pinned at the tested release to prevent silent resolution back
+# to an older line.
+capsule-emit[mcp]>=0.7.0
 scitt-cose>=0.2.2
 cbor2
 mcp<2
