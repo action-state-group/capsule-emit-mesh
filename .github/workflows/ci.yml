@@ -14,6 +14,7 @@
 #   - Break import in goose/server.py → "Smoke: goose/server.py" fails.
 #   - Break import in capsule_sidecar.py → "Smoke: capsule_sidecar" fails.
 #   - Break import in capsule_mesh_view.py → "Smoke: capsule_mesh_view" fails.
+#   - Break import in capsule_accountability_tab.py → "Smoke: capsule_accountability_tab" fails.
 name: ci
 
 on:
@@ -89,6 +90,9 @@ jobs:
 
       - name: Smoke — mesh_viewer_static (the inline mesh_verify.js asset package)
         run: python -c "import mesh_viewer_static; from importlib import resources; resources.files('mesh_viewer_static').joinpath('mesh_verify.js').read_text(); print('ok')"
+
+      - name: Smoke — capsule_accountability_tab (mesh-llm-ui-styled offline Accountability tab; composes capsule_mesh_view + capsule_mesh_viewer + capsule_sidecar)
+        run: python -c "import capsule_accountability_tab; print('ok')"
 
       - name: Unit tests
         run: |
