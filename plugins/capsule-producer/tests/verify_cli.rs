@@ -31,6 +31,7 @@ fn sample_input(seed: &str, chain: Option<ChainLink>) -> CapsuleInput {
         agent_output_digest: "b".repeat(64),
         tool_calls_digest: None,
         reasoning_digest: None,
+        host_binding: None,
         runtime: "runtime".to_string(),
         mesh_poc: MeshPocV1 {
             client_nonce: seed.repeat(32).chars().take(32).collect(),

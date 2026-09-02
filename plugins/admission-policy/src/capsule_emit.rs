@@ -12,7 +12,7 @@
 //! implementations. Mutating the actual content still changes `capsule_id`.
 
 use capsule_producer::capsule::{
-    seal, CapsuleInput, ChainLink, MeshPocV1, ServingProvenance, TokenUsage,
+    seal, CapsuleInput, ChainLink, HostBinding, MeshPocV1, ServingProvenance, TokenUsage,
 };
 use capsule_producer::cose::{build_signed_statement, SignedStatementInput};
 use capsule_producer::jcs;
@@ -348,6 +348,11 @@ impl CapsuleState {
             // when the model emitted none (never fabricated).
             tool_calls_digest,
             reasoning_digest,
+            // This path serves the exchange itself -- there is no SEPARATE
+            // host-native digest to bind (this plugin IS the one computing
+            // `agent_input_digest`, over the same bytes, under our own
+            // construction) -- so `host_binding` is not applicable here.
+            host_binding: None,
             // The REAL measured serving-binary hash + its honesty grade
             // (`os_measured` on macOS, else `self_measured`) when the binary
             // was measurable; the old `0*64` placeholder ONLY when it was not
@@ -578,6 +583,22 @@ impl CapsuleState {
             .map(str::to_string)
             .unwrap_or_else(|| format!("unknown-request:{model}"));
 
+        // host_binding: the SAME host-forwarded value, ALSO carried as an
+        // independent reverse-direction composition binding under mesh-llm's
+        // OWN construction -- not a re-derivation of `agent_input_digest`
+        // above, and never presumed byte-equal to it (see
+        // `capsule_producer::capsule::HostBinding`'s INDEPENDENCE RULE). This
+        // is what lets the record join mesh-llm's own ops log even if a
+        // future mesh-llm canonicalization change makes the two values
+        // diverge: the record already carries mesh-llm's digest labeled AS
+        // mesh-llm's own scheme, not smuggled in under ours. Absent -- never
+        // null -- when the host forwarded none.
+        let host_binding = request_digest.map(|rd| HostBinding {
+            digest: rd.to_string(),
+            construction: capsule_producer::capsule::MESH_LLM_REQUEST_BODY_SHA256_V1.to_string(),
+            purpose: capsule_producer::capsule::HOST_LOG_JOIN.to_string(),
+        });
+
         // agent_output_digest: PREFER the host-forwarded canonical digest of the
         // REAL response body (computed host-side at its JSON-relay delivery
         // point, the same plain-JCS `json_digest` a verifier recomputes) -- this
@@ -648,6 +669,7 @@ impl CapsuleState {
             // fabricated). This is where the real `tool_calls_digest` lands.
             tool_calls_digest: tool_calls_digest.map(str::to_string),
             reasoning_digest: reasoning_digest.map(str::to_string),
+            host_binding: host_binding.clone(),
             // Observe path: this measures the OBSERVING plugin binary, not the
             // host serving runtime (see the note above) -- labeled as such in the
             // runtime name. Real self-measured hash when measurable; `0*64`
@@ -948,6 +970,106 @@ mod tests {
             "observe path holds no request -> no sampling knobs, and NO fabricated temperature=0.0"
         );
         assert!(gp.get("temperature").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// END-TO-END: a host-served observed exchange that forwarded a real
+    /// `request_digest` seals a `host_binding` group carrying that SAME value
+    /// under mesh-llm's own construction — an independent second claim
+    /// alongside `agent_input_digest`, not a re-derivation of it.
+    #[test]
+    fn observed_host_exchange_seals_host_binding_from_forwarded_request_digest() {
+        let dir = std::env::temp_dir().join(format!("cap-hb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let observed = ObservedHostExchange {
+            model: "m",
+            exchange_id: Some("e"),
+            request_digest: Some(
+                "a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5",
+            ),
+            response_digest: None,
+            tool_calls_digest: None,
+            reasoning_digest: None,
+            usage: None,
+            host_provenance: HostProvenance::default(),
+        };
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal");
+        let ca = &emitted.capsule["model_attestation"]["compute_attestation"];
+        assert_eq!(
+            ca["host_binding"]["digest"],
+            "a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5"
+        );
+        assert_eq!(
+            ca["host_binding"]["construction"],
+            capsule_producer::capsule::MESH_LLM_REQUEST_BODY_SHA256_V1
+        );
+        assert_eq!(
+            ca["host_binding"]["purpose"],
+            capsule_producer::capsule::HOST_LOG_JOIN
+        );
+        // Both are the SAME value here (this rig forwards one digest for
+        // both), but structurally they are two independent claims: the
+        // capsule carries them under two different keys, and the sealed
+        // capsule validates structurally without comparing the two.
+        assert_eq!(ca["agent_input_digest"], ca["host_binding"]["digest"]);
+        assert!(capsule_producer::capsule::validate_host_binding(&emitted.capsule).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Absence rule on the OBSERVE path: when the host forwards NO
+    /// `request_digest`, `host_binding` is OMITTED entirely — never `null`,
+    /// never a digest over an empty/unknown input.
+    #[test]
+    fn observed_host_exchange_omits_host_binding_when_host_forwards_no_digest() {
+        let dir = std::env::temp_dir().join(format!("cap-hbn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let observed = ObservedHostExchange {
+            model: "m",
+            exchange_id: Some("e"),
+            request_digest: None,
+            response_digest: None,
+            tool_calls_digest: None,
+            reasoning_digest: None,
+            usage: None,
+            host_provenance: HostProvenance::default(),
+        };
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal");
+        let ca = &emitted.capsule["model_attestation"]["compute_attestation"];
+        assert!(
+            ca.get("host_binding").is_none(),
+            "no host-forwarded digest -> host_binding must be absent, not null"
+        );
+        assert!(capsule_producer::capsule::validate_host_binding(&emitted.capsule).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The plugin-served (`emit_for_exchange`) path is not the host-served
+    /// observe path — there is no separate mesh-llm-native digest to bind, so
+    /// `host_binding` stays absent there too.
+    #[test]
+    fn plugin_served_exchange_carries_no_host_binding() {
+        let dir = std::env::temp_dir().join(format!("cap-hbe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let exchange = ExchangeRecord {
+            model: "m",
+            client_nonce: Some("n"),
+            request_bytes: br#"{"model":"m","messages":[]}"#,
+            response_bytes: br#"{"model":"m","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+            latency_ms: 1.0,
+            exchange_id: Some("e"),
+            requesting_party: Some("client"),
+            host_provenance: None,
+        };
+        let emitted = state.emit_for_exchange(&exchange).expect("seal");
+        let ca = &emitted.capsule["model_attestation"]["compute_attestation"];
+        assert!(ca.get("host_binding").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

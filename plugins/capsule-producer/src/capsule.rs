@@ -247,6 +247,120 @@ impl ChainLink {
     }
 }
 
+/// The registered label for mesh-llm's own request-body digest, stated AS
+/// DATA: the exact byte source is the HTTP request body as mesh-llm's host
+/// runtime transmitted it (before any canonicalization on our side), the
+/// hash is SHA-256, and the representation is unprefixed lowercase hex —
+/// mesh-llm's own scheme, as mesh-llm defines it, never re-derived here.
+pub const MESH_LLM_REQUEST_BODY_SHA256_V1: &str = "mesh-llm/request-body-sha256/v1";
+
+/// A registered `host_binding.construction` label. Each entry states, AS
+/// DATA, the exact byte source, hash, and representation the label pins —
+/// this module does not normalize, re-encode, or re-derive those bytes. The
+/// closed set exists so [`validate_host_binding`] can reject an unregistered
+/// or missing label rather than accept any string.
+pub const REGISTERED_HOST_BINDING_CONSTRUCTIONS: &[&str] = &[MESH_LLM_REQUEST_BODY_SHA256_V1];
+
+/// The registered `host_binding.purpose` label for joining this record into
+/// mesh-llm's own operational log.
+pub const HOST_LOG_JOIN: &str = "host-log-join";
+
+/// A registered `host_binding.purpose` label (mirrors the entry's
+/// purpose-label list convention). `host-log-join` is the first member.
+pub const REGISTERED_HOST_BINDING_PURPOSES: &[&str] = &[HOST_LOG_JOIN];
+
+/// Reverse-direction composition binding (host-native digest) — the
+/// application of the AAC Composition WHAT-slot "Additional composition
+/// bindings" rule to this record: mesh-llm's OWN digest for the same
+/// exchange, carried under mesh-llm's OWN construction, so the record joins
+/// the host platform's operational log without either side re-canonicalizing
+/// the other's bytes.
+///
+/// INDEPENDENCE RULE (normative): a verifier MUST NOT infer equality,
+/// derivation, or transitive coverage between `host_binding.digest` and any
+/// other binding on the record (including `agent_input_digest`) merely
+/// because they cover the same exchange, share a hash algorithm, or appear
+/// in the same signed payload. Two bindings on one record are two
+/// independent, co-signed claims — byte-equality between them is NOT
+/// required, NOT implied, and MUST NOT be assumed by tooling. See
+/// [`validate_host_binding`], which performs ONLY structural checks and
+/// never compares `digest` against any other field, and the `mod tests`
+/// `equality_inference_mutant_*` tests, which demonstrate why.
+#[derive(Clone)]
+pub struct HostBinding {
+    /// The host's own digest for this exchange, lowercase hex, as mesh-llm
+    /// computed it — never re-derived here.
+    pub digest: String,
+    /// REQUIRED registered context label naming mesh-llm's own construction
+    /// (what bytes, what hash, stated as data — see
+    /// `REGISTERED_HOST_BINDING_CONSTRUCTIONS`), never a code-line citation.
+    pub construction: String,
+    /// A label from `REGISTERED_HOST_BINDING_PURPOSES`.
+    pub purpose: String,
+}
+
+impl HostBinding {
+    fn to_value(&self) -> Value {
+        json!({
+            "digest": self.digest,
+            "construction": self.construction,
+            "purpose": self.purpose,
+        })
+    }
+}
+
+/// Structural validation ONLY: presence and shape of `host_binding`. This
+/// function intentionally does NOT read or compare against
+/// `agent_input_digest` (or anything else on the record) — see the
+/// INDEPENDENCE RULE on [`HostBinding`]. It exists so a verifier can reject a
+/// malformed group (missing/unregistered `construction`, a `null` group)
+/// without ever inferring equality between two independent bindings.
+pub fn validate_host_binding(capsule: &Value) -> Result<(), String> {
+    let compute_attestation = capsule
+        .get("model_attestation")
+        .and_then(|m| m.get("compute_attestation"));
+    let Some(hb) = compute_attestation.and_then(|ca| ca.get("host_binding")) else {
+        // Absent key entirely -- OPTIONAL group, nothing to check.
+        return Ok(());
+    };
+    if hb.is_null() {
+        return Err("host_binding present but null -- must be absent, never null".to_string());
+    }
+    let obj = hb
+        .as_object()
+        .ok_or_else(|| "host_binding is not an object".to_string())?;
+    let digest = obj
+        .get("digest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "host_binding.digest missing or not a string".to_string())?;
+    if digest.len() != 64
+        || !digest
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    {
+        return Err("host_binding.digest is not lowercase-hex-64".to_string());
+    }
+    let construction = obj
+        .get("construction")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "host_binding.construction missing or not a string".to_string())?;
+    if !REGISTERED_HOST_BINDING_CONSTRUCTIONS.contains(&construction) {
+        return Err(format!(
+            "host_binding.construction {construction:?} is not a registered label"
+        ));
+    }
+    let purpose = obj
+        .get("purpose")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "host_binding.purpose missing or not a string".to_string())?;
+    if !REGISTERED_HOST_BINDING_PURPOSES.contains(&purpose) {
+        return Err(format!(
+            "host_binding.purpose {purpose:?} is not a registered label"
+        ));
+    }
+    Ok(())
+}
+
 pub struct CapsuleInput {
     pub action_id: String,
     pub action_type: String,
@@ -273,6 +387,11 @@ pub struct CapsuleInput {
     /// the capsule — when the model surfaced no reasoning (the honest null for a
     /// non-reasoning model like Llama-3.2), never fabricated.
     pub reasoning_digest: Option<String>,
+    /// OPTIONAL reverse-direction composition binding — mesh-llm's own digest
+    /// for this exchange, under its own construction. `None` — and ABSENT
+    /// from the capsule, never null — when the host exposed no digest for
+    /// this exchange. See [`HostBinding`] for the independence rule.
+    pub host_binding: Option<HostBinding>,
     pub runtime: String,
     pub mesh_poc: MeshPocV1,
     pub effect_status: String,
@@ -341,6 +460,13 @@ pub fn seal(input: &CapsuleInput) -> Result<Value, crate::jcs::JcsError> {
     }
     if let Some(rd) = &input.reasoning_digest {
         compute_attestation.insert("reasoning_digest".into(), json!(rd));
+    }
+    // host_binding: OPTIONAL reverse-direction composition binding, inserted
+    // ONLY when present -- never null. See `HostBinding`'s INDEPENDENCE RULE:
+    // this is a second, independent claim, not a re-derivation of
+    // `agent_input_digest`.
+    if let Some(hb) = &input.host_binding {
+        compute_attestation.insert("host_binding".into(), hb.to_value());
     }
     compute_attestation.insert("runtime".into(), json!(input.runtime));
     compute_attestation.insert("x-mesh-poc-v1".into(), input.mesh_poc.to_value());
@@ -438,6 +564,7 @@ mod tests {
             agent_output_digest: "b".repeat(64),
             tool_calls_digest: None,
             reasoning_digest: None,
+            host_binding: None,
             runtime: "runtime".to_string(),
             mesh_poc: MeshPocV1 {
                 client_nonce: "c".repeat(32),
@@ -673,5 +800,168 @@ mod tests {
         // even though it didn't affect the digest.
         assert_eq!(chained_a["chain"]["parent_capsule_id"], "f".repeat(64));
         assert_eq!(chained_b["chain"]["parent_capsule_id"], "0".repeat(64));
+    }
+
+    // =======================================================================
+    // host_binding — reverse-direction composition binding
+    // =======================================================================
+
+    /// Positive vector: a `host_binding` group carries mesh-llm's own digest
+    /// under its own construction, structurally valid per
+    /// `validate_host_binding`, and digest-bound into `capsule_id`.
+    #[test]
+    fn host_binding_present_is_carried_and_valid() {
+        let mut input = base_input(None);
+        input.host_binding = Some(HostBinding {
+            digest: "a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5"
+                .to_string(),
+            construction: MESH_LLM_REQUEST_BODY_SHA256_V1.to_string(),
+            purpose: HOST_LOG_JOIN.to_string(),
+        });
+        let capsule = seal(&input).unwrap();
+        let hb = &capsule["model_attestation"]["compute_attestation"]["host_binding"];
+        assert_eq!(
+            hb["digest"],
+            "a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5"
+        );
+        assert_eq!(hb["construction"], MESH_LLM_REQUEST_BODY_SHA256_V1);
+        assert_eq!(hb["purpose"], HOST_LOG_JOIN);
+        assert!(validate_host_binding(&capsule).is_ok());
+
+        // digest-bound: a different host digest changes capsule_id.
+        let baseline_id = capsule["capsule_id"].as_str().unwrap().to_string();
+        let mut other = base_input(None);
+        other.host_binding = Some(HostBinding {
+            digest: "0".repeat(64),
+            construction: MESH_LLM_REQUEST_BODY_SHA256_V1.to_string(),
+            purpose: HOST_LOG_JOIN.to_string(),
+        });
+        assert_ne!(seal(&other).unwrap()["capsule_id"], baseline_id.as_str());
+    }
+
+    /// Absence rule: when no host digest exists, the key is OMITTED entirely
+    /// — never present as `null`.
+    #[test]
+    fn host_binding_absent_when_not_supplied() {
+        let capsule = seal(&base_input(None)).unwrap();
+        let ca = &capsule["model_attestation"]["compute_attestation"];
+        assert!(
+            ca.get("host_binding").is_none(),
+            "an absent host_binding must be omitted, not null"
+        );
+        assert!(validate_host_binding(&capsule).is_ok());
+    }
+
+    /// MUST-FAIL (a): `construction` missing or unregistered.
+    #[test]
+    fn must_fail_construction_missing_or_unregistered() {
+        let mut capsule = seal(&base_input(None)).unwrap();
+        // (a1) construction missing entirely.
+        capsule["model_attestation"]["compute_attestation"]["host_binding"] = json!({
+            "digest": "a".repeat(64),
+            "purpose": HOST_LOG_JOIN,
+        });
+        assert!(validate_host_binding(&capsule).is_err());
+
+        // (a2) construction present but not a registered label.
+        capsule["model_attestation"]["compute_attestation"]["host_binding"] = json!({
+            "digest": "a".repeat(64),
+            "construction": "some-unregistered-scheme/v1",
+            "purpose": HOST_LOG_JOIN,
+        });
+        assert!(validate_host_binding(&capsule).is_err());
+    }
+
+    /// MUST-FAIL (b): a `null` group — the absence rule requires the key be
+    /// OMITTED, never carried as `null`.
+    #[test]
+    fn must_fail_null_group() {
+        let mut capsule = seal(&base_input(None)).unwrap();
+        capsule["model_attestation"]["compute_attestation"]["host_binding"] = Value::Null;
+        assert!(validate_host_binding(&capsule).is_err());
+    }
+
+    /// MUST-FAIL (c) — THE ACCEPTANCE CENTERPIECE: the equality-inference
+    /// mutant. `host_binding.digest` and `agent_input_digest` are two
+    /// independent, co-signed claims (the INDEPENDENCE RULE on
+    /// [`HostBinding`]) — a record where they legitimately DIFFER (mesh-llm's
+    /// format drifting from ours) is still a perfectly valid record.
+    ///
+    /// `validate_host_binding` (the real structural check) agrees: it never
+    /// reads `agent_input_digest`, so a divergent-but-well-formed
+    /// `host_binding` still passes.
+    ///
+    /// The MUTANT below is a verifier that additionally infers equality
+    /// between the two bindings — exactly the inference the independence
+    /// rule prohibits. Run against the SAME divergent-but-valid record, the
+    /// mutant WRONGLY rejects it. That the mutant fails red here is the
+    /// point: it demonstrates precisely the false rejection the rule exists
+    /// to prevent, and pins that this crate's real verifier contains no such
+    /// inference.
+    #[test]
+    fn equality_inference_mutant_wrongly_rejects_legitimate_format_drift() {
+        let mut input = base_input(None);
+        input.agent_input_digest = "1".repeat(64); // our construction's value
+        input.host_binding = Some(HostBinding {
+            digest: "2".repeat(64), // mesh-llm's construction's value -- DIFFERENT
+            construction: MESH_LLM_REQUEST_BODY_SHA256_V1.to_string(),
+            purpose: HOST_LOG_JOIN.to_string(),
+        });
+        let capsule = seal(&input).unwrap();
+
+        // The REAL verifier: independence respected, passes.
+        assert!(
+            validate_host_binding(&capsule).is_ok(),
+            "the real validator must not infer equality and must accept divergent bindings"
+        );
+
+        // The MUTANT verifier: infers equality, wrongly fails.
+        assert!(
+            equality_inference_mutant(&capsule).is_err(),
+            "MUTANT FAILS RED as expected: inferring equality between two \
+             independent bindings wrongly rejects a legitimate record"
+        );
+    }
+
+    /// The equality-inference mutant also wrongly rejects on the very
+    /// PLUMBING every other test in this module uses (`host_binding` absent):
+    /// with no `host_binding` present there is nothing to compare, so both
+    /// the real validator and this mutant agree — Ok. Included so the mutant
+    /// is not vacuously "always Err" and only fails on the case that matters.
+    #[test]
+    fn equality_inference_mutant_agrees_when_host_binding_absent() {
+        let capsule = seal(&base_input(None)).unwrap();
+        assert!(validate_host_binding(&capsule).is_ok());
+        assert!(equality_inference_mutant(&capsule).is_ok());
+    }
+
+    /// A MUTANT verifier, deliberately wrong: asserts record validity BECAUSE
+    /// `host_binding.digest == agent_input_digest`. This function exists ONLY
+    /// to be exercised by the tests above — production code (`seal`,
+    /// `validate_host_binding`) contains no such comparison anywhere.
+    fn equality_inference_mutant(capsule: &Value) -> Result<(), String> {
+        let ca = capsule
+            .get("model_attestation")
+            .and_then(|m| m.get("compute_attestation"))
+            .ok_or_else(|| "missing compute_attestation".to_string())?;
+        let Some(hb) = ca.get("host_binding").filter(|v| !v.is_null()) else {
+            return Ok(()); // nothing to (wrongly) compare
+        };
+        let hb_digest = hb
+            .get("digest")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "host_binding.digest missing".to_string())?;
+        let agent_input_digest = ca
+            .get("agent_input_digest")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "agent_input_digest missing".to_string())?;
+        if hb_digest != agent_input_digest {
+            return Err(format!(
+                "MUTANT: host_binding.digest {hb_digest:?} != agent_input_digest \
+                 {agent_input_digest:?} -- treated as invalid (WRONG: these are \
+                 two independent bindings, not required to match)"
+            ));
+        }
+        Ok(())
     }
 }

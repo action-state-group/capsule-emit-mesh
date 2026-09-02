@@ -124,6 +124,7 @@ fn step_input(step: &Step, chain: Option<ChainLink>) -> CapsuleInput {
         agent_output_digest: "b".repeat(64),
         tool_calls_digest: None,
         reasoning_digest: None,
+        host_binding: None,
         runtime: "0".repeat(64) + ":rust-demo3",
         mesh_poc: MeshPocV1 {
             client_nonce: step.nonce_char.to_string().repeat(32),
