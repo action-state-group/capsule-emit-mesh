@@ -10,16 +10,20 @@
 # versions (capsule-emit 0.4.0, scitt-cose 0.2.2); the prior git-ref pins here
 # (capsule-emit PR #66, scitt-cose PR #38/#40) are no longer needed.
 #
-# Floor is 0.5.1 (the current release), not 0.4.0: capsule-emit 0.5.1 pulls
-# agent-action-capsule 0.2.0, whose format-4/JCS capsules carry different
-# capsule_id/digest bytes than 0.4.x and whose top-level emit() verb was
-# renamed to seal()/received(). This repo consumes only the stable
-# capsule_emit.checkpoint surface and agent_action_capsule.emit() (aac's own
-# emit, unchanged in 0.2.0) -- not capsule-emit's removed emit() verb -- so the
-# full suite passes and the committed ledger/ fixtures verify clean against
-# 0.5.1/0.2.0 with no migration. The floor is pinned at the tested release to
-# prevent silent resolution back to an older, format-incompatible line.
-capsule-emit[mcp]>=0.5.1
+# Floor was 0.5.1, not 0.4.0: capsule-emit 0.5.1 pulls agent-action-capsule
+# 0.2.0, whose format-4/JCS capsules carry different capsule_id/digest bytes
+# than 0.4.x and whose top-level emit() verb was renamed to seal()/received().
+# This repo consumes only the stable capsule_emit.checkpoint surface and
+# agent_action_capsule.emit() (aac's own emit, unchanged in 0.2.0) -- not
+# capsule-emit's removed emit() verb -- so the full suite passes and the
+# committed ledger/ fixtures verify clean with no migration.
+#
+# Floor is now 0.6.1 (the current release): capsule-emit#128/#135 fixed a bug
+# where a float-typed tool argument dropped the planned capsule at the digest
+# layer instead of chaining it. No fixtures here carry float tool-args, so no
+# regeneration was needed for this bump. The floor is pinned at the tested
+# release to prevent silent resolution back to an older, unpatched line.
+capsule-emit[mcp]>=0.6.1
 scitt-cose>=0.2.2
 cbor2
 mcp<2
