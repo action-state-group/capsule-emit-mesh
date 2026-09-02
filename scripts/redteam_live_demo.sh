@@ -189,31 +189,7 @@ print('  capsule_id    :', rec['capsule_id'])
 
 if [[ "$LIAR" == "1" ]]; then
   echo "--- [6/7] LIAR MODE: malicious relay tampers the shared capsule (no re-sign) ---"
-  python3 - "$LEDGER_DIR/capsules.jsonl" "$CAPSULE_ID" <<'PYEOF'
-import json, sys
-path, capsule_id = sys.argv[1], sys.argv[2]
-lines = open(path).read().splitlines()
-out = []
-tampered = False
-for line in lines:
-    rec = json.loads(line)
-    if rec["capsule_id"] == capsule_id and not tampered:
-        poc = rec["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]
-        prov = poc["serving_provenance"]
-        before = prov.get("model_canonical_ref")
-        after = before.replace("Q4_K_M", "Q8_0") if before and "Q4_K_M" in before else "TAMPERED"
-        prov["model_canonical_ref"] = after
-        print(f"tampered field: model_attestation.compute_attestation.x-mesh-poc-v1.serving_provenance.model_canonical_ref")
-        print(f"  before (sealed) : {before}")
-        print(f"  after (relayed) : {after}")
-        print(f"  capsule_id left UNCHANGED at: {rec['capsule_id']}  (this is what makes the tamper detectable)")
-        tampered = True
-        line = json.dumps(rec, sort_keys=True)
-    out.append(line)
-if not tampered:
-    raise SystemExit(f"capsule {capsule_id} not found in {path}")
-open(path, "w").write("\n".join(out) + "\n")
-PYEOF
+  python3 "$ROOT/scripts/_redteam_tamper_capsule.py" "$LEDGER_DIR/capsules.jsonl" "$CAPSULE_ID"
 else
   echo "--- [6/7] honest mode: nothing tampered ---"
 fi
