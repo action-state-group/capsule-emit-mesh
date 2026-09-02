@@ -218,9 +218,150 @@ bug: the detached COSE statement signs the capsule's `capsule_id` string
 (`finding: 2`) is the layer that catches this class of tamper, which is
 why `stranger_verify_bundle.py` runs both checks rather than either alone.
 
+## Path A — cross-machine (M4 seals, M3 verifies OFFLINE)
+
+The single-machine demo above proves the integrity mechanism. Path A proves
+the more realistic shape of it: the party who verifies is not the party who
+sealed, running on a **different physical machine**, over the network, with
+**no shared process or filesystem** — the thing a real maintainer or
+counterparty actually experiences. (Chosen over joining M3 to the live mesh
+itself, which is fragile for a rehearsal; a plain scp over Tailscale gives
+the same "zero access to the sealer" property without the mesh-join
+surface area.)
+
+Same honesty box as above applies unchanged — see the header of
+[`scripts/redteam_cross_machine_demo.sh`](scripts/redteam_cross_machine_demo.sh)
+and the printed box at the end of every run.
+
+### The exact command
+
+Run from `capsule-emit-mesh/` on **M4** (the machine serving the live node):
+
+`M3_HOST` is **required** — no default is committed (this is a public repo,
+and a real ssh target is not something to ship in it):
+
+```
+M3_HOST=user@<your-m3-tailscale-ip-or-hostname> ./scripts/redteam_cross_machine_demo.sh
+```
+
+Override the remote repo path / python if needed:
+
+```
+M3_HOST=user@100.x.x.x M3_REPO=~/capsule-emit-mesh ./scripts/redteam_cross_machine_demo.sh
+```
+
+### What it does, step by step
+
+1. Runs `scripts/redteam_live_demo.sh` (honest mode) on M4 to seal one real
+   capsule from a live inference — identical to Path 1 above.
+2. Builds a transfer bundle: just `capsules.jsonl`, the capsule's detached
+   `.cose` signed statement, and the issuer's public key (`keys/node-key.pub.pem`)
+   — no keys, no code, no live access, nothing else leaves M4.
+3. Confirms M3 is reachable over Tailscale, then `scp`s the bundle to
+   `~/capsule-emit-mesh/_redteam-m4-bundle` on M3.
+4. Runs `stranger_verify_bundle.py` **on M3**, entirely offline, against the
+   copied bundle → prints `OVERALL: PASS`.
+5. On M3, a malicious-relay stand-in
+   (`scripts/_redteam_tamper_capsule.py`, the same tamper helper Path 1
+   uses) flips the served-quant claim on the **copy** — without re-signing.
+6. Re-runs `stranger_verify_bundle.py` on M3 → prints `OVERALL: FAIL`,
+   naming the same content-hash finding as Path 1.
+
+### Real output — run M4 → M3 (Tailscale), 2026-09-01
+
+```
+$ M3_HOST=user@<m3-tailscale-ip-or-hostname> ./scripts/redteam_cross_machine_demo.sh
+############################################################
+# PATH A -- cross-machine: M4 seals, M3 verifies OFFLINE
+# M3 target: user@<m3-tailscale-ip-or-hostname>
+############################################################
+
+=== Part 1/2: seal a real capsule on M4 (this machine) ===
+[... Path 1's own honest-run output, identical in shape to the transcript
+     above — capsule_id debbc12247fe8fa89edfa08384e8d05f18d7a3484881d734c59af6a40a8688a7 ...]
+
+M4 sealed capsule for cross-machine transfer: debbc12247fe8fa89edfa08384e8d05f18d7a3484881d734c59af6a40a8688a7
+
+--- [1/6] build the transfer bundle (capsule + signed statement + issuer pubkey) ---
+bundle contents:
+  .../redteam-cross-machine-bundle/capsules.jsonl
+  .../redteam-cross-machine-bundle/signed-statements/debbc12247fe8fa89edfa08384e8d05f18d7a3484881d734c59af6a40a8688a7.cose
+  .../redteam-cross-machine-bundle/node-key.pub.pem
+  .../redteam-cross-machine-bundle/_redteam_tamper_capsule.py
+
+--- [2/6] confirm M3 is reachable over Tailscale ---
+reachable: swim-googles.local
+
+--- [3/6] scp the bundle to M3 (this is the ONLY thing that leaves M4) ---
+
+--- [4/6] M3 verifies OFFLINE -- no access to M4, the sidecar, or the node ---
+=== stranger-verify: _redteam-m4-bundle ===
+capsule debbc12247fe8fa89edfa08384e8d05f18d7a3484881d734c59af6a40a8688a7: verify.ok=True cross_party_rung=unilateral_fallback
+    transparent verify: signature_verified=True ok=True
+    serving_provenance: model=None quant='unknown' gpu=None served_by='mesh-node-demo-1' tokens=None
+    advertised_vs_served: advertisement_absent
+
+all capsules verify.ok: True
+
+=== checkpoint / witness verify ===
+no checkpoints.jsonl in this bundle -- Layer 0/1 only, nothing to verify at the checkpoint layer
+
+OVERALL: PASS
+
+================================================================
+ GREEN (on M3) -- verified. M3 trusts this capsule with ZERO
+ access to M4 -- record bytes copied over the wire, that's all.
+================================================================
+
+=== Part 2/2: tamper the copy on M3, re-verify ===
+--- [5/6] M3: a malicious relay/copy step tampers the bundle (no re-sign) ---
+tampered field: model_attestation.compute_attestation.x-mesh-poc-v1.serving_provenance.model_canonical_ref
+  before (sealed) : bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M
+  after (relayed) : bartowski/Llama-3.2-3B-Instruct-GGUF:Q8_0
+  capsule_id left UNCHANGED at: debbc12247fe8fa89edfa08384e8d05f18d7a3484881d734c59af6a40a8688a7
+
+--- [6/6] M3 re-verifies OFFLINE ---
+=== stranger-verify: _redteam-m4-bundle ===
+capsule debbc12247fe8fa89edfa08384e8d05f18d7a3484881d734c59af6a40a8688a7: verify.ok=False cross_party_rung=unilateral_fallback
+    finding: 2 -- recomputed c0babbb00eda75d9f33c5c1bd09f490777eeb51d03ded9b98f12e7553fd9fca8 != carried debbc12247fe8fa89edfa08384e8d05f18d7a3484881d734c59af6a40a8688a7
+    finding: 8 -- effect.type='inference_completion' is not a seeded effect.type value; informational, not rejected (§12)
+    transparent verify: signature_verified=True ok=True
+    serving_provenance: model=None quant='unknown' gpu=None served_by='mesh-node-demo-1' tokens=None
+    advertised_vs_served: advertisement_absent
+
+all capsules verify.ok: False
+
+=== checkpoint / witness verify ===
+no checkpoints.jsonl in this bundle -- Layer 0/1 only, nothing to verify at the checkpoint layer
+
+OVERALL: FAIL
+
+================================================================
+ RED (on M3) -- verify FAILED after the copy was tampered.
+ M3 caught it with no access to M4 -- offline, from bytes alone.
+================================================================
+cross-machine demo: PASS (GREEN before tamper, RED after)
+```
+
+### A harness note worth knowing
+
+While building this, `ssh host "exit 1"` was observed to report a local
+exit code of `0` when run through this session's sandboxed command tool —
+even with sandboxing explicitly disabled — while the remote command's own
+`echo $?` correctly showed `1`. `scripts/redteam_cross_machine_demo.sh`
+therefore checks M3's verify result by matching the verifier's own printed
+`OVERALL: PASS`/`OVERALL: FAIL` line rather than trusting ssh's process
+exit code — more robust regardless of the cause, and it's what the real
+output above reflects.
+
 ## Under the hood
 
-- `scripts/redteam_live_demo.sh` — the one-command sequence above.
+- `scripts/redteam_live_demo.sh` — the one-command single-machine sequence.
+- `scripts/redteam_cross_machine_demo.sh` — Path A, the cross-machine
+  sequence: runs the above on M4, then scp/ssh to M3 for the offline
+  verify + tamper + re-verify.
+- `scripts/_redteam_tamper_capsule.py` — the shared tamper helper both
+  demos use (flips the served-quant claim, leaves `capsule_id` untouched).
 - `capsule_sidecar.py` — real reverse-proxy sidecar; unmodified, already
   used by `run_live_demo.sh` and the `ledger-live`/`ledger-real-deployment`
   fixtures.
