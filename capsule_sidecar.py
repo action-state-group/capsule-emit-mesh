@@ -1466,10 +1466,14 @@ def default_state(
     )
 
 
-if __name__ == "__main__":
-    # Standalone CLI: point this at a REAL mesh-llm node.
-    #   mesh-llm serve --local-model-only --model <path.gguf> --port 9337
-    #   python3 capsule_sidecar.py --upstream http://127.0.0.1:9337 --listen-port 8089
+def main(argv: list[str] | None = None) -> int:
+    """Standalone CLI: point this at a REAL mesh-llm node.
+
+      mesh-llm serve --local-model-only --model <path.gguf> --port 9337
+      capsule-sidecar --upstream http://127.0.0.1:9337 --listen-port 8089
+
+    (or `python3 capsule_sidecar.py ...` from a checkout, same thing.)
+    """
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1499,8 +1503,19 @@ if __name__ == "__main__":
         "for provider, mesh-requester-demo-1 for requester). On the requester role "
         "this is the requesting_party recorded in serving_provenance.",
     )
-    parser.add_argument("--ledger-dir", default=str(Path(__file__).parent / "ledger"))
-    parser.add_argument("--manifest", default=str(Path(__file__).parent / "model-package" / "model-package.json"))
+    parser.add_argument(
+        "--ledger-dir",
+        default=str(Path.cwd() / "ledger"),
+        help="defaults to ./ledger in the current working directory (not the package install location) "
+        "so a pip/pipx install writes into wherever you run it from.",
+    )
+    parser.add_argument(
+        "--manifest",
+        default=str(Path.cwd() / "model-package" / "model-package.json"),
+        help="path to mesh-llm's own model-package.json for the model currently loaded. Defaults to "
+        "./model-package/model-package.json in the current working directory; see QUICKSTART.md for "
+        "how to get one (or generate a placeholder fixture with build_model_package.py).",
+    )
     parser.add_argument("--runtime-label", default="unspecified-real-node")
     parser.add_argument("--runtime-artifact", help="path to a binary/artifact to hash for runtime_digest (read-only, never executed)")
     parser.add_argument(
@@ -1546,7 +1561,7 @@ if __name__ == "__main__":
         "cheap first-serve validity re-check. Owner identity is self-asserted -- "
         "see node_ownership.IDENTITY_LIMITATION_CAVEAT.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     advertisement = None
     if args.advertisement:
@@ -1569,7 +1584,7 @@ if __name__ == "__main__":
     node_id = args.node_id or (
         "mesh-requester-demo-1" if args.role == ROLE_REQUESTER else "mesh-node-demo-1"
     )
-    keys_dir = Path(__file__).parent / "keys"
+    keys_dir = Path.cwd() / "keys"
     state = default_state(
         ledger_dir=Path(args.ledger_dir),
         manifest_path=Path(args.manifest),
@@ -1618,3 +1633,8 @@ if __name__ == "__main__":
     if state.plugin_checkpoint is not None:
         print(f"plugin-ledger checkpointing enabled: log_id={state.plugin_checkpoint.log_id} {state.plugin_checkpoint.witness_status()}")
     server.serve_forever()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -36,6 +36,15 @@ FIELD DESIGN  (x-mesh-lifecycle-v1 inside compute_attestation)
                           record's own agent_input_digest and derives
                           cross_party_rung from that verification — it is
                           NEVER read as pre-asserted trust.
+  requester_identity_binding  dict|None  Optional evidence
+                          (requester_identity_binding.py) that the
+                          requester_commitment's public key is cited by a
+                          persistent, self-signed identity — closing the
+                          zero-effort self-mint gap [mesh-rung12-adversarial-
+                          review] D1 disclosed: a bare commitment key with no
+                          binding behind it grades at most acknowledged_
+                          receipt, never full_bilateral. Still self-asserted
+                          (no external anchor) — see TRUST-MODEL.md §4.1a.
   identity_limitation    str|None  Present whenever requester_commitment is
                           not None (requester_commitment.IDENTITY_LIMITATION_
                           CAVEAT). States plainly that cross_party_rung=
@@ -186,6 +195,7 @@ def emit_lifecycle_record(
     request_digest: str | None = None,
     response_digest: str | None = None,
     requester_commitment: dict[str, Any] | None = None,
+    requester_identity_binding: dict[str, Any] | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Emit one signed capsule record for a lifecycle state / observation point.
@@ -203,6 +213,13 @@ def emit_lifecycle_record(
     mesh_record_verifier.verify_record_bytes() must catch — this emitter does
     not check the binding itself; only the offline verifier does, because the
     producer's own claim is never the evidence.
+
+    ``requester_identity_binding`` (optional): evidence built with
+    requester_identity_binding.make_requester_identity_binding(), citing the
+    SAME public key as ``requester_commitment``. Like the commitment itself,
+    this emitter does not check it — only mesh_record_verifier.py does, and
+    only a verified binding lets a valid commitment reach full_bilateral
+    rather than acknowledged_receipt.
 
     Producer-side invariant enforced here:
         if transcript.expected_count is not None and transcript.complete is True:
@@ -243,6 +260,7 @@ def emit_lifecycle_record(
             "complete": transcript.complete,
         },
         "requester_commitment": requester_commitment,
+        "requester_identity_binding": requester_identity_binding,
         # [mesh-rung12-adversarial-review] D1(a) — restores the honesty
         # caveat the old capsule_sidecar.build_capsule() path already
         # carries (identity_limitation, attached whenever bilateral evidence
@@ -345,6 +363,7 @@ def emit_from_trace(
     transcript_expected_count: int | None = None,
     _transcript_override_complete: bool | None = None,
     requester_commitment: dict[str, Any] | None = None,
+    requester_identity_binding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Emit a capsule record from a LifecycleTrace + optional ObservationRecord.
 
@@ -387,4 +406,5 @@ def emit_from_trace(
         request_digest=req_digest,
         response_digest=resp_digest,
         requester_commitment=requester_commitment,
+        requester_identity_binding=requester_identity_binding,
     )
