@@ -10,10 +10,13 @@ Key responsibilities:
 1. Extract terminal_state, observation_point, exchange_id, hop_id, attempt,
    local_peer_id from the x-mesh-lifecycle-v1 block in the record.
 2. Verify the requester_commitment (rung-2, requester_commitment.py) against
-   the record's own request digest and derive cross_party_rung — see
+   the record's own request digest, and — when present — the
+   requester_identity_binding (requester_identity_binding.py) citing that
+   commitment's public key, then derive cross_party_rung — see
    derive_cross_party_rung() below. A record without a valid commitment stays
-   unilateral_fallback; the label is NEVER upgraded on absent or invalid
-   evidence.
+   unilateral_fallback; a valid commitment with no verified identity binding
+   stays acknowledged_receipt; the label is NEVER upgraded on absent or
+   invalid evidence.
 3. Enforce the transcript completeness guard:
        complete=True AND event_count < expected_count → IncompleteTranscriptError
    This guard is what distinguishes "complete evidence" from "incomplete evidence
@@ -35,7 +38,11 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from requester_commitment import IDENTITY_LIMITATION_CAVEAT, verify_requester_commitment
+from requester_commitment import verify_requester_commitment
+from requester_identity_binding import (
+    IDENTITY_LIMITATION_CAVEAT as IDENTITY_BINDING_LIMITATION_CAVEAT,
+    verify_requester_identity_binding,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -72,19 +79,46 @@ HOST_OBSERVATION_POINTS = frozenset({
 
 #: Mutuality axis (docs/ASSURANCE-VOCABULARY.md §5, capsule_sidecar.py's
 #: existing cross_party_rung vocabulary) — reused verbatim, not reforked.
-#: Ordering: UNILATERAL_FALLBACK < FULL_BILATERAL. This record family has no
-#: separate client-acknowledgment step (that is #1233/capsule_sidecar.py's
-#: Move 4, a different mechanism), so ``acknowledged_receipt`` is not a value
-#: this deriver produces — the requester's rung-2 commitment IS the evidence,
-#: and either it verifies or it does not.
+#: Ordering: UNILATERAL_FALLBACK < ACKNOWLEDGED_RECEIPT < FULL_BILATERAL.
+#:
+#: [mesh-rung12-adversarial-review] D1, closed for the zero-effort case
+#: (2026-09-01, TRUST-MODEL.md §4.1a) — this record family previously had no
+#: separate client-acknowledgment step, so ``acknowledged_receipt`` was not a
+#: value this deriver produced. It now IS: a valid requester_commitment whose
+#: public key carries no verified requester_identity_binding
+#: (requester_identity_binding.py) — the exact self-mint attack the redteam
+#: review found — grades at ``acknowledged_receipt``, not ``full_bilateral``.
+#: ``full_bilateral`` now additionally requires that binding to verify.
 UNILATERAL_FALLBACK = "unilateral_fallback"
+ACKNOWLEDGED_RECEIPT = "acknowledged_receipt"
 FULL_BILATERAL = "full_bilateral"
 
-# IDENTITY_LIMITATION_CAVEAT is imported above from requester_commitment —
-# see its docstring there for the full rationale ([mesh-rung12-adversarial-
-# review] D1): full_bilateral proves a commitment was made and matches this
-# record, never that an independent party made it. derive_cross_party_rung()
+# IDENTITY_BINDING_LIMITATION_CAVEAT is imported above from
+# requester_identity_binding — see its docstring there for the full
+# rationale: even a verified identity binding proves a persistent,
+# independently-checkable identity was cited, never that owner_id
+# corresponds to a real person or organisation. derive_cross_party_rung()
 # below attaches it automatically whenever it returns FULL_BILATERAL.
+
+
+@dataclass
+class CrossPartyRungResult:
+    """Everything derive_cross_party_rung() derived, in one place.
+
+    Kept as a dataclass (not a bare tuple) because there are now two
+    independent pieces of evidence (the commitment, the identity binding),
+    each with its own present/valid/reason — a positional tuple of that
+    shape is easy to misread at a call site.
+    """
+
+    rung: str
+    commitment_valid: bool
+    commitment_reason: str
+    identity_limitation: str | None
+    identity_binding_present: bool
+    identity_binding_valid: bool
+    identity_binding_reason: str
+    identity_owner_id: str | None
 
 
 def derive_cross_party_rung(
@@ -92,23 +126,42 @@ def derive_cross_party_rung(
     *,
     request_digest: str,
     exchange_id: str,
-) -> tuple[str, bool, str, str | None]:
-    """Derive cross_party_rung from the requester_commitment's own bytes.
+    requester_identity_binding: dict[str, Any] | None = None,
+    now_unix_ms: int | None = None,
+    revoked_identity_cert_ids: frozenset[str] = frozenset(),
+) -> CrossPartyRungResult:
+    """Derive cross_party_rung from the requester_commitment's own bytes and,
+    when present, a requester_identity_binding (requester_identity_binding.py)
+    citing that same commitment's public key.
 
-    Returns (rung, commitment_valid, reason, identity_limitation). The rung
-    is DERIVED here, never read off a producer-asserted label — there is no
-    such label in the record to trust in the first place;
-    ``requester_commitment`` is evidence, and this function IS the
-    derivation, exactly the discipline capsule_sidecar.derive_cross_party_rung()
-    already established for the #1233 receipt tuple.
+    The rung is DERIVED here, never read off a producer-asserted label —
+    there is no such label in the record to trust in the first place; both
+    ``requester_commitment`` and ``requester_identity_binding`` are evidence,
+    and this function IS the derivation, exactly the discipline
+    capsule_sidecar.derive_cross_party_rung() already established for the
+    #1233 receipt tuple.
 
     full_bilateral
         The record carries a requester_commitment whose signature verifies
         under its own embedded public key AND whose request_digest and
-        exchange_id match this record's own values. ``identity_limitation``
-        is ALWAYS populated (IDENTITY_LIMITATION_CAVEAT) alongside this rung
-        — see that constant's docstring for why: this check cannot and does
-        not confirm the key belongs to a second, independent party.
+        exchange_id match this record's own values, AND a
+        requester_identity_binding whose own signature verifies, is bound to
+        THIS commitment's exact public key, is unexpired, and (when a
+        revocation set is supplied) is not revoked. ``identity_limitation``
+        is ALWAYS populated (IDENTITY_BINDING_LIMITATION_CAVEAT) alongside
+        this rung — see that constant's docstring for why: even a verified
+        binding cannot confirm owner_id belongs to a real, independent
+        party.
+
+    acknowledged_receipt
+        A valid requester_commitment WITHOUT a verified identity binding —
+        the commitment's signature is self-consistent and bound to this
+        record, but the key behind it has no persistent identity cited (or
+        the binding present is invalid, expired, revoked, or bound to a
+        different commitment key). This is precisely the zero-effort
+        self-mint case: a fresh throwaway key, signed inline, with nothing
+        registered behind it. ``identity_limitation`` is None — this rung
+        makes no independent-party claim to caveat.
 
     unilateral_fallback
         No commitment, or a commitment present but invalid (bad signature,
@@ -116,16 +169,53 @@ def derive_cross_party_rung(
         evidence is never worth partial credit — it is treated identically
         to absent evidence, matching capsule_sidecar.py's own rule that a
         present-but-invalid bilateral evaluation still yields
-        unilateral_fallback. ``identity_limitation`` is None here.
+        unilateral_fallback. The identity binding is not evaluated at all
+        in this case (there is no valid commitment key to bind).
+        ``identity_limitation`` is None here.
     """
-    valid, reason = verify_requester_commitment(
+    commitment_valid, commitment_reason = verify_requester_commitment(
         requester_commitment,
         expected_request_digest=request_digest,
         expected_exchange_id=exchange_id,
     )
-    rung = FULL_BILATERAL if valid else UNILATERAL_FALLBACK
-    identity_limitation = IDENTITY_LIMITATION_CAVEAT if rung == FULL_BILATERAL else None
-    return rung, valid, reason, identity_limitation
+
+    if not commitment_valid:
+        return CrossPartyRungResult(
+            rung=UNILATERAL_FALLBACK,
+            commitment_valid=False,
+            commitment_reason=commitment_reason,
+            identity_limitation=None,
+            identity_binding_present=requester_identity_binding is not None,
+            identity_binding_valid=False,
+            identity_binding_reason="not evaluated: no valid requester commitment to bind",
+            identity_owner_id=None,
+        )
+
+    commitment_public_key = (requester_commitment or {}).get("public_key", "")
+    binding_verdict = verify_requester_identity_binding(
+        requester_identity_binding,
+        expected_commitment_public_key=commitment_public_key,
+        now_unix_ms=now_unix_ms,
+        revoked_cert_ids=revoked_identity_cert_ids,
+    )
+
+    if binding_verdict.valid:
+        rung = FULL_BILATERAL
+        identity_limitation = IDENTITY_BINDING_LIMITATION_CAVEAT
+    else:
+        rung = ACKNOWLEDGED_RECEIPT
+        identity_limitation = None
+
+    return CrossPartyRungResult(
+        rung=rung,
+        commitment_valid=True,
+        commitment_reason=commitment_reason,
+        identity_limitation=identity_limitation,
+        identity_binding_present=requester_identity_binding is not None,
+        identity_binding_valid=binding_verdict.valid,
+        identity_binding_reason=binding_verdict.reason,
+        identity_owner_id=binding_verdict.owner_id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +295,10 @@ class LifecycleVerdict:
     requester_commitment_valid: bool
     requester_commitment_reason: str
     identity_limitation: str | None
+    requester_identity_binding_present: bool
+    requester_identity_binding_valid: bool
+    requester_identity_binding_reason: str
+    requester_identity_owner_id: str | None
     findings: list[str] = field(default_factory=list)
 
     def is_joinable_with(self, other: "LifecycleVerdict") -> bool:
@@ -355,11 +449,20 @@ def verify_record_bytes(
     require_known_terminal_state: bool = True,
     require_known_observation_point: bool = True,
     check_provenance: bool = True,
+    now_unix_ms: int | None = None,
+    revoked_identity_cert_ids: frozenset[str] = frozenset(),
 ) -> LifecycleVerdict:
     """Read ONLY the record bytes and return a LifecycleVerdict.
 
     This is the function the 8×1 and 4×1 tables call.  No rig, no sidecar,
     no side-channel — just the bytes.
+
+    ``revoked_identity_cert_ids`` (optional): a set of requester identity
+    ``cert_id`` values the CALLER knows to be revoked — the operator's live
+    decision, never fabricated or inferred here (same discipline
+    node_ownership.recheck_ownership_validity() follows for its own cert:
+    this function does not and cannot consult a trust-store on its own).
+    Defaults to empty, meaning no revocation is assumed.
 
     Raises:
         json.JSONDecodeError         if bytes are not valid JSON
@@ -409,12 +512,18 @@ def verify_record_bytes(
 
     # Rung-2: derive cross_party_rung from the requester_commitment's own
     # bytes, bound against this record's own agent_input_digest and
-    # exchange_id — never against a claim the commitment makes about itself.
+    # exchange_id — never against a claim the commitment makes about itself
+    # — and, when present, the requester_identity_binding citing that same
+    # commitment's public key (requester_identity_binding.py).
     requester_commitment = block.get("requester_commitment")
-    cross_party_rung, commitment_valid, commitment_reason, identity_limitation = derive_cross_party_rung(
+    requester_identity_binding = block.get("requester_identity_binding")
+    result = derive_cross_party_rung(
         requester_commitment,
         request_digest=compute_attestation.get("agent_input_digest", ""),
         exchange_id=exchange_id,
+        requester_identity_binding=requester_identity_binding,
+        now_unix_ms=now_unix_ms,
+        revoked_identity_cert_ids=revoked_identity_cert_ids,
     )
 
     findings: list[str] = []
@@ -434,11 +543,15 @@ def verify_record_bytes(
         transcript_event_count=event_count,
         transcript_expected_count=expected_count,
         transcript_complete=transcript_complete,
-        cross_party_rung=cross_party_rung,
+        cross_party_rung=result.rung,
         requester_commitment_present=requester_commitment is not None,
-        requester_commitment_valid=commitment_valid,
-        requester_commitment_reason=commitment_reason,
-        identity_limitation=identity_limitation,
+        requester_commitment_valid=result.commitment_valid,
+        requester_commitment_reason=result.commitment_reason,
+        identity_limitation=result.identity_limitation,
+        requester_identity_binding_present=result.identity_binding_present,
+        requester_identity_binding_valid=result.identity_binding_valid,
+        requester_identity_binding_reason=result.identity_binding_reason,
+        requester_identity_owner_id=result.identity_owner_id,
         findings=findings,
     )
 
