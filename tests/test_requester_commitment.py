@@ -636,10 +636,10 @@ class TestIdentityBindingClosesTheSelfMintGap:
         commitment key AND a fresh identity key and signs a binding between
         them -- the identity is still self-asserted, exactly as
         node_ownership.py's owner cert is. That still reaches full_bilateral.
-        Closing THIS residual requires an external anchor (the Authority
-        tier), out of scope for this record layer -- see TRUST-MODEL.md
-        §4.1a. This test exists so the residual is proven and visible, not
-        silently assumed away."""
+        Closing THIS residual requires an external trust anchor /
+        third-party attestation root, out of scope for this record layer --
+        see TRUST-MODEL.md §4.1a. This test exists so the residual is proven
+        and visible, not silently assumed away."""
         node = default_node_state("attacker-node")
         commitment, binding = _bound_commitment_and_binding(owner_id="attacker-self-registered")
         capsule = self._emit(node=node, requester_commitment=commitment, requester_identity_binding=binding)

@@ -547,8 +547,9 @@ key rather than the node owner's endpoint.
   self-asserted, exactly as `node_ownership.py`'s owner cert is (§B.1). This is proved, not assumed,
   by `test_still_open_attacker_who_also_self_mints_the_identity_binding`. Closing *that* residual is
   the same unclosed problem §4.1a already named: it requires a third-party-issued credential or a
-  trusted root a relying party accepts — the Authority tier, out of scope for this record layer. What
-  changed is the shape of the residual: before, *any* commitment key reached `full_bilateral`; now,
+  trusted root a relying party accepts — an external trust anchor / third-party attestation root, out
+  of scope for this record layer. What changed is the shape of the residual: before, *any* commitment
+  key reached `full_bilateral`; now,
   reaching it requires a **second, persistent artifact** an attacker must additionally produce and
   bind correctly — closing the inline, single-artifact case while leaving the fully-determined,
   two-artifact self-registration case open, honestly disclosed via

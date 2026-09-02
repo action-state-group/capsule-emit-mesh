@@ -12,10 +12,10 @@ keypair inline, sign a fully self-consistent commitment, and reach
 ``full_bilateral`` with no real requester ever involved.
 
 THIS MODULE does not and cannot make that impossible — there is still no
-third-party-issued credential or trusted root behind any of it (that is the
-Authority tier: out of scope for this record layer, see TRUST-MODEL.md
-§4.1). What it closes is the ZERO-EFFORT version of the attack: a bare
-commitment key with no registration step at all.
+third-party-issued credential or trusted root behind any of it (an external
+trust anchor / third-party attestation root is out of scope for this record
+layer, see TRUST-MODEL.md §4.1). What it closes is the ZERO-EFFORT version
+of the attack: a bare commitment key with no registration step at all.
 
 THE MECHANISM — reuses node_ownership.py's exact pattern (self-signed,
 time-bounded, revocable cert; a persistent "who" a reader can independently
@@ -92,8 +92,9 @@ IDENTITY_LIMITATION_CAVEAT = (
     "zero-effort inline self-mint case ([mesh-rung12-adversarial-review]): "
     "a commitment key with no persistent identity behind it can no longer "
     "reach full_bilateral. It does not close the case of an attacker who "
-    "self-registers an identity too — that requires an external anchor "
-    "(the Authority tier), out of scope here. See TRUST-MODEL.md §4.1a."
+    "self-registers an identity too — that requires an external trust "
+    "anchor / third-party attestation root, out of scope here. See "
+    "TRUST-MODEL.md §4.1a."
 )
 
 
