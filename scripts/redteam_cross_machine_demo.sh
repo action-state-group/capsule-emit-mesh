@@ -15,10 +15,11 @@
 #   (3) M3: verify OFFLINE -> GREEN.
 #   (4) M3: tamper one field on the COPY (no re-sign) -> re-verify -> RED.
 #
-# Usage:
-#   ./scripts/redteam_cross_machine_demo.sh
+# Usage (M3_HOST is REQUIRED -- no default is committed; this is a public
+# repo, and a real ssh target is not something to ship in it):
+#   M3_HOST=user@<your-m3-tailscale-ip-or-hostname> ./scripts/redteam_cross_machine_demo.sh
 #
-# Override the target machine with M3_HOST / M3_REPO if needed:
+# Override the remote repo path / python if needed:
 #   M3_HOST=user@100.x.x.x M3_REPO=~/capsule-emit-mesh ./scripts/redteam_cross_machine_demo.sh
 #
 # *** What this proves, and what it does NOT prove -- read before presenting ***
@@ -36,7 +37,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-M3_HOST="${M3_HOST:-stevenmih@100.127.121.98}"
+# No default here on purpose -- this is a public repo, and a real
+# ssh target (username + tailnet IP/hostname) is not something to commit.
+# Set it yourself: M3_HOST=user@<your-m3-tailscale-ip-or-hostname>
+M3_HOST="${M3_HOST:?set M3_HOST=user@<your-m3-tailscale-ip-or-hostname> -- see DEMO-REDTEAM.md \"Path A\"}"
+case "$M3_HOST" in
+  *100.x.x.x*|*'<'*)
+    echo "FATAL: M3_HOST is still a placeholder (\"$M3_HOST\"). Set it to your real M3 target." >&2
+    exit 1
+    ;;
+esac
 M3_REPO="${M3_REPO:-~/capsule-emit-mesh}"
 M3_PYTHON="${M3_PYTHON:-${M3_REPO}/.venv-redteam/bin/python3}"
 BUNDLE_LOCAL="$ROOT/redteam-cross-machine-bundle"

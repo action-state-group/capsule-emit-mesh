@@ -237,11 +237,14 @@ and the printed box at the end of every run.
 
 Run from `capsule-emit-mesh/` on **M4** (the machine serving the live node):
 
+`M3_HOST` is **required** — no default is committed (this is a public repo,
+and a real ssh target is not something to ship in it):
+
 ```
-./scripts/redteam_cross_machine_demo.sh
+M3_HOST=user@<your-m3-tailscale-ip-or-hostname> ./scripts/redteam_cross_machine_demo.sh
 ```
 
-Override the target machine if needed:
+Override the remote repo path / python if needed:
 
 ```
 M3_HOST=user@100.x.x.x M3_REPO=~/capsule-emit-mesh ./scripts/redteam_cross_machine_demo.sh
@@ -267,10 +270,10 @@ M3_HOST=user@100.x.x.x M3_REPO=~/capsule-emit-mesh ./scripts/redteam_cross_machi
 ### Real output — run M4 → M3 (Tailscale), 2026-09-01
 
 ```
-$ ./scripts/redteam_cross_machine_demo.sh
+$ M3_HOST=user@<m3-tailscale-ip-or-hostname> ./scripts/redteam_cross_machine_demo.sh
 ############################################################
 # PATH A -- cross-machine: M4 seals, M3 verifies OFFLINE
-# M3 target: stevenmih@100.127.121.98
+# M3 target: user@<m3-tailscale-ip-or-hostname>
 ############################################################
 
 === Part 1/2: seal a real capsule on M4 (this machine) ===
