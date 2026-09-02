@@ -38,12 +38,14 @@ from mesh_coordinator_receipt_emitter import TopologyEntry, default_node_state a
 from mesh_record_emitter import default_node_state, emit_lifecycle_record, make_transcript_summary
 from mesh_record_verifier import FULL_BILATERAL, UNILATERAL_FALLBACK
 from requester_commitment import RequesterKey, make_requester_commitment
+from requester_identity_binding import RequesterIdentityKey, make_requester_identity_binding
 
 RUN_ID = "run-cv-test-0001"
 REQUEST_DIGEST = "a" * 64
+FAR_FUTURE_MS = 32_503_680_000_000  # 3000-01-01T00:00:00Z -- outlives any real test run
 
 
-def _seal(hop_id: str, *, requester_commitment=None) -> dict:
+def _seal(hop_id: str, *, requester_commitment=None, requester_identity_binding=None) -> dict:
     node = default_node_state(node_id=f"prov/{hop_id}")
     return emit_lifecycle_record(
         node,
@@ -54,6 +56,7 @@ def _seal(hop_id: str, *, requester_commitment=None) -> dict:
         transcript=make_transcript_summary(2, 2),
         request_digest=REQUEST_DIGEST,
         requester_commitment=requester_commitment,
+        requester_identity_binding=requester_identity_binding,
     )
 
 
@@ -86,9 +89,22 @@ class TestGradeCrossPartyRung:
         assert grade == UNILATERAL_FALLBACK
 
     def test_full_bilateral_with_valid_commitment_carries_caveat(self):
+        """A valid requester_commitment alone only reaches acknowledged_receipt
+        since #70 (requester_identity_binding closes the zero-effort self-mint
+        gap) -- full_bilateral now also requires a verified identity binding
+        citing that exact commitment key. Build both, the "registered
+        identity" case, per tests/test_requester_commitment.py's
+        _bound_commitment_and_binding() pattern."""
         key = RequesterKey.generate()
         commitment = make_requester_commitment(key, request_digest=REQUEST_DIGEST, exchange_id=RUN_ID)
-        sealed = _seal("stage-0", requester_commitment=commitment)
+        identity_key = RequesterIdentityKey.generate()
+        binding = make_requester_identity_binding(
+            identity_key,
+            owner_id="requester-owner-1",
+            commitment_public_key=commitment["public_key"],
+            expires_at_unix_ms=FAR_FUTURE_MS,
+        )
+        sealed = _seal("stage-0", requester_commitment=commitment, requester_identity_binding=binding)
         grade = ccv.grade_cross_party_rung(_bundle("stage-0", sealed))
         assert grade.startswith(FULL_BILATERAL)
         assert "caveat:" in grade  # identity_limitation must ride along, never silently dropped
