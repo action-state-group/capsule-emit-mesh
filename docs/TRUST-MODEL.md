@@ -494,7 +494,7 @@ exchange in §4's opening paragraph:
   performs, with no second, independent party involved at any point.** `verify_requester_commitment()`
   confirms a signature is self-consistent and bound to the record's own `request_digest`/`exchange_id`
   — it does not and cannot confirm the embedded public key belongs to anyone else. This is inherent
-  without an external identity anchor (the Authority tier; out of scope for this record layer), so the
+  without an external identity anchor (out of scope for this record layer), so the
   fix is disclosure, not prevention: a record or verdict reporting `cross_party_rung=full_bilateral`
   now always carries an `identity_limitation` caveat saying plainly that the rung proves *a commitment
   was made and matches this record*, never *that an independent party made it* — attached at the
