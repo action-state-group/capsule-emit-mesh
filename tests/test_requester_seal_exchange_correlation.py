@@ -224,3 +224,82 @@ def test_requester_capsule_does_not_carry_move4_ack(tmp_path: Path) -> None:
     # No ack leg: either no cross_party block at all, or one that carries no
     # counterparty_ref acknowledging a provider capsule_id.
     assert cross_party is None or cross_party.get("counterparty_ref") is None
+
+
+# ---------------------------------------------------------------------------
+# 5. [mesh-b1-requestor-capsule-ledger] PROVISIONAL role/observation_point
+#    (CPB #70 vocabulary, hard-coded ahead of its promotion)
+# ---------------------------------------------------------------------------
+
+def _poc(capsule: dict) -> dict:
+    return capsule["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]
+
+
+def test_requester_capsule_carries_provisional_role_requested_and_client_egress(tmp_path: Path) -> None:
+    cs_mod = _real_capsule_sidecar()
+    state = _state(tmp_path, role=cs_mod.ROLE_REQUESTER, node_id="req-node-1")
+    capsule = _seal(state, {"id": "chatcmpl-role-req", "object": "chat.completion"})
+    poc = _poc(capsule)
+    assert poc["role"] == "requested"
+    assert poc["observation_point"] == "client_egress"
+
+
+def test_provider_capsule_carries_provisional_role_served_and_serving_host_ingress(tmp_path: Path) -> None:
+    """Mirrors the requester-side field: the provider half gets the CPB #70
+    pairing its own vantage requires (serving_host_ingress -> served)."""
+    cs_mod = _real_capsule_sidecar()
+    state = _state(tmp_path, role=cs_mod.ROLE_PROVIDER, node_id="prov-node-1")
+    capsule = _seal(state, {"id": "chatcmpl-role-prov", "object": "chat.completion"})
+    poc = _poc(capsule)
+    assert poc["role"] == "served"
+    assert poc["observation_point"] == "serving_host_ingress"
+
+
+def test_provisional_role_field_has_a_single_labeled_definition() -> None:
+    """ACCEPTANCE: 'the provisional role field is a single labeled definition
+    (grep shows the PROVISIONAL comment)'. Guards against a future hand-copy
+    of the "requested"/"served" literals landing without the CPB #70 label,
+    which would silently fork the vocabulary from its one source of truth."""
+    source = Path(__file__).resolve().parent.parent / "capsule_sidecar.py"
+    text = source.read_text(encoding="utf-8")
+    assert text.count("# PROVISIONAL: pending CPB #70 promotion") == 1
+
+
+def test_two_requesters_same_exchange_each_independently_offline_verifiable(tmp_path: Path) -> None:
+    """ACCEPTANCE: 'two requesters, same exchange -> each half independently
+    offline-verifiable'. Two DIFFERENT requester nodes (e.g. both dialing the
+    same shared/broadcast provider) each seal their own-half capsule for the
+    SAME exchange_id. This is NOT a join (that's B2, out of scope): each
+    capsule stands alone and verifies on its own bytes, with no reference to
+    the other."""
+    from agent_action_capsule.verify import verify as verify_capsule
+
+    cs_mod = _real_capsule_sidecar()
+    response = {
+        "id": "chatcmpl-shared-two-requesters",
+        "object": "chat.completion",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+    }
+    state_a = _state(tmp_path, role=cs_mod.ROLE_REQUESTER, node_id="req-a")
+    cap_a = _seal(state_a, response)
+    state_b = _state(tmp_path, role=cs_mod.ROLE_REQUESTER, node_id="req-b")
+    cap_b = _seal(state_b, response)
+
+    # Each half is independently, offline-verifiable on its own bytes.
+    result_a = verify_capsule(cap_a)
+    result_b = verify_capsule(cap_b)
+    assert result_a.ok, result_a.findings
+    assert result_b.ok, result_b.findings
+
+    # Distinct records (different requesting_party, different capsule_id) --
+    # not one exchange collapsed into a single shared capsule.
+    poc_a, poc_b = _poc(cap_a), _poc(cap_b)
+    assert poc_a["role"] == poc_b["role"] == "requested"
+    assert poc_a["observation_point"] == poc_b["observation_point"] == "client_egress"
+    assert cap_a["capsule_id"] != cap_b["capsule_id"]
+    sp_a, sp_b = _serving_provenance(cap_a), _serving_provenance(cap_b)
+    assert sp_a["requesting_party"] == "req-a"
+    assert sp_b["requesting_party"] == "req-b"
+    # Both still carry the SAME shared correlator -- joinable later (B2), not
+    # joined here: no reference to the other capsule's id in either record.
+    assert sp_a["exchange_id"] == sp_b["exchange_id"] == "chatcmpl-shared-two-requesters"

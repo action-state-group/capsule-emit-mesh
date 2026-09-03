@@ -108,6 +108,41 @@ ROLE_PROVIDER = "provider"
 ROLE_REQUESTER = "requester"
 ROLES = (ROLE_PROVIDER, ROLE_REQUESTER)
 
+# PROVISIONAL: pending CPB #70 promotion ([mesh-exchange-role-field],
+# scitt-payload-binding's `mesh-inference-exchange` registry entry, issue
+# #69, commit a5864d2). CPB #70 is not landed, so this sidecar hard-codes
+# the field here ahead of the registry entry's promotion (Steven,
+# 2026-09-03, task [mesh-b1-requestor-capsule-ledger]), matching #70's
+# proposed vocabulary and role/observation_point pairing exactly so
+# promotion is a rename, not a reshape. Single definition site — every
+# call site below reads these maps, never a hand-copied literal.
+#
+# This is a DIFFERENT axis from ROLE_PROVIDER/ROLE_REQUESTER above (this
+# sidecar's own CLI role, also recorded as serving_provenance.role using
+# "provider"/"requester" vocabulary): CPB #70's vocabulary is
+# "requested"/"served", and the two must never be conflated.
+LIFECYCLE_ROLE_REQUESTED = "requested"
+LIFECYCLE_ROLE_SERVED = "served"
+_LIFECYCLE_ROLE_BY_SIDECAR_ROLE = {
+    ROLE_REQUESTER: LIFECYCLE_ROLE_REQUESTED,
+    ROLE_PROVIDER: LIFECYCLE_ROLE_SERVED,
+}
+# The vantage point this sidecar observes at, per CPB #70's role/
+# observation_point consistency invariant (client_egress <-> requested;
+# serving_host_ingress/backend_dispatch <-> served; gateway_ingress carries
+# no role at all). This Python sidecar always proxies its OWN node's /v1
+# surface — never a gateway or a mid-topology backend hop — so there is
+# exactly one vantage per role today. The other two values in CPB #70's
+# four-value set (gateway_ingress, backend_dispatch) belong to the
+# coordinator/split-inference hop tracer (mesh_record_emitter.py's
+# x-mesh-lifecycle-v1 block) — a different producer, out of scope here.
+LIFECYCLE_OBSERVATION_POINT_CLIENT_EGRESS = "client_egress"
+LIFECYCLE_OBSERVATION_POINT_SERVING_HOST_INGRESS = "serving_host_ingress"
+_LIFECYCLE_OBSERVATION_POINT_BY_SIDECAR_ROLE = {
+    ROLE_REQUESTER: LIFECYCLE_OBSERVATION_POINT_CLIENT_EGRESS,
+    ROLE_PROVIDER: LIFECYCLE_OBSERVATION_POINT_SERVING_HOST_INGRESS,
+}
+
 #: How exchange_id is derived, recorded honestly in the capsule so a reader
 #: knows it is the wire-observed response id, not a host-minted correlator this
 #: proxy cannot see. Both the provider and requester sidecars observe the SAME
@@ -690,6 +725,17 @@ def build_capsule(
             # Move-4 ack leg (the requester does not sign the provider's
             # capsule_id here — that upgrade is spec-gated and out of scope).
             "serving_provenance": serving_provenance,
+            # role/observation_point are PROVISIONAL — see the single labeled
+            # definition site (_LIFECYCLE_ROLE_BY_SIDECAR_ROLE /
+            # _LIFECYCLE_OBSERVATION_POINT_BY_SIDECAR_ROLE) above for the
+            # rationale and the CPB #70 vocabulary these two fields match.
+            # Deliberately top-level siblings here, NOT nested inside
+            # serving_provenance above, because serving_provenance already
+            # has its own "role" key using this sidecar's OWN CLI-role
+            # vocabulary ("provider"/"requester") — a different axis this
+            # field must never collide with.
+            "role": _LIFECYCLE_ROLE_BY_SIDECAR_ROLE[state.role],
+            "observation_point": _LIFECYCLE_OBSERVATION_POINT_BY_SIDECAR_ROLE[state.role],
             # verify-after-advertise (§12.3): the node's self-attested CLAIM,
             # co-carried so a third party has BOTH the advertisement and the
             # serving fact from ONE offline artifact -- the reconciliation is

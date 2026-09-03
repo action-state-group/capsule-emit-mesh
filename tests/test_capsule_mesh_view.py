@@ -28,12 +28,15 @@ def _capsule(
     observation_point: str | None = None,
     advertisement: dict | None = None,
     serving_provenance: dict | None = None,
+    role: str | None = None,
 ) -> dict:
     poc: dict = {"cross_party": cross_party}
     if advertisement is not None:
         poc["advertisement"] = advertisement
     if serving_provenance is not None:
         poc["serving_provenance"] = serving_provenance
+    if role is not None:
+        poc["role"] = role
     compute_attestation = {"x-mesh-poc-v1": poc}
     if observation_point is not None:
         compute_attestation["x-mesh-lifecycle-v1"] = {"observation_point": observation_point}
@@ -86,6 +89,22 @@ def test_role_via_observation_point_alone_for_an_unrecognized_source_log():
     # the "fails closed instead of silently mislabeling" claim.
     rec = _capsule("a" * 64, "2026-08-28T00:00:00Z", observation_point="gateway_ingress")
     assert label_role(rec, "some-future-log") == "served"
+
+
+def test_role_reads_the_provisional_capsule_field_when_present():
+    """[mesh-b1-requestor-capsule-ledger]: capsule_sidecar.py now
+    provisionally emits x-mesh-poc-v1.role for real. When a record carries
+    it, that field is authoritative -- read directly, not re-derived."""
+    rec = _capsule("a" * 64, "2026-08-28T00:00:00Z", role="requested", observation_point="client_egress")
+    assert label_role(rec, SOURCE_SIDECAR) == "requested"
+
+
+def test_role_field_overrides_the_heuristic_even_when_they_would_disagree():
+    """Isolates that the provisional field wins outright, not just when it
+    happens to agree with the heuristic -- deleting the early-return branch
+    flips this test red."""
+    rec = _capsule("a" * 64, "2026-08-28T00:00:00Z", role="requested", observation_point="serving_host_ingress")
+    assert label_role(rec, SOURCE_SIDECAR) == "requested"
 
 
 # ---------------------------------------------------------------------------

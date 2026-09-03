@@ -18,13 +18,24 @@ joined by each record's own content address (`capsule_id`), never written
 back to either log.
 
 This module adds exactly two DISPLAY-ONLY labels per record -- `role`
-(requested|served) and `counterparty` -- neither of which is a capsule
-field. Do NOT add a `role` field to any capsule here; that is the separate,
-gated registry-entry track ([mesh-exchange-role-field], scitt-payload-
-binding's `mesh-inference-exchange` provisional). Per that track's LOCKED
+(requested|served) and `counterparty` -- neither of which was a capsule
+field when this module was written. This viewer never ADDS a `role` field
+to any capsule here; that promotion is the separate, gated registry-entry
+track ([mesh-exchange-role-field], scitt-payload-binding's
+`mesh-inference-exchange` provisional, CPB #70). Per that track's LOCKED
 ruling, `role` is a genuine party-role axis and is NOT derivable from
 `observation_point` alone (`gateway_ingress` maps to neither requested nor
 served) -- so the label here also weighs which log produced the record.
+
+2026-09-03 update ([mesh-b1-requestor-capsule-ledger]): capsule_sidecar.py
+now PROVISIONALLY emits its own `x-mesh-poc-v1.role` /
+`.observation_point` pair, hard-coded ahead of CPB #70's promotion (see
+its `# PROVISIONAL: pending CPB #70 promotion` definition site). This
+viewer's `label_role()` below reads that field as authoritative when
+present, falling back to the pre-existing source-log/observation_point
+heuristic only for records that don't carry it (e.g. the Rust plugin,
+which this task did not touch) -- so a genuine requester record is no
+longer silently mislabeled "served".
 """
 from __future__ import annotations
 
@@ -92,7 +103,18 @@ def _poc_block(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def label_role(record: dict[str, Any], source_log: str) -> str:
-    """Display-only role label -- never persisted, never a new capsule field."""
+    """Display-only role label -- never persisted here.
+
+    [mesh-b1-requestor-capsule-ledger] capsule_sidecar.py now provisionally
+    seals its own `x-mesh-poc-v1.role` (see its `PROVISIONAL: pending CPB
+    #70 promotion` definition site) -- when a record carries that field, it
+    is the authoritative source-of-truth and is returned as-is. Records
+    without it (e.g. the Rust plugin's, or older sidecar records) fall back
+    to the pre-existing observation_point/source-log heuristic below.
+    """
+    poc_role = _poc_block(record).get("role")
+    if poc_role in ("requested", "served"):
+        return poc_role
     observation_point = _lifecycle_block(record).get("observation_point")
     if observation_point in _SERVED_OBSERVATION_POINTS:
         return "served"
