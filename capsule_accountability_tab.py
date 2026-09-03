@@ -38,6 +38,7 @@ to keep data out of a request URL; this page has no URL to protect).
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import sys
 from pathlib import Path
@@ -46,6 +47,8 @@ from typing import Any
 from capsule_mesh_view import _poc_block, _verify_ok_map, verify_results_for
 from capsule_mesh_viewer import _load_verify_js, friendly_model_name, serving_provenance
 from capsule_sidecar import derive_cross_party_rung, identity_limitation_for_rung
+from mac_hardware_inventory import GRADE_OS_MEASURED as HARDWARE_INVENTORY_OS_MEASURED
+from trace_citation import GRADE_UNATTESTED, grade_tee_citation
 
 try:  # same reader capsule_mesh_view / capsule_mesh_viewer use for their CLIs
     from capsule_emit.ledger import read_ledger
@@ -57,9 +60,11 @@ __all__ = [
     "build_tab_payload",
     "cross_party_grade",
     "freshness_grade",
+    "hardware_inventory_grade",
     "log_integrity_grade",
     "measurement_class_grade",
     "render_accountability_tab_html",
+    "tee_citation_grade",
 ]
 
 # The three-state discipline (TRUST-MODEL.md §10 Rule 1), plus an explicit
@@ -129,6 +134,76 @@ def measurement_class_grade(poc: dict[str, Any]) -> dict[str, Any]:
     return {"state": state}
 
 
+def tee_citation_grade(poc: dict[str, Any]) -> dict[str, Any]:
+    """Rung 3c-by-composition -- a mesh capsule citing a foreign TRACE Trust
+    Record's TDX evidence, graded via `trace_citation.grade_tee_citation`
+    (never re-derived here). DELIBERATELY NOT merged into
+    ``measurement_class_grade``'s self_measured/os_measured/tee_measured ladder:
+    that ladder is this NODE's own hardware self-attesting; this rung is a
+    citation of SOMEONE ELSE's signed record, and its three grades
+    (unattested/platform-attested/attested) name a narrower, honestly weaker set
+    of claims -- "genuine silicon reported this measurement" is not "this
+    execution happened here". Blending the two ladders into one state space
+    would silently let a citation borrow the visual weight `tee_measured`
+    already carries on this table.
+
+    Absent evidence_refs.trace_citation renders ``absent`` -- a record that never
+    cited anything is exactly that, never a fabricated ``unattested`` verdict
+    about evidence that was never offered.
+    """
+    citation = (poc.get("evidence_refs") or {}).get("trace_citation")
+    if not citation:
+        return {"state": STATE_ABSENT}
+
+    reference = citation.get("reference") or {}
+    record_raw_b64 = citation.get("record_raw_b64")
+    quote_b64 = citation.get("quote_b64")
+    if not record_raw_b64:
+        return {"state": STATE_ABSENT}
+
+    try:
+        record_bytes = base64.b64decode(record_raw_b64)
+        cited_record = json.loads(record_bytes)
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return {"state": GRADE_UNATTESTED, "reason": "cited record is not valid base64/JSON"}
+
+    quote_bytes = base64.b64decode(quote_b64) if quote_b64 else None
+
+    result = grade_tee_citation(
+        reference=reference,
+        cited_record=cited_record,
+        cited_record_bytes=record_bytes,
+        quote_bytes=quote_bytes,
+    )
+    return {
+        "state": result.grade,
+        "reason": result.reason,
+        "card_text": result.card_text,
+        "record_signature_state": result.record_signature_state,
+    }
+
+
+def hardware_inventory_grade(poc: dict[str, Any]) -> dict[str, Any]:
+    """PATH (a) rung -- the Mac-only ``hardware_inventory`` block
+    (``mac_hardware_inventory.capture_mac_hardware_inventory``), a *different*
+    evidence slot from ``measurement_class_grade``'s ``binary_attestation``: this
+    is what the OS reports about the HOST HARDWARE, not the serving binary's
+    cdhash. Absent is rendered honestly, never blank -- the mutant this rung
+    exists to prevent is a missing capture silently reading as "nothing to see"
+    instead of "no hardware inventory was offered for this record".
+    """
+    block = poc.get("hardware_inventory")
+    if not block or block.get("grade") != HARDWARE_INVENTORY_OS_MEASURED:
+        return {"state": STATE_ABSENT}
+    return {
+        "state": HARDWARE_INVENTORY_OS_MEASURED,
+        "model_identifier": block.get("model_identifier"),
+        "chip": block.get("chip"),
+        "source": block.get("source"),
+        "capture_method": block.get("capture_method"),
+    }
+
+
 def log_integrity_grade(verify_ok: bool | None, has_witness_checkpoint: bool) -> dict[str, Any]:
     """Rung 4 -- log integrity: signed/chained verify + whether a witness
     checkpoint was supplied to THIS view (a property of the view, not of the
@@ -160,6 +235,8 @@ def build_row(record: dict[str, Any], *, verify_ok: bool | None, has_witness_che
             "freshness": freshness_grade(poc.get("client_nonce_source")),
             "cross_party": cross_party_grade(poc),
             "runtime_binding": measurement_class_grade(poc),
+            "tee_citation": tee_citation_grade(poc),
+            "hardware_inventory": hardware_inventory_grade(poc),
             "log_integrity": log_integrity_grade(verify_ok, has_witness_checkpoint),
         },
         "record": record,
@@ -353,10 +430,10 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   }
 
   var TONE = {
-    absent: "neutral", unilateral_fallback: "neutral",
+    absent: "neutral", unilateral_fallback: "neutral", unattested: "neutral",
     "present-unverified": "warn", acknowledged_receipt: "warn",
-    self_measured: "warn", os_measured: "warn",
-    verified: "good", full_bilateral: "good", tee_measured: "good",
+    self_measured: "warn", os_measured: "warn", "platform-attested": "warn",
+    verified: "good", full_bilateral: "good", tee_measured: "good", attested: "good",
     failed: "bad"
   };
 
@@ -422,6 +499,13 @@ _HTML_SHELL = r"""<!DOCTYPE html>
     }
     if (r.runtime_binding) {
       grid.appendChild(rungCard("Runtime / binding", r.runtime_binding.state, r.runtime_binding.state));
+    }
+    if (r.tee_citation) {
+      grid.appendChild(rungCard("TEE (via TRACE citation)", r.tee_citation.state, r.tee_citation.state, r.tee_citation.card_text || r.tee_citation.reason));
+    }
+    if (r.hardware_inventory) {
+      var hiText = r.hardware_inventory.state === "absent" ? "absent" : (r.hardware_inventory.model_identifier || r.hardware_inventory.state);
+      grid.appendChild(rungCard("Hardware inventory", r.hardware_inventory.state, hiText, r.hardware_inventory.state === "absent" ? null : (r.hardware_inventory.chip + " · " + r.hardware_inventory.source)));
     }
     if (r.log_integrity) {
       var liText = r.log_integrity.state + (r.log_integrity.witness_checkpoint_supplied ? " · witness checkpoint supplied" : " · no witness checkpoint");
