@@ -160,6 +160,20 @@ IDENTITY_LIMITATION_CAVEAT = (
 #: keys/ is gitignored.
 NODE_KEY_FILENAME = "node-key.pem"
 
+# [mesh-native-log-join] The node's OWN operational request log --
+# native_log.jsonl -- written for every /v1/chat/completions request this
+# sidecar handles, regardless of whether sealing succeeded. This is what a
+# coverage join reconciles against capsules.jsonl: see native_log_join.py.
+NATIVE_STATUS_SUCCESS = "SUCCESS"
+NATIVE_STATUS_FAILED = "FAILED"
+
+#: runtime_shutdown_* lifecycle markers bound expected sealing gaps (a
+#: coverage join labels a gap inside one of these windows "runtime down"
+#: instead of an unexplained miss). _begin is written when this process
+#: stops serving; _end is written the next time a NodeState boots.
+LIFECYCLE_RUNTIME_SHUTDOWN_BEGIN = "runtime_shutdown_begin"
+LIFECYCLE_RUNTIME_SHUTDOWN_END = "runtime_shutdown_end"
+
 
 @dataclass
 class BilateralEvalResult:
@@ -438,6 +452,47 @@ def digest_json(value: Any) -> str:
     return json_digest(_stringify_floats(value))
 
 
+def _utc_now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def record_native_request(
+    state: "NodeState",
+    *,
+    request_id: str,
+    status: str,
+    request_digest: str | None,
+    capsule_id: str | None,
+) -> dict[str, Any]:
+    """Append one entry to native_log.jsonl -- written for EVERY request this
+    sidecar handles, independent of whether sealing succeeded. [mesh-native-
+    log-join] ``capsule_id`` is None exactly when this request was never
+    sealed (a bad-JSON body, an uncaught sidecar exception, a crash mid-
+    stream) -- that gap is the coverage finding native_log_join.py exists to
+    surface, not a bug to paper over here.
+    """
+    entry = {
+        "request_id": request_id,
+        "timestamp": _utc_now_iso(),
+        "status": status,
+        "request_digest": request_digest,
+        "capsule_id": capsule_id,
+    }
+    with state.native_log_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, sort_keys=True) + "\n")
+    return entry
+
+
+def record_lifecycle_event(state: "NodeState", event: str) -> dict[str, Any]:
+    """Append one runtime_shutdown_begin/_end marker to lifecycle_events.jsonl."""
+    entry = {"event": event, "timestamp": _utc_now_iso()}
+    with state.lifecycle_events_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, sort_keys=True) + "\n")
+    return entry
+
+
 @dataclass
 class NodeState:
     """Chain + identity state the sidecar holds for one node/run."""
@@ -525,6 +580,15 @@ class NodeState:
         self.ledger_path = self.ledger_dir / "capsules.jsonl"
         self.statements_dir = self.ledger_dir / "signed-statements"
         self.statements_dir.mkdir(parents=True, exist_ok=True)
+
+        # [mesh-native-log-join] The operational request log + lifecycle
+        # marker log, siblings of capsules.jsonl in the same ledger_dir --
+        # native_log_join.py reconciles the three against each other.
+        self.native_log_path = self.ledger_dir / "native_log.jsonl"
+        self.lifecycle_events_path = self.ledger_dir / "lifecycle_events.jsonl"
+        # Every process boot closes out any prior runtime_shutdown window --
+        # this IS the "sealing resumed" marker a coverage join looks for.
+        record_lifecycle_event(self, LIFECYCLE_RUNTIME_SHUTDOWN_END)
 
         # [b4-who-did] Default the expected endpoint id from the loaded cert, so
         # a matching cert re-checks green without extra config. When no cert is
@@ -1264,6 +1328,9 @@ def make_handler(state: NodeState, upstream_base: str):
             if self.path != "/v1/chat/completions":
                 self._proxy_passthrough("POST", raw)
                 return
+            # [mesh-native-log-join] request_id identifies this native_log row
+            # independent of whatever capsule (if any) ends up sealed for it.
+            request_id = uuid.uuid4().hex
             headers = {k.lower(): v for k, v in self.headers.items()}
             try:
                 request_json = json.loads(raw.decode("utf-8"))
@@ -1274,9 +1341,28 @@ def make_handler(state: NodeState, upstream_base: str):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+                # A malformed body never reaches digest_json/sealing -- the
+                # native_log row still exists, with no request_digest and no
+                # capsule, so the join surfaces it as unsealed rather than a
+                # request that silently never happened.
+                record_native_request(
+                    state, request_id=request_id, status=NATIVE_STATUS_FAILED,
+                    request_digest=None, capsule_id=None,
+                )
                 return
+            request_digest = digest_json(request_json)
             if request_json.get("stream"):
-                self._handle_streaming_chat_completion(headers, raw, request_json)
+                try:
+                    self._handle_streaming_chat_completion(headers, raw, request_json, request_id=request_id)
+                except Exception:
+                    # The SSE writer may already have sent a partial response by
+                    # the time this fires -- sending a second HTTP response here
+                    # would corrupt the stream, so this only records the
+                    # native_log gap (best-effort, never silently dropped).
+                    record_native_request(
+                        state, request_id=request_id, status=NATIVE_STATUS_FAILED,
+                        request_digest=request_digest, capsule_id=None,
+                    )
                 return
             try:
                 status_code, body, out_headers = handle_chat_completion(state, upstream_base, headers, raw)
@@ -1290,8 +1376,20 @@ def make_handler(state: NodeState, upstream_base: str):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            # [mesh-native-log-join] capsule_id is None exactly when the except
+            # branch above ran -- handle_chat_completion seals on every path it
+            # completes, so an uncaught sidecar-internal exception is the one
+            # gap left for the join to surface here.
+            record_native_request(
+                state, request_id=request_id,
+                status=NATIVE_STATUS_SUCCESS if 200 <= status_code < 300 else NATIVE_STATUS_FAILED,
+                request_digest=request_digest,
+                capsule_id=out_headers.get("X-Capsule-Id"),
+            )
 
-        def _handle_streaming_chat_completion(self, headers: dict[str, str], raw_body: bytes, request_json: dict[str, Any]) -> None:
+        def _handle_streaming_chat_completion(
+            self, headers: dict[str, str], raw_body: bytes, request_json: dict[str, Any], *, request_id: str,
+        ) -> None:
             """Buffer the real SSE stream, seal a capsule over the RAW
             reassembled response, then forward a re-synthesized SSE stream
             built from a CLIENT-COMPATIBILITY-NORMALIZED copy of that same
@@ -1357,7 +1455,7 @@ def make_handler(state: NodeState, upstream_base: str):
                 except json.JSONDecodeError:
                     response_json = {"error": {"message": error_body.decode("utf-8", errors="replace")}}
                 latency_ms = (time.monotonic() - start) * 1000
-                _seal_chat_completion(
+                capsule = _seal_chat_completion(
                     state,
                     client_nonce=client_nonce,
                     client_nonce_source=client_nonce_source,
@@ -1368,6 +1466,10 @@ def make_handler(state: NodeState, upstream_base: str):
                     latency_ms=latency_ms,
                     bilateral_eval=bilateral_eval,
                 )
+                record_native_request(
+                    state, request_id=request_id, status=NATIVE_STATUS_FAILED,
+                    request_digest=request_digest, capsule_id=capsule["capsule_id"],
+                )
                 return
 
             latency_ms = (time.monotonic() - start) * 1000
@@ -1375,7 +1477,7 @@ def make_handler(state: NodeState, upstream_base: str):
             # Build the compat copy BEFORE sealing so the capsule can state what
             # the caller actually got. response_digest still commits to RAW.
             forwarded, transforms, upstream_ids = build_forwarded_copy(response_json)
-            _seal_chat_completion(
+            capsule = _seal_chat_completion(
                 state,
                 client_nonce=client_nonce,
                 client_nonce_source=client_nonce_source,
@@ -1386,6 +1488,11 @@ def make_handler(state: NodeState, upstream_base: str):
                 latency_ms=latency_ms,
                 forwarded_copy=forwarded_copy_record(forwarded, transforms, upstream_ids),
                 bilateral_eval=bilateral_eval,
+            )
+            record_native_request(
+                state, request_id=request_id,
+                status=NATIVE_STATUS_SUCCESS if 200 <= status_code < 300 else NATIVE_STATUS_FAILED,
+                request_digest=request_digest, capsule_id=capsule["capsule_id"],
             )
 
             body = b"".join(synthesize_sse(forwarded))
@@ -1426,6 +1533,22 @@ def run_sidecar(
 ) -> ThreadingHTTPServer:
     server = ThreadingHTTPServer((listen_host, listen_port), make_handler(state, upstream_base))
     return server
+
+
+def serve_until_shutdown(server: ThreadingHTTPServer, state: NodeState) -> None:
+    """``server.serve_forever()``, with a ``runtime_shutdown_begin`` lifecycle
+    marker written on the way out -- however the loop ends (KeyboardInterrupt,
+    ``server.shutdown()`` from another thread, an uncaught exception). This is
+    the other half of the boot-time ``runtime_shutdown_end`` marker
+    (NodeState.__post_init__): together they bound the window a coverage join
+    (native_log_join.py) labels "sealing was off" instead of an unexplained
+    gap. Does not cover an unrecoverable process kill (SIGKILL) -- same
+    honest limit as every other best-effort marker in this file.
+    """
+    try:
+        server.serve_forever()
+    finally:
+        record_lifecycle_event(state, LIFECYCLE_RUNTIME_SHUTDOWN_BEGIN)
 
 
 def default_state(
@@ -1632,7 +1755,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"checkpointing enabled: log_id={state.checkpoint.log_id} {state.checkpoint.witness_status()}")
     if state.plugin_checkpoint is not None:
         print(f"plugin-ledger checkpointing enabled: log_id={state.plugin_checkpoint.log_id} {state.plugin_checkpoint.witness_status()}")
-    server.serve_forever()
+    serve_until_shutdown(server, state)
     return 0
 
 
