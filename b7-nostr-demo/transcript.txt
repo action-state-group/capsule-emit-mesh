@@ -1,0 +1,161 @@
+B7 -- account capsule -> Nostr publish path -- LOCAL TEST-RELAY TRANSCRIPT
+Everything below is local/offline. No public relay is contacted.
+
+=== 1. Build a witnessed capsule ledger ===
+checkpoint root=1613dc2c097876c764317bde93bad4cd2f03737de3a35cf877fd9927f12f2d0d mmr_size=7 witnessed=True
+ledger now has 6 entries (2 appended AFTER the checkpoint)
+
+=== 2. Build the account capsule (checkpoint-covered range ONLY) ===
+selection: entries 1..4 (covered_entries=4 of 6 on disk)
+MUTANT CHECK: the 2 un-anchored tail entries are NOT in the account -- PASS
+{
+  "coverage": {
+    "checkpoint_root": "1613dc2c097876c764317bde93bad4cd2f03737de3a35cf877fd9927f12f2d0d",
+    "log_id": "b7-demo",
+    "mmr_size": 7,
+    "note": "cross-check handle: recompute the fold from the node's ledger, check the ledger against this root, confirm the root was witnessed",
+    "timestamp": "2026-09-03T23:47:47.743295Z",
+    "witnessed": true,
+    "witnesses": [
+      "https://ts.example.invalid"
+    ]
+  },
+  "derivation": {
+    "definition_digest": "97130cc74ae73c93042980c71415945e042e92757daa49b341854906d8b4051a",
+    "fold": {
+      "n_requested": 1,
+      "n_served": 3,
+      "n_served_confirmed": 2,
+      "n_total": 4,
+      "n_unknown_role": 0
+    },
+    "kind": "served_success_fold",
+    "note": "plain counts over the selected range; an ACCOUNT, not a score. The relying party computes its own predicate."
+  },
+  "node_id": "b7-demo-node",
+  "not_a_score": "This is an account of facts + a witness handle to verify them, not a score or routing recommendation. See example_predicate() for an EXAMPLE predicate only \u2014 never a default routing policy.",
+  "schema": "mesh-account-capsule/1",
+  "selection": {
+    "covered_entries": 4,
+    "from_entry": 1,
+    "note": "witnessed range only: entries appended after the latest witnessed checkpoint are excluded by design",
+    "to_entry": 4
+  },
+  "sybil_residual": "Reputation is only as durable as identity. A mesh node key is free to mint, so a node with a poor account can reset to a fresh key with an empty history at zero cost. The witness makes ONE identity's history tamper-evident; it does not bind that identity to a scarce real-world entity. A relying party that needs Sybil resistance must add its own (stake, counterparty attestation, allow-list, proof-of-personhood) \u2014 this account does not provide it."
+}
+
+=== 3. Seal the account capsule into the node's own ledger ===
+sealed capsule_id=25c06ae40e28b55499edcd5e9824a5c11403b53a89bcc0e0aa47bcd6c782730d
+
+=== 4. Generate the node's Nostr signing key (separate from its Ed25519 ledger key) ===
+ledger key (Ed25519 PEM): /Users/intangible/dev/asg/_worktrees/capsule-emit-mesh/b7-account-nostr/b7-nostr-demo/ledger/node-key.pub.pem
+Nostr key (secp256k1 Schnorr x-only pubkey, hex): 4bd2ed6532dde61801e80d575b6c85fe82b78fc8cc47aea79c264149dd22be52
+(the Nostr secret is generated in-memory for this demo and discarded at process exit -- never written to disk, same as any throwaway demo key)
+
+=== 5. Start a LOCAL test relay (`nak serve`, 127.0.0.1 only) ===
+relay listening at ws://127.0.0.1:64797 (localhost only)
+
+=== 6. Publish the account event to the local relay ===
+event kind=31991 id=0ac744c3b1fb9cea7d63ca58ea7fdbdb8bbb9b0fc00c0d66beca2b56358d5627
+{
+  "content": "{\"coverage\":{\"checkpoint_root\":\"1613dc2c097876c764317bde93bad4cd2f03737de3a35cf877fd9927f12f2d0d\",\"log_id\":\"b7-demo\",\"mmr_size\":7,\"note\":\"cross-check handle: recompute the fold from the node's ledger, check the ledger against this root, confirm the root was witnessed\",\"timestamp\":\"2026-09-03T23:47:47.743295Z\",\"witnessed\":true,\"witnesses\":[\"https://ts.example.invalid\"]},\"derivation\":{\"definition_digest\":\"97130cc74ae73c93042980c71415945e042e92757daa49b341854906d8b4051a\",\"fold\":{\"n_requested\":1,\"n_served\":3,\"n_served_confirmed\":2,\"n_total\":4,\"n_unknown_role\":0},\"kind\":\"served_success_fold\",\"note\":\"plain counts over the selected range; an ACCOUNT, not a score. The relying party computes its own predicate.\"},\"durability\":\"This is a REPLACEABLE Nostr listing \\u2014 a relay may drop or supersede it at any time. No durability is claimed for this summary here. The durable layer is the WITNESS: cross-check the coverage.checkpoint_root against the witness, do not rely on this relay copy.\",\"node_id\":\"b7-demo-node\",\"not_a_score\":\"This is an account of facts + a witness handle to verify them, not a score or routing recommendation. See example_predicate() for an EXAMPLE predicate only \\u2014 never a default routing policy.\",\"schema\":\"mesh-account-capsule/1\",\"sealed_capsule_id\":\"25c06ae40e28b55499edcd5e9824a5c11403b53a89bcc0e0aa47bcd6c782730d\",\"sealed_note\":\"This account is SEALED as a capsule in the node's own ledger under capsule_id=25c06ae40e28b55499edcd5e9824a5c11403b53a89bcc0e0aa47bcd6c782730d. Pull that capsule from the node's capsules.jsonl and cross-check it against this listing; the ledgered capsule (not this relay copy) is the on-the-record assertion.\",\"selection\":{\"covered_entries\":4,\"from_entry\":1,\"note\":\"witnessed range only: entries appended after the latest witnessed checkpoint are excluded by design\",\"to_entry\":4},\"sybil_residual\":\"Reputation is only as durable as identity. A mesh node key is free to mint, so a node with a poor account can reset to a fresh key with an empty history at zero cost. The witness makes ONE identity's history tamper-evident; it does not bind that identity to a scarce real-world entity. A relying party that needs Sybil resistance must add its own (stake, counterparty attestation, allow-list, proof-of-personhood) \\u2014 this account does not provide it.\"}",
+  "created_at": 1788479267,
+  "id": "0ac744c3b1fb9cea7d63ca58ea7fdbdb8bbb9b0fc00c0d66beca2b56358d5627",
+  "kind": 31991,
+  "pubkey": "4bd2ed6532dde61801e80d575b6c85fe82b78fc8cc47aea79c264149dd22be52",
+  "sig": "ee3978d494e1ad4eb9d6a3a20845411f87833c59e997e8298d97732e4cb429174eb65d16cbef6f9d708486c82eede3cf3c875bec2f2ec95d4c409594865d839f",
+  "tags": [
+    [
+      "d",
+      "mesh-account"
+    ],
+    [
+      "k",
+      "mesh-account"
+    ],
+    [
+      "account_digest",
+      "bc2fe51310c51f07dd90f07cce3727adbe97bc0c0bb7922cf49e8ecb9ae0d50a"
+    ],
+    [
+      "coverage_root",
+      "1613dc2c097876c764317bde93bad4cd2f03737de3a35cf877fd9927f12f2d0d"
+    ],
+    [
+      "node_id",
+      "b7-demo-node"
+    ],
+    [
+      "witnessed",
+      "1"
+    ],
+    [
+      "sealed_capsule_id",
+      "25c06ae40e28b55499edcd5e9824a5c11403b53a89bcc0e0aa47bcd6c782730d"
+    ]
+  ]
+}
+relay OK response: {'ok': True, 'id': '0ac744c3b1fb9cea7d63ca58ea7fdbdb8bbb9b0fc00c0d66beca2b56358d5627', 'message': ''}
+
+=== 7. Fetch the event back over the wire and verify ===
+fetched event id=0ac744c3b1fb9cea7d63ca58ea7fdbdb8bbb9b0fc00c0d66beca2b56358d5627 Nostr signature verifies: True
+fetched content matches published account: True
+account.verify(): True
+
+=== 8. MUTANT: tampered account bytes -> verify FAILS ===
+tampered content, same claimed sig -- signature verify: False (expect False)
+MUTANT CHECK: tampered account bytes are rejected -- PASS
+
+=== 9. MUTANT: event signed by the WRONG key -> rejected by the relay ===
+relay response to wrong-key-signed event: {'ok': False, 'id': 'f7b59bcffb1bcd3616e1652f4b91d6a5e284ade5c342e8271f7a88c23ec78688', 'message': 'invalid: signature is invalid'} (expect ok=False)
+MUTANT CHECK: wrong-key signature is rejected -- PASS
+
+local test relay stopped.
+
+=== STAGED / HELD -- what a live publish WOULD emit (nothing below this line touches a network) ===
+{
+  "content": "{\"coverage\":{\"checkpoint_root\":\"1613dc2c097876c764317bde93bad4cd2f03737de3a35cf877fd9927f12f2d0d\",\"log_id\":\"b7-demo\",\"mmr_size\":7,\"note\":\"cross-check handle: recompute the fold from the node's ledger, check the ledger against this root, confirm the root was witnessed\",\"timestamp\":\"2026-09-03T23:47:47.743295Z\",\"witnessed\":true,\"witnesses\":[\"https://ts.example.invalid\"]},\"derivation\":{\"definition_digest\":\"97130cc74ae73c93042980c71415945e042e92757daa49b341854906d8b4051a\",\"fold\":{\"n_requested\":1,\"n_served\":3,\"n_served_confirmed\":2,\"n_total\":4,\"n_unknown_role\":0},\"kind\":\"served_success_fold\",\"note\":\"plain counts over the selected range; an ACCOUNT, not a score. The relying party computes its own predicate.\"},\"durability\":\"This is a REPLACEABLE Nostr listing \\u2014 a relay may drop or supersede it at any time. No durability is claimed for this summary here. The durable layer is the WITNESS: cross-check the coverage.checkpoint_root against the witness, do not rely on this relay copy.\",\"node_id\":\"b7-demo-node\",\"not_a_score\":\"This is an account of facts + a witness handle to verify them, not a score or routing recommendation. See example_predicate() for an EXAMPLE predicate only \\u2014 never a default routing policy.\",\"schema\":\"mesh-account-capsule/1\",\"sealed_capsule_id\":\"25c06ae40e28b55499edcd5e9824a5c11403b53a89bcc0e0aa47bcd6c782730d\",\"sealed_note\":\"This account is SEALED as a capsule in the node's own ledger under capsule_id=25c06ae40e28b55499edcd5e9824a5c11403b53a89bcc0e0aa47bcd6c782730d. Pull that capsule from the node's capsules.jsonl and cross-check it against this listing; the ledgered capsule (not this relay copy) is the on-the-record assertion.\",\"selection\":{\"covered_entries\":4,\"from_entry\":1,\"note\":\"witnessed range only: entries appended after the latest witnessed checkpoint are excluded by design\",\"to_entry\":4},\"sybil_residual\":\"Reputation is only as durable as identity. A mesh node key is free to mint, so a node with a poor account can reset to a fresh key with an empty history at zero cost. The witness makes ONE identity's history tamper-evident; it does not bind that identity to a scarce real-world entity. A relying party that needs Sybil resistance must add its own (stake, counterparty attestation, allow-list, proof-of-personhood) \\u2014 this account does not provide it.\"}",
+  "id": "f7b59bcffb1bcd3616e1652f4b91d6a5e284ade5c342e8271f7a88c23ec78688",
+  "kind": 31991,
+  "kind_is_provisional": true,
+  "pubkey": "4bd2ed6532dde61801e80d575b6c85fe82b78fc8cc47aea79c264149dd22be52",
+  "sig": "43d5ac316fd54ac146d9c1b9d787a1917e23bf188641406cfcbc7635df49f8c5c16fc218ff8c399a129dc945ecc6c4189a8fbaa113cfc21a456a0636540b9dd6",
+  "signing_key": "node Nostr key (SchnorrNostrKey) \u2014 separate from the Ed25519 ledger key",
+  "tags": [
+    [
+      "d",
+      "mesh-account"
+    ],
+    [
+      "k",
+      "mesh-account"
+    ],
+    [
+      "account_digest",
+      "bc2fe51310c51f07dd90f07cce3727adbe97bc0c0bb7922cf49e8ecb9ae0d50a"
+    ],
+    [
+      "coverage_root",
+      "1613dc2c097876c764317bde93bad4cd2f03737de3a35cf877fd9927f12f2d0d"
+    ],
+    [
+      "node_id",
+      "b7-demo-node"
+    ],
+    [
+      "witnessed",
+      "1"
+    ],
+    [
+      "sealed_capsule_id",
+      "25c06ae40e28b55499edcd5e9824a5c11403b53a89bcc0e0aa47bcd6c782730d"
+    ]
+  ],
+  "would_publish_to": "NOWHERE \u2014 this is a dry-run description; no relay_urls were contacted"
+}
+
+Attempting nlp.publish_account_capsule_live(...) with NO go-ahead (expect refusal):
+REFUSED as expected: Live publish to a public relay is HELD pending Steven's explicit one-line nod on the B7 report (local test-relay transcript + the exact event shape from describe_live_publish_plan()). Pass i_have_stevens_go_ahead_for_a_public_relay=True only after that nod is given.
+
+This task fires NOTHING at nos.lol / relay.damus.io / relay.primal.net / any public relay.
+Live publish requires Steven's relay_urls + explicit one-line nod (see nostr_live_publish.py).

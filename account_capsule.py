@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""A node's reputation **account capsule** — an ACCOUNT of its own history,
-never a score.
+"""A node's **account capsule** — an ACCOUNT of its own history, never a
+score.
 
 The mesh already gives a node two public-facing evidence layers:
 

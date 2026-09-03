@@ -475,7 +475,7 @@ witness registration is **staged, not executed** by default;
 `ledger-checkpoint-demo/` and `ledger-real-deployment/` are committed transcripts
 so the claims are checkable against real artifacts.
 
-## Reputation account capsule + Nostr publish path (B7)
+## Account capsule + Nostr publish path (B7)
 
 A node already exposes two public evidence layers: its **capsule ledger**
 (`capsules.jsonl`, one signed capsule per exchange) and its **witness
@@ -534,13 +534,35 @@ the node DECLARES it in the same public listing: `merge_into_listing()` /
 `transparency_courtesy_tags()` add the seal declaration (and the Sybil residual,
 verbatim) to the node's mesh listing content and as first-class Nostr tags.
 
-**MOCK RELAY ONLY.** Building and testing the publish capability is in scope;
-firing it at a real public relay (relay.damus.io, …) is a separate, explicit,
-gated act and is **not** done here. `publish_account_capsule` takes a relay
-*client* argument; the only client shipped is the in-process `MockRelay` (verifies
-signatures, applies replaceable-supersede semantics, opens no socket). There is no
-default public relay URL anywhere in the module. Tested end-to-end against the mock
-relay in `tests/test_account_capsule_nostr.py`.
+**TEST-RELAY ONLY — no public relay fired in this task.** Building and
+test-relay-verifying the publish capability is in scope; firing it at a real
+public relay (relay.damus.io, relay.primal.net, nos.lol, …) is Steven's
+separate, explicit, gated act and is **not** done here.
+
+- `nostr_account.MockRelay` — the in-process, no-socket relay used by
+  `tests/test_account_capsule_nostr.py`.
+- `nostr_relay_client.WebsocketRelayClient` (`nostr_relay_client.py`) — a REAL
+  NIP-01 WebSocket relay client, used for a genuine local network round trip
+  against [`nak serve`](https://github.com/fiatjaf/nak) (`brew install nak`)
+  on `127.0.0.1`. `run_b7_nostr_demo.py` spins one up, publishes the account
+  event, fetches it back over the wire, and verifies the Nostr signature + the
+  account — transcript at
+  [`b7-nostr-demo/transcript.txt`](b7-nostr-demo/transcript.txt), covering the
+  full round trip plus the two live mutants (tampered content → signature
+  verify fails; wrong-key signature → relay rejects). Tests in
+  `tests/test_nostr_relay_client_and_live_publish.py` skip if `nak` is absent.
+- `nostr_live_publish.py` — the **HELD** live-publish path. Same client, but
+  `publish_account_capsule_live()` structurally refuses (raises
+  `LivePublishHeld`) unless called with BOTH a non-empty, Steven-approved
+  `relay_urls` list AND `i_have_stevens_go_ahead_for_a_public_relay=True`.
+  Nothing in this repo ever sets that flag together with a real relay list —
+  see `tests/test_nostr_relay_client_and_live_publish.py`'s repo-wide
+  guardrail test. `describe_live_publish_plan()` builds and signs the exact
+  event a live publish would send — kind, tags, content, the node's Nostr
+  pubkey — entirely offline, so Steven can eyeball it before giving the nod.
+
+There is no default relay URL anywhere in any of these modules; every relay
+URL is named explicitly by the caller.
 
 ## Replay spot-check harness (C2a)
 

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""B7 — the reputation account capsule and its Nostr publish path.
+"""B7 — the account capsule and its Nostr publish path.
 
 Covers:
   * building an account capsule (selection/derivation/coverage) over a THROWAWAY
@@ -454,3 +454,100 @@ def test_publish_carries_sealed_capsule_id_to_mock_relay(tmp_path, fake_witness)
     stored = relay.latest_for(key.pubkey_hex)
     assert stored is not None
     assert {t[0]: t[1:] for t in stored.tags}["sealed_capsule_id"] == [cap["capsule_id"]]
+
+
+# --------------------------------------------------------------------------- #
+# PR#65 ruling guardrails — account not score, no reputation naming,           #
+# a grade never propagates into the account                                   #
+# --------------------------------------------------------------------------- #
+def test_account_carries_no_rating_or_score_field(tmp_path, fake_witness):
+    """Steven's PR#65 ruling: this is an ACCOUNT of facts/properties, never a
+    reputation score. Lock the top-level and nested shapes so no
+    score/rating/grade field can be added without this test failing."""
+    on_disk, cp = _build_witnessed_ledger(tmp_path, [_served_capsule(1), _served_capsule(2)])
+    account = ac.build_account_capsule(node_id="n", capsules=on_disk, latest_checkpoint=cp)
+    val = account.to_value()
+    forbidden = ("score", "rating", "grade", "rank", "reputation_score", "trust_score")
+    #: `not_a_score` is the ruling's own explicit negation key, not a score field.
+    exempt_keys = {"not_a_score"}
+
+    def _walk(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                lowered = k.lower()
+                if k not in exempt_keys:
+                    assert not any(f in lowered for f in forbidden), f"forbidden field name: {k}"
+                _walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(val)
+
+
+def test_nostr_event_content_carries_no_rating_or_score_field(tmp_path, fake_witness):
+    account = _account(tmp_path)
+    key = na.SchnorrNostrKey.generate()
+    evt = na.build_account_event(account, key)
+    content = json.loads(evt.content)
+    forbidden = ("score", "rating", "grade", "rank", "reputation_score", "trust_score")
+    #: `not_a_score` is the ruling's own explicit negation key, not a score field.
+    exempt_keys = {"not_a_score"}
+
+    def _walk(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                lowered = k.lower()
+                if k not in exempt_keys:
+                    assert not any(f in lowered for f in forbidden), f"forbidden field name: {k}"
+                _walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(content)
+
+
+def test_definition_never_reads_a_per_capsule_grade_field():
+    """The fold's DEFINITION document names exactly the fields it reads
+    (definition-as-data). A per-capsule evidentiary label like
+    `cross_party_rung` / `full_bilateral` (mesh_record_verifier.py's
+    mutuality grade) MUST NOT appear among them — a grade on an individual
+    claim never propagates into the account that summarizes many claims."""
+    reads = ac.MESH_ACCOUNT_DEFINITION.reads
+    for field_name in reads:
+        lowered = field_name.lower()
+        assert "grade" not in lowered
+        assert "rung" not in lowered
+        assert "bilateral" not in lowered
+
+
+def test_a_per_capsule_grade_field_does_not_change_the_fold(tmp_path, fake_witness):
+    """End-to-end mutant: attach a `cross_party_rung`/`grade` label to source
+    capsules (as mesh_record_verifier.derive_cross_party_rung would) and
+    confirm the account's fold — and therefore the account itself — is
+    byte-identical whether or not that label is present. A grade on a claim
+    must never leak into, or be summarized by, the account."""
+    plain = [_served_capsule(1), _served_capsule(2, confirmed=False)]
+    graded = [dict(c, cross_party_rung="full_bilateral", grade="full_bilateral") for c in plain]
+
+    on_disk_plain, cp_plain = _build_witnessed_ledger(tmp_path / "plain", plain)
+    on_disk_graded, cp_graded = _build_witnessed_ledger(tmp_path / "graded", graded)
+
+    account_plain = ac.build_account_capsule(node_id="n", capsules=on_disk_plain, latest_checkpoint=cp_plain)
+    account_graded = ac.build_account_capsule(node_id="n", capsules=on_disk_graded, latest_checkpoint=cp_graded)
+
+    assert account_plain.fold.to_value() == account_graded.fold.to_value()
+    assert "grade" not in json.dumps(account_graded.to_value())
+    assert "cross_party_rung" not in json.dumps(account_graded.to_value())
+
+
+def test_no_reputation_naming_in_account_module_docstrings():
+    """PR#65 ruling: drop any 'reputation' NAMING for this artifact (it is an
+    account of facts, not a reputation score). The general Sybil-residual
+    sentence ('Reputation is only as durable as identity...', shared verbatim
+    with node_ownership.py and docs/TRUST-MODEL.md) is explanatory prose, not
+    a name for this artifact, and is exempted."""
+    for doc in (ac.__doc__, na.__doc__):
+        assert "reputation account" not in (doc or "").lower()
+        assert "reputation layer" not in (doc or "").lower()

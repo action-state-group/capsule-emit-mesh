@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The Nostr publish path for a node's reputation **account capsule**, plus the
+"""The Nostr publish path for a node's **account capsule**, plus the
 **transparency-courtesy** sealing declaration that ships in the node's listing.
 
 Background. mesh-llm already publishes a signed **mesh-discovery** listing to
 public Nostr relays — a parameterized-replaceable event (Kind **31990**, content
 a `MeshListing`, signed by the node's Nostr key) so each node has exactly one
 live listing that updates in place. This module rides the same rail for the
-reputation layer:
+account layer:
 
   1. **Account capsule → Nostr event.** We serialize an
      `account_capsule.AccountCapsule` as a Nostr event of Kind
