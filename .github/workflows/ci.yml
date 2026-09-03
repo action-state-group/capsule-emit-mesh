@@ -103,6 +103,15 @@ jobs:
       - name: Smoke — peer_accountability_tab (Pane B "Peers" -- composes capsule_accountability_tab + capsule_mesh_view + history_card)
         run: python -c "import peer_accountability_tab; print('ok')"
 
+      - name: Smoke — native_log_join (join native /logs truth to sealed capsule truth, self-coverage finding)
+        run: python -c "import native_log_join; print('ok')"
+
+      - name: Smoke — twin_adjudicator (E17a offline twin-comparison adjudicator)
+        run: python -c "import twin_adjudicator; print('ok')"
+
+      - name: Smoke — self_accountability (Pane A "This node" card -- composes native_log_join + history_card + twin_adjudicator + capsule_accountability_tab)
+        run: python -c "import self_accountability; print('ok')"
+
       - name: Unit tests
         run: |
           pip install pytest
