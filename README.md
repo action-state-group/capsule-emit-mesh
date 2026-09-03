@@ -478,6 +478,52 @@ witness registration is **staged, not executed** by default;
 `ledger-checkpoint-demo/` and `ledger-real-deployment/` are committed transcripts
 so the claims are checkable against real artifacts.
 
+## `history_card()`: checkpoints + receipts + consistency proofs since size S
+
+`history_card.py` answers "what has this node's checkpoint chain looked like
+since MMR size S?" with **properties, never a score**: `continuity`
+(`"unbroken"` or an honest `"broken at mmr_size=<N>: <reason>"`, never
+silently green), `history_depth` (how many checkpoints the chain walk actually
+verified), `unforked` (no fork/rewrite/gap anywhere in the requested range),
+and `cadence` (checkpoint-interval stats). No capsule content and no
+per-record (per-capsule) digests are in the card — only checkpoint roots and
+persisted-entry digests, the same "digests-only" tier as a `checkpoints_only`
+evidence-request derivation.
+
+**No new record type.** This is a `chain_segment`-kind account from the same
+neutral `capsule_emit.account` fold-definition core `account_capsule.py` (PR
+#65, reviewed — see `docs/PR65-ACCOUNT-CAPSULE-REVIEW.md`) uses
+for its (range-kind) reputation account: an in-record chain, self-verifying
+from its two endpoints (the boundary checkpoints' own `entry_digest()`s) and
+never a per-checkpoint reference list. `history_card.py` does not import
+`account_capsule.py` itself (that module's Nostr-publish half stays HELD) —
+it reuses the merged, hold-free neutral core plus
+`capsule_emit.checkpoint.cose_wire.verify_checkpoint_cose_offline`, which
+already re-verifies each checkpoint's embedded consistency proof against its
+predecessor, offline, from the COSE-wire bytes alone.
+
+**Answerable only under a pin, never on demand.** `answer_full_history_request()`
+rides the evidence-request carrier's shape (`subject: full_history`,
+`derivation: checkpoints_only`) and refuses outright unless the caller
+supplies `expected_pin` — the root of a checkpoint it already expects (a
+static, previously-published export). A missing pin is `request_malformed`
+regardless of how healthy the underlying chain is; a pin that doesn't match
+the node's latest checkpoint root is `coverage_unsatisfiable`. There is no
+code path that builds a fresh card for an unpinned "give me your history
+right now" request.
+
+**The offline verifier.** `verify_history_card()` takes a published card
+(`HistoryCard.to_value()`) plus the raw `checkpoints.jsonl` lines it claims to
+summarize and independently rebuilds the card from the checkpoints alone —
+recompute+match, the same discipline `verify_real_deployment_checkpoint.py`
+uses for capsule inclusion. A stranger holding only those two things (no live
+sidecar, no MMR state) can run it; every cryptographic link is re-proven from
+scratch, not trusted from the published card. See `tests/test_history_card.py`
+for the mutant proofs (tampered root, missing/forged consistency proof, a
+published card that overclaims, a ledger tampered after publish) and a
+parametrized check that both the inclusion and consistency proofs the verifier
+relies on stay O(log n) as the log grows.
+
 ## Replay spot-check harness (C2a)
 
 `tools/replay_spot_check.py` implements the C2a mechanism from
@@ -711,6 +757,7 @@ checkpoint.example.toml         example [checkpoint] config
 run_checkpoint_demo.py          synthetic checkpoint demo (exchanges -> MMR -> checkpoint -> registry -> verify)
 run_real_deployment_checkpoint_demo.sh   real mesh-llm + checkpointing, end to end (no goose leg)
 verify_real_deployment_checkpoint.py     offline verify + rollback-mutant proof
+history_card.py                 history_card() verb: checkpoints + receipts + consistency proofs since size S (properties, never a score)
 
 # split / coordinator (record shapes; see the split-honesty note above)
 mesh_record_emitter.py          exchange_id-correlated per-hop record emitter (+ requester_commitment)
