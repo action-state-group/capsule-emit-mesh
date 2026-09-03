@@ -343,7 +343,9 @@ def build_verdict(
     the three dense role-questions. Each line is {mark, text} where mark is
     "ok" (✓) or "warn" (⚠) -- never a fake green.
 
-    Line 1 — what really ran (green when the model+hardware facts recompute).
+    Line 1 — what the node ATTESTS it ran (self-reported; green when this
+             record's own signature + digests verify — integrity, not proof
+             the model/hardware claim is true).
     Line 2 — signed + anchored (green only if witness receipt is carried;
              honest amber "witness receipt not in this bundle" otherwise).
     Line 3 — the honest open gap: who asked + this node's history.
@@ -354,11 +356,12 @@ def build_verdict(
     if sp.get("is_soc") and gpu:
         hw = f" on an {gpu} (Apple silicon)"
 
-    # Line 1 — really ran. Green when this record's own facts verify here.
+    # Line 1 — what it attests it ran. Green = this record's own signature +
+    # digests verify here (integrity), NOT that the self-reported claim is true.
     if sp.get("model") and verify_ok is not False:
         line1 = {
             "mark": "ok",
-            "text": f"Really ran on {name}{hw} — and you can recompute the proof in your browser.",
+            "text": f"Attests it ran on {name}{hw} (self-reported) — you can recompute in your browser that this record is signed and unaltered.",
         }
     elif sp.get("model") and verify_ok is False:
         line1 = {
@@ -1108,7 +1111,7 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   </div>
 
   <h1>What my capsules <em>look like</em></h1>
-  <p class="sub">Each card leads with a plain-language verdict — what really ran, whether it's signed, and what's still open — then shows the exchange. The security details fold behind one toggle.</p>
+  <p class="sub">Each card leads with a plain-language verdict — what the node attests it ran, whether it's signed, and what's still open — then shows the exchange. The security details fold behind one toggle.</p>
   <div class="meta mono" data-meta></div>
 
   <div class="empty" data-empty>

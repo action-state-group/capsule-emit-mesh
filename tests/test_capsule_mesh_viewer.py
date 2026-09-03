@@ -194,9 +194,10 @@ def test_verdict_is_three_plain_lines_with_honest_marks():
     sp = _raw_gguf_sp()
     verdict = build_verdict(sp, verify_ok=True, has_witness_checkpoint=False, counterparty="unknown")
     assert len(verdict) == 3
-    # line 1: really ran, green, friendly name, no raw hash
+    # line 1: attests it ran (self-reported), green, friendly name, no raw hash
     assert verdict[0]["mark"] == "ok"
-    assert "Really ran on Llama-3B" in verdict[0]["text"]
+    assert "Attests it ran on Llama-3B" in verdict[0]["text"]
+    assert "self-reported" in verdict[0]["text"]
     assert "recompute" in verdict[0]["text"]
     assert "sha256" not in verdict[0]["text"]
     # line 2: honest amber — witness receipt not in this bundle
