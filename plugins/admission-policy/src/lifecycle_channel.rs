@@ -103,6 +103,24 @@ pub struct OpenAiExchangeEnvelope {
     /// never fabricated.
     #[serde(default)]
     pub reasoning_digest: Option<String>,
+    /// [disclosure-default-on] The EXACT raw request body TEXT, forwarded by
+    /// the host only when its own disclosure flag
+    /// (`MESH_LLM_DISCLOSE_PREIMAGE`, default ON) is set -- see the fork
+    /// host's `OpenAiExchangeEnvelope::request_body_text`. This is a LOCAL
+    /// preimage carried alongside the digest above; it is never part of what
+    /// gets sealed into the capsule. `None` on a host that predates this
+    /// field, or when the host's own disclosure flag is off -- never
+    /// fabricated. `#[serde(default)]` for forward/backward compatibility.
+    #[serde(default)]
+    pub request_body_text: Option<String>,
+    /// [disclosure-default-on] The EXACT raw response body TEXT, forwarded by
+    /// the host under the same conditions as `request_body_text` -- see the
+    /// fork host's `OpenAiExchangeEnvelope::response_body_text` /
+    /// `ExchangeOutputDigests::response_body_text`. `None` on a host that
+    /// predates this field, disclosure off, or a streamed/non-JSON response
+    /// the host never buffered -- never fabricated.
+    #[serde(default)]
+    pub response_body_text: Option<String>,
 }
 
 /// Mirror of the host's `ExchangeUsage` (real token counts). Every field is a
@@ -419,7 +437,9 @@ mod tests {
             nonce: None,
             usage: None,
             request_digest: None,
+            request_body_text: None,
             response_digest: None,
+            response_body_text: None,
             tool_calls_digest: None,
             reasoning_digest: None,
             serving_provenance: gpu.map(|g| HostServingProvenance {

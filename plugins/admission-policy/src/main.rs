@@ -1,5 +1,6 @@
 mod capsule_emit;
 mod decision;
+mod disclosure;
 mod lifecycle_channel;
 
 use axum::{
@@ -102,7 +103,18 @@ fn token_usage_from(usage: MirrorUsage) -> TokenUsage {
 /// observe-path failure must not disturb the host). The three real facts —
 /// serving provenance, usage, request digest — come straight off the terminal
 /// event; nothing is fabricated.
-fn seal_observed_host_exchange(capsules: &CapsuleState, envelope: &OpenAiExchangeEnvelope) {
+///
+/// [disclosure-default-on] `disclosures_dir` is where the OPTIONAL local
+/// request/response TEXT preimage is written on a successful seal, keyed by
+/// the just-minted `capsule_id` — see `disclosure::persist_disclosure_preimage`.
+/// A no-op when the host forwarded neither `request_body_text` nor
+/// `response_body_text` on this envelope (its own disclosure flag was off, or
+/// it predates the field).
+fn seal_observed_host_exchange(
+    capsules: &CapsuleState,
+    disclosures_dir: &std::path::Path,
+    envelope: &OpenAiExchangeEnvelope,
+) {
     let host_provenance = envelope
         .serving_provenance
         .clone()
@@ -128,6 +140,12 @@ fn seal_observed_host_exchange(capsules: &CapsuleState, envelope: &OpenAiExchang
                 capsule_id = %emitted.capsule_id,
                 model = %envelope.model,
                 "SEALED AAC for host-served (observed) exchange"
+            );
+            disclosure::persist_disclosure_preimage(
+                disclosures_dir,
+                &emitted.capsule_id,
+                envelope.request_body_text.as_deref(),
+                envelope.response_body_text.as_deref(),
             );
         }
         Err(error) => {
@@ -274,6 +292,11 @@ async fn main() -> anyhow::Result<()> {
         "capsule-producer ready"
     );
     let lifecycle_events = Arc::new(ObservedLifecycleEvents::open(&data_dir)?);
+    // [disclosure-default-on] Same convention the mesh-llm-host-runtime
+    // Capsules tab route already resolves (`<ledger_dir>/disclosures/`) --
+    // `CapsuleState::open` puts the ledger at `data_dir/ledger`.
+    let disclosures_dir: Arc<std::path::PathBuf> =
+        Arc::new(data_dir.join("ledger").join("disclosures"));
 
     let capsules_for_handler = capsules.clone();
     let app_state = AppState {
@@ -284,6 +307,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(serve_admission_http(listener, app_state));
 
     let lifecycle_events_for_handler = lifecycle_events.clone();
+    let disclosures_dir_for_handler = disclosures_dir.clone();
     let plugin = plugin! {
         metadata: PluginMetadata::new(
             PLUGIN_ID,
@@ -302,6 +326,7 @@ async fn main() -> anyhow::Result<()> {
         on_channel_message: move |message, _context| {
             let lifecycle_events = lifecycle_events_for_handler.clone();
             let capsules = capsules_for_handler.clone();
+            let disclosures_dir = disclosures_dir_for_handler.clone();
             Box::pin(async move {
                 if message.channel == OPENAI_EXCHANGE_CHANNEL {
                     match serde_json::from_slice::<OpenAiExchangeEnvelope>(&message.body) {
@@ -316,7 +341,7 @@ async fn main() -> anyhow::Result<()> {
                             // capsule from the observed serving provenance + real
                             // usage + host-forwarded request digest.
                             if ObservedLifecycleEvents::is_sealable_host_served(&envelope) {
-                                seal_observed_host_exchange(&capsules, &envelope);
+                                seal_observed_host_exchange(&capsules, &disclosures_dir, &envelope);
                             }
                             lifecycle_events.record(envelope);
                         }
