@@ -6,10 +6,14 @@ These tests drive the REAL capsule_sidecar.build_capsule() and assert on the
 owner block it seals into x-mesh-poc-v1 provenance:
 
   GRACEFUL ABSENT (default): no cert -> served_by_node_id sealed, owner ABSENT,
-    no owner_id fabricated, no identity capsule cited, no stray caveat.
-  BOUND: live matching cert + a sealed identity capsule -> owner_id sealed and
-    the identity capsule_id cited (the did cites the who), honesty grade present.
-  INVALID: expired cert -> owner not bound, identity capsule NOT cited.
+    no owner_id fabricated, no identity capsule cited, no owner_cert_ref, no
+    stray caveat.
+  BOUND: live matching cert + a sealed identity capsule -> owner_id sealed,
+    the identity capsule_id cited (the did cites the who), AND
+    [mesh-e6-identity-owner-cert] owner_cert_ref cites the owner cert itself
+    as a CPB typed digest reference, honesty grade present.
+  INVALID: expired cert -> owner not bound, identity capsule NOT cited,
+    owner_cert_ref NOT cited.
 """
 from __future__ import annotations
 
@@ -33,6 +37,7 @@ from node_ownership import (  # noqa: E402
     OWNER_STATUS_INVALID,
     NodeOwnershipClaim,
     SignedNodeOwnership,
+    owner_cert_reference,
     canonical_claim_bytes,
 )
 
@@ -130,6 +135,9 @@ def test_serving_capsule_owner_absent_by_default():
     assert blk["owner_status"] == OWNER_STATUS_ABSENT
     assert blk["owner_id"] is None
     assert blk["identity_capsule_id"] is None
+    # absent -> owner_cert_ref is explicitly None, not a missing/blank key.
+    assert "owner_cert_ref" in blk
+    assert blk["owner_cert_ref"] is None
     # No cert -> no honesty-grade caveat needed (nothing self-asserted).
     assert blk["identity_limitation"] is None
     # The whole capsule still verifies.
@@ -153,6 +161,8 @@ def test_serving_capsule_binds_owner_and_cites_identity_capsule():
     assert blk["owner_status"] == OWNER_STATUS_BOUND
     assert blk["owner_id"] == "owner-zzz"
     assert blk["identity_capsule_id"] == "cap-who-abc"  # did cites who
+    # [mesh-e6-identity-owner-cert] owner cert cited as a typed reference.
+    assert blk["owner_cert_ref"] == owner_cert_reference(cert)
     assert blk["node_label"] == "studio"
     assert blk["identity_limitation"] == IDENTITY_LIMITATION_CAVEAT
     # did still sealed alongside the who.
@@ -174,8 +184,44 @@ def test_serving_capsule_expired_cert_not_bound_and_not_cited():
     assert blk["owner_status"] == OWNER_STATUS_INVALID
     # Expired cert must NOT be presented as a live binding.
     assert blk["identity_capsule_id"] is None
+    assert blk["owner_cert_ref"] is None
     assert blk["recheck_valid"] is False
     assert blk["identity_limitation"] == IDENTITY_LIMITATION_CAVEAT
+
+
+def test_serving_capsule_swapped_cert_not_bound_and_ref_not_cited():
+    """[mesh-e6-identity-owner-cert] mutant: a cert with a swapped/mismatched
+    signature -> INVALID, and owner_cert_ref must not be cited."""
+    key = Ed25519PrivateKey.generate()
+    pub_hex = key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    ).hex()
+    now = int(time.time() * 1000)
+    claim = no.NodeOwnershipClaim(
+        version=1,
+        cert_id="cert-1",
+        owner_id="owner-zzz",
+        owner_sign_public_key=pub_hex,
+        node_endpoint_id=NODE_ID_HEX,
+        issued_at_unix_ms=now,
+        expires_at_unix_ms=now + 60_000,
+        node_label="studio",
+        hostname_hint="host",
+    )
+    # Sign with a DIFFERENT key -> signature does not match the embedded
+    # owner_sign_public_key (a swapped/mismatched cert).
+    other_key = Ed25519PrivateKey.generate()
+    tampered = no.SignedNodeOwnership(
+        claim=claim, signature=other_key.sign(no.canonical_claim_bytes(claim)).hex()
+    )
+    state = _make_state(node_ownership=tampered)
+    state.identity_capsule_id = "cap-who-abc"
+
+    cap = _build(state)
+    blk = _owner_block(cap)
+    assert blk["owner_status"] == OWNER_STATUS_INVALID
+    assert blk["owner_cert_ref"] is None
+    assert blk["identity_capsule_id"] is None
 
 
 # ── startup sealing helper ──────────────────────────────────────────────────

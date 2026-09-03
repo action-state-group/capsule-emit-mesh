@@ -36,7 +36,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 import node_ownership as no  # noqa: E402
 from node_ownership import (  # noqa: E402
+    DIGEST_ALG_SHA256,
     IDENTITY_LIMITATION_CAVEAT,
+    OWNER_CERT_REF_TYPE,
     OWNER_STATUS_ABSENT,
     OWNER_STATUS_BOUND,
     OWNER_STATUS_INVALID,
@@ -45,6 +47,8 @@ from node_ownership import (  # noqa: E402
     SignedNodeOwnership,
     canonical_claim_bytes,
     load_signed_node_ownership,
+    owner_cert_digest,
+    owner_cert_reference,
     owner_provenance_block,
     recheck_ownership_validity,
     seal_identity_capsule,
@@ -260,11 +264,14 @@ def test_owner_block_absent_when_no_cert():
     assert blk["owner_status"] == OWNER_STATUS_ABSENT
     assert blk["owner_id"] is None
     assert blk["identity_capsule_id"] is None
+    # absent -> owner_cert_ref is explicitly None, not a missing/blank key.
+    assert "owner_cert_ref" in blk
+    assert blk["owner_cert_ref"] is None
     # No cert -> no owner_id AND no caveat needed (nothing to caveat).
     assert blk["identity_limitation"] is None
 
 
-def test_owner_block_bound_cites_identity_capsule():
+def test_owner_block_bound_cites_identity_capsule_and_owner_cert_ref():
     cert = _signed_cert(_owner_key())
     blk = owner_provenance_block(
         cert, expected_node_endpoint_id=NODE_ID_HEX, identity_capsule_id="cap-who-123"
@@ -273,8 +280,75 @@ def test_owner_block_bound_cites_identity_capsule():
     assert blk["owner_id"] == cert.claim.owner_id
     assert blk["identity_capsule_id"] == "cap-who-123"  # the did cites the who
     assert blk["recheck_valid"] is True
+    # [mesh-e6-identity-owner-cert] the owner cert itself as a typed ref.
+    assert blk["owner_cert_ref"] == owner_cert_reference(cert)
+    assert blk["owner_cert_ref"]["type"] == OWNER_CERT_REF_TYPE
+    assert blk["owner_cert_ref"]["digest_alg"] == DIGEST_ALG_SHA256
+    assert blk["owner_cert_ref"]["digest"] == owner_cert_digest(cert)
     # Honesty grade present whenever a cert is present at all.
     assert blk["identity_limitation"] == IDENTITY_LIMITATION_CAVEAT
+
+
+# ── 4a. owner_cert_reference / owner_cert_digest — the typed reference ─────
+
+def test_owner_cert_reference_shape_matches_cpb_typed_digest_ref():
+    cert = _signed_cert(_owner_key())
+    ref = owner_cert_reference(cert)
+    assert set(ref.keys()) == {"type", "digest_alg", "digest"}
+    assert ref["type"] == "owner_cert"
+    assert ref["digest_alg"] == "SHA-256"
+    assert len(ref["digest"]) == 64
+    assert set(ref["digest"]) <= set("0123456789abcdef")
+
+
+def test_owner_cert_digest_is_deterministic():
+    cert = _signed_cert(_owner_key())
+    assert owner_cert_digest(cert) == owner_cert_digest(cert)
+
+
+def test_owner_cert_digest_changes_on_swapped_signature():
+    """A different owner's signature over the SAME claim -> a different
+    digest. Swapping in someone else's signature must not silently produce
+    the same typed reference."""
+    key_a = _owner_key()
+    key_b = _owner_key()
+    cert_a = _signed_cert(key_a)
+    swapped = SignedNodeOwnership(claim=cert_a.claim, signature=_signed_cert(key_b).signature)
+    assert owner_cert_digest(cert_a) != owner_cert_digest(swapped)
+
+
+def test_owner_cert_digest_changes_on_different_owner_id():
+    """Two different owner certs (different owner_id) must never collide on
+    the same typed reference digest."""
+    cert_a = _signed_cert(_owner_key(), owner_id="owner-aaa")
+    cert_b = _signed_cert(_owner_key(), owner_id="owner-bbb")
+    assert owner_cert_digest(cert_a) != owner_cert_digest(cert_b)
+
+
+def test_owner_block_swapped_signature_is_invalid_and_ref_not_cited():
+    """[mesh-e6-identity-owner-cert] mutant: a swapped/mismatched cert (bad
+    signature) -> owner_status=invalid AND owner_cert_ref=None. An invalid
+    cert must never be cited as though it were a live binding."""
+    key = _owner_key()
+    cert = _signed_cert(key)
+    tampered = SignedNodeOwnership(claim=cert.claim, signature=_signed_cert(_owner_key()).signature)
+    blk = owner_provenance_block(
+        tampered, expected_node_endpoint_id=NODE_ID_HEX, identity_capsule_id="cap-who-123"
+    )
+    assert blk["owner_status"] == OWNER_STATUS_INVALID
+    assert blk["owner_cert_ref"] is None
+    assert blk["identity_capsule_id"] is None
+
+
+def test_owner_block_wrong_node_cert_is_invalid_and_ref_not_cited():
+    """[mesh-e6-identity-owner-cert] mutant: a cert bound to a DIFFERENT
+    node (swapped in wholesale) -> owner_status=invalid, ref not cited."""
+    cert = _signed_cert(_owner_key(), node_id_hex=OTHER_NODE_HEX)
+    blk = owner_provenance_block(
+        cert, expected_node_endpoint_id=NODE_ID_HEX, identity_capsule_id="cap-who-123"
+    )
+    assert blk["owner_status"] == OWNER_STATUS_INVALID
+    assert blk["owner_cert_ref"] is None
 
 
 def test_owner_block_invalid_cert_does_not_cite_and_is_not_bound():
@@ -286,6 +360,7 @@ def test_owner_block_invalid_cert_does_not_cite_and_is_not_bound():
     assert blk["owner_status"] == OWNER_STATUS_INVALID
     # An invalid cert NEVER points at a who-record as though bound.
     assert blk["identity_capsule_id"] is None
+    assert blk["owner_cert_ref"] is None
     assert blk["recheck_valid"] is False
     # owner_id is still carried (honestly, it's what the cert claimed) but the
     # caveat makes clear it is not a live binding.

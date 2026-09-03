@@ -759,7 +759,11 @@ def build_capsule(
             # exchange. This block binds the "who" — the node OWNER's identity —
             # into that same record, and (when a valid cert is present) cites the
             # sealed identity capsule (identity_capsule_id) as the signed "who"
-            # record. Reuses the existing citation/caveat seam
+            # record, AND [mesh-e6-identity-owner-cert] carries the owner cert
+            # itself as a CPB typed digest reference (owner_cert_ref — see
+            # node_ownership.owner_cert_reference()), computed directly from the
+            # cert's own bytes so the binding doesn't depend on identity-capsule
+            # sealing order. Reuses the existing citation/caveat seam
             # (requester_commitment.py's cross_party block); no new machinery.
             # Owner identity is OPT-IN and self-asserted: node_ownership is None
             # by default, in which case owner_status="absent" and no owner is

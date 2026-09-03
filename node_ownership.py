@@ -45,6 +45,7 @@ capsule seals ``served_by_node_id`` only and marks the owner ABSENT
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import uuid
@@ -101,6 +102,14 @@ OWNERSHIP_SUBJECT_KEY = "x-mesh-owner-identity-v1"
 OWNER_STATUS_ABSENT = "absent"          # no cert present -> did-only, never fabricate
 OWNER_STATUS_BOUND = "bound"            # cert present, re-check passed, cited
 OWNER_STATUS_INVALID = "invalid"        # cert present but re-check failed -> owner not bound
+
+#: [mesh-e6-identity-owner-cert] CPB typed digest reference shape
+#: ({type, digest_alg, digest}) — the same shape
+#: mesh_coordinator_receipt_emitter._validate_bundle_ref enforces for its
+#: `bundle_ref` citations, reused here rather than inventing a second
+#: convention.
+OWNER_CERT_REF_TYPE = "owner_cert"
+DIGEST_ALG_SHA256 = "SHA-256"
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +227,37 @@ def canonical_claim_bytes(claim: NodeOwnershipClaim) -> bytes:
     _write_optional_string(buf, claim.node_label)
     _write_optional_string(buf, claim.hostname_hint)
     return bytes(buf)
+
+
+def owner_cert_digest(ownership: SignedNodeOwnership) -> str:
+    """SHA-256 digest over the owner cert's own bytes (claim || signature).
+
+    This digests the cert exactly as the owner signed it plus the signature
+    itself, so tampering either half (a swapped claim OR a swapped signature)
+    changes the digest. Computed directly from the cert — independent of
+    whether an identity capsule has been sealed for it — so the typed
+    reference below does not depend on capsule-sealing order.
+    """
+    claim_bytes = canonical_claim_bytes(ownership.claim)
+    sig_bytes = bytes.fromhex(ownership.signature)
+    return hashlib.sha256(claim_bytes + sig_bytes).hexdigest()
+
+
+def owner_cert_reference(ownership: SignedNodeOwnership) -> dict[str, Any]:
+    """The owner cert as a CPB typed digest reference: {type, digest_alg,
+    digest} (mesh_coordinator_receipt_emitter._validate_bundle_ref shape).
+
+    This is what binds node key <- owner cert on the serving capsule: the
+    digest is computed over exactly the bytes the owner's key signed
+    (canonical_claim_bytes, which embeds node_endpoint_id) plus the
+    signature, so the reference is unforgeable without the owner key and
+    changes if either the claim or signature is swapped.
+    """
+    return {
+        "type": OWNER_CERT_REF_TYPE,
+        "digest_alg": DIGEST_ALG_SHA256,
+        "digest": owner_cert_digest(ownership),
+    }
 
 
 @dataclass
@@ -402,18 +442,26 @@ def owner_provenance_block(
     Three honest outcomes:
       - no cert (default)        -> owner_status="absent", owner_id=None
       - cert present, re-check   -> owner_status="bound",  owner_id set,
-        passes                      identity_capsule_id cited (if provided)
+        passes                      identity_capsule_id + owner_cert_ref cited
       - cert present, re-check   -> owner_status="invalid", owner_id carried but
         fails                       NOT treated as bound; reason recorded
 
     The identity_limitation caveat is present whenever a cert is present at all —
     a reader must never see an owner_id without the honesty grade attached.
+
+    [mesh-e6-identity-owner-cert] `owner_cert_ref` carries the owner cert
+    itself as a CPB typed digest reference ({type, digest_alg, digest} —
+    see owner_cert_reference()), binding node key <- owner cert directly
+    from the cert's own bytes. It is separate from `identity_capsule_id`
+    (which cites the sealed "who" capsule, an auxiliary artifact that may
+    not exist yet) so the binding does not depend on sealing order.
     """
     if ownership is None:
         return {
             "owner_status": OWNER_STATUS_ABSENT,
             "owner_id": None,
             "identity_capsule_id": None,
+            "owner_cert_ref": None,
             "recheck_reason": "no owner cert present (owner identity is opt-in / off by default)",
             "identity_limitation": None,
         }
@@ -435,6 +483,10 @@ def owner_provenance_block(
         # cited when the re-check passed AND a capsule id was supplied — an
         # invalid cert never gets to point at a "who" record as though bound.
         "identity_capsule_id": identity_capsule_id if recheck.valid else None,
+        # The owner cert itself, as a typed reference. Only cited when the
+        # re-check passed — a swapped/mismatched cert (bad signature, wrong
+        # node, expired) is NEVER cited as though it were a live binding.
+        "owner_cert_ref": owner_cert_reference(ownership) if recheck.valid else None,
         "recheck_valid": recheck.valid,
         "recheck_reason": recheck.reason,
         # HONESTY GRADE — present whenever a cert is present at all.
