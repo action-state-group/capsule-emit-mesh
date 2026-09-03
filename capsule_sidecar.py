@@ -6,11 +6,20 @@ A reverse-proxy sidecar that sits in front of a mesh-llm node's OpenAI-
 compatible `/v1` HTTP surface. For every `/v1/chat/completions` call it:
 
   1. reads the raw request, computes a canonicalized, privacy-preserving
-     digest of it (the prompt itself is never stored in the capsule);
+     digest of it (the SIGNED capsule commits to the prompt by digest only);
   2. forwards the request unmodified to the real upstream node;
   3. captures the real response (success or error) and digests it too;
   4. emits + signs an Agent Action Capsule recording the exchange, hash-
-     chained to the previous capsule this sidecar emitted for this node.
+     chained to the previous capsule this sidecar emitted for this node;
+  5. [disclosure-default-on] ALSO persists the request+response TEXT
+     PREIMAGE -- the exact JSON bodies just digested -- into a local
+     ``<ledger_dir>/disclosures/<capsule_id>.json`` file, DEFAULT ON
+     (``--no-disclose`` turns it off). This is a LOCAL attachment carried
+     alongside the ledger, never part of the signed capsule: the wire object
+     still commits to request/response by digest only. It exists so a human
+     operator can see the actual exchange in capsule-mesh-viewer, which
+     recomputes request_digest/response_digest from this preimage and shows
+     whether it matches the sealed digests. See persist_disclosure_preimage().
 
 WHY A SIDECAR AND NOT A MESH-LLM PLUGIN -- see poc/README.md
 "Architecture decision" for the full writeup. Short version: neither of
@@ -517,6 +526,18 @@ class NodeState:
     #: capsule_id of the sealed identity capsule (the "who"), cited by every
     #: serving capsule whose owner re-check passes (the "did" cites the "who").
     identity_capsule_id: str | None = None
+    #: [disclosure-default-on] Whether this sidecar persists the request +
+    #: response TEXT PREIMAGE (the exact JSON bodies it just digested) into
+    #: ``<ledger_dir>/disclosures/<capsule_id>.json``, DEFAULT ON. This is a
+    #: LOCAL, out-of-band attachment carried alongside the ledger -- it never
+    #: changes the SIGNED capsule, ``capsule_id``, or the digest-parity
+    #: vectors; the wire/verifiable object still commits to request/response
+    #: by digest only. It exists so a human operator can see the actual
+    #: exchange in the viewer and recompute-and-match it against the sealed
+    #: request_digest/response_digest. ``False`` (``--no-disclose``) turns it
+    #: off for privacy -- digest-only, the prior behavior. See
+    #: persist_disclosure_preimage().
+    disclose_preimage: bool = True
 
     def __post_init__(self) -> None:
         self.manifest = load_manifest(self.manifest_path)
@@ -525,6 +546,9 @@ class NodeState:
         self.ledger_path = self.ledger_dir / "capsules.jsonl"
         self.statements_dir = self.ledger_dir / "signed-statements"
         self.statements_dir.mkdir(parents=True, exist_ok=True)
+        self.disclosures_dir = self.ledger_dir / "disclosures"
+        if self.disclose_preimage:
+            self.disclosures_dir.mkdir(parents=True, exist_ok=True)
 
         # [b4-who-did] Default the expected endpoint id from the loaded cert, so
         # a matching cert re-checks green without extra config. When no cert is
@@ -580,6 +604,104 @@ class NodeState:
                         signer=plugin_signer,
                         log_id=log_id,
                     )
+
+
+def _extract_prompt_text(request_json: dict[str, Any]) -> str | None:
+    """Best-effort plain-text prompt for the DISCLOSED display -- the last
+    ``user`` message's content. ``None`` when the request has no messages or
+    no user turn -- never invented. Display convenience only: the
+    digest-VERIFIED preimage is the full ``request_body`` persisted alongside
+    it (see persist_disclosure_preimage), not this extracted text."""
+    messages = request_json.get("messages")
+    if not isinstance(messages, list):
+        return None
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = [
+                part.get("text")
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str)
+            ]
+            if parts:
+                return "\n".join(parts)
+    return None
+
+
+def _extract_response_text(response_json: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Best-effort plain-text assistant reply + tool-call note for DISPLAY.
+
+    Returns ``(text, tool_calls_note)``; either may be ``None``. Never
+    invented -- the digest-VERIFIED preimage is the full ``response_body``
+    persisted alongside it (see persist_disclosure_preimage), not this text.
+    """
+    choices = response_json.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None, None
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    if not isinstance(message, dict):
+        return None, None
+    content = message.get("content")
+    text = content if isinstance(content, str) else None
+    tool_calls = message.get("tool_calls")
+    note = None
+    if isinstance(tool_calls, list) and tool_calls:
+        names = [
+            tc.get("function", {}).get("name")
+            for tc in tool_calls
+            if isinstance(tc, dict) and isinstance(tc.get("function"), dict)
+        ]
+        names = [n for n in names if n]
+        note = f"tool_call(s): {', '.join(names)}" if names else "tool_call(s) made"
+    return text, note
+
+
+def persist_disclosure_preimage(
+    state: NodeState,
+    capsule: dict[str, Any],
+    request_json: dict[str, Any],
+    response_json: dict[str, Any],
+) -> None:
+    """Write the request/response PREIMAGE this sidecar just digested, keyed
+    by ``capsule_id``, into ``<ledger_dir>/disclosures/<capsule_id>.json`` --
+    DEFAULT ON (``state.disclose_preimage``; ``--no-disclose`` turns it off).
+
+    This is a LOCAL, out-of-band attachment carried alongside the ledger: it
+    changes nothing about the SIGNED capsule -- ``request_digest``,
+    ``response_digest``, and ``capsule_id`` are computed exactly as before,
+    and the wire/verifiable object still commits to request/response by
+    digest only (see this module's docstring, point 3). A viewer holding this
+    file can show the actual request/response TEXT and recompute
+    ``request_digest``/``response_digest`` from the exact JSON bodies carried
+    here to prove the disclosed text is what was sealed
+    (``capsule_mesh_viewer.build_conversation`` does exactly that recompute-
+    and-match). Best-effort: a write failure here must never break request
+    handling that already succeeded and was recorded in the ledger.
+    """
+    if not state.disclose_preimage:
+        return
+    capsule_id = capsule.get("capsule_id")
+    if not capsule_id:
+        return
+    prompt_text = _extract_prompt_text(request_json)
+    response_text, tool_calls_note = _extract_response_text(response_json)
+    record = {
+        "capsule_id": capsule_id,
+        "request_body": request_json,
+        "response_body": response_json,
+        "request_text": prompt_text,
+        "response_text": response_text,
+        "tool_calls_note": tool_calls_note,
+    }
+    try:
+        path = state.disclosures_dir / f"{capsule_id}.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+    except OSError as exc:  # noqa: BLE001 -- best-effort, never break the serving path
+        print(f"disclosure preimage write failed for {capsule_id} (best-effort, continuing): {exc}")
 
 
 def build_capsule(
@@ -990,6 +1112,7 @@ def _seal_chat_completion(
         )
     signed_statement = sign_capsule(state, capsule)
     record_capsule(state, capsule, signed_statement)
+    persist_disclosure_preimage(state, capsule, request_json, response_json)
     return capsule
 
 
@@ -1246,6 +1369,7 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
 
     signed_statement = sign_capsule(state, capsule)
     record_capsule(state, capsule, signed_statement)
+    persist_disclosure_preimage(state, capsule, request_json, response_json)
 
     out_headers = {"Content-Type": "application/json", "X-Capsule-Id": capsule["capsule_id"]}
     return status_code, response_body, out_headers
@@ -1442,6 +1566,7 @@ def default_state(
     node_ownership: SignedNodeOwnership | None = None,
     role: str = ROLE_PROVIDER,
     node_id: str = "mesh-node-demo-1",
+    disclose_preimage: bool = True,
 ) -> NodeState:
     if role not in ROLES:
         raise ValueError(f"role must be one of {ROLES}, got {role!r}")
@@ -1463,6 +1588,7 @@ def default_state(
         plugin_keys_dir=plugin_keys_dir,
         plugin_checkpoint_config_path=plugin_checkpoint_config_path,
         node_ownership=node_ownership,
+        disclose_preimage=disclose_preimage,
     )
 
 
@@ -1518,6 +1644,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--runtime-label", default="unspecified-real-node")
     parser.add_argument("--runtime-artifact", help="path to a binary/artifact to hash for runtime_digest (read-only, never executed)")
+    parser.add_argument(
+        "--no-disclose",
+        dest="disclose_preimage",
+        action="store_false",
+        default=True,
+        help=(
+            "[disclosure-default-on] by DEFAULT this sidecar persists the request+response TEXT "
+            "PREIMAGE -- the exact JSON bodies it just digested -- into "
+            "<ledger-dir>/disclosures/<capsule_id>.json, so a human operator can see the actual "
+            "exchange in capsule-mesh-viewer and it can recompute-and-match the text against the "
+            "sealed request_digest/response_digest. This is a LOCAL attachment only: it never "
+            "changes the SIGNED capsule, capsule_id, or the digest vectors. Pass --no-disclose to "
+            "turn this off for privacy (digest-only, the prior behavior)."
+        ),
+    )
     parser.add_argument(
         "--checkpoint-config",
         help="path to a TOML file with a [checkpoint] table (Layers 1-2: local MMR + optional witness "
@@ -1601,6 +1742,7 @@ def main(argv: list[str] | None = None) -> int:
         node_ownership=node_ownership,
         role=args.role,
         node_id=node_id,
+        disclose_preimage=args.disclose_preimage,
     )
 
     # [b4-who-did] Seal the identity capsule (the "who") ONCE at startup, if a
@@ -1622,6 +1764,10 @@ def main(argv: list[str] | None = None) -> int:
     server = run_sidecar(listen_host=args.listen_host, listen_port=args.listen_port, upstream_base=args.upstream, state=state)
     print(f"capsule sidecar listening on http://{args.listen_host}:{args.listen_port} -> upstream {args.upstream}")
     print(f"role={state.role} node_id={state.node_id} model_package_digest={state.model_package_digest}")
+    if state.disclose_preimage:
+        print(f"disclosure preimage: ON (default) -> {state.disclosures_dir} (turn off with --no-disclose)")
+    else:
+        print("disclosure preimage: OFF (--no-disclose) -- capsules stay digest-only, as before")
     if state.role == ROLE_REQUESTER:
         print(
             "  requester role: sealing this node's OWN-HALF capsule per request "

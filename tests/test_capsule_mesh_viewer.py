@@ -521,6 +521,121 @@ def test_tool_calls_note_is_carried_verbatim():
 
 
 # ---------------------------------------------------------------------------
+# [disclosure-default-on] recompute-and-match over the sidecar's own preimage.
+# The sidecar's response_digest is digest_json(response_json) -- the FULL raw
+# response body, not just the served facts -- so when the disclosed
+# response_body is the exact object, the viewer can prove a byte-exact match,
+# and a tampered body must recompute to a DIFFERENT digest (red).
+# ---------------------------------------------------------------------------
+
+
+def test_conversation_verifies_response_body_when_the_exact_bytes_are_held():
+    from capsule_sidecar import digest_json
+
+    response_body = {
+        "id": "chatcmpl-1",
+        "choices": [{"message": {"role": "assistant", "content": "mesh-llm is a local inference mesh."}}],
+    }
+    cap, _ = _served_facts_capsule()
+    cap["effect"]["response_digest"] = digest_json(response_body)
+    conv = build_conversation(
+        cap,
+        serving_provenance(cap),
+        {"response": "mesh-llm is a local inference mesh.", "response_body": response_body},
+    )
+    rv = conv["response"]["verify"]
+    assert rv["kind"] == "response_body"
+    assert rv["sealed_digest"] == cap["effect"]["response_digest"]
+    assert rv["computed_digest"] == digest_json(response_body)
+    assert rv["matches"] is True
+    assert conv["response"]["disclosed"] is True
+
+
+def test_conversation_response_body_tamper_goes_red():
+    # A tamper of the disclosed text (reflected in the held response_body)
+    # must NEVER show a false "matches" -- this is the honesty test the
+    # disclosure feature exists to satisfy.
+    from capsule_sidecar import digest_json
+
+    real_body = {
+        "id": "chatcmpl-1",
+        "choices": [{"message": {"role": "assistant", "content": "mesh-llm is a local inference mesh."}}],
+    }
+    cap, _ = _served_facts_capsule()
+    cap["effect"]["response_digest"] = digest_json(real_body)
+
+    tampered_body = json.loads(json.dumps(real_body))
+    tampered_body["choices"][0]["message"]["content"] = "mesh-llm sends your prompts to a third party."
+    conv = build_conversation(
+        cap,
+        serving_provenance(cap),
+        {"response": tampered_body["choices"][0]["message"]["content"], "response_body": tampered_body},
+    )
+    rv = conv["response"]["verify"]
+    assert rv["kind"] == "response_body"
+    assert rv["computed_digest"] != rv["sealed_digest"]
+    assert rv["matches"] is False
+
+
+def test_conversation_falls_back_to_served_facts_when_no_response_body_held():
+    # Absent a body preimage, the honest served-facts approximation still
+    # applies (host-served / legacy path) -- never upgraded to response_body.
+    cap, real = _served_facts_capsule()
+    conv = build_conversation(cap, serving_provenance(cap), {"response": "hello"})
+    assert conv["response"]["verify"]["kind"] == "served_facts"
+    assert conv["response"]["verify"]["computed_digest"] == real
+
+
+# ---------------------------------------------------------------------------
+# load_disclosures -- auto-loads capsule_sidecar.py's DEFAULT-ON preimage
+# store next to a ledger, so a fresh sidecar-sealed capsule shows disclosed
+# without needing explicit --disclose flags.
+# ---------------------------------------------------------------------------
+
+
+def test_load_disclosures_reads_persisted_preimage_files(tmp_path):
+    from capsule_mesh_viewer import load_disclosures
+
+    disclosures_dir = tmp_path / "disclosures"
+    disclosures_dir.mkdir()
+    (disclosures_dir / "cap-1.json").write_text(
+        json.dumps(
+            {
+                "capsule_id": "cap-1",
+                "request_body": {"messages": [{"role": "user", "content": "hi"}]},
+                "response_body": {"choices": [{"message": {"content": "hey"}}]},
+                "request_text": "hi",
+                "response_text": "hey",
+                "tool_calls_note": None,
+            }
+        )
+    )
+    loaded = load_disclosures(tmp_path)
+    assert set(loaded) == {"cap-1"}
+    entry = loaded["cap-1"]
+    assert entry["request"] == "hi"
+    assert entry["response"] == "hey"
+    assert entry["request_body"] == {"messages": [{"role": "user", "content": "hi"}]}
+    assert entry["response_body"] == {"choices": [{"message": {"content": "hey"}}]}
+    assert "tool_calls_note" not in entry  # None stays absent, never a fabricated key
+
+
+def test_load_disclosures_missing_directory_returns_empty(tmp_path):
+    from capsule_mesh_viewer import load_disclosures
+
+    assert load_disclosures(tmp_path / "no-such-ledger") == {}
+
+
+def test_load_disclosures_skips_malformed_files_without_raising(tmp_path):
+    from capsule_mesh_viewer import load_disclosures
+
+    disclosures_dir = tmp_path / "disclosures"
+    disclosures_dir.mkdir()
+    (disclosures_dir / "broken.json").write_text("{not valid json")
+    assert load_disclosures(tmp_path) == {}
+
+
+# ---------------------------------------------------------------------------
 # Embed serialization -- REGRESSION for the corruption where the base64
 # fragment was jammed into the JS boot GUARD condition
 # (`if (embedded && embedded !== ""<base64>...`) instead of ONLY the
