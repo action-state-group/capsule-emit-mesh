@@ -39,6 +39,7 @@ import hashlib
 import json
 import sys
 from importlib import resources
+from pathlib import Path
 from typing import Any
 
 # Reuse the neutral mesh label layer -- role/counterparty labelling and the
@@ -79,6 +80,7 @@ __all__ = [
     "build_role_questions",
     "served_facts_digest",
     "build_conversation",
+    "load_disclosures",
     "to_fragment_payload",
     "encode_fragment",
     "decode_fragment",
@@ -341,7 +343,9 @@ def build_verdict(
     the three dense role-questions. Each line is {mark, text} where mark is
     "ok" (✓) or "warn" (⚠) -- never a fake green.
 
-    Line 1 — what really ran (green when the model+hardware facts recompute).
+    Line 1 — what the node ATTESTS it ran (self-reported; green when this
+             record's own signature + digests verify — integrity, not proof
+             the model/hardware claim is true).
     Line 2 — signed + anchored (green only if witness receipt is carried;
              honest amber "witness receipt not in this bundle" otherwise).
     Line 3 — the honest open gap: who asked + this node's history.
@@ -352,11 +356,12 @@ def build_verdict(
     if sp.get("is_soc") and gpu:
         hw = f" on an {gpu} (Apple silicon)"
 
-    # Line 1 — really ran. Green when this record's own facts verify here.
+    # Line 1 — what it attests it ran. Green = this record's own signature +
+    # digests verify here (integrity), NOT that the self-reported claim is true.
     if sp.get("model") and verify_ok is not False:
         line1 = {
             "mark": "ok",
-            "text": f"Really ran on {name}{hw} — and you can recompute the proof in your browser.",
+            "text": f"Attests it ran on {name}{hw} (self-reported) — you can recompute in your browser that this record is signed and unaltered.",
         }
     elif sp.get("model") and verify_ok is False:
         line1 = {
@@ -641,14 +646,14 @@ def served_facts_digest(sp: dict[str, Any]) -> str | None:
         return None
 
 
-def _request_body_digest(request_body: dict[str, Any] | None) -> str | None:
-    """Canonical digest of a disclosed request BODY, comparable to the sealed
-    ``request_digest``. Returns None when no body was supplied or the reference
-    isn't importable."""
-    if _digest_json is None or request_body is None:
+def _json_body_digest(body: dict[str, Any] | None) -> str | None:
+    """Canonical digest of a disclosed request/response BODY, comparable to
+    the sealed ``request_digest``/``response_digest``. Returns None when no
+    body was supplied or the reference isn't importable."""
+    if _digest_json is None or body is None:
         return None
     try:
-        return _digest_json(request_body)
+        return _digest_json(body)
     except Exception:  # pragma: no cover
         return None
 
@@ -683,7 +688,7 @@ def build_conversation(
     # ---- prompt side ---------------------------------------------------
     prompt_text = disclosed.get("request")
     request_body = disclosed.get("request_body")
-    body_digest = _request_body_digest(request_body)
+    body_digest = _json_body_digest(request_body)
     if request_body is not None:
         # The requester holds the exact request bytes -> a real digest check.
         prompt_verify = {
@@ -707,21 +712,39 @@ def build_conversation(
 
     # ---- response side -------------------------------------------------
     response_text = disclosed.get("response")
-    computed_facts = served_facts_digest(sp)
-    response_verify = {
-        "kind": "served_facts",
-        "sealed_digest": response_digest,
-        "computed_digest": computed_facts,
-        "matches": (computed_facts is not None and computed_facts == response_digest),
-        "label": "served model + usage vs sealed response_digest",
-        # A small muted secondary line (styled tiny/grey), not a big paragraph:
-        # the honest boundary that response_digest seals the served facts, and
-        # the text is the requester's held copy.
-        "note": (
-            "response_digest seals the served facts (model + token usage); the "
-            "text is the requester's held copy."
-        ),
-    }
+    response_body = disclosed.get("response_body")
+    if response_body is not None:
+        # The requester/operator holds the exact response JSON body -- e.g. the
+        # sidecar's own disclosure preimage, the SAME object it digested at
+        # seal time (capsule_sidecar._seal_chat_completion /
+        # handle_chat_completion: response_digest = digest_json(response_json)).
+        # This is a real, byte-exact recompute-and-match, not the served-facts
+        # approximation below -- the strongest disclosure proof this viewer can
+        # show, and a tampered body recomputes to a DIFFERENT digest (red).
+        response_body_digest = _json_body_digest(response_body)
+        response_verify = {
+            "kind": "response_body",
+            "sealed_digest": response_digest,
+            "computed_digest": response_body_digest,
+            "matches": (response_body_digest is not None and response_body_digest == response_digest),
+            "label": "response body vs sealed response_digest",
+        }
+    else:
+        computed_facts = served_facts_digest(sp)
+        response_verify = {
+            "kind": "served_facts",
+            "sealed_digest": response_digest,
+            "computed_digest": computed_facts,
+            "matches": (computed_facts is not None and computed_facts == response_digest),
+            "label": "served model + usage vs sealed response_digest",
+            # A small muted secondary line (styled tiny/grey), not a big paragraph:
+            # the honest boundary that response_digest seals the served facts, and
+            # the text is the requester's held copy.
+            "note": (
+                "response_digest seals the served facts (model + token usage); the "
+                "text is the requester's held copy."
+            ),
+        }
 
     return {
         "served_by": {
@@ -740,12 +763,12 @@ def build_conversation(
             "text": prompt_text,
             # For the inline header tag: green "shown by operator" when the
             # operator disclosed this field, grey "sealed — digest only" otherwise.
-            "disclosed": prompt_text is not None,
+            "disclosed": prompt_text is not None or request_body is not None,
             "verify": prompt_verify,
         },
         "response": {
             "text": response_text,
-            "disclosed": response_text is not None,
+            "disclosed": response_text is not None or response_body is not None,
             "tool_calls_note": disclosed.get("tool_calls_note"),
             "verify": response_verify,
         },
@@ -777,6 +800,54 @@ def _disclosure_view(record: dict[str, Any], disclose: dict[str, str] | None) ->
             }
         )
     return {"fields": fields}
+
+
+# ---------------------------------------------------------------------------
+# Disclosure preimage store -- [disclosure-default-on] auto-load what
+# capsule_sidecar.py's DEFAULT-ON preimage capture wrote next to the ledger,
+# so a fresh sidecar-sealed capsule shows as DISCLOSED without the caller
+# having to pass --disclose by hand. Capsules sealed before this feature (or
+# sealed with --no-disclose) simply have no file here and stay the honest
+# "sealed — digest only" default -- never retroactively disclosed.
+# ---------------------------------------------------------------------------
+
+
+def load_disclosures(ledger_dir: str | Path) -> dict[str, dict[str, Any]]:
+    """Load persisted request/response preimages from
+    ``<ledger_dir>/disclosures/<capsule_id>.json`` (written by
+    ``capsule_sidecar.persist_disclosure_preimage``).
+
+    Returns a ``{capsule_id: {...}}`` map in the shape ``to_fragment_payload``'s
+    ``disclose`` parameter expects (``request``/``request_body``/``response``/
+    ``response_body``/``tool_calls_note``). Missing directory or unreadable /
+    malformed files are skipped, never fatal to rendering the viewer.
+    """
+    disclosures: dict[str, dict[str, Any]] = {}
+    directory = Path(ledger_dir) / "disclosures"
+    if not directory.is_dir():
+        return disclosures
+    for path in sorted(directory.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        capsule_id = data.get("capsule_id") or path.stem
+        entry: dict[str, Any] = {}
+        for src_key, dest_key in (
+            ("request_text", "request"),
+            ("request_body", "request_body"),
+            ("response_text", "response"),
+            ("response_body", "response_body"),
+            ("tool_calls_note", "tool_calls_note"),
+        ):
+            value = data.get(src_key)
+            if value is not None:
+                entry[dest_key] = value
+        if entry:
+            disclosures[capsule_id] = entry
+    return disclosures
 
 
 # ---------------------------------------------------------------------------
@@ -1040,7 +1111,7 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   </div>
 
   <h1>What my capsules <em>look like</em></h1>
-  <p class="sub">Each card leads with a plain-language verdict — what really ran, whether it's signed, and what's still open — then shows the exchange. The security details fold behind one toggle.</p>
+  <p class="sub">Each card leads with a plain-language verdict — what the node attests it ran, whether it's signed, and what's still open — then shows the exchange. The security details fold behind one toggle.</p>
   <div class="meta mono" data-meta></div>
 
   <div class="empty" data-empty>
@@ -1174,13 +1245,21 @@ def _cmd_html(args: argparse.Namespace) -> int:
 
     import os
 
+    ledger_dir = os.path.dirname(os.path.abspath(args.ledger))
+    # [disclosure-default-on] Auto-load whatever capsule_sidecar.py's DEFAULT-ON
+    # preimage capture wrote next to the ledger, then let explicit --disclose /
+    # --disclose-file flags override individual fields on top of it.
+    merged_disclose = load_disclosures(ledger_dir)
+    for cid, fields in disclose.items():
+        merged_disclose.setdefault(cid, {}).update(fields)
+
     payload = to_fragment_payload(
         records,
         source_log=args.source_log,
         witness_checkpoint=witness,
-        disclose=disclose or None,
+        disclose=merged_disclose or None,
         operator=args.operator,
-        ledger_dir=os.path.dirname(os.path.abspath(args.ledger)),
+        ledger_dir=ledger_dir,
         default_role=args.role,
     )
     fragment = encode_fragment(payload)

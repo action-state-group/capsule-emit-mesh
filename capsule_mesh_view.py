@@ -397,7 +397,7 @@ def _cmd_view(args: argparse.Namespace) -> int:
         # Thin composition of the words-first, role-organised offline viewer.
         # One neutral core (the fragment mechanism + capsule_mesh_view labels);
         # this is only the label -> HTML entry point, no logic duplicated here.
-        from capsule_mesh_viewer import encode_fragment, render_mesh_viewer_html, to_fragment_payload
+        from capsule_mesh_viewer import encode_fragment, load_disclosures, render_mesh_viewer_html, to_fragment_payload
 
         # Prefer the plugin log when both are given (it is the serving-side
         # producer whose serving_provenance the roles read).
@@ -409,12 +409,17 @@ def _cmd_view(args: argparse.Namespace) -> int:
             with open(args.witness, encoding="utf-8") as fh:
                 text = fh.read().strip()
             witness = json.loads(text.splitlines()[0] if "\n" in text else text)
+        ledger_dir = Path(path).parent
+        # [disclosure-default-on] Auto-load whatever capsule_sidecar.py's
+        # DEFAULT-ON preimage capture wrote next to this log's ledger dir, so a
+        # fresh sidecar-sealed capsule shows disclosed text without extra flags.
         payload = to_fragment_payload(
             records,
             source_log=label,
             witness_checkpoint=witness,
+            disclose=load_disclosures(ledger_dir) or None,
             operator=records[0].get("operator") if records else None,
-            ledger_dir=Path(path).parent,
+            ledger_dir=ledger_dir,
         )
         fragment = encode_fragment(payload)
         with open(args.html, "w", encoding="utf-8") as fh:
