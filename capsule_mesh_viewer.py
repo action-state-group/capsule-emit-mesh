@@ -37,6 +37,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import sys
 from importlib import resources
 from pathlib import Path
@@ -104,6 +105,8 @@ __all__ = [
     "build_role_questions",
     "served_facts_digest",
     "build_conversation",
+    "RESPONSE_BODY_STRICT_JCS_STRINGIFY_FLOATS_V1",
+    "RESPONSE_BODY_PLAIN_JCS_RYU_FLOATS_V1",
     "load_disclosures",
     "to_fragment_payload",
     "encode_fragment",
@@ -707,6 +710,198 @@ def build_role_questions(
 # can't prove.
 # ---------------------------------------------------------------------------
 
+# --- response-body plain-JCS matching the mesh-llm host's construction -----
+# ([mesh-disclosure-recompute-jcs-float])
+#
+# `_json_body_digest` below (via `capsule_sidecar.digest_json`) reproduces the
+# STRICT construction: RFC 8785 JCS with every float pre-stringified via
+# Python `repr()` (spec S:5.1) -- exactly what capsule_sidecar.py itself uses
+# to seal a response_digest on the reverse-proxy path, and what the
+# admission-policy plugin's `canonical_body_digest`/`stringify_floats` use for
+# EVERY request_digest regardless of path. That construction is correct for a
+# sidecar-sealed response_digest, or any request_digest.
+#
+# But `emit_for_observed_host_exchange` (admission-policy/src/capsule_emit.rs)
+# PREFERS a second, genuinely different construction for a HOST-FORWARDED
+# response_digest: the mesh-llm host's own `openai_exchange::jcs_value` --
+# PLAIN JCS (no float pre-stringify) with numbers serialized via
+# `serde_json::Number::to_string()` (a `ryu`-based shortest-round-trip
+# formatter). A real llama.cpp response body's `timings` block
+# (`predicted_ms`, `prompt_per_second`, ...) digests DIFFERENTLY under the two
+# constructions, so recomputing a disclosed response_body against
+# `response_digest` with only the strict construction silently false-reds any
+# capsule sealed via the host-forwarded path -- worse than the neutral
+# "could not verify" the pre-fix browser JCS gave, per the task's own
+# warning. `_rust_plain_jcs_digest` below reproduces the host's construction
+# (ported from mesh-llm-ui's `lib/canonical.ts::formatRustFloat`/
+# `jcsPlainValue`, and pinned against the SAME `LLAMA_CPP_TIMINGS_FIXTURE`
+# vector as `openai_exchange.rs`'s
+# `response_digest_over_real_llama_cpp_timings_floats` test -- see
+# `tests/test_capsule_mesh_viewer.py`'s
+# `test_rust_plain_jcs_digest_matches_the_pinned_rust_seal_vector`).
+# `_response_body_verify` tries the strict construction FIRST (the common
+# case, a capsule-sidecar-sealed capsule) and falls back to the plain
+# construction, labeling honestly which one actually matched -- never a
+# fabricated match, and never a false-red just because the wrong
+# construction was tried first.
+
+RESPONSE_BODY_STRICT_JCS_STRINGIFY_FLOATS_V1 = "capsule-sidecar/response-body-digest_json/v1"
+RESPONSE_BODY_PLAIN_JCS_RYU_FLOATS_V1 = "mesh-llm/response-body-plain-jcs/v1"
+
+
+def _format_rust_float(v: float) -> str:
+    """Format ``v`` exactly like Rust's `ryu`-based `serde_json::Number::to_string()`.
+
+    NOT RFC 8785 S:3.2.2.3's ECMAScript algorithm -- see the module note
+    above for why this intentionally diverges from spec-pure JCS. Mirrors
+    `mesh-llm-ui/src/features/capsules/lib/canonical.ts::formatRustFloat`
+    digit-for-digit: both derive the shortest round-tripping decimal for the
+    IEEE-754 double, then apply the same fixed/scientific threshold
+    (``-5 <= exponent <= 15`` stays fixed-point).
+    """
+    if not math.isfinite(v):
+        raise ValueError(f"non-finite number in digest-bearing field: {v}")
+    sign = "-" if (v < 0 or math.copysign(1.0, v) < 0) else ""
+    magnitude = abs(v)
+    digits, exp = ("0", 0) if magnitude == 0 else _shortest_round_trip_digits(magnitude)
+    if -5 <= exp <= 15:
+        if exp >= 0:
+            if exp + 1 >= len(digits):
+                return sign + digits + "0" * (exp + 1 - len(digits)) + ".0"
+            return sign + digits[: exp + 1] + "." + digits[exp + 1 :]
+        return sign + "0." + "0" * (-exp - 1) + digits
+    mantissa = f"{digits[0]}.{digits[1:]}" if len(digits) > 1 else digits
+    return f"{sign}{mantissa}e{'+' if exp >= 0 else '-'}{abs(exp)}"
+
+
+def _shortest_round_trip_digits(magnitude: float) -> tuple[str, int]:
+    """The shortest decimal digit string + base-10 exponent that round-trips
+    to ``magnitude`` (a positive finite float) -- e.g. ``81.0 -> ("81", 1)``
+    (8.1 x 10^1). Python's `repr()` already computes this shortest
+    round-tripping decimal (CPython's float repr, like `ryu`, finds the
+    unique shortest digit string that reparses to the same IEEE-754 double);
+    this just reshapes repr's fixed-or-scientific text into (digits,
+    exponent) form so `_format_rust_float` can re-render it under Rust's OWN
+    fixed/scientific threshold rather than Python's repr threshold.
+    """
+    text = repr(magnitude)
+    mantissa, _, exp_text = text.partition("e")
+    exp = int(exp_text) if exp_text else 0
+    int_part, _, frac_part = mantissa.partition(".")
+    all_digits = int_part + frac_part
+    point_pos = len(int_part) + exp
+    stripped = min(len(all_digits) - len(all_digits.lstrip("0")), len(all_digits) - 1)
+    digits = all_digits[stripped:]
+    point_pos -= stripped
+    digits = digits.rstrip("0") or "0"
+    return digits, point_pos - 1
+
+
+def _rust_plain_jcs_string(s: str) -> str:
+    out = ['"']
+    for ch in s:
+        code = ord(ch)
+        if ch == '"':
+            out.append('\\"')
+        elif ch == "\\":
+            out.append("\\\\")
+        elif code == 0x08:
+            out.append("\\b")
+        elif code == 0x09:
+            out.append("\\t")
+        elif code == 0x0A:
+            out.append("\\n")
+        elif code == 0x0C:
+            out.append("\\f")
+        elif code == 0x0D:
+            out.append("\\r")
+        elif code < 0x20:
+            out.append("\\u%04x" % code)
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def _rust_plain_jcs_value(v: Any) -> str:
+    """Plain JCS (sorted keys, NO absent-field normalization) matching
+    ``openai_exchange.rs::jcs_value`` / ``canonical.ts::jcsPlainValue``: an
+    int serializes via its own decimal form, a float via
+    ``_format_rust_float``. Operates on an ALREADY-PARSED Python value --
+    unlike the browser port, Python's ``json`` module natively preserves the
+    int-vs-float distinction (``81`` -> ``int``, ``81.0`` -> ``float``) via
+    type, so no hand-rolled lexical-form-preserving parser is needed here.
+    """
+    if v is None:
+        return "null"
+    if v is True:
+        return "true"
+    if v is False:
+        return "false"
+    if isinstance(v, str):
+        return _rust_plain_jcs_string(v)
+    if isinstance(v, bool):  # pragma: no cover - handled above
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        return _format_rust_float(v)
+    if isinstance(v, list):
+        return "[" + ",".join(_rust_plain_jcs_value(x) for x in v) + "]"
+    if isinstance(v, dict):
+        items = sorted(v.items(), key=lambda kv: kv[0].encode("utf-16-be"))
+        return "{" + ",".join(_rust_plain_jcs_string(k) + ":" + _rust_plain_jcs_value(val) for k, val in items) + "}"
+    raise TypeError(f"value of type {type(v).__name__!r} is not JSON-serializable here")
+
+
+def _rust_plain_jcs_digest(value: Any) -> str | None:
+    """SHA-256 hex of ``_rust_plain_jcs_value(value)`` -- None on any error (a
+    non-finite float, an unserializable type), never a fabricated digest."""
+    try:
+        return hashlib.sha256(_rust_plain_jcs_value(value).encode("utf-8")).hexdigest()
+    except Exception:  # pragma: no cover - defensive; never fabricate a digest
+        return None
+
+
+def _response_body_verify(response_body: dict[str, Any], response_digest: str | None) -> dict[str, Any]:
+    """Recompute-and-match a disclosed response_body against the sealed
+    response_digest, trying BOTH known-valid constructions (see the module
+    note above) instead of false-redding whichever one wasn't tried first:
+    the strict capsule-sidecar construction (the common case -- a
+    sidecar-sealed capsule), then the host-forwarded plain-JCS construction
+    (a llama.cpp real-float body sealed via
+    ``emit_for_observed_host_exchange``'s host-forwarded response_digest).
+    Always a concrete ``matches`` bool -- never a fabricated True.
+    """
+    strict_digest = _json_body_digest(response_body)
+    if strict_digest is not None and strict_digest == response_digest:
+        return {
+            "kind": "response_body",
+            "sealed_digest": response_digest,
+            "computed_digest": strict_digest,
+            "matches": True,
+            "construction": RESPONSE_BODY_STRICT_JCS_STRINGIFY_FLOATS_V1,
+            "label": "response body vs sealed response_digest",
+        }
+    plain_digest = _rust_plain_jcs_digest(response_body)
+    if plain_digest is not None and plain_digest == response_digest:
+        return {
+            "kind": "response_body",
+            "sealed_digest": response_digest,
+            "computed_digest": plain_digest,
+            "matches": True,
+            "construction": RESPONSE_BODY_PLAIN_JCS_RYU_FLOATS_V1,
+            "label": "response body vs sealed response_digest",
+        }
+    return {
+        "kind": "response_body",
+        "sealed_digest": response_digest,
+        "computed_digest": strict_digest,
+        "matches": False,
+        "construction": RESPONSE_BODY_STRICT_JCS_STRINGIFY_FLOATS_V1,
+        "label": "response body vs sealed response_digest",
+    }
+
 
 def served_facts_digest(sp: dict[str, Any]) -> str | None:
     """Recompute the host-served ``response_digest`` from the observed terminal
@@ -801,18 +996,17 @@ def build_conversation(
         # The requester/operator holds the exact response JSON body -- e.g. the
         # sidecar's own disclosure preimage, the SAME object it digested at
         # seal time (capsule_sidecar._seal_chat_completion /
-        # handle_chat_completion: response_digest = digest_json(response_json)).
-        # This is a real, byte-exact recompute-and-match, not the served-facts
-        # approximation below -- the strongest disclosure proof this viewer can
-        # show, and a tampered body recomputes to a DIFFERENT digest (red).
-        response_body_digest = _json_body_digest(response_body)
-        response_verify = {
-            "kind": "response_body",
-            "sealed_digest": response_digest,
-            "computed_digest": response_body_digest,
-            "matches": (response_body_digest is not None and response_body_digest == response_digest),
-            "label": "response body vs sealed response_digest",
-        }
+        # handle_chat_completion: response_digest = digest_json(response_json)),
+        # or a host-forwarded real body (a real GGUF `timings` float block
+        # included) sealed via emit_for_observed_host_exchange's host-forwarded
+        # response_digest. This is a real, byte-exact recompute-and-match, not
+        # the served-facts approximation below -- the strongest disclosure
+        # proof this viewer can show, and a tampered body recomputes to a
+        # DIFFERENT digest under BOTH known constructions (red). See
+        # `_response_body_verify` (module note above,
+        # [mesh-disclosure-recompute-jcs-float]) for why two constructions are
+        # tried.
+        response_verify = _response_body_verify(response_body, response_digest)
     else:
         computed_facts = served_facts_digest(sp)
         response_verify = {

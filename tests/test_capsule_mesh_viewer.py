@@ -714,6 +714,147 @@ def test_conversation_falls_back_to_served_facts_when_no_response_body_held():
 
 
 # ---------------------------------------------------------------------------
+# [mesh-disclosure-recompute-jcs-float] response_body recompute against a
+# HOST-FORWARDED response_digest (mesh-llm host's plain-JCS + ryu-float
+# construction, `openai_exchange::jcs_value`), distinct from the
+# capsule-sidecar strict-JCS + repr-stringified-float construction covered
+# above. `LLAMA_CPP_TIMINGS_FIXTURE` is identical literal JSON text to
+# `openai_exchange.rs`'s fixture of the same name and
+# `canonical.test.ts`'s copy -- keep all three in sync character-for-
+# character if any changes. The pinned digest is asserted equal in all three
+# languages (Rust: `response_digest_over_real_llama_cpp_timings_floats`;
+# TS: `matches the Rust seal path digest ...`; here).
+# ---------------------------------------------------------------------------
+
+LLAMA_CPP_TIMINGS_FIXTURE = (
+    '{"id":"chatcmpl-mesh-1","object":"chat.completion","created":1700000000,'
+    '"model":"llama-3.2-3b-instruct","choices":[{"index":0,"message":{"role":"assistant",'
+    '"content":"hi there"},"finish_reason":"stop"}],'
+    '"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15},'
+    '"timings":{"prompt_n":10,"prompt_ms":123.456,"prompt_per_token_ms":12.3456,'
+    '"prompt_per_second":81.0,"predicted_n":5,"predicted_ms":234.567,'
+    '"predicted_per_token_ms":46.9134,"predicted_per_second":21.3169}}'
+)
+EXPECTED_TIMINGS_DIGEST = "7179feb00c2b4e2a99a785449eb202c2faf9694cc77501876802c300f57b298a"
+
+# Identical literal JSON text to `openai_exchange.rs`'s
+# `response_digest_over_integer_only_body_unchanged` fixture / `canonical.test.ts`'s copy.
+INTEGER_ONLY_BODY = (
+    '{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant",'
+    '"content":"hello"},"finish_reason":"stop"}],'
+    '"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}'
+)
+EXPECTED_INTEGER_ONLY_DIGEST = "660e8a56afa6b1cdf4b088c0c42be7f6af958b28492b7583d6676a684dbe5bd7"
+
+
+def test_rust_plain_jcs_digest_matches_the_pinned_rust_seal_vector():
+    # (mutant 1) A real llama.cpp `timings` float block digests to the SAME
+    # hex the Rust seal path produces -- byte-for-byte parity, not merely
+    # "some digest was computed".
+    body = json.loads(LLAMA_CPP_TIMINGS_FIXTURE)
+    assert v._rust_plain_jcs_digest(body) == EXPECTED_TIMINGS_DIGEST
+
+
+def test_rust_plain_jcs_digest_integer_only_body_unchanged():
+    # (mutant 3, no regression) The already-working integer-only path still
+    # digests correctly under the new plain-JCS construction too.
+    body = json.loads(INTEGER_ONLY_BODY)
+    assert v._rust_plain_jcs_digest(body) == EXPECTED_INTEGER_ONLY_DIGEST
+
+
+def test_rust_plain_jcs_digest_whole_number_float_not_collapsed_to_integer():
+    # `prompt_per_second: 81.0` is a WHOLE-NUMBER float -- Python's `json`
+    # module (unlike JS) already keeps it a `float` (not collapsed to the
+    # `int` 81), but assert the mechanism end-to-end: changing the source
+    # text `81.0` -> `81` changes the digest.
+    bare_int = LLAMA_CPP_TIMINGS_FIXTURE.replace('"prompt_per_second":81.0', '"prompt_per_second":81')
+    assert v._rust_plain_jcs_digest(json.loads(bare_int)) != EXPECTED_TIMINGS_DIGEST
+
+
+def test_format_rust_float_matches_rust_thresholds_not_pythons_own_repr():
+    # Rust's ryu-based formatter stays fixed-point for -5 <= exponent <= 15,
+    # a DIFFERENT threshold than Python's own `repr()` (e.g. `repr(1e-05)` is
+    # already scientific `"1e-05"`, but Rust wants fixed `"0.00001"`) -- a
+    # naive `return repr(v)` implementation would pass the timings-fixture
+    # digest test above (none of its values sit in the divergent range) but
+    # fail here. Values pinned against the Rust/TS ports directly (see
+    # `openai_exchange.rs` test module comments and `canonical.ts`'s
+    # `formatRustFloat` module note).
+    cases = [
+        (1e-5, "0.00001"),  # Rust fixed; Python repr is scientific "1e-05"
+        (1e-6, "1e-6"),  # both scientific, but Rust omits repr's zero-pad
+        (1e15, "1000000000000000.0"),  # Rust fixed at the e==15 boundary
+        (1e16, "1e+16"),  # Rust scientific at the e==16 boundary
+        (-0.0, "-0.0"),  # negative zero sign preserved
+        (0.0, "0.0"),
+        (81.0, "81.0"),  # whole-number float still gets a trailing .0
+    ]
+    for value, expected in cases:
+        assert v._format_rust_float(value) == expected, f"formatting {value!r}"
+
+
+def test_format_rust_float_rejects_nan_and_infinity():
+    # (mutant 4) NaN/Infinity are not valid JSON and must never coerce into a
+    # digest -- explicit rejection.
+    with pytest.raises(ValueError):
+        v._format_rust_float(float("nan"))
+    with pytest.raises(ValueError):
+        v._format_rust_float(float("inf"))
+    with pytest.raises(ValueError):
+        v._format_rust_float(float("-inf"))
+    # And the digest wrapper never fabricates one -- honest None instead of
+    # raising out of `_response_body_verify`'s call site.
+    assert v._rust_plain_jcs_digest({"x": float("nan")}) is None
+
+
+def test_response_body_verify_green_matches_a_host_forwarded_float_capsule():
+    # (mutant 1) A real llama.cpp response WITH a `timings` float block,
+    # sealed via the HOST-FORWARDED plain-JCS construction (not the
+    # capsule-sidecar strict construction) -- the strict construction tried
+    # first does NOT match this digest, so this exercises the fallback.
+    body = json.loads(LLAMA_CPP_TIMINGS_FIXTURE)
+    cap, _ = _served_facts_capsule()
+    cap["effect"]["response_digest"] = EXPECTED_TIMINGS_DIGEST
+    conv = build_conversation(cap, serving_provenance(cap), {"response": "hi there", "response_body": body})
+    rv = conv["response"]["verify"]
+    assert rv["kind"] == "response_body"
+    assert rv["matches"] is True
+    assert rv["computed_digest"] == EXPECTED_TIMINGS_DIGEST
+    assert rv["construction"] == v.RESPONSE_BODY_PLAIN_JCS_RYU_FLOATS_V1
+
+
+def test_response_body_verify_tampered_float_body_goes_red():
+    # (mutant 2) One byte changed in a real-float body must mismatch under
+    # BOTH known constructions -- never a false "matches".
+    tampered = LLAMA_CPP_TIMINGS_FIXTURE.replace('"hi there"', '"hi there!"')
+    cap, _ = _served_facts_capsule()
+    cap["effect"]["response_digest"] = EXPECTED_TIMINGS_DIGEST
+    conv = build_conversation(
+        cap, serving_provenance(cap), {"response": "hi there!", "response_body": json.loads(tampered)}
+    )
+    rv = conv["response"]["verify"]
+    assert rv["kind"] == "response_body"
+    assert rv["matches"] is False
+    assert rv["computed_digest"] != rv["sealed_digest"]
+
+
+def test_response_body_verify_labels_the_strict_construction_when_sidecar_sealed():
+    # (mutant 3, no regression) An integer-only body sealed the ORIGINAL way
+    # (capsule_sidecar.digest_json) still matches on the FIRST try, labeled
+    # with the strict construction -- the new fallback never shadows the
+    # common case.
+    from capsule_sidecar import digest_json
+
+    body = json.loads(INTEGER_ONLY_BODY)
+    cap, _ = _served_facts_capsule()
+    cap["effect"]["response_digest"] = digest_json(body)
+    conv = build_conversation(cap, serving_provenance(cap), {"response": "hello", "response_body": body})
+    rv = conv["response"]["verify"]
+    assert rv["matches"] is True
+    assert rv["construction"] == v.RESPONSE_BODY_STRICT_JCS_STRINGIFY_FLOATS_V1
+
+
+# ---------------------------------------------------------------------------
 # load_disclosures -- auto-loads capsule_sidecar.py's DEFAULT-ON preimage
 # store next to a ledger, so a fresh sidecar-sealed capsule shows disclosed
 # without needing explicit --disclose flags.
