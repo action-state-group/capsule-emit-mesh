@@ -100,6 +100,9 @@ jobs:
       - name: Smoke — capsule_exchange_tab (Pane C "This exchange" subtab; composes capsule_accountability_tab + capsule_mesh_view + capsule_mesh_viewer)
         run: python -c "import capsule_exchange_tab; print('ok')"
 
+      - name: Smoke — peer_accountability_tab (Pane B "Peers" -- composes capsule_accountability_tab + capsule_mesh_view + history_card)
+        run: python -c "import peer_accountability_tab; print('ok')"
+
       - name: Unit tests
         run: |
           pip install pytest
