@@ -31,6 +31,30 @@ Steven Mih · 2026-08-16 · offered for discussion, revision, or re-homing.
 > code-level honest-labeling fix; R3's status is corrected to reflect the (scoped) replay-detection
 > fix. Nothing else in this document changed.
 >
+> **Revision 2026-09-03 ([mesh-e2-witness-checkpoints], W5 — reconciliation).** A3/A4 (§Class A) and
+> R6 (§2.2) said "registration missing" / "Not built" even though checkpoint-by-default
+> (`docs/CHECKPOINT-BY-DEFAULT.md`, `checkpointing.py`) already shipped it and had already run live
+> once (`ledger-checkpoint-demo/checkpoint-demo-transcript.txt`, 2026-08-22) — §12.6's own accrual
+> table already said "checkpoint→receipt verified live" the whole time, so this document
+> contradicted itself. This task re-ran the live leg fresh (2026-09-03, against the same public
+> witness, `witness.agentactioncapsule.org`, a real POST/receipt/offline-verify cycle, not a
+> fixture) and added a second, independent RE-VERIFICATION path: `capsule_mesh_viewer.py`'s "signed
+> + anchored" line previously turned green on the mere PRESENCE of a `witnesses` entry in a
+> checkpoint bundle, never on actually checking it — a bundle carrying a tampered root next to an
+> untouched (and therefore now-mismatched) receipt would have shown the same green line as a real
+> one. It now calls `capsule_emit.checkpoint.verify_witness_stamp_tristate` (checkpoint-bound
+> `entry_hash` check + COSE-signature verify against the pinned witness key, fully offline for the
+> default witness) and only shows green on an actual pass; a receipt that fails now renders a
+> distinct ✗ (never the same amber as no receipt at all), and a structurally-valid receipt from an
+> unpinned witness renders a third, honest "unverified" state. A3/A4/R6 below are corrected to match
+> what both legs now demonstrate. **What is still open, flagged rather than fixed here (the known
+> W5 blocker):** a print/publish step surfacing this reconciliation into the operator-facing
+> handout was identified as blocked in the filing batch and is deferred, not resolved by this
+> revision — treat the row corrections below as accurate, but the wider "what ships this week"
+> narrative outside this document as not yet caught up. Also unchanged, and still honestly a gap:
+> single-witness registration (what is built) is not the multi-witness/collusion-resistant bar A4's
+> own "Does not establish" column describes — see the corrected A4 row for the precise line.
+>
 > **Status of the referenced specifications.** Where this document refers to record-format
 > mechanisms, the published revisions are `draft-mih-scitt-agent-action-capsule-02`,
 > `draft-mih-agent-bilateral-attestation-01`, `draft-mih-sato-agent-accountability-composition-00`
@@ -114,7 +138,7 @@ inside the mesh's own console is not evidence to anyone who matters in a dispute
 | R3 | Replay of earlier work as fresh | **Client-contributed nonce** bound into the receipt | Partly built (2026-08-21) — `capsule_sidecar.py`'s `_resolve_client_nonce()` now tracks client-supplied nonces per node, in-memory, for that node's running lifetime; a replayed nonce is labeled `client_supplied_replayed` rather than accepted as indistinguishably fresh (closes the gap [mesh-rung12-adversarial-review] found: a captured nonce replayed onto an unrelated exchange previously read as an ordinary `client_supplied` value). Scope, stated honestly: this catches replay within one running node's process only — not across a restart (the tracking set is not persisted) or across independently-operated nodes. Today's *fallback* nonce (minted when the client sends none) remains node-side and is explicitly not anti-replay evidence; that half is unchanged. **A third tier, `local_ingress`, was added 2026-08-23**: mesh-llm's own local ingress may mint the nonce one hop upstream of the sidecar and mark its own injection with `x-capsule-nonce-origin: local_ingress`, so the sidecar can tell "the harness sent it" from "ingress minted it" instead of overclaiming `client_supplied`. Naming it is not authenticating it: **records admitted via local_ingress are self-attested at admission; the header is a routing hint, not authentication.** Nothing here Ed25519-verifies the origin header the way `evaluate_bilateral_attestation` verifies bilateral request headers elsewhere in the same file — deliberately: enforcement belongs on trust-deciding paths, and `local_ingress` is a PoC routing path, not one today. `client_nonce_source` (including this tier) is committed into `compute_attestation`, which is itself committed into `capsule_id` (§1's second consequence: self-attestation is the floor, not a flaw, and saying so plainly is what makes the record usable as evidence) — so the degradation travels with the record into any bundle or checkpoint a downstream reader sees, not only in this document. Ed25519 enforcement is filed as a follow-up, gated on this path graduating from PoC to one that drives a real trust decision (`[mesh-local-ingress-ed25519-when-graduated]`). |
 | R4 | The response received is not the response signed | Request and output digests under one signature | Built |
 | R5 | Later denial or rewriting | Signed, hash-chained records | Built, per node |
-| R6 | A different story per audience | Registration to a Transparency Service, and a witnessed log so the log cannot equivocate either | Chaining built; registration is the missing half |
+| R6 | A different story per audience | Registration to a Transparency Service, and a witnessed log so the log cannot equivocate either | Chaining built; checkpoint-level registration + a single witness's receipt now built and proven live end-to-end (checkpoint-by-default, re-verified 2026-09-03) — the residual gap is that ONE witness is registered, not several independently operated ones, so the collusion-resistant bar this row names is not yet reached (see A4) |
 | R7 | I cannot tell which node this was | Receipt key bound to node and owner identity | Specified in #1331; not built |
 | R8 | Output behaves nothing like the claimed model | Fingerprints, as confidence not verdict (step 4) | Not built |
 | R9 | **My prompt is read, retained, or repurposed** | Nothing in the record layer — §5 | Unaddressed; #1346 is the first attempt |
@@ -225,8 +249,8 @@ deployment properties.
 | A0 Unrecorded | Nothing survives | — | — |
 | A1 Recorded | Signed commitments to request and response bytes | Who the node is; that computation occurred | Built |
 | A2 Chained | Order and completeness within one node's history | That this is its only history | Built |
-| A3 Registered | The record, or a digest of it, is registered to a Transparency Service, yielding a **Receipt** — existence and content-at-registration are checkable by a party who trusts neither the node nor its operator | That the *log* is honest; a single log can still show different views to different readers | Chaining built; registration missing |
-| A4 Witnessed | The log's own checkpoint is independently co-signed, or the same commitments are registered to more than one independently operated log — so the log cannot equivocate either | That any witness is honest — only that equivocation now requires collusion | Not built |
+| A3 Registered | The record, or a digest of it, is registered to a Transparency Service, yielding a **Receipt** — existence and content-at-registration are checkable by a party who trusts neither the node nor its operator | That the *log* is honest; a single log can still show different views to different readers | Chaining built; checkpoint-level registration built — a node's local MMR checkpoint (covering its whole capsule log, not one record at a time) is registered to the public witness and the returned Receipt is verified offline (`checkpointing.py`, `docs/CHECKPOINT-BY-DEFAULT.md`); proven live end-to-end 2026-09-03 against `witness.agentactioncapsule.org` (real POST, real Receipt, offline verify — not a fixture) |
+| A4 Witnessed | The log's own checkpoint is independently co-signed, or the same commitments are registered to more than one independently operated log — so the log cannot equivocate either | That any witness is honest — only that equivocation now requires collusion | Partly built — a SINGLE witness co-signs the checkpoint today (built and live, per A3), which already catches a reader who checks the Receipt being shown a rewritten root. It does NOT yet reach this row's own bar: "registered to more than one independently operated log" is not built, so equivocation across two different readers (or across the one witness itself) is not yet ruled out by collusion-resistance — only by trusting that one witness. `capsule_mesh_viewer.py` now RE-VERIFIES the Receipt from the bundle (checkpoint-bound `entry_hash` + COSE signature against the pinned witness key) rather than trusting its mere presence, and marks a receipt that fails to verify distinctly from one that is simply absent — see `verify_witness_checkpoint`/`StampVerdict` (`INVALID` vs `None`/absent, never conflated). |
 
 > **Three things, deliberately not merged.** *Registration* is the act of submitting a Signed
 > Statement. A *Receipt* is what the service returns — a signed inclusion proof. *Witnessing* is a

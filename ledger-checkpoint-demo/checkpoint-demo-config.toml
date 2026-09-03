@@ -2,4 +2,4 @@
 log_id = "mesh-checkpoint-demo-log"
 cadence_entries = 3
 max_lag_entries = 10
-ts_urls = ["https://anchor.agentactioncapsule.org"]
+ts_urls = ["https://witness.agentactioncapsule.org"]

@@ -318,12 +318,17 @@
 
 
   // Render the 3 plain-language verdict lines -- the DEFAULT per-card read.
+  // mark is "ok" (verified here), "bad" (present but FAILED verification --
+  // e.g. a tampered witness root -- never the same as "warn"), or anything
+  // else falls to "warn" (honest gap, nothing to check yet).
+  var VLINE_MARK = { ok: "✓", bad: "✗" };
   function renderVerdict(container, verdict) {
     if (!container || !verdict || !verdict.length) return;
     verdict.forEach(function (v) {
       var node = tmpl("verdict-line-template").cloneNode(true).querySelector(".vline");
-      node.classList.add(v.mark === "ok" ? "ok" : "warn");
-      node.querySelector("[data-vmark]").textContent = v.mark === "ok" ? "✓" : "⚠";
+      var cls = v.mark === "ok" ? "ok" : v.mark === "bad" ? "bad" : "warn";
+      node.classList.add(cls);
+      node.querySelector("[data-vmark]").textContent = VLINE_MARK[v.mark] || "⚠";
       node.querySelector("[data-vtext]").textContent = v.text;
       container.appendChild(node);
     });
@@ -443,11 +448,18 @@
 
     var meta = el("[data-meta]");
     var w = payload.witness;
+    var wv = w ? w.verdict : null; // "witnessed" | "invalid" | "unverified" | null -- RE-VERIFIED, not presence
+    var witnessLabel = !w
+      ? " · no witness checkpoint in this view"
+      : " · witness " + (w.log_id || "?") + " size=" + (w.size != null ? w.size : "?") +
+        (wv === "witnessed" ? " (receipt verifies ✓)"
+         : wv === "invalid" ? " (receipt FAILS to verify ✗)"
+         : wv === "unverified" ? " (receipt present, issuing TS unpinned)"
+         : " (no receipt)");
     meta.textContent =
       (payload.operator ? "operator " + payload.operator + " · " : "") +
       payload.entries.length + " capsule(s) · source log: " + (payload.source_log || "?") +
-      (w ? " · witness " + (w.log_id || "?") + " size=" + (w.size != null ? w.size : "?") + (w.cose_present ? " (COSE)" : "")
-         : " · no witness checkpoint in this view");
+      witnessLabel;
 
     var defaultRole = payload.default_role || "requester";
     var container = el("[data-entries]");
@@ -461,8 +473,10 @@
       "This page recomputed each capsule_id in your browser from the record itself. " +
       "Answers marked <b>not yet in record</b> name a mechanism that isn't built for this record yet " +
       "(e.g. the coordinator stage-order receipt) — said out loud, never faked. " +
-      (w ? "A witness checkpoint receipt was supplied, so third-party completeness is anchored."
-         : "No witness checkpoint was supplied, so third-party completeness stays self-attested in this view.");
+      (wv === "witnessed" ? "The witness receipt in this bundle was re-verified here, so third-party completeness is anchored."
+       : wv === "invalid" ? "A witness receipt was supplied but FAILS to verify — treat this bundle as NOT anchored, and as suspect."
+       : wv === "unverified" ? "A witness receipt was supplied but its issuing service isn't pinned here, so anchoring can't be confirmed offline."
+       : "No witness checkpoint was supplied, so third-party completeness stays self-attested in this view.");
 
     // permalink chrome
     var link = el("[data-permalink]");

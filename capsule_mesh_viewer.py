@@ -60,6 +60,30 @@ try:  # read_ledger is the same reader capsule_mesh_view uses for its CLI.
 except Exception:  # pragma: no cover - only when capsule-emit isn't installed
     read_ledger = None  # type: ignore[assignment]
 
+# The witness-receipt cryptographic recompute (never a presence check --
+# [mesh-e2-witness-checkpoints] W2): CheckpointRecord/WitnessRecord model the
+# on-disk checkpoints.jsonl shape, verify_witness_stamp_tristate actually
+# re-verifies the receipt against the checkpoint it claims to cover (never
+# trusting the plain presence of a `witnesses` entry), and StampVerdict names
+# the three real outcomes -- WITNESSED (verifies, pinned TS), UNVERIFIED
+# (structurally a receipt, but the issuing TS isn't pinned so identity can't
+# be confirmed offline), INVALID (fails -- forged, tampered, or copied from a
+# different checkpoint). This is fully offline for the default witness
+# (DEFAULT_TS_URL auto-pins to its known public key); no network call is made
+# by this viewer.
+try:
+    from capsule_emit.checkpoint import (
+        CheckpointRecord,
+        StampVerdict,
+        WitnessRecord,
+        verify_witness_stamp_tristate,
+    )
+except Exception:  # pragma: no cover - only when capsule-emit isn't installed
+    CheckpointRecord = None  # type: ignore[assignment]
+    StampVerdict = None  # type: ignore[assignment]
+    WitnessRecord = None  # type: ignore[assignment]
+    verify_witness_stamp_tristate = None  # type: ignore[assignment]
+
 # The canonical JSON-DIGEST (RFC 8785 JCS + float-stringify, spec §5.1) used by
 # the Rust admission-policy plugin's `canonical_body_digest` AND its
 # host-served `emit_for_observed_host_exchange` output-facts digest. Reused
@@ -336,18 +360,24 @@ def build_verdict(
     sp: dict[str, Any],
     *,
     verify_ok: bool | None,
-    has_witness_checkpoint: bool,
+    witness_verdict: "StampVerdict | None",
     counterparty: str,
 ) -> list[dict[str, str]]:
     """Three plain-language lines that are the DEFAULT per-card read, replacing
     the three dense role-questions. Each line is {mark, text} where mark is
-    "ok" (✓) or "warn" (⚠) -- never a fake green.
+    "ok" (✓), "warn" (⚠), or "bad" (✗) -- never a fake green.
 
-    Line 1 — what the node ATTESTS it ran (self-reported; green when this
-             record's own signature + digests verify — integrity, not proof
-             the model/hardware claim is true).
-    Line 2 — signed + anchored (green only if witness receipt is carried;
-             honest amber "witness receipt not in this bundle" otherwise).
+    Line 1 — what really ran (green when the model+hardware facts recompute).
+    Line 2 — signed + anchored. ``witness_verdict`` is the RE-VERIFIED result
+             (``verify_witness_checkpoint``), never a presence check: green
+             only when the receipt actually verifies (``StampVerdict
+             .WITNESSED``); honest amber when no receipt rides along at all,
+             or one does but its issuing TS isn't pinned here
+             (``UNVERIFIED``); a hard ✗ when a receipt IS present but does
+             NOT verify (``StampVerdict.INVALID`` -- tampered root, forged or
+             mismatched receipt) — that state must never collapse into the
+             same amber as "no receipt", or a bad receipt would read as an
+             honest gap instead of a caught tamper.
     Line 3 — the honest open gap: who asked + this node's history.
     """
     name = friendly_model_name(sp)
@@ -371,11 +401,30 @@ def build_verdict(
     else:
         line1 = {"mark": "warn", "text": "No serving-provenance in this record — can't say what ran."}
 
-    # Line 2 — signed + anchored. Honest amber unless a witness receipt rides along.
-    if has_witness_checkpoint:
+    # Line 2 — signed + anchored. Green only when the receipt actually
+    # re-verifies from the bundle; a receipt that fails is a hard ✗, never
+    # the same amber as no receipt at all.
+    verdict_value = witness_verdict.value if witness_verdict is not None else None
+    if verdict_value == "witnessed":
         line2 = {
             "mark": "ok",
-            "text": "Signed by the provider and anchored to a public witness, so it can't be quietly changed.",
+            "text": "Signed by the provider and the witness receipt in this bundle verifies — "
+            "checked here against the checkpoint's own digest and the witness's public key, "
+            "so it can't be quietly changed.",
+        }
+    elif verdict_value == "invalid":
+        line2 = {
+            "mark": "bad",
+            "text": "Provider-signed (the signature verifies here) — but the witness receipt in this "
+            "bundle FAILS to verify (tampered, forged, or copied from a different checkpoint). "
+            "Treat this record as NOT anchored.",
+        }
+    elif verdict_value == "unverified":
+        line2 = {
+            "mark": "warn",
+            "text": "Provider-signed (the signature verifies here) — a witness receipt rides along, "
+            "but its issuing service isn't pinned in this viewer, so anchoring can't be "
+            "independently confirmed offline.",
         }
     else:
         line2 = {
@@ -409,11 +458,17 @@ def build_verdict(
 #   "not_in_record"-- the mechanism that would answer it is not yet built for
 #                     this record (e.g. the coordinator receipt). Said so
 #                     out loud, never faked.
+#   "failed"       -- the mechanism IS in the record and was checked, and it
+#                     did NOT verify (e.g. a witness receipt present but
+#                     tampered/forged). Must never collapse into
+#                     "not_in_record" -- a caught tamper is a stronger,
+#                     more alarming statement than an honest absence.
 # ---------------------------------------------------------------------------
 
 ANSWERED = "answered"
 PARTIAL = "partial"
 NOT_IN_RECORD = "not_in_record"
+FAILED = "failed"
 
 
 def _q(question: str, state: str, value: str, *, evidence: list[str] | None = None) -> dict[str, Any]:
@@ -425,15 +480,19 @@ def build_role_questions(
     *,
     source_log: str,
     verify_ok: bool | None,
-    has_witness_checkpoint: bool,
+    witness_verdict: "StampVerdict | None",
 ) -> dict[str, Any]:
     """Answer the 4 roles x 3 questions from one mesh capsule + context.
 
     ``verify_ok`` is this record's own best-effort store-verify result (from
-    capsule_mesh_view's verifier). ``has_witness_checkpoint`` is True when a
-    COSE checkpoint receipt covering this log was supplied -- it is what turns
-    the third-party "is the record complete / anchored" answer from
-    self-attested into witnessed.
+    capsule_mesh_view's verifier). ``witness_verdict`` is the RE-VERIFIED
+    result of the checkpoint's witness receipt (``verify_witness_checkpoint``
+    -- never mere presence): ``StampVerdict.WITNESSED`` is what turns the
+    third-party "is the record complete / anchored" answer from self-attested
+    into witnessed; ``INVALID`` (present but fails to verify) and
+    ``UNVERIFIED`` (present, structurally a receipt, but from an unpinned TS)
+    each stay short of that, honestly, and ``None`` means no receipt rode
+    along at all.
     """
     sp = serving_provenance(record)
     role = label_role(record, source_log)
@@ -441,6 +500,8 @@ def build_role_questions(
     effect = record.get("effect", {}) or {}
     disposition = record.get("disposition", {}) or {}
     verified_word = {True: "verified", False: "FAILED verify", None: "not verified here"}[verify_ok]
+    witness_verdict_value = witness_verdict.value if witness_verdict is not None else None
+    witnessed = witness_verdict_value == "witnessed"
 
     # ---- Requester -----------------------------------------------------
     # verify-after-advertise (§12.3): reconcile the node's advertised CLAIM
@@ -498,7 +559,7 @@ def build_role_questions(
         PARTIAL,
         (
             "Yes, from this signed record"
-            + (" anchored to a witness checkpoint" if has_witness_checkpoint else "")
+            + (" anchored to a witness checkpoint" if witnessed else "")
             + " — self-attested today; a counterparty countersign (Move 4) is not yet in this record, "
             "so it is the provider's signed claim, offline-verifiable, not yet a mutual one."
         ),
@@ -571,14 +632,37 @@ def build_role_questions(
             else "the counterparty half is self-attested only (no bilateral countersign yet).")),
         evidence=["offline verify --store", "serving_provenance", "cross_party.initiator_ref"],
     )
+    if witness_verdict_value == "witnessed":
+        tp_q2_state = ANSWERED
+        tp_q2_answer = (
+            "Anchored: the witness receipt in this bundle was RE-VERIFIED here — checkpoint-bound "
+            "(entry_hash matches this checkpoint's own digest) and its signature checks against the "
+            "pinned witness key — binding this record into a non-equivocable log."
+        )
+    elif witness_verdict_value == "invalid":
+        tp_q2_state = FAILED
+        tp_q2_answer = (
+            "FAILED: a witness receipt was supplied with this view, but it does NOT verify against "
+            "this checkpoint (tampered root, forged, or copied from a different checkpoint) — treat "
+            "this record as self-attested, NOT anchored, and treat the bundle itself as suspect."
+        )
+    elif witness_verdict_value == "unverified":
+        tp_q2_state = PARTIAL
+        tp_q2_answer = (
+            "A witness receipt was supplied and is a structurally valid, checkpoint-bound receipt, "
+            "but its issuing service isn't pinned in this viewer, so its identity — and therefore "
+            "non-equivocation — can't be independently confirmed offline here."
+        )
+    else:
+        tp_q2_state = NOT_IN_RECORD
+        tp_q2_answer = (
+            "No witness checkpoint receipt was supplied with this view, so inclusion/consistency against "
+            "the public witness is NOT shown here — the record is self-attested, not yet anchored in THIS view."
+        )
     tp_q2 = _q(
         "Is the record complete / not equivocated?",
-        ANSWERED if has_witness_checkpoint else NOT_IN_RECORD,
-        ("Anchored: a COSE checkpoint receipt covering this log was supplied — inclusion + consistency "
-         "against the public witness checkpoint bound this record into a non-equivocable log."
-         if has_witness_checkpoint
-         else "No witness checkpoint receipt was supplied with this view, so inclusion/consistency against "
-              "the public witness is NOT shown here — the record is self-attested, not yet anchored in THIS view."),
+        tp_q2_state,
+        tp_q2_answer,
         evidence=["witness checkpoint (COSE_Sign1 cll-checkpoint)", "inclusion proof", "consistency proof"],
     )
     tp_q3 = _q(
@@ -855,7 +939,43 @@ def load_disclosures(ledger_dir: str | Path) -> dict[str, dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def _witness_summary(witness_checkpoint: dict[str, Any] | None) -> dict[str, Any] | None:
+def verify_witness_checkpoint(witness_checkpoint: dict[str, Any] | None) -> tuple["StampVerdict | None", list[str]]:
+    """Actually RE-VERIFY the witness receipt carried in *witness_checkpoint*
+    (the raw ``checkpoints.jsonl`` line, as loaded by ``--witness``) -- never
+    just check that a ``witnesses`` entry is present.
+
+    Returns ``(None, [])`` when there is nothing to verify (no checkpoint, or
+    a self-checkpointed one with no registered witness) -- the honest "not
+    shown here" case, distinct from a checkpoint that WAS witnessed but whose
+    receipt fails. Returns ``(StampVerdict.WITNESSED, [])`` when the receipt
+    is checkpoint-bound (``entry_hash`` matches this checkpoint's own digest
+    -- rejects a receipt copied from a different checkpoint) AND its COSE
+    signature verifies under the pinned witness key (the default witness's
+    key is baked into ``capsule_emit.checkpoint`` -- fully offline, no
+    network call here). Returns ``(StampVerdict.INVALID, errors)`` for a
+    receipt that is present but does NOT verify -- a tampered root, a forged
+    or mismatched entry_hash, a corrupt receipt -- so a bad receipt in the
+    bundle can never read the same as no receipt at all, and never green.
+    Returns ``(StampVerdict.UNVERIFIED, errors)`` for a structurally valid
+    receipt from a TS this function has no pinned key for -- a real receipt
+    shape, but identity isn't confirmed offline.
+    """
+    if verify_witness_stamp_tristate is None or not witness_checkpoint:
+        return None, []
+    witnesses = witness_checkpoint.get("witnesses") or []
+    if not witnesses:
+        return None, []
+    try:
+        cp = CheckpointRecord.from_dict(witness_checkpoint)
+        witness_record = WitnessRecord.from_dict(witnesses[0])
+    except Exception as exc:  # noqa: BLE001 - malformed bundle data, never raise
+        return StampVerdict.INVALID, [f"witness checkpoint/receipt could not be parsed: {exc}"]
+    return verify_witness_stamp_tristate(cp, witness_record)
+
+
+def _witness_summary(
+    witness_checkpoint: dict[str, Any] | None, witness_verdict: "StampVerdict | None"
+) -> dict[str, Any] | None:
     if not witness_checkpoint:
         return None
     return {
@@ -865,6 +985,10 @@ def _witness_summary(witness_checkpoint: dict[str, Any] | None) -> dict[str, Any
         "size": witness_checkpoint.get("mmr_size") or witness_checkpoint.get("log_size"),
         "issued_at": witness_checkpoint.get("timestamp") or witness_checkpoint.get("issued_at"),
         "cose_present": bool(witness_checkpoint.get("checkpoint_cose")),
+        # The actual recompute result (never presence-only -- see
+        # verify_witness_checkpoint): "witnessed" | "unverified" | "invalid" |
+        # null (no receipt was carried at all).
+        "verdict": witness_verdict.value if witness_verdict is not None else None,
     }
 
 
@@ -894,7 +1018,7 @@ def to_fragment_payload(
         # Older capsule_mesh_view without the ledger_dir kwarg.
         verify_results = verify_results_for(records)
     vmap = _verify_ok_map(records, verify_results)
-    has_witness = witness_checkpoint is not None
+    witness_verdict, _witness_errors = verify_witness_checkpoint(witness_checkpoint)
 
     entries = []
     for rec in records:
@@ -916,7 +1040,7 @@ def to_fragment_payload(
                 "verdict": build_verdict(
                     sp,
                     verify_ok=verify_ok,
-                    has_witness_checkpoint=has_witness,
+                    witness_verdict=witness_verdict,
                     counterparty=label_counterparty(rec),
                 ),
                 "serving_provenance": sp,
@@ -930,7 +1054,7 @@ def to_fragment_payload(
                 # disclosed + digest-verified, rendered ABOVE the questions.
                 "conversation": build_conversation(rec, sp, cap_disclose),
                 "role_questions": build_role_questions(
-                    rec, source_log=source_log, verify_ok=verify_ok, has_witness_checkpoint=has_witness
+                    rec, source_log=source_log, verify_ok=verify_ok, witness_verdict=witness_verdict
                 ),
                 # The full record travels so the browser can recompute capsule_id
                 # (hide-the-merkle, but the merkle is CHECKABLE, not just hidden).
@@ -946,7 +1070,7 @@ def to_fragment_payload(
         # Which role renders inline by default; the rest fold behind a toggle.
         # "all" renders every role inline (the original layout).
         "default_role": default_role,
-        "witness": _witness_summary(witness_checkpoint),
+        "witness": _witness_summary(witness_checkpoint, witness_verdict),
         "entries": entries,
     }
 
@@ -1045,6 +1169,7 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   .state.answered { background:#E6F2EC; color:#127A52; }
   .state.partial { background:#FBF3E2; color:#9A6B12; }
   .state.not_in_record { background:#F1F1EC; color:#7A6355; }
+  .state.failed { background:#FBEAE8; color:#B3261E; }
   details.merkle { margin-top:8px; font-size:11px; }
   details.merkle summary { cursor:pointer; color:#3A5BD9; font-family:ui-monospace,monospace; }
   .kv { display:grid; grid-template-columns:180px 1fr; gap:4px 12px; margin-top:8px; font-size:11px; color:#5C6573; word-break:break-all; }
@@ -1058,6 +1183,8 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   .vline.ok   .vmark { color:#127A52; }
   .vline.warn .vmark { color:#9A6B12; }
   .vline.warn { color:#5B4A2A; }
+  .vline.bad  .vmark { color:#B3261E; }
+  .vline.bad  { color:#7A2A22; }
   /* Inference-forward conversation block -- lead with the exchange. */
   .conv { padding:18px 24px 6px; border-bottom:1px solid #E3E3DC; }
   .conv-served { font-size:11px; color:#5C6573; margin-bottom:12px; font-family:ui-monospace,monospace; }
@@ -1271,7 +1398,13 @@ def _cmd_html(args: argparse.Namespace) -> int:
     if args.permalink_out:
         with open(args.permalink_out, "w", encoding="utf-8") as fh:
             fh.write(permalink + "\n")
-    n_witness = "with witness checkpoint" if witness else "no witness checkpoint"
+    witness_verdict_str = (payload.get("witness") or {}).get("verdict")
+    n_witness = {
+        None: "no witness checkpoint",
+        "witnessed": "witness receipt verifies (witnessed)",
+        "invalid": "witness receipt FAILS to verify (invalid -- tampered/forged)",
+        "unverified": "witness receipt present, issuing TS not pinned (unverified)",
+    }[witness_verdict_str]
     print(f"mesh viewer: {len(records)} capsule(s), {n_witness} -> {args.out}")
     print(f"permalink ({len(fragment)} b64u chars): open the HTML then append #<fragment>")
     print(f"  {permalink}")

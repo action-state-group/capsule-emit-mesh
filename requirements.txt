@@ -34,3 +34,8 @@ capsule-emit[mcp]>=0.7.0
 scitt-cose>=0.2.2
 cbor2
 mcp<2
+
+# tomllib is stdlib from Python 3.11; checkpointing.py's load_checkpoint_config
+# falls back to the tomli backport so [checkpoint] TOML configs (checkpoint.example.toml)
+# still parse on Python 3.10. Marker keeps this a no-op install on 3.11+.
+tomli>=2.0; python_version < "3.11"
