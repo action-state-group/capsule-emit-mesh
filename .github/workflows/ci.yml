@@ -76,7 +76,7 @@ jobs:
       - name: Smoke — checkpoint_ledger (standalone CheckpointState CLI, no sidecar proxy needed)
         run: python -c "import checkpoint_ledger; print('ok')"
 
-      - name: Smoke — history_card (history_card() verb: checkpoints + consistency proofs since size S)
+      - name: Smoke — history_card (history_card() verb -- checkpoints + consistency proofs since size S)
         run: python -c "import history_card; print('ok')"
 
       - name: Smoke — send_bilateral_request (Move-1/Move-4 requester CLI)
