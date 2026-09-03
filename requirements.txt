@@ -39,3 +39,17 @@ mcp<2
 # falls back to the tomli backport so [checkpoint] TOML configs (checkpoint.example.toml)
 # still parse on Python 3.10. Marker keeps this a no-op install on 3.11+.
 tomli>=2.0; python_version < "3.11"
+
+# trace_citation.py depends on agent-manifest's TDX quote verifier
+# (agent_manifest._tdx_verify: parse_tdx_quote / verify_tdx_quote / TdxVerificationError) to grade a
+# cited TRACE Trust Record's hardware evidence. This is a hard dependency, not vendored: the standing
+# rule for this rung is "depend on their verifier, never re-implement" (mesh-tee-rung-trace-citation).
+# TDX verification landed at 0.5.0 and a buffer-overrun parsing fix (#250) landed by 0.8.0; 0.11.2
+# is the release we tested against, so the floor is pinned there rather than at the bare minimum.
+agent-manifest>=0.11.2
+
+# trace_citation.py's OPTIONAL record-authenticity check (only exercised when a caller passes a
+# trusted issuer key -- no deployment does yet, pending a registry decision explicitly out of scope
+# before 2026-09-09) depends on agentrust_trace.sign.verify_record, same never-re-implement rule.
+# Pinned so the reject-on-tampered-envelope mutant test always runs in CI rather than skipping.
+agentrust-trace>=0.9.0

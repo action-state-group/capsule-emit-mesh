@@ -8,7 +8,12 @@ rung depends on can only ever LOWER what that rung renders, never raise it.
 """
 from __future__ import annotations
 
+import base64
+import json
+from pathlib import Path
+
 import pytest
+from agent_manifest._tdx_verify import parse_tdx_quote
 
 from capsule_accountability_tab import (
     STATE_ABSENT,
@@ -19,11 +24,42 @@ from capsule_accountability_tab import (
     build_tab_payload,
     cross_party_grade,
     freshness_grade,
+    hardware_inventory_grade,
     log_integrity_grade,
     measurement_class_grade,
     render_accountability_tab_html,
+    tee_citation_grade,
 )
 from capsule_sidecar import IDENTITY_LIMITATION_CAVEAT
+from trace_citation import GRADE_PLATFORM_ATTESTED, GRADE_UNATTESTED, trace_record_reference
+
+FIXTURES = Path(__file__).parent / "fixtures" / "tdx-attestation"
+QUOTE_A = (FIXTURES / "tdx_quote.bin").read_bytes()
+SHARED_MRTD = parse_tdx_quote(QUOTE_A).mrtd.hex()
+
+
+def _trace_record_bytes(*, measurement=SHARED_MRTD, platform="intel-tdx"):
+    record = {
+        "eat_profile": "tag:agentrust-io.com,2026:trace-v0.2",
+        "subject": "spiffe://trust.example.org/agent/evidence-demo/prod",
+        "runtime": {
+            "platform": platform,
+            "measurement": f"sha384:{measurement}",
+            "evidence": {"format": "tdx-quote-v4", "collateral": "embedded"},
+        },
+        "model": {"provider": "meta", "model_id": "llama-3.3-70b-instruct"},
+    }
+    return json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _trace_citation_evidence_ref(*, quote_bytes=QUOTE_A, measurement=SHARED_MRTD):
+    record_bytes = _trace_record_bytes(measurement=measurement)
+    reference = trace_record_reference(record_bytes, slot="runtime.tee_attestation")
+    return {
+        "reference": reference,
+        "record_raw_b64": base64.b64encode(record_bytes).decode(),
+        "quote_b64": base64.b64encode(quote_bytes).decode() if quote_bytes else None,
+    }
 
 CROSS_PARTY_ORDER = {"unilateral_fallback": 0, "acknowledged_receipt": 1, "full_bilateral": 2}
 
@@ -39,6 +75,8 @@ def _capsule(
     cross_party=None,
     binary_attestation=None,
     tee_attestation=None,
+    trace_citation=None,
+    hardware_inventory=None,
 ) -> dict:
     poc = {
         "client_nonce_source": client_nonce_source,
@@ -50,10 +88,13 @@ def _capsule(
         "evidence_refs": {
             "binary_attestation": binary_attestation,
             "tee_attestation": tee_attestation,
+            "trace_citation": trace_citation,
         },
     }
     if cross_party is not None:
         poc["cross_party"] = cross_party
+    if hardware_inventory is not None:
+        poc["hardware_inventory"] = hardware_inventory
     return {
         "spec_version": "draft-mih-scitt-agent-action-capsule-02",
         "format_version": "2",
@@ -159,6 +200,76 @@ def test_measurement_class_grade_tee_measured_wins_over_binary():
 
 
 # ---------------------------------------------------------------------------
+# tee_citation_grade -- composition rung, kept SEPARATE from measurement_class_grade
+# ---------------------------------------------------------------------------
+
+
+def test_tee_citation_grade_absent_when_no_citation_offered():
+    assert tee_citation_grade({})["state"] == STATE_ABSENT
+    assert tee_citation_grade({"evidence_refs": {}})["state"] == STATE_ABSENT
+
+
+def test_tee_citation_grade_platform_attested_from_a_real_citation():
+    poc = {"evidence_refs": {"trace_citation": _trace_citation_evidence_ref()}}
+    grade = tee_citation_grade(poc)
+    assert grade["state"] == GRADE_PLATFORM_ATTESTED
+    assert "genuine Intel silicon" in grade["card_text"]
+
+
+def test_tee_citation_grade_never_shares_state_space_with_measurement_class_grade():
+    # A record whose OWN binary/self-attestation is absent, but which carries a
+    # valid TRACE citation, must show the citation on its OWN rung, not be
+    # promoted into (or blended with) runtime_binding's tee_measured state.
+    poc = {"evidence_refs": {"trace_citation": _trace_citation_evidence_ref()}}
+    assert measurement_class_grade(poc)["state"] == STATE_ABSENT
+    assert tee_citation_grade(poc)["state"] == GRADE_PLATFORM_ATTESTED
+
+
+def test_mutant_tee_citation_measurement_mismatch_no_lift():
+    poc = {"evidence_refs": {"trace_citation": _trace_citation_evidence_ref(measurement="ff" * 48)}}
+    grade = tee_citation_grade(poc)
+    assert grade["state"] == GRADE_UNATTESTED
+
+
+def test_mutant_tee_citation_forged_reference_no_lift():
+    ref = _trace_citation_evidence_ref()
+    ref["reference"]["digest"] = "0" * 64
+    grade = tee_citation_grade({"evidence_refs": {"trace_citation": ref}})
+    assert grade["state"] == GRADE_UNATTESTED
+
+
+def test_mutant_tee_citation_absent_quote_no_lift():
+    poc = {"evidence_refs": {"trace_citation": _trace_citation_evidence_ref(quote_bytes=None)}}
+    assert tee_citation_grade(poc)["state"] == GRADE_UNATTESTED
+
+
+# ---------------------------------------------------------------------------
+# hardware_inventory_grade -- PATH (a), a different evidence slot from binary_attestation
+# ---------------------------------------------------------------------------
+
+
+def test_hardware_inventory_grade_absent_when_no_block():
+    assert hardware_inventory_grade({})["state"] == STATE_ABSENT
+
+
+def test_hardware_inventory_grade_reads_a_real_capture():
+    from mac_hardware_inventory import capture_mac_hardware_inventory
+
+    inventory = capture_mac_hardware_inventory()
+    if inventory is None:
+        pytest.skip("no macOS hardware available to capture")
+    poc = {"hardware_inventory": inventory.to_capsule_block()}
+    grade = hardware_inventory_grade(poc)
+    assert grade["state"] == "os_measured"
+    assert grade["model_identifier"]
+
+
+def test_mutant_hardware_inventory_wrong_grade_field_never_rounds_up():
+    poc = {"hardware_inventory": {"grade": "self_reported", "model_identifier": "Mac16,5"}}
+    assert hardware_inventory_grade(poc)["state"] == STATE_ABSENT
+
+
+# ---------------------------------------------------------------------------
 # log_integrity_grade
 # ---------------------------------------------------------------------------
 
@@ -188,6 +299,23 @@ def test_build_row_carries_claimed_model_and_hardware():
     assert row["hardware_claimed"] == "Apple M4 Max, SoC"
     assert row["rungs"]["freshness"]["state"] == STATE_VERIFIED
     assert row["record"]["capsule_id"] == "c" * 64
+    assert row["rungs"]["tee_citation"]["state"] == STATE_ABSENT
+    assert row["rungs"]["hardware_inventory"]["state"] == STATE_ABSENT
+
+
+def test_build_row_carries_a_real_tee_citation_and_hardware_inventory():
+    from mac_hardware_inventory import capture_mac_hardware_inventory
+
+    inventory = capture_mac_hardware_inventory()
+    hw_block = inventory.to_capsule_block() if inventory is not None else None
+    row = build_row(
+        _capsule(trace_citation=_trace_citation_evidence_ref(), hardware_inventory=hw_block),
+        verify_ok=True,
+        has_witness_checkpoint=False,
+    )
+    assert row["rungs"]["tee_citation"]["state"] == GRADE_PLATFORM_ATTESTED
+    if hw_block is not None:
+        assert row["rungs"]["hardware_inventory"]["state"] == "os_measured"
 
 
 def test_build_tab_payload_sorts_rows_by_timestamp():
