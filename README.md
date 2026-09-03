@@ -266,7 +266,34 @@ This is the **requester-seals-its-own-half + exchange_id correlation** rung
 half-record sharing a correlator, and it does **not** sign or reference the
 provider's `capsule_id`. That upgrade is spec-gated and out of scope here.
 Joining the two halves together is also out of scope here — see
-`[mesh-b2-served-request-join]`.
+`[mesh-b2-served-request-join]` / `served_request_join.py` below.
+
+**`served_request_join.py` — the served<->request cryptographic join
+(`[mesh-b2-served-request-join]`).** `exchange_id` correlation (above) ties
+the two halves for a reader who already trusts both logs, but it is an
+unauthenticated string, not a signed claim either side makes about the
+other. `join_served_request(provider_capsule, requester_capsule)` mints the
+missing cryptographic half: a new capsule, chained onto the **requester's
+own** ledger (`chain.parent_capsule_id` = the requester's own-half
+`capsule_id`, `chain.relation = "confirms"`), whose top-level `references`
+array cites the **provider's** served-half `capsule_id` by CPB typed digest
+reference (`{type: "capsule", digest_alg: "SHA-256", digest: <provider
+capsule_id>, citation_purpose: "responds_to"}`) — the AAC {{xref}} mechanism
+(draft-mih-scitt-agent-action-capsule-04, landed in agent-action-capsule#85
+as spec text; there is no python-library constructor for it yet, so this
+module adds the field and recomputes `capsule_id` itself — see its
+`_with_references` docstring). `references` participates in the join
+capsule's own `capsule_id` digest exactly like the rest of the payload, so a
+stranger holding all three records (provider half, requester half, join)
+verifies the join from bytes alone, trusting neither producer's say-so.
+Offline, from two already-sealed halves — same shape as
+`twin_adjudicator.adjudicate()` — because neither side can hold the other's
+`capsule_id` at request/response time. Refuses (raises, mints nothing) when
+either half fails its own `verify()`, the two halves are not the roles they
+claim, or they do not share one `exchange_id`. **NO Move-4 upgrade**: this
+is a citation, never an acknowledgment of the provider's `capsule_id` as the
+requester's own claim (`cross_party.counterparty_ref`) — that upgrade stays
+spec-gated and out of scope.
 
 **`role`/`observation_point` (PROVISIONAL).** Every capsule this sidecar
 seals also carries `x-mesh-poc-v1.role` (`"requested"` for `--role
