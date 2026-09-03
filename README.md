@@ -265,6 +265,22 @@ This is the **requester-seals-its-own-half + exchange_id correlation** rung
 (`full_bilateral`): the requester's own-half capsule is an independent
 half-record sharing a correlator, and it does **not** sign or reference the
 provider's `capsule_id`. That upgrade is spec-gated and out of scope here.
+Joining the two halves together is also out of scope here — see
+`[mesh-b2-served-request-join]`.
+
+**`role`/`observation_point` (PROVISIONAL).** Every capsule this sidecar
+seals also carries `x-mesh-poc-v1.role` (`"requested"` for `--role
+requester`, `"served"` for `--role provider`) and `.observation_point`
+(`"client_egress"` / `"serving_host_ingress"` respectively) — the exact
+vocabulary and pairing proposed by [mesh-exchange-role-field] (CPB #70),
+hard-coded here ahead of that registry entry's promotion. See "Field
+mapping" below for the full rationale and why this is a different axis from
+`serving_provenance.role` above.
+
+**Requester-side ledger.** `--role requester` uses the same `--ledger-dir`
+/ `--checkpoint-config` machinery as the provider path — point it at its own
+directory (as in the example above) and it checkpoints to the same witness
+service the same way, no separate mechanism.
 
 ### Why not "the same pattern as your metrics plugin" (the original framing)
 
@@ -619,6 +635,7 @@ deliberately, once, against the real call artifact, not an earlier rehearsal.
 | `model_package_digest` (Python path) | `model_attestation.compute_attestation["x-mesh-poc-v1"].model_package_digest` | Computed by `model_identity.py` per the issue's formula: `sha256(canonical_manifest + artifact_digests + runtime_abi)`. Sourced from a real `model-package.json`, never fabricated. **Python producer only.** |
 | `model_name_digest` (Rust plugin path) | `model_attestation.compute_attestation["x-mesh-poc-v1"].model_name_digest` | The live Rust plugin only has the request's model **name**, so it attests exactly `sha256(model_name)` under a **truthful** field name — renamed from an earlier `model_package_digest` that overclaimed a weights/package binding it never had. A name hash is named as a name hash. |
 | serving provenance (what ran where) | `model_attestation.compute_attestation["x-mesh-poc-v1"].serving_provenance` | Provenance of the actual run: `served_by_node_id`, `requesting_party`, `exchange_id` correlation lineage, `usage.{prompt,completion,total}_tokens`, plus `quantization` and `hardware.{gpu,vram_bytes,device}`. **`quantization` and `hardware.*` record as `"unknown"`/`null` on the observe path** because the host's `openai.exchange.v1` event and response body genuinely do not carry them — recorded honestly as absent, never fabricated. Fork PRs #2/#3 fill `model`+`usage` on the host path. Every field here is digest-bearing: mutating any changes `capsule_id`. |
+| `role` / `observation_point` (PROVISIONAL) | `model_attestation.compute_attestation["x-mesh-poc-v1"].role` / `.observation_point` | **PROVISIONAL — pending [mesh-exchange-role-field] / CPB #70 promotion**, hard-coded ahead of the registry entry per Steven (2026-09-03, task `[mesh-b1-requestor-capsule-ledger]`). Matches CPB #70's exact vocabulary and pairing: `role ∈ {requested, served}`, `observation_point ∈ {client_egress, serving_host_ingress}` (this sidecar's own two vantages), paired `client_egress ↔ requested` / `serving_host_ingress ↔ served`. Distinct from `serving_provenance.role` above, which uses this sidecar's own `provider`/`requester` CLI-role vocabulary — a different axis; the two must never be conflated. Single definition site in `capsule_sidecar.py`, labeled `# PROVISIONAL: pending CPB #70 promotion`. |
 | `runtime_digest` | `model_attestation.compute_attestation.runtime` (prefix before the first `:`) | SHA-256 of the actual runtime artifact serving the request (`--runtime-artifact <path>`, e.g. the mesh-llm binary). Read-only hash, never executes the artifact. **In the live Rust plugin this is the serving-binary hash, `os_measured` on macOS or `self_measured` as the fallback** (see `binary_attestation` below): the field shape is `<sha256>:<measurement_class>:<runtime-name>`, e.g. `…:os_measured:admission-policy-plugin/mesh-llm-host-runtime` on this codebase's Mac development fleet, or `…:self_measured:…` off macOS / on a kernel-query failure. When the binary path can't be resolved/read the plugin degrades gracefully to the legacy `0*64:…` placeholder — never a fabricated hash. |
 | `generation_parameters` | `model_attestation.compute_attestation["x-mesh-poc-v1"].generation_parameters` | Legible decimal-string values (temperature, top_p, max_tokens, seed, penalties, stop) — not digested; policy/audit-relevant, not privacy-sensitive the way the prompt is. |
 | `output_digest` | `effect.response_digest` | **Spec-native field** (§5.2), same treatment as `request_digest` — JSON-DIGEST over the canonicalized response body (success or error alike). |
