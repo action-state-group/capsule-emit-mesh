@@ -419,8 +419,20 @@ def test_load_checkpoint_config_falls_back_to_tomli_when_tomllib_absent(tmp_path
     `load_checkpoint_config` must raise ModuleNotFoundError and fall back to
     the `tomli` backport (requirements.txt), not crash. Mutant this guards
     against: an unconditional `import tomllib` (no try/except) -- that would
-    pass on this test runner's 3.11+ interpreter but break on 3.10."""
+    pass on this test runner's 3.11+ interpreter but break on 3.10.
+
+    The real `tomli` PyPI package is deliberately NOT required by this test:
+    requirements.txt marks it `python_version < "3.11"`, so a CI runner on
+    3.12+ (this one) correctly does not install it -- a test that imported
+    the real backport would fail there for an unrelated reason (package
+    absent, not fallback-logic broken). Instead this test registers this
+    interpreter's own stdlib `tomllib` module under the name `tomli` in
+    `sys.modules`, so `import tomli as tomllib` resolves to genuine TOML
+    parsing while still proving the fallback branch (not `tomllib` itself)
+    is what ran -- tomli's public API (`load(fh)`) mirrors tomllib's exactly."""
     import builtins
+    import sys
+    import tomllib as _real_tomllib
 
     real_import = builtins.__import__
 
@@ -430,6 +442,7 @@ def test_load_checkpoint_config_falls_back_to_tomli_when_tomllib_absent(tmp_path
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", _blocked_import)
+    monkeypatch.setitem(sys.modules, "tomli", _real_tomllib)
 
     config_path = tmp_path / "checkpoint.toml"
     config_path.write_text('[checkpoint]\nlog_id = "node-b"\ncadence_entries = 7\n')
