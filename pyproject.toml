@@ -38,6 +38,7 @@ capsule-disclosure-endpoint = "capsule_disclosure_endpoint:main"
 # (demos, red-team fixtures, the Rust plugin harness, etc.) are dev-only and stay out of the wheel.
 py-modules = [
     "capsule_sidecar",
+    "evidence_responder",
     "advertisement",
     "checkpointing",
     "model_identity",
