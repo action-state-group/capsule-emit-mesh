@@ -1,10 +1,12 @@
 # QUICKSTART — you have Mesh-LLM, now what?
 
-Two independent things you can test today, in order of effort:
+Three independent things you can test today, in order of effort:
 
 1. **Ask -> verify** — a coordinator asks a stage node "what did you do?" and checks the
    answer *offline*, without trusting it. Fully runnable right now, no Mesh-LLM needed.
 2. **Get real capsules out of your running Mesh-LLM node** — two paths, one works today.
+3. **Ask a peer node for evidence, over the wire** — `POST /evidence-request` + an offline
+   verifier, cross-node, no Mesh-LLM upstream dependency.
 
 This is a walkthrough, not a spec. For what each piece actually proves (and doesn't), see
 [docs/TRUST-MODEL.md](docs/TRUST-MODEL.md); for the mechanism this quickstart exercises, see
@@ -20,7 +22,8 @@ cd capsule-emit-mesh && git checkout ask-verify-quickstart
 pip install .          # or: pipx install .
 ```
 
-Installs three commands: `capsule-sidecar`, `capsule-coordinator-verify`, `capsule-disclosure-endpoint`.
+Installs five commands: `capsule-sidecar`, `capsule-coordinator-verify`, `capsule-disclosure-endpoint`,
+`capsule-evidence-server`, `ask-history`.
 
 ## 1. Ask -> verify, in one command
 
@@ -112,3 +115,40 @@ is why `capsule-coordinator-verify`'s `runtime` grade above stays at "self-attes
 **Cargo pin note:** `plugins/admission-policy/Cargo.toml` pins `mesh-llm-plugin = "0.75"`.
 Upstream's workspace is ahead of that on `main` (pre-release, unpublished), but the published
 crate on crates.io is still `0.75.0` — there is nothing newer to move to yet.
+
+## 3. Ask a peer node for evidence, over the wire
+
+`capsule-emit`'s `answer()` (E14) already decides what a request for `record`/`range` evidence
+gets back — an offline-verifiable `Bundle`, or a signed refusal — but nothing could reach it
+from another node. This puts an HTTP door in front of it.
+
+```
+capsule-evidence-server --ledger-dir ./ledger --node-key ./keys/node-key.pem --listen-port 8091
+```
+
+`--ledger-dir` also accepts the Rust plugin's own `<data_dir>/ledger` directly — if it carries a
+sibling `checkpoints.jsonl` (the shape `capsule_sidecar.py --plugin-ledger-dir` checkpoints that
+log into, read-only), the server bridges it automatically so `answer()` can see the checkpoint;
+see `evidence_server.py`'s module docstring for exactly what that bridge does and does not prove.
+
+From a peer, ask it and verify the answer offline:
+
+```
+python3 ask_history.py http://<peer>:8091 --subject range --selector <cid1>..<cid2>
+python3 ask_history.py http://<peer>:8091 --subject record --capsule-id <cid>
+```
+
+Each returned bundle is verified with `capsule_emit.bundle.verify_bundle` — the pure, offline
+per-bundle check this artifact shape calls for, never `stranger_verify_bundle.py`'s ledger-DIR
+verify (that one needs a full copy of a ledger directory, which this route never hands out) —
+and a small history card (`continuity`/`history_depth`/`unforked`) is folded from the bundle's
+own checkpoint fields via `history_card.build_history_card`. An unknown record or a checkpoint
+pin mismatch comes back as a *signed* refusal (`no_such_record` / `coverage_unsatisfiable`),
+verified offline against the peer's own key — never a bare 404.
+
+**Honest limitation:** a bundle-tier answer proves LOG integrity (inclusion, checkpoint
+signature/consistency) but never a Rust-producer capsule's own detached signed statement
+(`signed-statements/<capsule_id>.cose` is not carried in this artifact shape) — `ask_history.py`
+labels that gap rather than rounding a log-integrity pass up to a full verify. This is the
+**Record** layer only: it makes a claim signed and checkable, it does not attest to how the
+answering process was run (that's Attest/Detect, elsewhere in this repo's ladder).

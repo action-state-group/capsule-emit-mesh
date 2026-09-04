@@ -112,6 +112,12 @@ jobs:
       - name: Smoke — self_accountability (Pane A "This node" card -- composes native_log_join + history_card + twin_adjudicator + capsule_accountability_tab)
         run: python -c "import self_accountability; print('ok')"
 
+      - name: Smoke — evidence_server (E15 POST /evidence-request door + plugin-ledger bridge)
+        run: python -c "import evidence_server; print('ok')"
+
+      - name: Smoke — ask_history (E15 requester CLI -- offline bundle verify + history card render)
+        run: python -c "import ask_history; print('ok')"
+
       - name: Unit tests
         run: |
           pip install pytest
