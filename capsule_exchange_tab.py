@@ -288,7 +288,12 @@ def build_exchange_view(
     verdict = build_verdict(
         sp,
         verify_ok=verify_ok,
-        has_witness_checkpoint=has_witness_checkpoint,
+        # build_verdict now takes the RE-VERIFIED witness_verdict, not mere presence
+        # (mesh-e2 "re-verify the receipt, not just presence"). Pane C's witness re-verify is
+        # still a PENDING placeholder (witness_receipt_reverify below), so there is no re-verified
+        # verdict to assert here yet -- None is the honest value; presence alone is never rendered
+        # as "witnessed". has_witness_checkpoint stays plumbed for that future wiring.
+        witness_verdict=None,
         counterparty=label_counterparty(record),
     )
 
