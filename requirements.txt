@@ -57,3 +57,17 @@ agent-manifest>=0.11.2
 # before 2026-09-09) depends on agentrust_trace.sign.verify_record, same never-re-implement rule.
 # Pinned so the reject-on-tampered-envelope mutant test always runs in CI rather than skipping.
 agentrust-trace>=0.9.0
+
+# nostr_account.py signs account-capsule events with BIP-340 Schnorr over
+# secp256k1 (NIP-01) -- the curve Nostr uses, which the stdlib and `cryptography`
+# do not expose. coincurve provides sign_schnorr / PublicKeyXOnly. The account
+# capsule build path and the mock-relay publish path load without it; only the
+# real Schnorr signing key (SchnorrNostrKey) needs it, and the tests skip if
+# it is absent.
+coincurve>=18
+# nostr_relay_client.py talks real NIP-01 WebSocket to a relay -- used ONLY for
+# a local test-relay round trip and the HELD live-publish gate in
+# nostr_live_publish.py (default OFF; never a public relay -- see that
+# module's docstring). Neither the account capsule nor the mock-relay publish
+# path needs it; tests skip if it is absent.
+websockets>=12
