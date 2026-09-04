@@ -38,6 +38,16 @@ pub const OPENAI_EXCHANGE_CHANNEL: &str = "openai.exchange.v1";
 pub enum DispatchPath {
     TypedFrontend,
     RawProxy,
+    /// Catch-all for any dispatch_path value this mirror predates (e.g. a
+    /// future host adding `remote_mesh` for routed exchanges). `#[serde(other)]`
+    /// is required here -- `#[serde(default)]` on the *field* does not apply to
+    /// an unrecognized *variant*; without this, an old plugin build fails to
+    /// parse the WHOLE envelope the moment a newer host emits a value this
+    /// enum doesn't know, silently dropping every field, not just this one.
+    /// Same "unknown != trusted" discipline as the `tpm_measured` registry
+    /// values: an unrecognized dispatch path is observed, never guessed at.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -429,6 +439,19 @@ mod tests {
         let wire = r#"{"dispatch_path":"raw_proxy","phase":"terminal","model":"m","status":200}"#;
         let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse legacy event");
         assert!(env.serving_provenance.is_none());
+    }
+
+    /// A host newer than this plugin build emitting a `dispatch_path` this
+    /// mirror predates (e.g. a future `remote_mesh`) must not fail to parse
+    /// the WHOLE envelope -- `#[serde(other)]` catches it as `Unknown` rather
+    /// than rejecting every field in the record. Never treated as sealable:
+    /// an unrecognized dispatch path is observed, never guessed at.
+    #[test]
+    fn unknown_dispatch_path_parses_as_unknown_not_a_parse_failure() {
+        let wire = r#"{"dispatch_path":"remote_mesh","phase":"terminal","model":"m","status":200}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire)
+            .expect("a forward host value must not break parsing of the whole envelope");
+        assert_eq!(env.dispatch_path, DispatchPath::Unknown);
     }
 
     /// `latest_provenance_for_model` returns the MOST RECENT provenance for the
