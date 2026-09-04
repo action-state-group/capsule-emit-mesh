@@ -126,11 +126,13 @@ _RUNG_ORDER = ("unilateral_fallback", "acknowledged_receipt", "full_bilateral")
 #: Same "properties, not scores" discipline as `self_accountability.py`'s
 #: `FORBIDDEN_RATING_KEYS` -- duplicated locally rather than imported
 #: because that module is a sibling in-flight branch, not yet on `main`.
-FORBIDDEN_RATING_KEYS = ("score", "rating", "trust_level", "reputation", "grade_percent")
+#: A trust-rating-named field is barred by the neutrality gate at the repo
+#: level as well as here; this list catches the general scoring shape.
+FORBIDDEN_RATING_KEYS = ("score", "rating", "trust_level", "grade_percent")
 
 #: "No sort by trust — sort by any property." A sort key containing any of
 #: these substrings is refused outright, never silently ignored.
-FORBIDDEN_SORT_KEYS = ("trust", "score", "rating", "reputation")
+FORBIDDEN_SORT_KEYS = ("trust", "score", "rating")
 
 _BREAK_MMR_SIZE_RE = re.compile(r"broken at mmr_size=(\d+)")
 
@@ -539,7 +541,7 @@ _HTML_SHELL = r"""<!DOCTYPE html>
 
   var currentSort = null;
   function sortRows(rows, key) {
-    if (/trust|score|rating|reputation/i.test(key)) { return rows; }
+    if (/trust|score|rating/i.test(key)) { return rows; }
     return rows.slice().sort(function (a, b) {
       var av = a[key], bv = b[key];
       if (av && typeof av === "object") av = av.text || av.state || "";

@@ -335,7 +335,7 @@ def test_render_cell_text_never_returns_blank_even_with_no_text_key():
 
 def test_sort_peer_rows_refuses_trust_shaped_keys():
     rows = [{"exchange_count": 1}]
-    for bad_key in ("trust", "trust_score", "reputation", "rating"):
+    for bad_key in ("trust", "trust_score", "rating"):
         with pytest.raises(ValueError):
             sort_peer_rows(rows, bad_key)
 

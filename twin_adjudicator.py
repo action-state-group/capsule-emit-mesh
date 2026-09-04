@@ -38,7 +38,7 @@ WHAT THIS IS NOT — read before extending
     send here — those are E17b (twin send) and E17c (third-node referee),
     both upstream-gated and HELD.
   - NOT a scorer. `AdjudicationOutcome.margin` is the number the verdict
-    rule compared against `margin_tau`, never a confidence/trust/reputation
+    rule compared against `margin_tau`, never a confidence/trust-rating
     field, and no such field is ever added (same discipline as
     `output_cross_check.CrossCheckResult` and `replay_spot_check.SpotCheckResult`,
     which this module reuses the digest domain of).

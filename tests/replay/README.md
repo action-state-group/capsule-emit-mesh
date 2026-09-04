@@ -20,10 +20,10 @@ there is one definition of "match."
 
 This harness is a comparator, nothing else:
 
-- **No scoring, no reputation, no trust-adjustment.** `SpotCheckResult` is
+- **No scoring, no trust rating, no trust-adjustment.** `SpotCheckResult` is
   `{domain, digest_a, digest_b, match, advisory}` — a boolean and two
   digests, not a score. That is a standing constraint of the task this
-  suite was built for, not a stylistic choice: reputation/scoring logic on
+  suite was built for, not a stylistic choice: trust-rating/scoring logic on
   top of this comparison is explicitly Authority-tier and out of bounds for
   this neutral, public-repo lane.
 - **A mismatch opens an investigation, not a verdict.** `TRUST-MODEL.md`

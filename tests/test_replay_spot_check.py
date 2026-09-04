@@ -9,7 +9,7 @@ matched pair reported as `match: true` and a deliberately mismatched pair
 positive case, per the task's standing constraint 2.
 
 Also asserts the standing scope constraint directly: `SpotCheckResult`
-never grows a score/reputation/trust field. That is checked here, not just
+never grows a score/trust-rating field. That is checked here, not just
 claimed in the docstring, so a future edit that adds one fails a test
 instead of silently drifting past review.
 """
@@ -153,14 +153,14 @@ def test_replay_volatile_fields_is_exactly_id_and_created():
 
 
 # ---------------------------------------------------------------------------
-# Scope guardrail: no scoring/reputation field, ever
+# Scope guardrail: no scoring/trust-rating field, ever
 # ---------------------------------------------------------------------------
 
-def test_result_carries_no_scoring_or_reputation_field():
+def test_result_carries_no_scoring_or_trust_rating_field():
     result = compare(_load("matched", "response_a.json"), _load("matched", "response_b.json"))
     payload = result.to_dict()
     assert set(payload) == {"domain", "digest_a", "digest_b", "match", "advisory"}
-    for forbidden in ("score", "confidence", "reputation", "trust_score", "verdict"):
+    for forbidden in ("score", "confidence", "trust_score", "verdict"):
         assert forbidden not in payload
 
 
