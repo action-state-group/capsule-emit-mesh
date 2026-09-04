@@ -30,15 +30,20 @@ Homepage = "https://github.com/action-state-group/capsule-emit-mesh"
 capsule-sidecar = "capsule_sidecar:main"
 capsule-coordinator-verify = "capsule_coordinator_verify:main"
 capsule-disclosure-endpoint = "capsule_disclosure_endpoint:main"
+capsule-evidence-server = "evidence_server:main"
+ask-history = "ask_history:main"
 
 [tool.setuptools]
 # Flat module layout (no package directory) -- listed explicitly rather than relying on setuptools'
 # flat-layout auto-discovery, which refuses to guess among this many top-level modules. Exactly the
-# transitive closure the three console scripts above need; the repo's other top-level scripts
+# transitive closure the five console scripts above need; the repo's other top-level scripts
 # (demos, red-team fixtures, the Rust plugin harness, etc.) are dev-only and stay out of the wheel.
 py-modules = [
     "capsule_sidecar",
     "evidence_responder",
+    "evidence_server",
+    "ask_history",
+    "history_card",
     "advertisement",
     "checkpointing",
     "model_identity",

@@ -13,6 +13,20 @@
     of them. Without this, test_checkpointing.py's `from scitt_cose import
     cll` fails whenever a stubbing test file collects first (alphabetical
     order is not a safe assumption to rely on instead).
+
+    NOTE: this deliberately does NOT extend to `model_identity` -- unlike
+    `agent_action_capsule`/`scitt_cose` (safe to bind for real, since
+    downstream tests only need their real classes to exist), several
+    stubbing test files' OWN tests (test_forwarded_copy_and_keys.py,
+    test_bilateral_demo.py, test_replay_spot_check.py) actively DEPEND on
+    `model_identity.load_manifest` staying a no-op stub (they construct a
+    `NodeState`/similar against a `manifest_path` that is never written).
+    Binding the real module here would make those tests fail deterministically
+    instead of passing by accident -- worse, not better. Any test file that
+    imports `capsule_sidecar` for real and could collect before those three
+    (alphabetically or otherwise) must carry the SAME "stub `model_identity`
+    if absent" guard itself -- see test_ask_history.py's top matter for the
+    reused idiom.
 """
 import os
 import sys
