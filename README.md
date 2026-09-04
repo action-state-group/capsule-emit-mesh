@@ -567,6 +567,93 @@ published card that overclaims, a ledger tampered after publish) and a
 parametrized check that both the inclusion and consistency proofs the verifier
 relies on stay O(log n) as the log grows.
 
+## Account capsule + Nostr publish path (B7)
+
+A node already exposes two public evidence layers: its **capsule ledger**
+(`capsules.jsonl`, one signed capsule per exchange) and its **witness
+checkpoint** (`checkpoints.jsonl`, a periodic signed commitment an independent
+witness co-signs). `account_capsule.py` builds the thin summarizing layer that
+rides both — a node's **account capsule**, an *account of its own history, not
+a trust rating*:
+
+- **selection** — the checkpoint-covered range. ONLY witnessed entries count;
+  the fold runs over `[1 .. leaf_count(latest_checkpoint.mmr_size)]`, never the
+  un-anchored tail (an account that summarized un-witnessed activity would let a
+  node inflate its record between anchors — exactly the equivocation the witness
+  exists to prevent). No checkpoint → the account is honestly empty.
+- **derivation** — a plain, documented **served/success fold** over the selected
+  range: total exchanges, served vs. requested (same role vocabulary as
+  `trust_summary`), and how many served ones carried a confirmed effect
+  (`effect.status == "confirmed"`, the signal the sidecar already writes). Counts,
+  not a weighted opinion — it invents no new metric.
+- **coverage** — the latest witnessed checkpoint's `root` (+ `mmr_size`,
+  `log_id`, witness URLs). The cross-check handle: a relying party recomputes the
+  fold from the node's ledger, checks that ledger against this root, and confirms
+  the root was witnessed. `coverage_witnessed` is `False` (honestly) for a
+  self-checkpointed root no outside party has seen.
+
+**It is an account, not a verdict — the relying party computes its own
+predicate.** `example_predicate()` ships an EXAMPLE of one such predicate ("the
+coverage root is witnessed AND the node served ≥1 confirmed exchange") and is
+**shipped as an example only, never wired as a default routing policy** — nothing
+in the mesh calls it.
+
+**Sybil / identity-reset residual (stated in the capsule + here).** This is an
+account of facts, not a trust rating; anyone using it comparatively must bring
+their own Sybil resistance — identity is free to mint (a mesh node key costs
+nothing), so a node with a poor account can reset to a fresh empty-history key
+at zero cost. The witness makes ONE identity's history tamper-evident; it does
+not bind that identity to a scarce real-world entity. This residual is a
+first-class field (`sybil_residual`) so it is never silently dropped when the
+account is serialized or published.
+
+**Nostr publish path** (`nostr_account.py`). mesh-llm publishes its signed
+mesh-discovery listing as a parameterized-replaceable Nostr event (Kind **31990**,
+signed by the node's Nostr key). The account capsule rides the same rail as Kind
+**31991** — one above discovery, in the parameterized-replaceable range
+(30000–39999), with a `d=mesh-account` tag so a newer account supersedes the old
+one **in place**. **Replaceable ⇒ no durability claim on the summary**: a relay may
+drop or supersede the listing at any time, so the event carries an explicit
+`durability` disclaimer pointing back to the WITNESS (the `coverage` root) as the
+durable layer, never the relay. Signing is BIP-340 Schnorr over secp256k1 (NIP-01,
+via `coincurve`); events verify offline (recompute id + Schnorr-verify against the
+x-only pubkey).
+
+**Transparency-courtesy sealing declaration.** Mesh nodes SEAL — digest-only,
+zero payload retention (the ledger/account carry hashes, never request/response
+bodies). In a zero-retention culture an *undeclared* seal reads as betrayal, so
+the node DECLARES it in the same public listing: `merge_into_listing()` /
+`transparency_courtesy_tags()` add the seal declaration (and the Sybil residual,
+verbatim) to the node's mesh listing content and as first-class Nostr tags.
+
+**HELD — no publish to a public relay fired by this repo.** Building and
+test-relay-verifying the publish capability is in scope; firing it at a public
+relay (relay.damus.io, relay.primal.net, nos.lol, …) is a separate, explicit,
+gated act and is **not** done here — that is the open NIP-56 / properties-not-
+scores question, revisited after our own test relay / witness host is in place.
+
+- `nostr_account.MockRelay` — the in-process, no-socket relay used by
+  `tests/test_account_capsule_nostr.py`.
+- `nostr_relay_client.WebsocketRelayClient` (`nostr_relay_client.py`) — a REAL
+  NIP-01 WebSocket relay client, used for a genuine local network round trip
+  against [`nak serve`](https://github.com/fiatjaf/nak) (`brew install nak`)
+  on `127.0.0.1`. `tests/test_nostr_relay_client_and_live_publish.py` covers
+  the full round trip plus two live mutants (tampered content → signature
+  verify fails; wrong-key signature → relay rejects), and skips if `nak` is
+  absent.
+- `nostr_live_publish.py` — the **HELD** live-publish path. Same client, but
+  `publish_account_capsule_live()` structurally refuses (raises
+  `LivePublishHeld`) unless called with BOTH a non-empty relay-URL list AND
+  `i_have_stevens_go_ahead_for_a_public_relay=True`. Nothing in this repo ever
+  sets that flag together with a real relay list — see
+  `tests/test_nostr_relay_client_and_live_publish.py`'s repo-wide guardrail
+  test. `describe_live_publish_plan()` builds and signs the exact event a live
+  publish would send — kind, tags, content, the node's Nostr pubkey — entirely
+  offline, so a human can review it before any gate opens.
+
+There is no default relay URL anywhere in any of these modules; every relay
+URL is named explicitly by the caller.
+
 ## Replay spot-check harness (C2a)
 
 `tools/replay_spot_check.py` implements the C2a mechanism from
