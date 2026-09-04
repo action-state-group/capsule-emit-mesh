@@ -35,8 +35,11 @@ trust-index / scoring / pricing language — a fail-closed neutrality
 CI gate (`.github/neutrality_scan.py`) enforces it.
 
 The relationship to Mesh-LLM is offered, not asserted: the native plugin is built
-against Mesh-LLM's actual published plugin protocol and rides on a fork
-(`StevenMih/mesh-llm`, PRs #1/#2/#3 on top of upstream #1437's hooks); an
+against Mesh-LLM's actual published plugin protocol, whose lifecycle hooks
+(`crates/mesh-llm-host-runtime/src/plugin/openai_exchange.rs`, the
+`mesh-native-serving-plugin-api`/`-host` crates) landed upstream via #1437; a
+fork (`StevenMih/mesh-llm`, PRs #1/#2/#3) carries additional serving-provenance
+work stacked on top of those hooks, not the base capability; an
 [on-list update](https://github.com/Mesh-LLM/mesh-llm/issues/1233) tracks #1233;
 and a real bug found while wiring the split path is filed as
 [Mesh-LLM/mesh-llm#1547](https://github.com/Mesh-LLM/mesh-llm/issues/1547).
@@ -157,9 +160,12 @@ here. They see different things, and that difference is the whole design choice.
 ### Path 1 (primary) — native Rust `admission-policy-plugin` + `capsule-producer`
 
 A real `mesh-llm-plugin` plugin on the serving path. It seals the host's own
-`openai.exchange.v1` lifecycle event and rides the #1437 hooks (fork
-`StevenMih/mesh-llm`, PRs #1/#2/#3). This is a **first-party integration**, and it
-is what sealed the current demo capsules.
+`openai.exchange.v1` lifecycle event and rides the #1437 lifecycle hooks, which
+are upstream now (`crates/mesh-llm-host-runtime/src/plugin/openai_exchange.rs`,
+the `mesh-native-serving-plugin-api`/`-host` crates); a fork
+(`StevenMih/mesh-llm`, PRs #1/#2/#3) carries additional serving-provenance work
+stacked on top. This is a **first-party integration**, and it is what sealed the
+current demo capsules.
 
 - **`plugins/admission-policy`** — binds against Mesh-LLM's *actual* published
   plugin protocol (`mesh-llm-plugin` on crates.io: a length-prefixed protobuf
@@ -321,10 +327,11 @@ request/response JSON a #1233 receipt digests. The path that *can* see both side
 is an **in-process hook** on the host's OpenAI frontend (`OpenAiHookPolicy` /
 `HookedOpenAiBackend`). The earlier PoC concluded that exploiting it meant a fork
 with no installable plugin and no PR — so it shipped the sidecar. **That
-conclusion is now superseded: we built the native plugin.** It rides upstream
-#1437's hooks on a fork (`StevenMih/mesh-llm`, PRs #1/#2/#3), seals the host's
-`openai.exchange.v1` event, and is Path 1 above. The sidecar remains a valid
-zero-core-change alternative.
+conclusion is now superseded: we built the native plugin.** It rides #1437's
+hooks, upstream now, seals the host's `openai.exchange.v1` event, and is Path 1
+above (the fork, `StevenMih/mesh-llm` PRs #1/#2/#3, carries additional
+serving-provenance work stacked on top, not the base hooks). The sidecar
+remains a valid zero-core-change alternative.
 
 ---
 
