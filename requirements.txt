@@ -39,3 +39,16 @@ mcp<2
 # falls back to the tomli backport so [checkpoint] TOML configs (checkpoint.example.toml)
 # still parse on Python 3.10. Marker keeps this a no-op install on 3.11+.
 tomli>=2.0; python_version < "3.11"
+
+# nostr_account.py signs account-capsule events with BIP-340 Schnorr over
+# secp256k1 (NIP-01) -- the curve Nostr uses, which the stdlib and `cryptography`
+# do not expose. coincurve provides sign_schnorr / PublicKeyXOnly. The account
+# capsule build path and the mock-relay publish path load without it; only the
+# real Schnorr signing key (SchnorrNostrKey) needs it, and the tests skip if
+# it is absent.
+coincurve>=18
+# nostr_relay_client.py talks real NIP-01 WebSocket to a relay -- used ONLY for
+# the local test-relay round trip (against `nak serve` on localhost) and the
+# HELD live-publish gate in nostr_live_publish.py. Neither the account capsule
+# nor the mock-relay publish path needs it; tests skip if it is absent.
+websockets>=12
