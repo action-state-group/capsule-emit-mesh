@@ -16,8 +16,10 @@ import json
 import pytest
 
 import capsule_mesh_viewer as v
+from capsule_emit.checkpoint import StampVerdict
 from capsule_mesh_viewer import (
     ANSWERED,
+    FAILED,
     NOT_IN_RECORD,
     PARTIAL,
     build_role_questions,
@@ -29,6 +31,7 @@ from capsule_mesh_viewer import (
     render_mesh_viewer_html,
     serving_provenance,
     to_fragment_payload,
+    verify_witness_checkpoint,
 )
 
 
@@ -192,7 +195,7 @@ def test_friendly_model_name_prefers_a_real_hf_ref_tail():
 
 def test_verdict_is_three_plain_lines_with_honest_marks():
     sp = _raw_gguf_sp()
-    verdict = build_verdict(sp, verify_ok=True, has_witness_checkpoint=False, counterparty="unknown")
+    verdict = build_verdict(sp, verify_ok=True, witness_verdict=None, counterparty="unknown")
     assert len(verdict) == 3
     # line 1: attests it ran (self-reported), green, friendly name, no raw hash
     assert verdict[0]["mark"] == "ok"
@@ -210,16 +213,34 @@ def test_verdict_is_three_plain_lines_with_honest_marks():
 
 def test_verdict_never_fakes_green_on_failed_verify():
     sp = _raw_gguf_sp()
-    verdict = build_verdict(sp, verify_ok=False, has_witness_checkpoint=False, counterparty="unknown")
+    verdict = build_verdict(sp, verify_ok=False, witness_verdict=None, counterparty="unknown")
     assert verdict[0]["mark"] == "warn"
     assert "FAILED verification" in verdict[0]["text"]
 
 
-def test_verdict_line2_goes_green_with_a_witness_receipt():
+def test_verdict_line2_goes_green_only_when_the_receipt_actually_verifies():
     sp = _raw_gguf_sp()
-    verdict = build_verdict(sp, verify_ok=True, has_witness_checkpoint=True, counterparty="unknown")
+    verdict = build_verdict(sp, verify_ok=True, witness_verdict=StampVerdict.WITNESSED, counterparty="unknown")
     assert verdict[1]["mark"] == "ok"
-    assert "anchored to a public witness" in verdict[1]["text"]
+    assert "verifies" in verdict[1]["text"]
+
+
+def test_verdict_line2_is_a_hard_fail_never_amber_when_receipt_is_invalid():
+    # Mutant this guards: a tampered/forged witness receipt must NEVER read
+    # the same as "no receipt at all" (warn) -- it is a caught tamper, a
+    # stronger and more alarming statement, and must be its own mark ("bad").
+    sp = _raw_gguf_sp()
+    verdict = build_verdict(sp, verify_ok=True, witness_verdict=StampVerdict.INVALID, counterparty="unknown")
+    assert verdict[1]["mark"] == "bad"
+    assert "FAILS to verify" in verdict[1]["text"]
+    assert "witness receipt isn't in this bundle" not in verdict[1]["text"]
+
+
+def test_verdict_line2_unverified_stays_amber_distinct_from_missing():
+    sp = _raw_gguf_sp()
+    verdict = build_verdict(sp, verify_ok=True, witness_verdict=StampVerdict.UNVERIFIED, counterparty="unknown")
+    assert verdict[1]["mark"] == "warn"
+    assert "isn't pinned" in verdict[1]["text"]
 
 
 def test_entry_payload_carries_friendly_name_and_verdict_not_raw_title():
@@ -263,7 +284,7 @@ def test_entry_payload_carries_friendly_name_and_verdict_not_raw_title():
 
 
 def test_four_roles_three_questions_each():
-    rq = build_role_questions(_nested_capsule(), source_log="plugin", verify_ok=True, has_witness_checkpoint=False)
+    rq = build_role_questions(_nested_capsule(), source_log="plugin", verify_ok=True, witness_verdict=None)
     roles = rq["roles"]
     assert set(roles) == {"requester", "provider", "coordinator", "third_party"}
     for role in roles.values():
@@ -271,14 +292,14 @@ def test_four_roles_three_questions_each():
 
 
 def test_coordinator_questions_are_not_yet_in_the_record():
-    rq = build_role_questions(_nested_capsule(), source_log="plugin", verify_ok=True, has_witness_checkpoint=True)
+    rq = build_role_questions(_nested_capsule(), source_log="plugin", verify_ok=True, witness_verdict=StampVerdict.WITNESSED)
     for qa in rq["roles"]["coordinator"]["questions"]:
         assert qa["state"] == NOT_IN_RECORD
 
 
 def test_third_party_completeness_flips_on_witness_checkpoint():
-    without = build_role_questions(_nested_capsule(), source_log="plugin", verify_ok=True, has_witness_checkpoint=False)
-    withck = build_role_questions(_nested_capsule(), source_log="plugin", verify_ok=True, has_witness_checkpoint=True)
+    without = build_role_questions(_nested_capsule(), source_log="plugin", verify_ok=True, witness_verdict=None)
+    withck = build_role_questions(_nested_capsule(), source_log="plugin", verify_ok=True, witness_verdict=StampVerdict.WITNESSED)
     q2_without = without["roles"]["third_party"]["questions"][1]
     q2_with = withck["roles"]["third_party"]["questions"][1]
     assert q2_without["state"] == NOT_IN_RECORD
@@ -287,14 +308,14 @@ def test_third_party_completeness_flips_on_witness_checkpoint():
 
 def test_provider_q1_answered_when_counterparty_present():
     with_cp = _nested_capsule(cross_party={"initiator_ref": "a" * 64})
-    rq = build_role_questions(with_cp, source_log="plugin", verify_ok=True, has_witness_checkpoint=False)
+    rq = build_role_questions(with_cp, source_log="plugin", verify_ok=True, witness_verdict=None)
     assert rq["roles"]["provider"]["questions"][0]["state"] == ANSWERED
-    without = build_role_questions(_nested_capsule(), source_log="plugin", verify_ok=True, has_witness_checkpoint=False)
+    without = build_role_questions(_nested_capsule(), source_log="plugin", verify_ok=True, witness_verdict=None)
     assert without["roles"]["provider"]["questions"][0]["state"] == PARTIAL
 
 
 def test_requester_q1_reports_failed_verify_honestly():
-    rq = build_role_questions(_nested_capsule(), source_log="plugin", verify_ok=False, has_witness_checkpoint=False)
+    rq = build_role_questions(_nested_capsule(), source_log="plugin", verify_ok=False, witness_verdict=None)
     assert "FAILED verify" in rq["roles"]["requester"]["questions"][0]["answer"]
 
 
@@ -338,6 +359,111 @@ def test_witness_summary_present_when_checkpoint_supplied():
     payload = to_fragment_payload([_nested_capsule()], source_log="plugin", witness_checkpoint=checkpoint)
     assert payload["witness"]["log_id"] == "log-1"
     assert payload["witness"]["cose_present"] is True
+    # No `witnesses` entry on the checkpoint dict -- self-checkpointed only,
+    # nothing to re-verify: the honest "not shown here" state, not a fail.
+    assert payload["witness"]["verdict"] is None
+
+
+# -- verify_witness_checkpoint: the ACTUAL recompute (never presence), real
+# library crypto -- no mocking of the verify machinery itself. --------------
+
+
+def _real_checkpoint_dict(**overrides) -> dict:
+    import hashlib
+
+    from capsule_emit.checkpoint import CheckpointRecord
+
+    base = dict(
+        v=1, kind="cll-checkpoint", log_id="log-a", mmr_size=3, root="a" * 64,
+        prev_size=0, prev_root="0" * 64, key_id="k" * 64,
+        timestamp="2026-09-03T00:00:00Z", signature="s" * 128,
+    )
+    base.update(overrides)
+    cp = CheckpointRecord(**base)
+    return cp.to_dict()
+
+
+def _entry_hash_for(checkpoint_dict: dict) -> str:
+    import hashlib
+
+    from capsule_emit.checkpoint import CheckpointRecord
+
+    return hashlib.sha256(bytes.fromhex(CheckpointRecord.from_dict(checkpoint_dict).digest())).hexdigest()
+
+
+def test_verify_witness_checkpoint_none_when_absent():
+    assert verify_witness_checkpoint(None) == (None, [])
+    assert verify_witness_checkpoint({"root": "a" * 64}) == (None, [])  # no `witnesses` key at all
+
+
+def test_verify_witness_checkpoint_invalid_on_tampered_root():
+    """W2's core mutant: a witness receipt bound to the ORIGINAL checkpoint,
+    carried alongside a checkpoint dict whose `root` was tampered afterward
+    -- e.g. someone hand-edited checkpoints.jsonl -- must recompute as
+    INVALID (a hard fail), never silently pass and never collapse into the
+    "no receipt at all" (None/amber) state. No signing keys involved: the
+    entry_hash-to-checkpoint-digest binding alone catches this."""
+    import base64
+
+    original = _real_checkpoint_dict()
+    entry_hash = _entry_hash_for(original)
+    tampered = dict(original, root="f" * 64)  # same witnesses, different root
+    tampered["witnesses"] = [
+        {"ts_url": "https://witness.agentactioncapsule.org", "entry_hash": entry_hash,
+         "receipt_b64": base64.b64encode(b"irrelevant-not-reached").decode(), "leaf_index": 0, "tree_size": 1}
+    ]
+    verdict, errors = verify_witness_checkpoint(tampered)
+    assert verdict is StampVerdict.INVALID
+    assert errors  # a reason is always given, never a silent fail
+
+
+def test_verify_witness_checkpoint_invalid_on_garbage_receipt_bytes():
+    """A hand-fabricated stamp (right entry_hash, but receipt_b64 that is not
+    a real COSE Receipt at all) must also fail, not just a mismatched hash."""
+    import base64
+
+    checkpoint = _real_checkpoint_dict()
+    entry_hash = _entry_hash_for(checkpoint)
+    checkpoint["witnesses"] = [
+        {"ts_url": "https://witness.agentactioncapsule.org", "entry_hash": entry_hash,
+         "receipt_b64": base64.b64encode(b"not a cose receipt").decode(), "leaf_index": 0, "tree_size": 1}
+    ]
+    verdict, errors = verify_witness_checkpoint(checkpoint)
+    assert verdict is StampVerdict.INVALID
+    assert errors
+
+
+def test_verify_witness_checkpoint_unverified_for_a_real_receipt_from_an_unpinned_ts():
+    """A genuine, well-formed, checkpoint-bound COSE Receipt (built with the
+    real scitt_cose wire format, signed with a throwaway key) from a
+    non-default `ts_url` this viewer has no pinned key for: real receipt
+    shape, but identity can't be confirmed offline -- UNVERIFIED, distinct
+    from both WITNESSED and INVALID."""
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from scitt_cose import build_receipt
+
+    checkpoint = _real_checkpoint_dict()
+    entry_hash = _entry_hash_for(checkpoint)
+    key = Ed25519PrivateKey.generate()
+    key_pem = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    receipt_bytes = build_receipt(
+        leaf_entry_hex=entry_hash, leaf_index=0, tree_entries_hex=[entry_hash], alg="EdDSA",
+        log_private_key_pem=key_pem,
+    )
+    checkpoint["witnesses"] = [
+        {"ts_url": "https://self-hosted-witness.example", "entry_hash": entry_hash,
+         "receipt_b64": base64.b64encode(receipt_bytes).decode(), "leaf_index": 0, "tree_size": 1}
+    ]
+    verdict, errors = verify_witness_checkpoint(checkpoint)
+    assert verdict is StampVerdict.UNVERIFIED
+    assert errors
 
 
 def test_rendered_html_is_self_contained_and_carries_no_capsule_data():
@@ -367,7 +493,7 @@ def test_legacy_flat_shape_still_names_the_model():
     }
     sp = serving_provenance(flat)
     assert "Hermes-2-Pro-Mistral-7B" in sp["model"]
-    rq = build_role_questions(flat, source_log="sidecar", verify_ok=None, has_witness_checkpoint=False)
+    rq = build_role_questions(flat, source_log="sidecar", verify_ok=None, witness_verdict=None)
     # verify-after-advertise (§12.3) changed Requester Q1's semantics: a record
     # that NAMES a served model but co-carries NO advertisement can no longer
     # read as a clean green -- there is no advertised claim to reconcile against,

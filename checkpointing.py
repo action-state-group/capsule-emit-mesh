@@ -188,7 +188,10 @@ def load_checkpoint_config(config_path: Path) -> tuple[CheckpointConfig, str | N
     mesh-specific `log_id` key) into a `CheckpointConfig` + `log_id`.
     Returns `None` if the file has no `[checkpoint]` table -- checkpointing
     stays off, Layer 0 only."""
-    import tomllib
+    try:
+        import tomllib  # Python 3.11+
+    except ModuleNotFoundError:
+        import tomli as tomllib  # Python 3.10 fallback (see requirements.txt)
 
     with config_path.open("rb") as fh:
         data = tomllib.load(fh)

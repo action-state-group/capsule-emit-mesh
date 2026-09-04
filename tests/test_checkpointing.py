@@ -393,3 +393,61 @@ def test_offline_inclusion_verify_round_trips_through_cll(tmp_path):
         body_digest=tampered_digest, leaf_index=target_seq - 1, checkpoint=cll_checkpoint, proof=cll_proof,
     )
     assert not mutant_result.ok
+
+
+# -- load_checkpoint_config: TOML parsing, and the tomli fallback for 3.10 --
+
+
+def test_load_checkpoint_config_parses_toml_table(tmp_path):
+    config_path = tmp_path / "checkpoint.toml"
+    config_path.write_text('[checkpoint]\nlog_id = "node-a"\ncadence_entries = 5\n')
+    result = checkpointing.load_checkpoint_config(config_path)
+    assert result is not None
+    cfg, log_id = result
+    assert log_id == "node-a"
+    assert cfg.cadence_entries == 5
+
+
+def test_load_checkpoint_config_returns_none_without_checkpoint_table(tmp_path):
+    config_path = tmp_path / "checkpoint.toml"
+    config_path.write_text('[other]\nfoo = "bar"\n')
+    assert checkpointing.load_checkpoint_config(config_path) is None
+
+
+def test_load_checkpoint_config_falls_back_to_tomli_when_tomllib_absent(tmp_path, monkeypatch):
+    """Simulates Python 3.10 (no stdlib `tomllib`): `import tomllib` inside
+    `load_checkpoint_config` must raise ModuleNotFoundError and fall back to
+    the `tomli` backport (requirements.txt), not crash. Mutant this guards
+    against: an unconditional `import tomllib` (no try/except) -- that would
+    pass on this test runner's 3.11+ interpreter but break on 3.10.
+
+    The real `tomli` PyPI package is deliberately NOT required by this test:
+    requirements.txt marks it `python_version < "3.11"`, so a CI runner on
+    3.12+ (this one) correctly does not install it -- a test that imported
+    the real backport would fail there for an unrelated reason (package
+    absent, not fallback-logic broken). Instead this test registers this
+    interpreter's own stdlib `tomllib` module under the name `tomli` in
+    `sys.modules`, so `import tomli as tomllib` resolves to genuine TOML
+    parsing while still proving the fallback branch (not `tomllib` itself)
+    is what ran -- tomli's public API (`load(fh)`) mirrors tomllib's exactly."""
+    import builtins
+    import sys
+    import tomllib as _real_tomllib
+
+    real_import = builtins.__import__
+
+    def _blocked_import(name, *args, **kwargs):
+        if name == "tomllib":
+            raise ModuleNotFoundError("simulated: no stdlib tomllib on Python 3.10")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked_import)
+    monkeypatch.setitem(sys.modules, "tomli", _real_tomllib)
+
+    config_path = tmp_path / "checkpoint.toml"
+    config_path.write_text('[checkpoint]\nlog_id = "node-b"\ncadence_entries = 7\n')
+    result = checkpointing.load_checkpoint_config(config_path)
+    assert result is not None
+    cfg, log_id = result
+    assert log_id == "node-b"
+    assert cfg.cadence_entries == 7
