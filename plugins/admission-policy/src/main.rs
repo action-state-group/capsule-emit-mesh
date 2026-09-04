@@ -79,6 +79,7 @@ fn host_provenance_from(observed: HostServingProvenance) -> HostProvenance {
         parameter_size: observed.parameter_size,
         layer_count: observed.layer_count,
         model_identity_hash: observed.model_identity_hash,
+        weights_digest: observed.weights_digest,
         model_canonical_ref: observed.model_canonical_ref,
         model_revision: observed.model_revision,
         gpu: observed.gpu,

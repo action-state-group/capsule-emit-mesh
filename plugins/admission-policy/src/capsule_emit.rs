@@ -217,6 +217,10 @@ pub struct HostProvenance {
     pub parameter_size: Option<String>,
     pub layer_count: Option<u32>,
     pub model_identity_hash: Option<String>,
+    /// SHA-256 of the served GGUF's file BYTES (mirror `lifecycle_channel::
+    /// HostServingProvenance::weights_digest`) -- a different fact from
+    /// `model_identity_hash`, never a replacement for it.
+    pub weights_digest: Option<String>,
     pub model_canonical_ref: Option<String>,
     pub model_revision: Option<String>,
     pub gpu: Option<String>,
@@ -400,6 +404,7 @@ impl CapsuleState {
                     parameter_size: host.parameter_size.clone(),
                     layer_count: host.layer_count,
                     model_identity_hash: host.model_identity_hash.clone(),
+                    weights_digest: host.weights_digest.clone(),
                     model_canonical_ref: host.model_canonical_ref.clone(),
                     model_revision: host.model_revision.clone(),
                     // Real token counts from the response body's `usage`, if any.
@@ -704,6 +709,7 @@ impl CapsuleState {
                     parameter_size: host.parameter_size.clone(),
                     layer_count: host.layer_count,
                     model_identity_hash: host.model_identity_hash.clone(),
+                    weights_digest: host.weights_digest.clone(),
                     model_canonical_ref: host.model_canonical_ref.clone(),
                     model_revision: host.model_revision.clone(),
                     // The REAL token counts from the host terminal event.

@@ -52,6 +52,7 @@ fn sample_input(seed: &str, chain: Option<ChainLink>) -> CapsuleInput {
                 parameter_size: None,
                 layer_count: None,
                 model_identity_hash: None,
+                weights_digest: None,
                 model_canonical_ref: None,
                 model_revision: None,
                 usage: Some(TokenUsage {
