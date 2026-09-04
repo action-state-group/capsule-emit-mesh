@@ -139,6 +139,14 @@ pub struct HostServingProvenance {
     pub layer_count: Option<u32>,
     #[serde(default)]
     pub model_identity_hash: Option<String>,
+    /// SHA-256 of the served GGUF's file BYTES, from the host's load-time
+    /// hash of the file it actually opened for serving (`mesh-llm`
+    /// `ServedModelIdentity::weights_digest`) -- a different fact from
+    /// `model_identity_hash` (a hash of a reference STRING, absent for a bare
+    /// local path). `#[serde(default)]` so a host that predates this field
+    /// simply arrives without it, and `None` here is never fabricated.
+    #[serde(default)]
+    pub weights_digest: Option<String>,
     #[serde(default)]
     pub model_canonical_ref: Option<String>,
     #[serde(default)]
@@ -338,6 +346,28 @@ mod tests {
         assert!(prov.quantization.is_none());
         assert!(prov.architecture.is_none());
         assert!(prov.model_identity_hash.is_none());
+        // A host that predates `weights_digest` simply omits the field --
+        // this mirror stays forward/backward compatible, and it deserializes
+        // to `None`, never a fabricated placeholder.
+        assert!(prov.weights_digest.is_none());
+    }
+
+    /// A host reporting BOTH the name-hash (`model_identity_hash`) and the
+    /// bytes-hash (`weights_digest`) survives the deserialize with both
+    /// distinct facts intact -- neither collapses into or replaces the other.
+    #[test]
+    fn serving_provenance_carries_weights_digest_alongside_model_identity_hash() {
+        let wire = r#"{"dispatch_path":"raw_proxy","phase":"terminal","model":"local-gguf/sha256-4ff195f73917d9c2","status":200,"capsule_id":null,"nonce":null,"serving_provenance":{"served_by_node_id":"143f4d9f8cd9a9","hostname":"Stevens-MacBook-Pro.local","architecture":"llama","model_identity_hash":null,"weights_digest":"904548955b8a6478df029588e8992fad5ac4ff195f73917d9c2e5f0b32d6dd5","gpu":"Apple M4 Max","vram_bytes":28991029248,"is_soc":true}}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
+        assert!(ObservedLifecycleEvents::is_sealable_host_served(&env));
+        let prov = env.serving_provenance.expect("provenance present");
+        // A local GGUF has no reference-string identity hash (honest None)...
+        assert!(prov.model_identity_hash.is_none());
+        // ...but the load-time bytes digest is a real, present fact.
+        assert_eq!(
+            prov.weights_digest.as_deref(),
+            Some("904548955b8a6478df029588e8992fad5ac4ff195f73917d9c2e5f0b32d6dd5")
+        );
     }
 
     /// A REAL host-served terminal event now carries the backend's real `usage`
@@ -431,6 +461,7 @@ mod tests {
                 parameter_size: None,
                 layer_count: None,
                 model_identity_hash: None,
+                weights_digest: None,
                 model_canonical_ref: None,
                 model_revision: None,
                 gpu: Some(g.to_string()),

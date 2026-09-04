@@ -92,6 +92,13 @@ pub struct ServingProvenance {
     /// of the model identity, NOT of the model *name* string). `None` when the
     /// host did not resolve one.
     pub model_identity_hash: Option<String>,
+    /// SHA-256 of the served GGUF's file BYTES, from the host's load-time
+    /// hash of the file it actually opened for serving. A different fact
+    /// from `model_identity_hash` (a hash of a reference STRING, or absent
+    /// for a bare local path) -- this never replaces it. `None` when the
+    /// host has not resolved one (unreadable file, or no load-time hash
+    /// computed yet for this model).
+    pub weights_digest: Option<String>,
     pub model_canonical_ref: Option<String>,
     pub model_revision: Option<String>,
     /// Token accounting from the response `usage`, or `None` if absent.
@@ -122,6 +129,7 @@ impl ServingProvenance {
                 "parameter_size": self.parameter_size,
                 "layer_count": self.layer_count,
                 "identity_hash": self.model_identity_hash,
+                "weights_digest": self.weights_digest,
                 "canonical_ref": self.model_canonical_ref,
                 "revision": self.model_revision,
             },
@@ -585,6 +593,7 @@ mod tests {
                     parameter_size: Some("7B".to_string()),
                     layer_count: Some(32),
                     model_identity_hash: Some("a".repeat(64)),
+                    weights_digest: Some("9".repeat(64)),
                     model_canonical_ref: Some("repo@rev/model.gguf".to_string()),
                     model_revision: Some("rev".to_string()),
                     usage: Some(TokenUsage {
@@ -647,6 +656,8 @@ mod tests {
         assert_eq!(prov["model"]["parameter_size"], "7B");
         assert_eq!(prov["model"]["layer_count"], 32);
         assert_eq!(prov["model"]["identity_hash"], "a".repeat(64));
+        // The bytes-hash rides alongside the name-hash as a distinct fact.
+        assert_eq!(prov["model"]["weights_digest"], "9".repeat(64));
         assert_eq!(prov["model"]["canonical_ref"], "repo@rev/model.gguf");
         assert_eq!(prov["model"]["revision"], "rev");
         // Hardware from the host serving-provenance block (real values).
@@ -739,6 +750,13 @@ mod tests {
         // (3c) a hardware field (gpu) is also digest-bound.
         let mut input = base_input(None);
         input.mesh_poc.serving_provenance.hardware_gpu = Some("NVIDIA H100".to_string());
+        assert_ne!(seal(&input).unwrap()["capsule_id"], baseline_id.as_str());
+
+        // (3d) the weights digest is also digest-bound -- a quant swap under
+        // the same model name records as a changed capsule (it does not
+        // prevent the swap; it makes it a signed, non-repudiable fact).
+        let mut input = base_input(None);
+        input.mesh_poc.serving_provenance.weights_digest = Some("8".repeat(64));
         assert_ne!(seal(&input).unwrap()["capsule_id"], baseline_id.as_str());
 
         // (4) usage token counts
