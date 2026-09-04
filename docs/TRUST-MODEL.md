@@ -55,6 +55,32 @@ Steven Mih · 2026-08-16 · offered for discussion, revision, or re-homing.
 > single-witness registration (what is built) is not the multi-witness/collusion-resistant bar A4's
 > own "Does not establish" column describes — see the corrected A4 row for the precise line.
 >
+> **Revision 2026-09-03 ([mesh-b7-w5-trust-model-reconcile], W5 continued — C3/R2/D1).** The prior
+> W5 pass above reconciled A3/A4/R6; this pass closes the two rows it left stale, each caught by
+> comparing this document against what the batch that just merged actually ships:
+>
+> - **C3 (§3, Class C) and R2 (§2.2)** said "Not built" for execution attestation. `trace_citation.py`
+>   ([mesh-tee-rung-trace-citation], merged 2026-09-03) closes this by composition: a mesh capsule
+>   cites a foreign TRACE Trust Record's TDX quote (never re-implementing attestation — TDX
+>   parsing/verification is `agent_manifest`'s, imported unmodified) and grades the citation
+>   `unattested` / `platform-attested` / `attested`. Real usage — a 2-quote GCP TDX capture from
+>   `agentrust-io/agent-manifest` — reaches `platform-attested` (genuine Intel TDX silicon reported the
+>   cited measurement); it does **not** reach `attested` (REPORT_DATA committing to the record-signing
+>   key), which is specified but unreachable from any artifact this codebase holds today. Both rows
+>   are corrected below to "Partly built" at that precise grade, not "Built" — a quote-substitution
+>   mutant (two genuine, same-MRTD quotes, swapped) proves measurement-matching binds to a
+>   *measurement*, not a *quote*, which is exactly why the top grade stays capped.
+> - **D1 (§3, Class D)** said "Not built; the header is accepted, nothing sends it" while R3 (§2.2,
+>   dated 2026-08-21) already described the same mechanism as "Partly built" in detail — the two rows
+>   contradicted each other. D1 is corrected to match R3: `capsule_sidecar.py`'s
+>   `_resolve_client_nonce()` does track client-supplied nonces and label a replay, scoped to one
+>   running node's process (not persisted across a restart, not shared across independently-operated
+>   nodes).
+>
+> No residual trust-rating framing (the word PR-1 scrubbed, or any equivalent) was found or
+> reintroduced by this pass — the account layer (§7, §12) already reads "account of facts, not a
+> trust rating" throughout.
+>
 > **Status of the referenced specifications.** Where this document refers to record-format
 > mechanisms, the published revisions are `draft-mih-scitt-agent-action-capsule-02`,
 > `draft-mih-agent-bilateral-attestation-01`, `draft-mih-sato-agent-accountability-composition-00`
@@ -134,7 +160,7 @@ inside the mesh's own console is not evidence to anyone who matters in a dispute
 | # | Fear | Evidence that addresses it | Status |
 |---|---|---|---|
 | R1 | Substituted quantization or different weights | Model package digest bound into the receipt (step 2) | Manifests largely carry it; needs tag-not-branch discipline and a declared equivalence class |
-| R2 | A canned answer with no computation | TEE / execution evidence (step 5) | Not built |
+| R2 | A canned answer with no computation | TEE / execution evidence (step 5) | Partly built via composition — `trace_citation.py` cites a foreign TRACE Trust Record's TDX quote (`agent-manifest`'s verifier, never re-implemented) and reaches `platform-attested` (genuine TDX silicon reported the cited measurement) on a real capture; the `attested` grade that would fully close this fear is specified but unreachable from any artifact held today (see C3, §3) |
 | R3 | Replay of earlier work as fresh | **Client-contributed nonce** bound into the receipt | Partly built (2026-08-21) — `capsule_sidecar.py`'s `_resolve_client_nonce()` now tracks client-supplied nonces per node, in-memory, for that node's running lifetime; a replayed nonce is labeled `client_supplied_replayed` rather than accepted as indistinguishably fresh (closes the gap [mesh-rung12-adversarial-review] found: a captured nonce replayed onto an unrelated exchange previously read as an ordinary `client_supplied` value). Scope, stated honestly: this catches replay within one running node's process only — not across a restart (the tracking set is not persisted) or across independently-operated nodes. Today's *fallback* nonce (minted when the client sends none) remains node-side and is explicitly not anti-replay evidence; that half is unchanged. **A third tier, `local_ingress`, was added 2026-08-23**: mesh-llm's own local ingress may mint the nonce one hop upstream of the sidecar and mark its own injection with `x-capsule-nonce-origin: local_ingress`, so the sidecar can tell "the harness sent it" from "ingress minted it" instead of overclaiming `client_supplied`. Naming it is not authenticating it: **records admitted via local_ingress are self-attested at admission; the header is a routing hint, not authentication.** Nothing here Ed25519-verifies the origin header the way `evaluate_bilateral_attestation` verifies bilateral request headers elsewhere in the same file — deliberately: enforcement belongs on trust-deciding paths, and `local_ingress` is a PoC routing path, not one today. `client_nonce_source` (including this tier) is committed into `compute_attestation`, which is itself committed into `capsule_id` (§1's second consequence: self-attestation is the floor, not a flaw, and saying so plainly is what makes the record usable as evidence) — so the degradation travels with the record into any bundle or checkpoint a downstream reader sees, not only in this document. Ed25519 enforcement is filed as a follow-up, gated on this path graduating from PoC to one that drives a real trust decision (`[mesh-local-ingress-ed25519-when-graduated]`). |
 | R4 | The response received is not the response signed | Request and output digests under one signature | Built |
 | R5 | Later denial or rewriting | Signed, hash-chained records | Built, per node |
@@ -320,7 +346,7 @@ and is **never cited** as a live binding.
 | C0 Claimed | The node states a model and runtime | Nothing — a claim is not evidence | Built (labelled as claim) |
 | C1 Artifact-bound | The claimed bundle resolves to content-addressed digests within a declared equivalence class | That those bytes served *this* request | Partly (step 2) |
 | C2 Behaviourally checked | Output consistent with the claimed model — by **replay spot-check** (C2a) or **statistical fingerprint** (C2b) | Certainty. Each form fails differently; see below | Not built (step 4) |
-| C3 Execution-attested | A measured environment loaded those artifacts and produced this output | That the measured program is honest | Not built (step 5) |
+| C3 Execution-attested | A measured environment loaded those artifacts and produced this output | That the measured program is honest | Partly built via composition — `trace_citation.py` cites a foreign TRACE Trust Record's TDX quote by typed digest and carries it alongside the capsule, grading the citation `unattested` / `platform-attested` / `attested` (never a boolean; `agent-manifest`'s TDX verifier is a dependency, never re-implemented). A real 2-quote GCP capture reaches `platform-attested` — genuine Intel TDX silicon reported the cited measurement — which does NOT establish this row's full bar ("this measured environment produced this output"); `attested` (REPORT_DATA committing to the record-signing key) would, and is specified but unreachable from any artifact this codebase holds today. A quote-substitution mutant (two genuine, same-MRTD quotes, swapped) is green: measurement-matching binds to a *measurement*, never a *quote*, which is why the grade stays capped rather than rounding up |
 
 > **C2 has two forms, and the cheaper one is under-discussed.**
 >
@@ -379,7 +405,7 @@ and is **never cited** as a live binding.
 | Rung | Establishes | Does not establish | Status |
 |---|---|---|---|
 | D0 Unilateral | The node's account of the exchange | That the requester agrees; anything about who asked | Built — current state |
-| D1 Client-nonced | Freshness — no precomputation or replay | Who the requester is | Not built; the header is accepted, nothing sends it |
+| D1 Client-nonced | Freshness — no precomputation or replay | Who the requester is | Partly built (2026-08-21) — `capsule_sidecar.py`'s `_resolve_client_nonce()` tracks client-supplied nonces per node, in-memory, and labels a replayed nonce `client_supplied_replayed` rather than accepting it as indistinguishably fresh; scoped to one running node's process — not persisted across a restart, not shared across independently-operated nodes (see R3, §2.2, for the full scope) |
 | D2 Bilateral | Both parties bound to the same exchange | That either is honest — only that neither can disown what they committed | Not built |
 
 > **These map onto a vocabulary the record format already defines** [forthcoming revision]:
