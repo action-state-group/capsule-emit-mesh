@@ -31,7 +31,7 @@ it seals the host's own `openai.exchange.v1` lifecycle event), and a **Python
 `capsule_sidecar.py` reverse-proxy** (a zero-core-change observer, still valid as
 an alternative). Published as `action-state-group/capsule-emit-mesh`. Everything
 here is PUBLIC-safe (Apache-2.0, see [LICENSE](LICENSE)), and contains no
-trust-index / scoring / reputation / pricing language — a fail-closed neutrality
+trust-index / scoring / pricing language — a fail-closed neutrality
 CI gate (`.github/neutrality_scan.py`) enforces it.
 
 The relationship to Mesh-LLM is offered, not asserted: the native plugin is built
@@ -128,11 +128,11 @@ evidence that addresses each — are set out in full in the threat model:
 [`docs/TRUST-MODEL.md`](docs/TRUST-MODEL.md) **§2.2** (requester), **§2.3**
 (provider), **§2.4** (coordinator), **§2.5** (third-party auditor / court).
 
-**History is evidence a relying party computes over — not a reputation score we
-compute.** This is a neutrality invariant (`docs/TRUST-MODEL.md` §7; and
-Mesh-LLM's own `NODE_REP.md` reaches the same conclusion): no scoring, ranking,
-or reputation-index. Present the evidence; policy decides; nobody is the authority
-for the computation. Likewise the record **counts** (tokens, compute time) but
+**History is an account of facts, not a trust rating; anyone using it
+comparatively must bring their own Sybil resistance.** This is a neutrality
+invariant (`docs/TRUST-MODEL.md` §7; and Mesh-LLM's own `NODE_REP.md` reaches
+the same conclusion): no scoring, ranking, or trust-index. Present the
+evidence; policy decides; nobody is the authority for the computation. Likewise the record **counts** (tokens, compute time) but
 **must not price** — no currency, rate, or invoice (`docs/TRUST-MODEL.md` §6).
 
 **Split / stages, honestly (read before citing).** The coordinator receipt is a
@@ -536,7 +536,7 @@ evidence-request derivation.
 **No new record type.** This is a `chain_segment`-kind account from the same
 neutral `capsule_emit.account` fold-definition core `account_capsule.py` (PR
 #65, reviewed — see `docs/PR65-ACCOUNT-CAPSULE-REVIEW.md`) uses
-for its (range-kind) reputation account: an in-record chain, self-verifying
+for its (range-kind) account of facts: an in-record chain, self-verifying
 from its two endpoints (the boundary checkpoints' own `entry_digest()`s) and
 never a per-checkpoint reference list. `history_card.py` does not import
 `account_capsule.py` itself (that module's Nostr-publish half stays HELD) —
@@ -574,8 +574,8 @@ relies on stay O(log n) as the log grows.
 temperature-0, fixed-seed request twice and compare the two responses on the domain
 the record already commits to — `response_digest`. It answers one question only —
 do these two runs match on that domain — and is **deliberately not a scorer**: the
-result carries `match: true`/`false` and the two digests, never a confidence,
-trust, or reputation value. A mismatch is grounds to investigate, not a verdict
+result carries `match: true`/`false` and the two digests, never a confidence
+or trust-rating value. A mismatch is grounds to investigate, not a verdict
 (sampling non-determinism and cross-hardware execution are named, expected confounds
 in TRUST-MODEL.md's C2a discussion).
 

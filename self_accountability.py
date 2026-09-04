@@ -81,8 +81,10 @@ SHARED_ABSENT_REASON = (
 
 #: Substrings that must never appear as a dict key anywhere in a Pane A
 #: card -- "properties, not scores" (rules block, batch draft). Checked by
-#: `assert_no_rating_fields`, not just documented.
-FORBIDDEN_RATING_KEYS = ("score", "rating", "trust_level", "reputation", "grade_percent")
+#: `assert_no_rating_fields`, not just documented. A trust-rating-named
+#: field is barred by the neutrality gate at the repo level as well as
+#: here; this list catches the general scoring shape.
+FORBIDDEN_RATING_KEYS = ("score", "rating", "trust_level", "grade_percent")
 
 
 class RatingFieldError(ValueError):

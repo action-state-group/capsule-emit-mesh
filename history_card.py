@@ -38,7 +38,7 @@ but nothing here requires that.
 capsule content, no per-record (per-capsule) digests. A relying party gets
 "this node's history since size S is an unbroken, witnessed chain of N
 checkpoints averaging a K-second cadence" (or an honest `broken at <...>`),
-never a reputation number.
+never a trust-rating number.
 
 **Answerable only under a pin, never on demand.** `answer_full_history_request`
 refuses outright unless the requester supplies `expected_pin` -- the root of a

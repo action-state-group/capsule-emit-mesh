@@ -218,7 +218,7 @@ def test_assert_no_rating_fields_passes_on_a_clean_card():
     assert_no_rating_fields({"sealing": {"coverage_summary": "coverage: fully sealed"}})
 
 
-@pytest.mark.parametrize("key", ["score", "trust_score", "rating", "reputation_score", "trust_level"])
+@pytest.mark.parametrize("key", ["score", "trust_score", "rating", "grade_percent", "trust_level"])
 def test_mutant_rating_field_anywhere_in_the_tree_is_caught(key):
     with pytest.raises(RatingFieldError):
         assert_no_rating_fields({"sealing": {"history": {key: 0.9}}})

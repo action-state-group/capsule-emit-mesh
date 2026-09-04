@@ -571,8 +571,8 @@ def build_role_questions(
     req_q3 = _q(
         "Have I had good exchanges with this node before?",
         NOT_IN_RECORD,
-        "A per-node reputation predicate is computed by the relying party over its OWN history — "
-        "not carried in a single capsule. This viewer shows one exchange, not a history.",
+        "A per-node account-of-facts predicate is computed by the relying party over its OWN "
+        "history — not carried in a single capsule. This viewer shows one exchange, not a history.",
         evidence=["served_by_node_id"],
     )
 

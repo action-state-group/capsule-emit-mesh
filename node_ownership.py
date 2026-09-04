@@ -36,8 +36,8 @@ live) — we do NOT and CANNOT verify that the owner_id corresponds to any real
 person or organisation. The ``identity_limitation`` caveat below is carried INTO
 the identity capsule itself and INTO every serving capsule that cites it, exactly
 as requester_commitment.IDENTITY_LIMITATION_CAVEAT is carried for the cross-party
-block. Reputation is only as durable as identity: never imply the owner binding
-is externally verified.
+block. An account of facts is only as durable as identity: never imply the
+owner binding is externally verified.
 
 If no cert is present on a node (the default), we degrade gracefully: the serving
 capsule seals ``served_by_node_id`` only and marks the owner ABSENT
@@ -79,7 +79,7 @@ DEFAULT_NODE_OWNERSHIP_PATH = Path.home() / ".mesh-llm" / "node-ownership.json"
 #: HONESTY GRADE — carried INTO the identity capsule (as a caveat field on the
 #: owner->node subject) AND into every serving capsule that cites it. Same
 #: discipline as requester_commitment.IDENTITY_LIMITATION_CAVEAT for the
-#: cross-party block: reputation is only as durable as identity.
+#: cross-party block: an account of facts is only as durable as identity.
 IDENTITY_LIMITATION_CAVEAT = (
     "opt-in-self-asserted-owner-identity: this owner->node binding is an "
     "OPT-IN mesh-llm feature (off by default) whose owner key is "
@@ -90,8 +90,8 @@ IDENTITY_LIMITATION_CAVEAT = (
     "matches this node, and the cert is unexpired — it does NOT prove the "
     "owner_id corresponds to any real person or organisation. First-use "
     "acceptance of a self-asserted owner MUST NOT be treated as externally "
-    "verified identity; reputation attached to it is only as durable as that "
-    "self-assertion. Mirrors requester_commitment.IDENTITY_LIMITATION_CAVEAT "
+    "verified identity; any account of facts attached to it is only as "
+    "durable as that self-assertion. Mirrors requester_commitment.IDENTITY_LIMITATION_CAVEAT "
     "for the cross-party block."
 )
 

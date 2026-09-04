@@ -26,7 +26,7 @@ in-family with the Rust capsule-producer crate's `CHAIN_LINKAGE_FIELDS`
 exclusion from `capsule_id` (`jcs.rs`).
 
 WHAT THIS IS NOT (standing constraint — read before extending this file):
-  - Not a scorer. `SpotCheckResult` has no confidence, trust, or reputation
+  - Not a scorer. `SpotCheckResult` has no confidence or trust-rating
     field, and never will — that logic is Authority-tier and explicitly out
     of bounds for this neutral, public-repo lane.
   - Not a verdict. TRUST-MODEL.md is explicit that a mismatch is "grounds to

@@ -123,7 +123,7 @@ Three consequences run throughout:
 |---|---|---|
 | **Requester** | A prompt or task; a keypair they control | The claimed model served their request; the answer received is the answer produced; their input is not retained or repurposed; they spend no more than they authorized |
 | **Provider** (node operator) | Hardware, weights, an owner identity | Not to be liable for what strangers ask; to prove they served honestly; to bound what they learn, what they run, and what it costs |
-| **Coordinator / mesh** | Routing, topology, split layout | To admit or exclude nodes on evidence; to resolve disputes without adjudicating by reputation alone |
+| **Coordinator / mesh** | Routing, topology, split layout | To admit or exclude nodes on evidence; to resolve disputes without adjudicating by a trust rating alone |
 | **Third party** | Neither; arrives later | To evaluate a claim about an exchange they did not witness — an auditor, a regulator, a counterparty, a court |
 
 The third party is why records must be portable and offline-checkable. Evidence that only works
@@ -303,8 +303,8 @@ real person or organisation. An `identity_limitation` caveat
 (`node_ownership.IDENTITY_LIMITATION_CAVEAT`) is carried **into the identity
 capsule itself** (on the owner→node subject) **and** into every serving capsule
 that cites it — exactly as §4.1a carries its caveat for the cross-party block.
-Reputation is only as durable as identity; never imply the owner binding is
-externally verified. This realizes the owner→node leg of B2 only — the receipt-key
+An account of facts is only as durable as identity; never imply the owner
+binding is externally verified. This realizes the owner→node leg of B2 only — the receipt-key
 → owner-key delegation and hardware binding remain future work.
 
 **Graceful absent path (the default).** With no cert on the node, the serving
@@ -740,19 +740,21 @@ semantic. The record must say which unit it counted.
 ## 7. History, and why not a score
 
 Requesters want a sense of a provider's track record, and providers want the same about requesters.
-The obvious implementation is a reputation score, and it is the wrong one: someone has to compute it,
-which makes that party the arbiter of who gets work — a governance burden, a gaming target, and a
+The obvious implementation is a trust-rating score, and it is the wrong one: someone has to compute
+it, which makes that party the arbiter of who gets work — a governance burden, a gaming target, and a
 capture point for a system whose premise is that no party need be trusted.
 
-Mesh-LLM has already reached this conclusion independently. `docs/NODE_REP.md`: local reputation is a
-routing-safety mechanism, *"not a mesh trust system… not gossiped, not persisted as a network-wide
-score, and not used to prove peer identity, model honesty, owner attestation, or release
-provenance,"* with cross-node reputation deferred until there is a reviewed design.
+Mesh-LLM has already reached this conclusion independently. `docs/NODE_REP.md`: their local per-node
+signal is a routing-safety mechanism, *"not a mesh trust system… not gossiped, not persisted as a
+network-wide score, and not used to prove peer identity, model honesty, owner attestation, or release
+provenance,"* with cross-node signal-sharing deferred until there is a reviewed design.
 
 The constructive question — what a relying party may compute over registered records, and what
-assurance ordering that computation must respect — is being worked separately as agent reputation
+assurance ordering that computation must respect — is being worked separately as account-of-facts
 predicates, and is deliberately out of scope here. What belongs in a threat model is the negative
-result: **evidence is presented; policy decides; and nobody is the authority for the computation.**
+result: this is an account of facts, not a trust rating; anyone using it comparatively must bring
+their own Sybil resistance. **Evidence is presented; policy decides; and nobody is the authority for
+the computation.**
 
 ---
 
@@ -915,11 +917,11 @@ express a gradient:
   carries per-peer liveness (`last_seen`, round-trip time) and warms a peer only as it proves itself
   over repeated contact. This is trust-on-first-use raised by continuity — earned by a long-lived,
   re-verified connection, not asserted at introduction.
-- **Local reputation routes away from misbehaviour.** A node keeps a *local* reputation on each
-  target from observed outcomes and steers work away from nodes that misbehave. `NODE_REP.md` is
-  emphatic about what this is **not**: *not gossiped, not persisted as a network-wide score, and not
-  used to prove peer identity, model honesty, owner attestation, or release provenance* (§7). It is
-  routing-safety, ephemeral and local by construction.
+- **A local signal routes away from misbehaviour.** A node keeps a *local* per-target signal from
+  observed outcomes and steers work away from nodes that misbehave. `NODE_REP.md` is emphatic about
+  what this is **not**: *not gossiped, not persisted as a network-wide score, and not used to prove
+  peer identity, model honesty, owner attestation, or release provenance* (§7). It is routing-safety,
+  ephemeral and local by construction.
 
 So the native gradient is real but bounded: it protects the router's own next decision. It does not
 travel, does not survive as evidence, and cannot be shown to a third party. **That boundary is
@@ -928,7 +930,7 @@ portable.
 
 ### 12.2 What a record adds: portability, and proof
 
-The same outcome that nudges a local reputation counter can be **sealed**: a signed, content-addressed
+The same outcome that nudges a local per-target signal can be **sealed**: a signed, content-addressed
 record of what actually ran (Class C), optionally with the requester bound in (Class D), optionally
 witnessed to a log the node does not control (§8). That converts an ephemeral local signal into a
 portable, third-party-checkable one — a node's track record becomes **a set of records anyone verifies
@@ -941,7 +943,7 @@ The gradient, restated in these terms:
 |---|---|---|
 | **First contact** | what *this* record proves (Class C) + the neutral witness (§8) | a stranger with no shared history |
 | **Across interactions** | an accruing set of anchored records — a real track record | any relying party, offline |
-| **In the open system** | the same, plus mesh-llm's live transport/reputation gradient (§12.1) | the router, locally, now |
+| **In the open system** | the same, plus mesh-llm's live transport/local-signal gradient (§12.1) | the router, locally, now |
 
 Trust deepens on evidence, never on the machine's word or ours. A first exchange rests on the two
 layers a stranger can check unaided; a relationship's worth of anchored records is what lets a relying
@@ -1005,8 +1007,8 @@ it.
 |---|---|---|
 | This reply (Class C) | serving_provenance seals model/quant/hardware/usage; verifies offline | identity self-attested (§1); key not hardware-rooted |
 | Advertised-vs-served (C1 after-half) | the record proves what ran | advertised descriptor **not co-carried** — reconciliation needs the counterparty's note (§12.3) |
-| Machine history (§7) | records are portable, anchorable inputs | the reputation **predicate over them is deferred** — this section supplies inputs, not the computation |
-| Native transport/reputation (§12.1) | live in mesh-llm | local and ephemeral; our records do **not** yet consume `PeerInfo` continuity |
+| Machine history (§7) | records are portable, anchorable inputs | the account-of-facts **predicate over them is deferred** — this section supplies inputs, not the computation |
+| Native transport/local-signal (§12.1) | live in mesh-llm | local and ephemeral; our records do **not** yet consume `PeerInfo` continuity |
 | Coordinator graph (§12.5) | correlation spine + disclosure model | receipt **binding** stage order not built (C2/C3) |
 | Witness (§8) | checkpoint→receipt verified live | unwitnessed window is a rewrite window; weight records inside it differently |
 
