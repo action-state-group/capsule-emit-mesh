@@ -71,12 +71,12 @@ shape `capsule_sidecar.py` already does for the single-node case below.
 
 ## 2. Get capsules out of your running Mesh-LLM node
 
-| | sidecar-now | native-plugin-after-#1437 |
+| | sidecar-now | native-plugin |
 |---|---|---|
-| Works today | Yes | No — needs upstream Mesh-LLM/mesh-llm#1437 (plugin hooks), still OPEN |
+| Works today | Yes | Yes — #1437's plugin hooks are upstream now |
 | Captures | HTTP-observed request/response (a "collector") | The host's own `openai.exchange.v1` lifecycle event (a "gate") |
 | Where | `capsule_sidecar.py`, a reverse proxy in front of your node | Rust `admission-policy-plugin` + `capsule-producer`, in-process |
-| Extra step | None | Fork `StevenMih/mesh-llm`, PRs #1/#2/#3, rebased on upstream #1437 |
+| Extra step | None | None for the base hooks; a fork (`StevenMih/mesh-llm`, PRs #1/#2/#3) carries additional serving-provenance work stacked on top |
 
 ### sidecar-now
 
@@ -96,12 +96,19 @@ Mesh-LLM's own manifest for the loaded model when you have it.
 identity binding, advertised-vs-served reconciliation, and witness checkpointing respectively)
 — see `capsule-sidecar --help` and [docs/TRUST-MODEL.md](docs/TRUST-MODEL.md).
 
-### native-plugin-after-#1437
+### native-plugin
 
-Not runnable against upstream Mesh-LLM yet — it needs Mesh-LLM/mesh-llm#1437's plugin hooks,
-which are still OPEN. `plugins/capsule-producer` builds today against a fork
-(`StevenMih/mesh-llm`, PRs #1/#2/#3) that carries those hooks ahead of upstream merging them.
-Once #1437 lands, the same plugin builds against upstream directly. This is also the only path
-with the `self_measured` / `os_measured` / `tee_measured` runtime-attestation ladder
+Runs against upstream Mesh-LLM directly — #1437's plugin lifecycle hooks
+(`crates/mesh-llm-host-runtime/src/plugin/openai_exchange.rs`, the
+`mesh-native-serving-plugin-api`/`-host` crates) merged upstream.
+`plugins/capsule-producer` builds against Mesh-LLM's published `mesh-llm-plugin`
+protocol; a fork (`StevenMih/mesh-llm`, PRs #1/#2/#3) carries additional
+serving-provenance work stacked on top of the upstream hooks, not a dependency
+for this base path. This is also the only path with the `self_measured` /
+`os_measured` / `tee_measured` runtime-attestation ladder
 (see [docs/REDTEAM-RUNG3.md](docs/REDTEAM-RUNG3.md)) — not available on the sidecar path, which
 is why `capsule-coordinator-verify`'s `runtime` grade above stays at "self-attested" today.
+
+**Cargo pin note:** `plugins/admission-policy/Cargo.toml` pins `mesh-llm-plugin = "0.75"`.
+Upstream's workspace is ahead of that on `main` (pre-release, unpublished), but the published
+crate on crates.io is still `0.75.0` — there is nothing newer to move to yet.
