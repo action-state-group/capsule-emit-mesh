@@ -30,7 +30,11 @@
 # here. 0.7.0 also folds in the 0.6.1 float tool-arg canonicalization fix.
 # The floor is pinned at the tested release to prevent silent resolution back
 # to an older line.
-capsule-emit[mcp]>=0.7.0
+# TEMPORARY git-SHA pin (Steven-approved 2026-09-03): the E17a adjudicator + E14 responder depend on
+# capsule_emit.adjudication (#149) and capsule_emit.evidence_request (#148), which are on capsule-emit
+# main but not in any PUBLISHED wheel yet (0.7.0's wheel is held; 0.7.1 not cut). Pin the exact main
+# SHA so clean-venv CI resolves the real modules. Revert to `capsule-emit[mcp]>=0.7.1` once published.
+capsule-emit[mcp] @ git+https://github.com/action-state-group/capsule-emit@9ca8652cdde3b38327a756daf326efbe9c2b904d
 scitt-cose>=0.2.2
 cbor2
 mcp<2
