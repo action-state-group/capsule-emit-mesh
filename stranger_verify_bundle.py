@@ -94,17 +94,59 @@ def _issuer_key_for(ledger_dir: Path, issuer_key: Path | None) -> Path | None:
     return None
 
 
+def _authenticated_capsule_id(report) -> str | None:
+    """The capsule_id actually AUTHENTICATED by the COSE_Sign1 signature --
+    either the bare-digest `CAPSULE_ID_MEDIA_TYPE` subject, or (this repo's
+    own scheme: `sign_capsule()` signs the full capsule JSON) the content-hash
+    `agent_action_capsule.verify()` recomputes from the signed payload's own
+    bytes (`report.payload.capsule_id`). Mirrors
+    `capsule_mesh_view.py::_authenticated_capsule_id`. Never trust a
+    `subject`/filename claim the signature itself doesn't cover."""
+    if report.authenticated_capsule_id is not None:
+        return report.authenticated_capsule_id
+    if report.payload is not None:
+        return report.payload.capsule_id
+    return None
+
+
 def _transparent_check(ledger_dir: Path, capsule_id: str, issuer_key: Path | None) -> str | None:
     """Verify the DETACHED COSE_Sign1 Signed Statement for one capsule
     (`signed-statements/<capsule_id>.cose`, this repo's own producer-
     signature rung -- neither writer embeds a self-attested `signature`/
     `key_id` inline, so `agent_action_capsule.verify()`/`verify_store()`
     alone only prove content-hash + chain integrity, never who signed it;
-    this is the separate check that does). Returns a one-line status string,
-    or None if there is no statement to check (self-attested rung only)."""
+    this is the separate check that does). Returns a one-line status string.
+
+    [mesh-verify-bind-statement-to-capsuleid] Two adversarial-review findings
+    (ADV-1/ADV-2, `_work/mesh-adversarial-review-2026-09-05.md`) against the
+    prior version of this function, both re-verified by execution and both
+    fixed here:
+
+    - ADV-2: a MISSING statement used to return None, and the caller left
+      `ok` at whatever the content-hash-only check gave it -- so a wholly
+      fabricated, never-signed capsule (a self-consistent capsule_id over
+      arbitrary claims, no `signed-statements/` at all) read `OVERALL: PASS`.
+      Absence is not evidence: this now returns a "NO SIGNATURE:" line the
+      caller treats as a hard, named failure -- never a silent pass-through.
+    - ADV-1: a validly-signed statement was accepted for ANY capsule_id
+      requested, because `report.ok`/`signature_verified` alone only prove
+      SOME statement signed by the issuer key exists -- not that it was
+      signed over *this* capsule's bytes. A keyless relay can tamper a
+      record, recompute its own public unkeyed capsule_id, and rename the
+      original (still honestly signed) `.cose` to the new filename -- no key
+      material required. The authenticated subject is now bound back to
+      `capsule_id` (`_authenticated_capsule_id`); a mismatch is a
+      "SUBJECT MISMATCH:" hard failure, distinct from an unverified or
+      absent signature so a human reading it knows which attack was caught.
+    """
     statement_path = ledger_dir / "signed-statements" / f"{capsule_id}.cose"
     if not statement_path.exists():
-        return None
+        return (
+            "NO SIGNATURE: no signed-statements/"
+            f"{capsule_id}.cose found for this capsule -- absence of a "
+            "signed statement is not evidence of anything; a capsule with "
+            "no signature at all can never read PASS"
+        )
     if issuer_key is None:
         # A signed statement is present but NO key was found to check it. This
         # is NOT a pass: the caller degrades verify.ok for this capsule and the
@@ -117,6 +159,15 @@ def _transparent_check(ledger_dir: Path, capsule_id: str, issuer_key: Path | Non
         report = verify_transparent(statement_path=str(statement_path), issuer_key_path=str(issuer_key))
     except (OSError, SubstrateInputError) as exc:
         return f"transparent verify error: {exc}"
+    if report.signature_verified:
+        authenticated_id = _authenticated_capsule_id(report)
+        if authenticated_id is not None and authenticated_id != capsule_id:
+            return (
+                f"SUBJECT MISMATCH: statement at signed-statements/{capsule_id}.cose "
+                f"is validly signed, but authenticates capsule_id={authenticated_id} "
+                f"-- NOT {capsule_id}. Signed over a different capsule's bytes, "
+                "filed under (or renamed to) this one's filename."
+            )
     return f"transparent verify: signature_verified={report.signature_verified} ok={report.ok}"
 
 
@@ -180,7 +231,15 @@ def verify_bundle(
                 capsule_unverified = True
                 any_unverified = True
                 ok = False  # signature present but not checked -> not ok
-            elif "signature_verified=False" in transparent_line or "error" in transparent_line:
+            elif (
+                transparent_line.startswith("NO SIGNATURE:")
+                or transparent_line.startswith("SUBJECT MISMATCH:")
+                or "signature_verified=False" in transparent_line
+                or "error" in transparent_line
+            ):
+                # Named, hard failures (ADV-1/ADV-2) -- never UNVERIFIED (that
+                # state is reserved for "couldn't check", not "checked and it's
+                # wrong" or "there's nothing to check at all").
                 ok = False
 
         all_ok = all_ok and ok
