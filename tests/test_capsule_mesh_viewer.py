@@ -38,7 +38,7 @@ from capsule_mesh_viewer import (
 # A nested-shape mesh capsule (capsule-producer/0.2.0), the real-capture shape.
 def _nested_capsule(*, model="Llama-3.2-3B", quant="Q4_K_M", gpu="Apple M4 Max", vram=28991029248,
                     total_tokens=43, cross_party=None, chained=False,
-                    generation_parameters=None) -> dict:
+                    generation_parameters=None, role=None) -> dict:
     poc = {
         "client_nonce_source": "client_supplied",
         "model_name_digest": "f" * 64,
@@ -53,6 +53,10 @@ def _nested_capsule(*, model="Llama-3.2-3B", quant="Q4_K_M", gpu="Apple M4 Max",
             "usage": {"prompt_tokens": 41, "completion_tokens": 2, "total_tokens": total_tokens},
         },
     }
+    # [mesh-provider-no-body-persistence] Absent by default (pre-b6a-requester-
+    # seal shape); set explicitly for role-dependent tests (disclosure_status).
+    if role is not None:
+        poc["serving_provenance"]["role"] = role
     # The REAL requested sampling knobs sealed by #54 -- a sibling of
     # serving_provenance inside the poc block. Absent by default so the
     # absent-stays-absent tests can control it explicitly.
@@ -901,6 +905,108 @@ def test_load_disclosures_skips_malformed_files_without_raising(tmp_path):
     disclosures_dir.mkdir()
     (disclosures_dir / "broken.json").write_text("{not valid json")
     assert load_disclosures(tmp_path) == {}
+
+
+# ---------------------------------------------------------------------------
+# [mesh-provider-no-body-persistence] load_disclosure_purges + disclosure_status
+# -- the per-record persistence-honesty badge distinct from the per-field
+# disclosed/verify checks above.
+# ---------------------------------------------------------------------------
+
+
+def test_load_disclosure_purges_reads_tombstones(tmp_path):
+    from capsule_mesh_viewer import load_disclosure_purges
+
+    (tmp_path / "disclosures_purged.jsonl").write_text(
+        json.dumps({"capsule_id": "cap-1", "purged_at": "2026-09-01T00:00:00Z", "reason": "ttl"}) + "\n"
+    )
+    assert load_disclosure_purges(tmp_path) == {"cap-1": "2026-09-01T00:00:00Z"}
+
+
+def test_load_disclosure_purges_missing_file_returns_empty(tmp_path):
+    from capsule_mesh_viewer import load_disclosure_purges
+
+    assert load_disclosure_purges(tmp_path / "no-such-ledger") == {}
+
+
+def test_load_disclosure_purges_skips_malformed_lines(tmp_path):
+    from capsule_mesh_viewer import load_disclosure_purges
+
+    (tmp_path / "disclosures_purged.jsonl").write_text("not json at all\n")
+    assert load_disclosure_purges(tmp_path) == {}
+
+
+def test_load_disclosure_purges_keeps_latest_purged_at_per_capsule(tmp_path):
+    from capsule_mesh_viewer import load_disclosure_purges
+
+    (tmp_path / "disclosures_purged.jsonl").write_text(
+        json.dumps({"capsule_id": "cap-1", "purged_at": "2026-09-01T00:00:00Z", "reason": "ttl"}) + "\n"
+        + json.dumps({"capsule_id": "cap-1", "purged_at": "2026-09-02T00:00:00Z", "reason": "max_bytes"}) + "\n"
+    )
+    assert load_disclosure_purges(tmp_path) == {"cap-1": "2026-09-02T00:00:00Z"}
+
+
+def test_disclosure_status_provider_role_is_never_retained():
+    cap = _nested_capsule(role="provider")
+    conv = to_fragment_payload([cap], source_log="sidecar")["entries"][0]["conversation"]
+    assert conv["disclosure_status"] == "never retained (provider role)"
+
+
+def test_disclosure_status_requester_role_no_disclosure_no_purge_is_none():
+    cap = _nested_capsule(role="requester")
+    conv = to_fragment_payload([cap], source_log="sidecar")["entries"][0]["conversation"]
+    assert conv["disclosure_status"] is None
+
+
+def test_disclosure_status_present_reflects_the_field_verify_outcome():
+    """disclosure_status is a badge over the SAME verify outcome
+    conversation.response.verify already computed -- not independent logic
+    that could disagree with it."""
+    cid = "c" * 64
+    cap = _nested_capsule(role="requester")
+    conv = to_fragment_payload(
+        [cap], source_log="sidecar", disclose={cid: {"response": "hey"}}
+    )["entries"][0]["conversation"]
+    assert conv["response"]["disclosed"] is True
+    expected = "present (digest mismatch!)" if conv["response"]["verify"]["matches"] is False else "present (verified)"
+    assert conv["disclosure_status"] == expected
+
+
+def test_disclosure_status_present_digest_mismatch_when_body_disagrees_with_sealed_digest():
+    cid = "c" * 64
+    cap = _nested_capsule(role="requester")
+    # response_digest is "2"*64 in the fixture; this body will never recompute
+    # to that -- a real, forced digest mismatch, not the served-facts fallback.
+    tampered_body = {"choices": [{"message": {"content": "TAMPERED, never the sealed body"}}]}
+    conv = to_fragment_payload(
+        [cap], source_log="sidecar", disclose={cid: {"response": "TAMPERED", "response_body": tampered_body}}
+    )["entries"][0]["conversation"]
+    assert conv["response"]["verify"]["matches"] is False
+    assert conv["disclosure_status"] == "present (digest mismatch!)"
+
+
+def test_disclosure_status_purged_when_no_longer_present():
+    cid = "c" * 64
+    cap = _nested_capsule(role="requester")
+    conv = to_fragment_payload(
+        [cap], source_log="sidecar", disclosure_purges={cid: "2026-09-01T00:00:00Z"}
+    )["entries"][0]["conversation"]
+    assert conv["disclosure_status"] == "purged 2026-09-01T00:00:00Z"
+
+
+def test_disclosure_status_present_takes_priority_over_purge_record():
+    """A stale purge tombstone for a capsule_id that HAS since been
+    re-disclosed (or was never actually removed) must not shadow the real,
+    present disclosure -- present-and-checkable always wins."""
+    cid = "c" * 64
+    cap = _nested_capsule(role="requester")
+    conv = to_fragment_payload(
+        [cap],
+        source_log="sidecar",
+        disclose={cid: {"response": "hello"}},
+        disclosure_purges={cid: "2026-09-01T00:00:00Z"},
+    )["entries"][0]["conversation"]
+    assert conv["disclosure_status"] != "purged 2026-09-01T00:00:00Z"
 
 
 # ---------------------------------------------------------------------------

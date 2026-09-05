@@ -695,6 +695,12 @@ the receipt beyond what each stage record independently earns.
 plaintext in the operator's memory. Digest-only records protect the evidence trail, not the runtime.
 On a public mesh this is the dominant residual risk, and no rung in Classes A–D reduces it.
 
+### 5.1a Stated property: provider-side disclosure retention (mesh-provider-no-body-persistence)
+
+A provider node retains digests only. There is no configuration that retains prompt or response
+content in the provider role; the write path does not exist in the code. Verifiable by code audit;
+bound to the running binary at the `os_measured` rung.
+
 ### 5.2 What FHE changes, and what it does not
 
 It changes E0 to E3 for the compiled path: the operator cannot read prompts, outputs, KV state or

@@ -44,8 +44,9 @@ When the answer comes back, the receipt tells you, in plain terms:
   random seed, the length limit — the knobs that actually shape what comes out. Plus
   the graphics chip and memory it used, and how much work it took (the token counts).
   Everything that shapes an answer is in the receipt, not just the answer itself.
-- **The answer** — and it's tied to that record, so it can't be quietly swapped for a
-  different one.
+- **The answer** — the copy you already received, tied to that record so it can't be
+  quietly swapped for a different one. Same rule as your prompt: the provider's own
+  receipt commits to it by fingerprint only, never by keeping the words.
 
 And the key move: **you can re-check the receipt yourself, offline.** The record has a
 fingerprint computed from its own contents. Change *any* detail — the model, the

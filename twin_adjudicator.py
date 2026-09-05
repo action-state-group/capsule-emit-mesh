@@ -104,11 +104,12 @@ from agent_action_capsule.emit import emit
 from agent_action_capsule.verify import verify as verify_capsule
 from capsule_emit.numbers import float_to_str
 
-from capsule_sidecar import digest_json
+from capsule_sidecar import ROLE_PROVIDER, digest_json
 
 __all__ = [
     "CAPTURE_METHOD_DETERMINISTIC_REPLAY",
     "DEFAULT_MARGIN_TAU",
+    "NO_VERDICT_NO_REQUESTER_TRANSCRIPT",
     "NO_VERDICT_SAME_OWNER_TWIN",
     "NO_VERDICT_WEIGHTS_MISMATCH",
     "RELATION_ADJUDICATES",
@@ -148,6 +149,13 @@ VERDICT_CONTRADICTED_PREFIX = "contradicted:"
 #: fine, there is simply nothing to adjudicate.
 NO_VERDICT_WEIGHTS_MISMATCH = "weights_mismatch"
 NO_VERDICT_SAME_OWNER_TWIN = "same_owner_twin"
+#: [mesh-provider-no-body-persistence] The referee spec is explicit: the
+#: REQUESTER holds both twin responses. A half whose sealed serving_provenance
+#: names it as the provider role -- and carries no disclosed response body --
+#: has no transcript this module could ever have compared; refuse cleanly
+#: (`inconclusive: no_requester_transcript`) instead of letting
+#: _verify_preimage_or_raise crash on an always-empty disclosed dict.
+NO_VERDICT_NO_REQUESTER_TRANSCRIPT = "no_requester_transcript"
 
 #: Only a fully-matching comparison (margin == 1.0) clears the default
 #: threshold. Two temperature-0, fixed-seed, same-weights runs are expected
@@ -409,6 +417,26 @@ def _verify_preimage_or_raise(label: str, half: AdjudicationHalf) -> None:
         )
 
 
+def _half_role(half: AdjudicationHalf) -> str | None:
+    """The half's sealed `serving_provenance.role` ("provider"/"requester"),
+    read from the same `x-mesh-poc-v1` block `capsule_mesh_viewer.
+    serving_provenance()` reads. `None` for a capsule sealed before
+    b6a-requester-seal, which carries neither -- never fabricated."""
+    poc = ((half.capsule.get("model_attestation") or {}).get("compute_attestation") or {}).get("x-mesh-poc-v1") or {}
+    return (poc.get("serving_provenance") or {}).get("role")
+
+
+def _no_requester_transcript(half: AdjudicationHalf) -> bool:
+    """True when this half is a provider-role capsule with no disclosed
+    response body -- i.e. there is, by construction, no requester-held
+    transcript for it (mesh-provider-no-body-persistence: the provider role
+    has no disclosure write path at all). A provider-role half that somehow
+    DOES carry a disclosed response body (e.g. a caller manually attached
+    one) is not blocked here -- this only refuses the case that would
+    otherwise crash `_verify_preimage_or_raise` on an always-empty dict."""
+    return _half_role(half) == ROLE_PROVIDER and not half.disclosed.get("response_body")
+
+
 def adjudicate(
     half_a: AdjudicationHalf,
     half_b: AdjudicationHalf,
@@ -424,17 +452,23 @@ def adjudicate(
 
     1. Each half's capsule must pass its own `verify()` -- a forged half
        raises `ForgedHalfError`.
-    2. Each half's disclosed response body must hash to that half's
+    2. [mesh-provider-no-body-persistence] The referee spec requires the
+       REQUESTER to hold both twin responses. Either half being a
+       provider-role capsule with no disclosed response body -- i.e. no
+       requester-held transcript could exist for it, by construction --
+       returns cleanly with `no_verdict_reason="no_requester_transcript"`,
+       never a crash.
+    3. Each half's disclosed response body must hash to that half's
        declared `response_digest` -- a mismatch raises
        `PreimageDigestMismatchError` (abort BEFORE any comparison; never
        reason about bytes that don't match what was actually sealed).
-    3. If both halves declare a `weights_digest` and they differ, there is
+    4. If both halves declare a `weights_digest` and they differ, there is
        nothing to adjudicate -- returns with
        `no_verdict_reason="weights_mismatch"`.
-    4. If both halves' owners are known and equal, this isn't an
+    5. If both halves' owners are known and equal, this isn't an
        independent twin -- returns with `twin_owner_distinct=False`,
        `no_verdict_reason="same_owner_twin"`.
-    5. Otherwise, `compare_transcripts` the disclosed response text.
+    6. Otherwise, `compare_transcripts` the disclosed response text.
 
        Default (`logprob_tau=None`, the original E17a path, unchanged): a
        full match (`margin >= margin_tau`) is `corroborated`; anything else
@@ -456,11 +490,26 @@ def adjudicate(
         raise ValueError("adjudicate(logprob_tau=...) requires a referee callable")
     _verify_half_or_raise("half_a", half_a)
     _verify_half_or_raise("half_b", half_b)
-    _verify_preimage_or_raise("half_a", half_a)
-    _verify_preimage_or_raise("half_b", half_b)
 
     half_a_id = half_a.capsule_id
     half_b_id = half_b.capsule_id
+
+    if _no_requester_transcript(half_a) or _no_requester_transcript(half_b):
+        return AdjudicationOutcome(
+            verdict=None,
+            no_verdict_reason=NO_VERDICT_NO_REQUESTER_TRANSCRIPT,
+            divergence_index=None,
+            margin=0.0,
+            margin_tau=margin_tau,
+            prefix_digest=None,
+            twin_owner_distinct=None,
+            weights_digest=None,
+            half_a_capsule_id=half_a_id,
+            half_b_capsule_id=half_b_id,
+        )
+
+    _verify_preimage_or_raise("half_a", half_a)
+    _verify_preimage_or_raise("half_b", half_b)
 
     if (
         half_a.weights_digest is not None
