@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.error
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -247,6 +248,16 @@ class CheckpointState:
     #: ignores the age leg) is the restart catch-up path, so nothing is lost.
     _pending_since: float | None = field(default=None, repr=False)
 
+    #: COSE-wire bytes for `last_checkpoint`, cached so a witness retry (see
+    #: `retry_pending_witnesses`) can register the EXACT already-signed
+    #: checkpoint later without rebuilding it.
+    _last_checkpoint_cose: bytes | None = field(default=None, repr=False)
+    #: `ts_urls` from `last_checkpoint`'s own registration attempt that have
+    #: not yet succeeded -- what a later, activity-free tick still owes a
+    #: retry (MED-11: a registration failure must not stay unwitnessed
+    #: forever just because the node goes idle afterward).
+    _pending_ts_urls: list[str] = field(default_factory=list, repr=False)
+
     @classmethod
     def load(
         cls,
@@ -319,6 +330,11 @@ class CheckpointState:
         seconds_since = None if self._pending_since is None else self.clock() - self._pending_since
         if due_for_checkpoint(self.cfg, self.entries_since_checkpoint, seconds_since_last=seconds_since):
             return self._checkpoint_now()
+        # No new activity due for a fresh checkpoint -- still retry any
+        # witness registration left pending by a prior outage (MED-11):
+        # this is the only path an idle node has to ever get its last
+        # window witnessed once the TS comes back.
+        self.retry_pending_witnesses()
         return None
 
     def checkpoint_on_shutdown(self) -> CheckpointRecord | None:
@@ -353,6 +369,7 @@ class CheckpointState:
         if self.last_checkpoint is not None:
             last_leaf_count = _leaf_count_at_size(self.last_checkpoint.mmr_size)
             if self.mmr.leaf_count() <= last_leaf_count:
+                self.retry_pending_witnesses()
                 return None
         return self._checkpoint_now()
 
@@ -381,20 +398,36 @@ class CheckpointState:
         except Exception as exc:  # noqa: BLE001 -- best-effort, mirrors capsule_emit.witness's own COSE build
             print(f"COSE-wire checkpoint serialization failed (staying JSON-only, self-attested): {exc}")
 
-        for ts_url in self.cfg.ts_urls:
-            if checkpoint_cose is None:
-                print(f"skipping witness registration with {ts_url}: no COSE-wire checkpoint to send")
-                break
-            try:
-                witness = register_checkpoint(checkpoint_cose, ts_url)
-                cp.witnesses.append(witness)
-            except CheckpointError as exc:
-                # Registration is never on the serving path (TRUST-MODEL.md
-                # §8.4): an unreachable TS means this checkpoint stays
-                # locally-committed (self-checkpointed, not witnessed), not
-                # that anything upstream of it fails.
-                print(f"checkpoint registration with {ts_url} failed (staying self-checkpointed): {exc}")
+        # Registration is attempted BEFORE the write, same as upstream, so a
+        # same-call success is reflected in the one line this checkpoint
+        # ever gets on disk -- checkpoints.jsonl is one CheckpointRecord per
+        # line, strictly chained (history_card.py's continuity walk parses
+        # every line as one MMR transition; a second, same-mmr_size line
+        # for a later witness update would break that chain, and rewriting
+        # the original line would change its entry_digest() -- which
+        # COVERS `witnesses` -- out from under anything that already cited
+        # it, e.g. evidence_server.py). What changes here vs. before the
+        # fix is that a network-level failure (see _register_with) can no
+        # longer ESCAPE this method uncaught -- so the write below, and
+        # therefore the local stamp, can no longer be skipped by an
+        # unreachable witness either. Any URL that doesn't land this call
+        # is retried later (see retry_pending_witnesses), in memory only:
+        # the on-disk line stays self-attested, honestly, until a later
+        # REAL checkpoint (new activity, or a future write) is the next
+        # chance to carry a witnessed proof onto disk.
+        _, self._pending_ts_urls = self._register_with(cp, checkpoint_cose, list(self.cfg.ts_urls))
+        self._persist_checkpoint(cp, checkpoint_cose)
+        self.last_checkpoint = cp
+        self._last_checkpoint_cose = checkpoint_cose
+        self.entries_since_checkpoint = 0
+        # Backlog cleared: stop the age clock. It restarts (at that moment)
+        # only when the next new entry lands -- so the ~5-minute window is
+        # measured from the first NEW activity after this anchor, never as a
+        # free-running heartbeat.
+        self._pending_since = None
+        return cp
 
+    def _persist_checkpoint(self, cp: CheckpointRecord, checkpoint_cose: bytes | None) -> None:
         record = cp.to_dict()
         if checkpoint_cose is not None:
             # Sibling key, never folded into cp.to_dict()/cp.entry_digest()'s
@@ -405,14 +438,69 @@ class CheckpointState:
             record["checkpoint_cose"] = checkpoint_cose.hex()
         with self.checkpoints_path.open("a") as fh:
             fh.write(json.dumps(record, sort_keys=True) + "\n")
-        self.last_checkpoint = cp
-        self.entries_since_checkpoint = 0
-        # Backlog cleared: stop the age clock. It restarts (at that moment)
-        # only when the next new entry lands -- so the ~5-minute window is
-        # measured from the first NEW activity after this anchor, never as a
-        # free-running heartbeat.
-        self._pending_since = None
-        return cp
+
+    def _register_with(
+        self, cp: CheckpointRecord, checkpoint_cose: bytes | None, ts_urls: list[str]
+    ) -> tuple[bool, list[str]]:
+        """Attempt registration with each of `ts_urls`, appending any success
+        onto `cp.witnesses` in place. Returns (anything newly registered?,
+        the subset of `ts_urls` still unregistered)."""
+        newly_registered = False
+        still_pending: list[str] = []
+        for ts_url in ts_urls:
+            if checkpoint_cose is None:
+                print(f"skipping witness registration with {ts_url}: no COSE-wire checkpoint to send")
+                still_pending.append(ts_url)
+                continue
+            try:
+                witness = register_checkpoint(checkpoint_cose, ts_url)
+            except (CheckpointError, urllib.error.URLError) as exc:
+                # Registration is never on the serving path (TRUST-MODEL.md
+                # §8.4): "never on the serving path" must hold under a
+                # network-level failure too, not just the TS's own
+                # application-level CheckpointError -- a connection-refused
+                # or DNS-down witness raises urllib.error.URLError, which
+                # register_checkpoint does NOT wrap (only urllib.error.
+                # HTTPError, an already-connected TS returning a bad status,
+                # becomes CheckpointError). An unreachable TS means this
+                # checkpoint stays locally-committed (self-checkpointed, not
+                # witnessed) and pending for a later retry
+                # (`retry_pending_witnesses`), never that anything upstream
+                # of it fails or the daemon crashes.
+                print(f"checkpoint registration with {ts_url} failed (staying self-checkpointed, retrying later): {exc}")
+                still_pending.append(ts_url)
+                continue
+            cp.witnesses.append(witness)
+            newly_registered = True
+        return newly_registered, still_pending
+
+    def retry_pending_witnesses(self) -> bool:
+        """Retry registering `last_checkpoint` with whichever `ts_urls` are
+        still pending from its original attempt -- called from `tick()`/
+        `reconnect()` even when nothing new has landed (MED-11: a
+        registration failure must not be stuck unwitnessed forever just
+        because the node goes idle right after). No-op when there is no
+        checkpoint yet or nothing is pending.
+
+        A success updates `last_checkpoint.witnesses` (and therefore
+        `witness_status()`) in memory for the rest of this process's run,
+        but is deliberately NOT re-persisted to `checkpoints.jsonl`: that
+        file is one CheckpointRecord per line, each strictly chaining off
+        the previous one's `mmr_size` (history_card.py's continuity walk
+        depends on this), so a same-`mmr_size` follow-up line for a
+        witness-only update would fork that chain, and rewriting the
+        original line would change its `entry_digest()` -- which covers
+        `witnesses` -- out from under anything that already cited it. The
+        on-disk stamp for this checkpoint honestly stays self-attested; the
+        next REAL checkpoint (new activity, or `checkpoint_on_shutdown`) is
+        what next carries a witnessed proof onto disk. Returns whether
+        anything newly registered."""
+        if not self._pending_ts_urls or self.last_checkpoint is None:
+            return False
+        newly_registered, self._pending_ts_urls = self._register_with(
+            self.last_checkpoint, self._last_checkpoint_cose, self._pending_ts_urls
+        )
+        return newly_registered
 
     def witness_status(self) -> str:
         return describe_witness_state(self.last_checkpoint, self.mmr.leaf_count())

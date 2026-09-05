@@ -330,16 +330,84 @@ def test_witness_unreachable_keeps_checkpointing_locally_then_recovers(tmp_path,
     # The stamp is on disk locally regardless of the witness being down.
     assert (tmp_path / "checkpoints.jsonl").exists()
 
-    # Witness recovers; new activity arrives; next tick registers.
+    # Witness recovers. Retry-without-new-activity (MED-11): the very next
+    # tick -- even the "notice" pass, before a fresh checkpoint is due --
+    # retries and lands the PENDING registration for the checkpoint already
+    # persisted above; it does not wait for a new checkpoint to come due.
     down["is"] = False
     log.append(_fake_capsule(1))
-    assert state.tick() is None  # notice
+    assert state.tick() is None  # notice -- but the pending retry fires here
+    assert registered == ["https://fake-ts.example"]
+    assert len(cp.witnesses) == 1  # the FIRST checkpoint, backfilled in place
+
     clock.advance(300)
     cp2 = state.tick()
     assert cp2 is not None
-    assert registered == ["https://fake-ts.example"]
+    assert registered == ["https://fake-ts.example", "https://fake-ts.example"]
     # The recovery checkpoint chains over the locally-committed one (self-heals).
     assert cp2.prev_size == cp.mmr_size
+
+
+def test_witness_unreachable_via_url_error_not_just_checkpoint_error(tmp_path, monkeypatch):
+    """[adv-witness-outage-serving-path] register_checkpoint only wraps
+    urllib.error.HTTPError into CheckpointError; a connection-refused/DNS-down
+    failure raises the unwrapped urllib.error.URLError. Catching only
+    CheckpointError (the pre-fix code) lets that propagate out of tick() and
+    crash the daemon -- this must be caught exactly like CheckpointError."""
+    import urllib.error
+
+    clock = _Clock()
+
+    def _register(checkpoint_cose, ts_url, *, timeout=30.0):
+        raise urllib.error.URLError(ConnectionRefusedError("connection refused"))
+
+    monkeypatch.setattr(checkpointing, "register_checkpoint", _register)
+
+    log, state = _state(tmp_path, clock, cadence_seconds=300)
+    log.append(_fake_capsule(0))
+    assert state.tick() is None  # notice
+    clock.advance(300)
+
+    cp = state.tick()  # must NOT raise
+    assert cp is not None
+    assert cp.witnesses == []
+    assert (tmp_path / "checkpoints.jsonl").exists()
+
+
+def test_retry_pending_witnesses_without_any_new_activity(tmp_path, monkeypatch):
+    """MED-11, isolated: no new capsule ever arrives after the outage -- the
+    daemon must still eventually witness the idle node's last window, driven
+    purely by later ticks, never by new activity."""
+    clock = _Clock()
+    down = {"is": True}
+    registered = []
+
+    def _register(checkpoint_cose, ts_url, *, timeout=30.0):
+        if down["is"]:
+            raise CheckpointError("connection refused (witness down)")
+        registered.append(ts_url)
+        return WitnessRecord(
+            ts_url=ts_url, entry_hash="h", receipt_b64="eA==",
+            leaf_index=len(registered) - 1, tree_size=len(registered),
+        )
+
+    monkeypatch.setattr(checkpointing, "register_checkpoint", _register)
+
+    log, state = _state(tmp_path, clock, cadence_seconds=300)
+    log.append(_fake_capsule(0))
+    assert state.tick() is None  # notice
+    clock.advance(300)
+    cp = state.tick()
+    assert cp is not None
+    assert cp.witnesses == []
+
+    # No new capsules from here on -- due_for_checkpoint alone would never
+    # fire again (only-if-new-activity), so a bare tick() must still retry.
+    down["is"] = False
+    assert state.tick() is None  # not due (no new activity) -- but retries
+    assert registered == ["https://fake-ts.example"]
+    assert len(cp.witnesses) == 1
+    assert "NOT independently witnessed" not in state.witness_status()
 
 
 # -- build_state: mesh defaults + config/flag override -------------------------

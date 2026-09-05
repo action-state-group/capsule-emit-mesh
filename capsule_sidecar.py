@@ -1145,7 +1145,20 @@ def record_capsule(state: NodeState, capsule: dict[str, Any], signed_statement: 
     state.last_capsule_id = capsule["capsule_id"]
     state.emitted.append(capsule)
     if state.checkpoint is not None:
-        state.checkpoint.record_appended()
+        try:
+            state.checkpoint.record_appended()
+        except Exception as exc:  # noqa: BLE001 -- best-effort, availability-only guard
+            # [adv-witness-outage-serving-path] Mirrors the plugin leg's
+            # guard below: checkpointing.py's own registration retry already
+            # keeps a down/unreachable witness off this call's critical path
+            # (see its module docstring / TRUST-MODEL.md §8.4), but this
+            # node's OWN checkpoint call was previously the one call in this
+            # function left unguarded -- any failure here (network-level or
+            # otherwise) must never fail the exchange this sidecar is
+            # otherwise done recording. capsules.jsonl and the .cose
+            # statement are already written above regardless; a missed
+            # checkpoint is picked up whole on the next successful tick.
+            print(f"checkpoint record_appended failed (best-effort, continuing): {exc}")
     # Opportunistic: this process has no direct hook into the Rust plugin's
     # own writes (a separate process), so it piggybacks the plugin ledger's
     # cadence check on its own request-handling cadence instead of running a
