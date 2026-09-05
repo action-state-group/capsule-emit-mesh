@@ -888,15 +888,38 @@ def build_capsule(
         requesting_party = state.node_id
         counterparty_ref = peer_capsule_id
         counterparty_ref_provenance = "peer_asserted" if peer_capsule_id else None
+        # [adv-stream-membership-authenticated] The requester's outbound
+        # sidecar has no cryptographic (or even self-reported) signal for
+        # WHO served it -- see the block comment above. `counterparty_ref`
+        # is a per-exchange capsule id, not a stable node identity, so it
+        # cannot be promoted into the sequencing bucket key without turning
+        # every exchange into its own singleton "pair" (defeating continuity
+        # entirely). This stays honestly `unauthenticated`, tracked as a
+        # live-mesh gap distinct from this task.
+        counterparty_id_provenance = "unauthenticated"
     else:
         served_by_node_id = state.node_id
-        requesting_party = (
-            bilateral_eval.initiator_ref
-            if bilateral_eval and bilateral_eval.valid and bilateral_eval.initiator_ref
-            else "unknown"
-        )
+        bilateral_verified = bool(bilateral_eval and bilateral_eval.valid and bilateral_eval.initiator_ref)
+        requesting_party = bilateral_eval.initiator_ref if bilateral_verified else "unknown"
         counterparty_ref = None
         counterparty_ref_provenance = None
+        # [adv-stream-membership-authenticated] Stream membership on the
+        # provider side is bound to `initiator_ref` only when the caller's
+        # bilateral request attestation verified (Move 2, signature-checked
+        # against the presented pubkey) -- a real, if non-conformant,
+        # authenticated binding, never a self-reported string this producer
+        # could pick freely. Every other case (no attestation sent, or one
+        # that failed verification) is honestly `unauthenticated` and files
+        # into the shared UNKNOWN_COUNTERPARTY bucket. That bucket is a
+        # legitimate fallback, but it is also where a dishonest provider
+        # could try to hide deniable exchanges from a counterparty that DID
+        # attest elsewhere -- labeling every record with this provenance
+        # (never just "unknown" with no explanation) is what lets a reader
+        # tell "no attestation was ever offered" apart from "the sidecar
+        # chose to drop it," and is what history_summary's
+        # `pair_sequencing.unauthenticated_records` (self_accountability.py)
+        # surfaces in aggregate so the bucket can never blend in silently.
+        counterparty_id_provenance = "bilateral_verified" if bilateral_verified else "unauthenticated"
     # [mesh-sequence-per-counterparty] Per-(self, counterparty) monotone seq
     # (history proposal §1 -- continuity is bilateral only). `self` is
     # always this node (state.node_id); the counterparty is the OTHER half
@@ -924,6 +947,14 @@ def build_capsule(
         "quantization": "unknown",
         "counterparty_ref": counterparty_ref,
         "counterparty_ref_provenance": counterparty_ref_provenance,
+        # [adv-stream-membership-authenticated] Whether `counterparty_id`
+        # (the value actually fed to the sequence counter above) came from
+        # an authenticated binding -- "bilateral_verified" (provider role,
+        # verified Move 2 signature) or "unauthenticated" (every other
+        # case, both roles). Never "unknown" alone: a reader must not have
+        # to infer authentication status from string-matching this bucket's
+        # name.
+        "counterparty_id_provenance": counterparty_id_provenance,
     }
     reconciliation = reconcile_advertised_vs_served(state.advertisement, serving_provenance)
 

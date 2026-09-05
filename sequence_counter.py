@@ -22,6 +22,9 @@ stream alone and reports it as a broken pair, never a fresh start.
 from __future__ import annotations
 
 import json
+import os
+import threading
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -29,6 +32,7 @@ from typing import Any, Callable, Iterable
 __all__ = [
     "UNKNOWN_COUNTERPARTY",
     "pair_key",
+    "pair_counterparty_authenticated",
     "SequenceCounterStore",
     "PairContinuity",
     "extract_pair_seq",
@@ -47,13 +51,41 @@ def pair_key(self_id: str, counterparty_id: str | None) -> str:
     return f"{self_id}::{counterparty_id or UNKNOWN_COUNTERPARTY}"
 
 
+def pair_counterparty_authenticated(pair: str) -> bool:
+    """`False` iff *pair* is bucketed under `UNKNOWN_COUNTERPARTY` -- i.e. no
+    authenticated (or at least self-reported-and-named) counterparty id was
+    available when the records in this pair were sealed. [adv-stream-
+    membership-authenticated]: this bucket is a legitimate, honest fallback
+    for a genuinely unauthenticated exchange, but it is ALSO where a
+    dishonest node can file exchanges it wants deniable while keeping a
+    named pair's stream contiguous. Exposing this as an explicit boolean
+    (rather than leaving callers to string-match `pair`) is what makes that
+    bucket VISIBLE in continuity output instead of blending silently into
+    the aggregate."""
+    return not pair.endswith(f"::{UNKNOWN_COUNTERPARTY}")
+
+
 class SequenceCounterStore:
     """Persists the last-issued `seq` per `(self, counterparty)` pair beside
     the ledger. See the module docstring for why this cache is never the
-    source of truth for continuity."""
+    source of truth for continuity.
+
+    [adv-stream-membership-authenticated] `next_seq` is called from the
+    sidecar's `ThreadingHTTPServer` request handler, so concurrent requests
+    call it concurrently on the SAME store instance. An unlocked
+    read-modify-write here lets two threads issue the same `seq` twice (a
+    lost update -- indistinguishable from the reset-cache regression
+    `verify_pair_continuity` exists to catch, except this one is a bug, not
+    an attack), and `_save()`'s previous shared `.tmp` name let two threads'
+    writes race each other (`FileNotFoundError` when one thread's
+    `tmp.replace()` runs after another already consumed that same tmp path).
+    Both are now serialized behind `self._lock`, and each `_save()` call
+    writes its own uniquely-named tmp file, so concurrent callers can no
+    longer step on each other's in-flight write."""
 
     def __init__(self, path: Path):
         self.path = path
+        self._lock = threading.Lock()
         self._state: dict[str, int] = self._load()
 
     def _load(self) -> dict[str, int]:
@@ -70,20 +102,25 @@ class SequenceCounterStore:
         return {str(k): int(v) for k, v in raw.items()}
 
     def _save(self) -> None:
-        tmp = self.path.with_suffix(".tmp")
+        # Unique per call (pid + random token), never a fixed name shared by
+        # every writer -- see the class docstring. Caller must hold `_lock`.
+        tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
         tmp.write_text(json.dumps(self._state, sort_keys=True), encoding="utf-8")
         tmp.replace(self.path)
 
     def next_seq(self, self_id: str, counterparty_id: str | None) -> tuple[int, int | None]:
         """Issues the next `seq` for `(self_id, counterparty_id)`, returning
         it alongside the pair's previous `seq` (`None` the first time this
-        store has seen the pair)."""
-        key = pair_key(self_id, counterparty_id)
-        prev_seq = self._state.get(key)
-        seq = (prev_seq or 0) + 1
-        self._state[key] = seq
-        self._save()
-        return seq, prev_seq
+        store has seen the pair). Thread-safe: the read, increment, and save
+        are one atomic critical section, so concurrent callers for the same
+        or different pairs never lose an update or observe a torn file."""
+        with self._lock:
+            key = pair_key(self_id, counterparty_id)
+            prev_seq = self._state.get(key)
+            seq = (prev_seq or 0) + 1
+            self._state[key] = seq
+            self._save()
+            return seq, prev_seq
 
 
 @dataclass(frozen=True)
@@ -94,12 +131,19 @@ class PairContinuity:
     only mean a reset or forgery, never a legitimate fresh start). A pure
     GAP (missing records, `seq` jumping forward by more than one) is softer:
     it increments `gaps_detected`, a labeled count and never a score, and
-    does NOT by itself mark the pair broken."""
+    does NOT by itself mark the pair broken.
+
+    `counterparty_authenticated` is `False` exactly when `pair` is the
+    `UNKNOWN_COUNTERPARTY` bucket (see `pair_counterparty_authenticated`) --
+    a labeled fact, never a score, so a reader can tell "this stream has no
+    named counterparty" apart from "this stream is broken" without parsing
+    the pair string itself."""
 
     pair: str
     continuity: str
     gaps_detected: int
     records_checked: int
+    counterparty_authenticated: bool
 
 
 def _poc_block(capsule: dict[str, Any]) -> dict[str, Any]:
@@ -215,6 +259,7 @@ def verify_pair_continuity(
             ),
             gaps_detected=gaps.get(key, 0),
             records_checked=count,
+            counterparty_authenticated=pair_counterparty_authenticated(key),
         )
         for key, count in counts.items()
     }

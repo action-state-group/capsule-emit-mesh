@@ -30,6 +30,7 @@ import capsule_sidecar as cs
 from sequence_counter import (
     UNKNOWN_COUNTERPARTY,
     SequenceCounterStore,
+    pair_counterparty_authenticated,
     pair_key,
     verify_pair_continuity,
 )
@@ -108,6 +109,52 @@ def test_missing_counterparty_collapses_to_unknown_bucket_never_invented() -> No
     assert pair_key("node-a", None) == f"node-a::{UNKNOWN_COUNTERPARTY}"
     assert pair_key("node-a", "") == f"node-a::{UNKNOWN_COUNTERPARTY}"
     assert pair_key("node-a", "node-b") == "node-a::node-b"
+
+
+def test_pair_counterparty_authenticated_is_false_only_for_the_unknown_bucket() -> None:
+    assert pair_counterparty_authenticated(pair_key("node-a", "node-b")) is True
+    assert pair_counterparty_authenticated(pair_key("node-a", None)) is False
+    assert pair_counterparty_authenticated(pair_key("node-a", UNKNOWN_COUNTERPARTY)) is False
+
+
+def test_concurrent_next_seq_never_loses_an_update_or_crashes(tmp_path: Path) -> None:
+    """[adv-stream-membership-authenticated] ADV-6's threading finding:
+    `sequence_counter.py`'s unlocked read-modify-write plus a shared `.tmp`
+    filename crashed and/or lost updates under concurrent callers -- the
+    sidecar's `ThreadingHTTPServer` calls `next_seq` from a fresh thread per
+    request. 8 threads x 50 calls each on ONE store/ONE pair must issue
+    seq=1..400 exactly once each, with no exception escaping any thread."""
+    import threading
+
+    store = SequenceCounterStore(tmp_path / "sequence_counters.json")
+    n_threads, calls_per_thread = 8, 50
+    issued: list[int] = []
+    issued_lock = threading.Lock()
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            for _ in range(calls_per_thread):
+                seq, _ = store.next_seq("node-a", "node-b")
+                with issued_lock:
+                    issued.append(seq)
+        except BaseException as exc:  # noqa: BLE001 -- captured to fail the test, not swallowed
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == [], f"next_seq raised under concurrency: {errors!r}"
+    total = n_threads * calls_per_thread
+    assert sorted(issued) == list(range(1, total + 1)), "lost or duplicated update under concurrent next_seq"
+
+    # The persisted cache reflects the true total, and reopening resumes past it.
+    reopened = SequenceCounterStore(store.path)
+    seq, prev = reopened.next_seq("node-a", "node-b")
+    assert (seq, prev) == (total + 1, total)
 
 
 def test_counter_state_persists_across_reopen(tmp_path: Path) -> None:
@@ -282,6 +329,76 @@ def test_requester_role_seals_seq_keyed_on_served_by_node_id(tmp_path: Path) -> 
     assert sp1["served_by_node_id"] == "unknown"
     assert (sp1["seq"], sp1["prev_seq"]) == (1, None)
     assert (sp2["seq"], sp2["prev_seq"]) == (2, 1)
+
+
+def test_requester_role_counterparty_id_provenance_is_unauthenticated(tmp_path: Path) -> None:
+    """[adv-stream-membership-authenticated] The requester's `unknown` bucket
+    must be LABELED, not just named -- a reader must not have to infer
+    authentication status from the string "unknown" alone."""
+    cs_mod = _real_capsule_sidecar()
+    state = _state(tmp_path, role=cs_mod.ROLE_REQUESTER, node_id="m4")
+    sp = _serving_provenance(_seal(state))
+    assert sp["counterparty_id_provenance"] == "unauthenticated"
+
+
+def test_provider_role_with_verified_bilateral_eval_binds_authenticated_provenance(tmp_path: Path) -> None:
+    """[adv-stream-membership-authenticated] A provider that DOES verify the
+    caller's bilateral request attestation must bind stream membership to
+    that authenticated `initiator_ref` -- and say so explicitly via
+    `counterparty_id_provenance`, never leaving it to look identical to an
+    unauthenticated exchange that merely happened to name the same party."""
+    cs_mod = _real_capsule_sidecar()
+    state = _state(tmp_path, role=cs_mod.ROLE_PROVIDER, node_id="m3")
+    verified_eval = cs_mod.BilateralEvalResult(
+        present=True, valid=True, initiator_ref="m4-pubkey-fingerprint", correlator=None, fail_reason=None,
+    )
+    capsule = cs_mod.build_capsule(
+        state,
+        client_nonce="n" * 32,
+        client_nonce_source="client_supplied",
+        request_json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+        request_digest="a" * 64,
+        status="confirmed",
+        response_digest="b" * 64,
+        verdict_class="executed",
+        disposition_decision="accept",
+        latency_ms=1.0,
+        exchange_id="chatcmpl-fixed",
+        exchange_id_source="response_id",
+        bilateral_eval=verified_eval,
+    )
+    sp = _serving_provenance(capsule)
+    assert sp["requesting_party"] == "m4-pubkey-fingerprint"
+    assert sp["counterparty_id_provenance"] == "bilateral_verified"
+
+
+def test_provider_role_with_failed_bilateral_eval_stays_unauthenticated(tmp_path: Path) -> None:
+    """A PRESENT but invalid attestation (malformed/expired/mismatched) must
+    file exactly like no attestation at all: `unknown` + `unauthenticated`,
+    never a partial-credit label."""
+    cs_mod = _real_capsule_sidecar()
+    state = _state(tmp_path, role=cs_mod.ROLE_PROVIDER, node_id="m3")
+    failed_eval = cs_mod.BilateralEvalResult(
+        present=True, valid=False, initiator_ref=None, correlator=None, fail_reason="bad signature",
+    )
+    capsule = cs_mod.build_capsule(
+        state,
+        client_nonce="n" * 32,
+        client_nonce_source="client_supplied",
+        request_json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+        request_digest="a" * 64,
+        status="confirmed",
+        response_digest="b" * 64,
+        verdict_class="executed",
+        disposition_decision="accept",
+        latency_ms=1.0,
+        exchange_id="chatcmpl-fixed",
+        exchange_id_source="response_id",
+        bilateral_eval=failed_eval,
+    )
+    sp = _serving_provenance(capsule)
+    assert sp["requesting_party"] == "unknown"
+    assert sp["counterparty_id_provenance"] == "unauthenticated"
 
 
 def test_different_counterparties_get_independent_counters(tmp_path: Path) -> None:
