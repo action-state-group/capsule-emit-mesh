@@ -60,6 +60,9 @@ struct Step {
     exchange_id: &'static str,
     prompt_tokens: u64,
     completion_tokens: u64,
+    /// This step's position in the (single, fixed) demo counterparty pair's
+    /// monotone sequence -- 1-indexed, matching `SequenceCounterStore`.
+    seq: u64,
 }
 
 fn demo_steps() -> [Step; 3] {
@@ -77,6 +80,7 @@ fn demo_steps() -> [Step; 3] {
             exchange_id: "chatcmpl-demo3-0001",
             prompt_tokens: 128,
             completion_tokens: 64,
+            seq: 1,
         },
         Step {
             name: "check_policy",
@@ -89,6 +93,7 @@ fn demo_steps() -> [Step; 3] {
             exchange_id: "chatcmpl-demo3-0002",
             prompt_tokens: 96,
             completion_tokens: 40,
+            seq: 2,
         },
         Step {
             name: "confirm",
@@ -101,6 +106,7 @@ fn demo_steps() -> [Step; 3] {
             exchange_id: "chatcmpl-demo3-0003",
             prompt_tokens: 80,
             completion_tokens: 24,
+            seq: 3,
         },
     ]
 }
@@ -160,6 +166,12 @@ fn step_input(step: &Step, chain: Option<ChainLink>) -> CapsuleInput {
                     completion_tokens: step.completion_tokens,
                     total_tokens: step.prompt_tokens + step.completion_tokens,
                 }),
+                // Deterministic 3-step demo, single counterparty throughout --
+                // a real monotone seq per step, computed by hand here since
+                // this binary predates SequenceCounterStore and stays a fixed,
+                // reproducible fixture generator.
+                seq: step.seq,
+                prev_seq: if step.seq > 1 { Some(step.seq - 1) } else { None },
             },
             generation_parameters,
             latency_ms: "42.0".to_string(),

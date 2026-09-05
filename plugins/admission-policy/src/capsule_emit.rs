@@ -18,6 +18,7 @@ use capsule_producer::cose::{build_signed_statement, SignedStatementInput};
 use capsule_producer::jcs;
 use capsule_producer::keys::{self, KeyPair};
 use capsule_producer::ledger::Ledger;
+use capsule_producer::sequence::SequenceCounterStore;
 use capsule_producer::timestamp::utc_now_iso8601;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -194,6 +195,11 @@ pub struct CapsuleState {
     keys: KeyPair,
     ledger: Mutex<Ledger>,
     node_id: String,
+    /// Per-`(self, counterparty)` monotone `seq`/`prev_seq` cache, persisted
+    /// beside the ledger at `<data_dir>/sequence_counters.json` (see
+    /// `capsule_producer::sequence` for why this cache is never the source
+    /// of truth for continuity).
+    sequence_counters: Mutex<SequenceCounterStore>,
 }
 
 pub struct EmittedCapsule {
@@ -263,10 +269,12 @@ impl CapsuleState {
             recovered_entries = report.valid_entries,
             "capsule-producer ledger opened"
         );
+        let sequence_counters = SequenceCounterStore::open(data_dir.join("sequence_counters.json"));
         Ok(Self {
             keys,
             ledger: Mutex::new(ledger),
             node_id: node_id.into(),
+            sequence_counters: Mutex::new(sequence_counters),
         })
     }
 
@@ -336,6 +344,17 @@ impl CapsuleState {
         let binary_attestation =
             capsule_producer::runtime_attest::measure_self(&self.keys, utc_now_iso8601());
 
+        // Provider-side pair key (history proposal §1): self = this node
+        // (`served_by_node_id` below); counterparty = the requesting party,
+        // from a forwarded identity header when present, else the honest
+        // "unknown" bucket -- never invented.
+        let requesting_party_id = requesting_party.unwrap_or("unknown").to_string();
+        let sequence = self
+            .sequence_counters
+            .lock()
+            .expect("sequence counter mutex poisoned")
+            .next_seq(&self.node_id, &requesting_party_id)?;
+
         let input = CapsuleInput {
             action_id: format!("mesh-poc/capsule-emit-mesh-integration/{agent_input_digest}"),
             action_type: "decide".to_string(),
@@ -382,7 +401,7 @@ impl CapsuleState {
                         .served_by_node_id
                         .clone()
                         .unwrap_or_else(|| self.node_id.clone()),
-                    requesting_party: requesting_party.unwrap_or("unknown").to_string(),
+                    requesting_party: requesting_party_id.clone(),
                     exchange_id: exchange_id.unwrap_or("unknown").to_string(),
                     hostname: host.hostname.clone(),
                     // Quantization from the host serving-provenance block when it
@@ -409,6 +428,8 @@ impl CapsuleState {
                     model_revision: host.model_revision.clone(),
                     // Real token counts from the response body's `usage`, if any.
                     usage,
+                    seq: sequence.seq,
+                    prev_seq: sequence.prev_seq,
                 },
                 generation_parameters,
                 latency_ms: format!("{latency_ms:.3}"),
@@ -657,6 +678,15 @@ impl CapsuleState {
         let binary_attestation =
             capsule_producer::runtime_attest::measure_self(&self.keys, utc_now_iso8601());
 
+        // Observe path carries no requester identity (see the honest
+        // "unknown" requesting_party below) -- the pair is keyed on that same
+        // "unknown" bucket, never a fabricated counterparty.
+        let sequence = self
+            .sequence_counters
+            .lock()
+            .expect("sequence counter mutex poisoned")
+            .next_seq(&self.node_id, "unknown")?;
+
         let input = CapsuleInput {
             action_id: format!("mesh-poc/capsule-emit-mesh-host-served/{agent_input_digest}"),
             action_type: "decide".to_string(),
@@ -714,6 +744,8 @@ impl CapsuleState {
                     model_revision: host.model_revision.clone(),
                     // The REAL token counts from the host terminal event.
                     usage,
+                    seq: sequence.seq,
+                    prev_seq: sequence.prev_seq,
                 },
                 generation_parameters,
                 // Latency is not carried on the observe path (the plugin did not
@@ -1392,6 +1424,120 @@ mod tests {
             "node key must verify the binary-hash signature it produced"
         );
         assert_eq!(att["signature"].as_str().unwrap().len(), 128, "ed25519 hex sig");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn seq_of(capsule: &Value) -> (u64, Option<u64>) {
+        let sp = &capsule["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]
+            ["serving_provenance"];
+        (
+            sp["seq"].as_u64().expect("seq is a u64"),
+            sp["prev_seq"].as_u64(),
+        )
+    }
+
+    fn sample_exchange<'a>(requesting_party: &'a str) -> ExchangeRecord<'a> {
+        ExchangeRecord {
+            model: "m",
+            client_nonce: Some("nonce-1"),
+            request_bytes: br#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#,
+            response_bytes: br#"{"id":"x","choices":[{"message":{"role":"assistant","content":"hello"}}]}"#,
+            latency_ms: 5.0,
+            exchange_id: Some("e-1"),
+            requesting_party: Some(requesting_party),
+            host_provenance: None,
+        }
+    }
+
+    /// [mesh-sequence-per-counterparty] Two exchanges served for the SAME
+    /// requesting party get a monotone `seq`/`prev_seq` for that pair
+    /// (1 -> None, 2 -> Some(1)); a THIRD exchange for a DIFFERENT
+    /// requesting party is an independent counter starting back at 1 -- the
+    /// pair, not the node, is what's sequenced.
+    #[test]
+    fn emit_for_exchange_seals_monotone_seq_per_counterparty_pair() {
+        let dir = std::env::temp_dir().join(format!("cap-seq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+
+        let first = state
+            .emit_for_exchange(&sample_exchange("party-1"))
+            .expect("seal 1");
+        assert_eq!(seq_of(&first.capsule), (1, None));
+
+        let second = state
+            .emit_for_exchange(&sample_exchange("party-1"))
+            .expect("seal 2");
+        assert_eq!(seq_of(&second.capsule), (2, Some(1)));
+
+        // A different counterparty is a DIFFERENT pair -- its own counter.
+        let other_party = state
+            .emit_for_exchange(&sample_exchange("party-2"))
+            .expect("seal other party");
+        assert_eq!(seq_of(&other_party.capsule), (1, None));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A host-served OBSERVED exchange carries no requester identity, so it
+    /// is keyed on the honest "unknown" counterparty bucket -- never
+    /// invented -- and still sequences monotonically within that bucket.
+    #[test]
+    fn observed_host_exchange_seals_monotone_seq_under_the_unknown_counterparty_bucket() {
+        let dir = std::env::temp_dir().join(format!("cap-seq-unk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let observed = ObservedHostExchange {
+            model: "m",
+            exchange_id: Some("e"),
+            request_digest: None,
+            response_digest: None,
+            tool_calls_digest: None,
+            reasoning_digest: None,
+            usage: None,
+            host_provenance: HostProvenance::default(),
+        };
+        let first = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal 1");
+        assert_eq!(seq_of(&first.capsule), (1, None));
+        let second = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal 2");
+        assert_eq!(seq_of(&second.capsule), (2, Some(1)));
+        assert_eq!(
+            first.capsule["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]
+                ["serving_provenance"]["requesting_party"],
+            "unknown"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// RESTART SAFETY: the sequence counter is persisted beside the ledger
+    /// (`sequence_counters.json`), not held only in memory -- reopening
+    /// `CapsuleState` against the SAME `data_dir` (simulating a process
+    /// restart) resumes the pair's counter at 3, never repeating 1.
+    #[test]
+    fn sequence_counter_survives_a_simulated_restart() {
+        let dir = std::env::temp_dir().join(format!("cap-seq-restart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        {
+            let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+            state
+                .emit_for_exchange(&sample_exchange("party-1"))
+                .expect("seal 1");
+            state
+                .emit_for_exchange(&sample_exchange("party-1"))
+                .expect("seal 2");
+        }
+        // Fresh CapsuleState over the same data_dir -- the restart.
+        let restarted = CapsuleState::open(&dir, "node-under-test").expect("reopen state");
+        let third = restarted
+            .emit_for_exchange(&sample_exchange("party-1"))
+            .expect("seal 3");
+        assert_eq!(seq_of(&third.capsule), (3, Some(2)));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -97,6 +97,8 @@ fn sample_capsule_input() -> CapsuleInput {
                     completion_tokens: 34,
                     total_tokens: 46,
                 }),
+                seq: 1,
+                prev_seq: None,
             },
             generation_parameters,
             latency_ms: "123.456".to_string(),

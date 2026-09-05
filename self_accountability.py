@@ -49,6 +49,7 @@ from capsule_accountability_tab import (
 from capsule_mesh_view import _poc_block
 from history_card import build_history_card
 from native_log_join import SEALED_VERDICT_CLASSES, coverage_report
+from sequence_counter import verify_pair_continuity
 from twin_adjudicator import RELATION_ADJUDICATES
 
 __all__ = [
@@ -143,12 +144,20 @@ def history_summary(
     log_id: str,
     checkpoint_lines: list[dict[str, Any]],
     since_size: int = 0,
+    ledger_records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """History row: continuous since / N checkpoints / unforked / witnessed
     -- ``history_card.build_history_card()``'s own properties, folded into
-    the card shape."""
+    the card shape -- plus, when ``ledger_records`` is supplied, a SEPARATE
+    ``pair_sequencing`` block: [mesh-sequence-per-counterparty]'s per-
+    (self, counterparty) ``gaps_detected`` count. This is a DIFFERENT axis
+    from ``continuity`` above (that is the checkpoint-CHAIN's own
+    consistency; this is whether any counterparty pair's ``seq`` stream is
+    missing records) -- the two are never blended into one field.
+    ``ledger_records`` omitted (the default) means this row simply cannot
+    compute it yet -- honestly absent, never a fabricated zero."""
     card = build_history_card(node_id=node_id, log_id=log_id, checkpoint_lines=checkpoint_lines, since_size=since_size)
-    return {
+    row = {
         "source": "history_card",
         "capture_method": "checkpoint_chain_walk",
         "continuous_since": card.from_checkpoint.timestamp if card.from_checkpoint else None,
@@ -159,6 +168,16 @@ def history_summary(
         "witnesses": list(card.witnesses),
         "cadence": dict(card.properties.cadence),
     }
+    if ledger_records is not None:
+        pair_results = verify_pair_continuity(ledger_records)
+        row["pair_sequencing"] = {
+            "source": "sequence_counter",
+            "capture_method": "pair_seq_walk",
+            "gaps_detected": sum(p.gaps_detected for p in pair_results.values()),
+            "pairs_checked": len(pair_results),
+            "broken_pairs": sorted(p.pair for p in pair_results.values() if p.continuity != "unbroken"),
+        }
+    return row
 
 
 def rung_summary(latest_record: dict[str, Any] | None) -> dict[str, Any]:
@@ -267,7 +286,11 @@ def build_self_accountability_card(
         "node_id": node_id,
         "sealing": sealing_summary(native_entries, ledger_records, lifecycle_events),
         "history": history_summary(
-            node_id=node_id, log_id=log_id, checkpoint_lines=checkpoint_lines or [], since_size=since_size
+            node_id=node_id,
+            log_id=log_id,
+            checkpoint_lines=checkpoint_lines or [],
+            since_size=since_size,
+            ledger_records=ledger_records,
         ),
         "rung": rung_summary(latest_record),
         "shared": shared_summary(),

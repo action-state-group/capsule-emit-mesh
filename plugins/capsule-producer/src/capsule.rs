@@ -103,6 +103,16 @@ pub struct ServingProvenance {
     pub model_revision: Option<String>,
     /// Token accounting from the response `usage`, or `None` if absent.
     pub usage: Option<TokenUsage>,
+    /// This record's position in the monotone per-`(self, counterparty)`
+    /// sequence (history proposal §1 -- continuity is bilateral only), from
+    /// [`crate::sequence::SequenceCounterStore`]. `self` is this node
+    /// (`served_by_node_id`); `counterparty` is `requesting_party`.
+    pub seq: u64,
+    /// The pair's previous `seq`, or `None` for this pair's first-ever
+    /// record. A verifier walking the ledger checks `prev_seq` against the
+    /// prior record's `seq` for the same pair -- see
+    /// [`crate::sequence::verify_pair_continuity`].
+    pub prev_seq: Option<u64>,
 }
 
 impl ServingProvenance {
@@ -142,6 +152,8 @@ impl ServingProvenance {
                 "is_soc": self.hardware_is_soc,
             },
             "usage": usage,
+            "seq": self.seq,
+            "prev_seq": self.prev_seq,
         })
     }
 }
@@ -601,6 +613,8 @@ mod tests {
                         completion_tokens: 22,
                         total_tokens: 33,
                     }),
+                    seq: 1,
+                    prev_seq: None,
                 },
                 generation_parameters,
                 latency_ms: "1.0".to_string(),

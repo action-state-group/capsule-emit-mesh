@@ -80,6 +80,8 @@ fn sample_input(seed: &str, chain: Option<ChainLink>) -> CapsuleInput {
                     completion_tokens: 6,
                     total_tokens: 11,
                 }),
+                seq: 1,
+                prev_seq: None,
             },
             generation_parameters,
             latency_ms: "42.0".to_string(),

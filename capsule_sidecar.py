@@ -77,6 +77,7 @@ from node_ownership import (
     recheck_ownership_validity,
     seal_identity_capsule,
 )
+from sequence_counter import SequenceCounterStore
 
 # Generation parameters we carry verbatim (not digested -- these are policy
 # knobs, not prompt content, and are useful for audit as legible values).
@@ -640,6 +641,12 @@ class NodeState:
         if self.disclose_preimage:
             self.disclosures_dir.mkdir(parents=True, exist_ok=True)
 
+        # [mesh-sequence-per-counterparty] Per-(self, counterparty) seq
+        # cache, a sibling of capsules.jsonl -- see sequence_counter.py's
+        # module docstring for why this file is never the source of truth
+        # for continuity.
+        self.sequence_counters = SequenceCounterStore(self.ledger_dir / "sequence_counters.json")
+
         # [mesh-native-log-join] The operational request log + lifecycle
         # marker log, siblings of capsules.jsonl in the same ledger_dir --
         # native_log_join.py reconciles the three against each other.
@@ -863,6 +870,15 @@ def build_capsule(
             if bilateral_eval and bilateral_eval.valid and bilateral_eval.initiator_ref
             else "unknown"
         )
+    # [mesh-sequence-per-counterparty] Per-(self, counterparty) monotone seq
+    # (history proposal §1 -- continuity is bilateral only). `self` is
+    # always this node (state.node_id); the counterparty is the OTHER half
+    # of the pair -- served_by_node_id when this record is the requester's
+    # own half (the requester names the provider it went to), else
+    # requesting_party (the provider names who asked). Never invented: an
+    # "unknown" counterparty is still a real, stable bucket.
+    counterparty_id = served_by_node_id if state.role == ROLE_REQUESTER else requesting_party
+    seq, prev_seq = state.sequence_counters.next_seq(state.node_id, counterparty_id)
     serving_provenance = {
         "served_by_node_id": served_by_node_id,
         "requesting_party": requesting_party,
@@ -875,6 +891,8 @@ def build_capsule(
         # requester (own half). A verifier reads this to know which side it is
         # holding before joining on exchange_id.
         "role": state.role,
+        "seq": seq,
+        "prev_seq": prev_seq,
         "model_canonical_ref": state.manifest.get("model_id"),
         "quantization": "unknown",
     }

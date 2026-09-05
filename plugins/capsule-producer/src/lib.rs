@@ -28,6 +28,9 @@
 //! - [`verify`] Offline (no-network) verification composing capsule_id
 //!   recomputation, COSE signature verification, and chain-parent
 //!   membership.
+//! - [`sequence`] Per-`(self, counterparty)` monotone capsule sequencing
+//!   (`seq`/`prev_seq`) and the gap/regression continuity check over a
+//!   pair's sealed capsule stream.
 
 pub mod anchor;
 pub mod capsule;
@@ -36,6 +39,7 @@ pub mod jcs;
 pub mod keys;
 pub mod ledger;
 pub mod runtime_attest;
+pub mod sequence;
 pub mod tee_attest;
 pub mod tee_verify;
 pub mod timestamp;
