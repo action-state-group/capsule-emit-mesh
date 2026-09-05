@@ -85,6 +85,7 @@ __all__ = [
     "HistoryProperties",
     "HistoryCard",
     "HistoryVerifyResult",
+    "node_id_from_key_id",
     "build_history_card",
     "verify_history_card",
     "seal_history_card",
@@ -466,6 +467,17 @@ def with_peer_reconciliation(card: HistoryCard, ledger_dir: Path) -> HistoryCard
     return replace(card, reconciled_with=reconciled_with, forks_observed=forks_observed)
 
 
+def node_id_from_key_id(key_id: str) -> str:
+    """The canonical `node_id` label derived from a checkpoint's own signing
+    `key_id` -- `f"node:{key_id[:16]}"`. Single definition site: the CLI
+    (`verify_history_card.py`) and `verify_history_card()`'s identity check
+    both call this rather than each inlining the derivation, so a claimed
+    `node_id` is always checked against the checkpoint chain's own key, never
+    trusted from the party presenting it.
+    """
+    return f"node:{key_id[:16]}"
+
+
 def build_history_card(
     *,
     node_id: str,
@@ -558,13 +570,50 @@ def verify_history_card(card_value: dict[str, Any], checkpoint_lines: list[dict[
     re-verified from scratch via `verify_checkpoint_cose_offline` inside
     `build_history_card` -- this function does not additionally trust the
     published card's `derivation.properties`.
+
+    **Identity is derived from `checkpoint_lines`, never taken from the
+    card.** `node_id`/`log_id` are read from the checkpoint chain's own
+    `log_id` and signing `key_id` (`node_id_from_key_id`) and checked
+    against what the card claims, not the reverse. Without this, a
+    STRUCTURALLY VALID, honestly witnessed chain belonging to node A could
+    be republished under a false `node_id` naming node B, and a
+    byte-for-byte recompute+match would trivially succeed because both the
+    published card and the recompute would carry the same (false) label --
+    the chain's own content was never consulted to check who it belongs to.
     """
     try:
         since_size = card_value["selection"]["since_size"]
-        node_id = card_value["node_id"]
-        log_id = card_value["log_id"]
+        claimed_node_id = card_value["node_id"]
+        claimed_log_id = card_value["log_id"]
     except (KeyError, TypeError) as exc:
         return HistoryVerifyResult(ok=False, errors=[f"malformed card: missing {exc}"])
+
+    if checkpoint_lines:
+        chain_key_id = checkpoint_lines[0].get("key_id")
+        chain_log_id = checkpoint_lines[0].get("log_id")
+        chain_node_id = node_id_from_key_id(chain_key_id) if chain_key_id else None
+
+        identity_errors: list[str] = []
+        if claimed_log_id != chain_log_id:
+            identity_errors.append(
+                f"log_id mismatch: card claims log_id={claimed_log_id!r} but the "
+                f"checkpoint chain's own log_id is {chain_log_id!r}"
+            )
+        if claimed_node_id != chain_node_id:
+            identity_errors.append(
+                f"node_id mismatch: card claims node_id={claimed_node_id!r} but the "
+                f"checkpoint chain's signing key derives node_id={chain_node_id!r} -- "
+                "refusing a history card presented under an identity the checkpoint "
+                "chain does not carry"
+            )
+        if identity_errors:
+            return HistoryVerifyResult(ok=False, errors=identity_errors)
+        node_id, log_id = chain_node_id, chain_log_id
+    else:
+        # No checkpoint lines to bind identity against (an honestly-empty
+        # chain) -- fall back to the card's own claim, matching
+        # `build_history_card`'s empty-chain handling.
+        node_id, log_id = claimed_node_id, claimed_log_id
 
     try:
         recomputed = build_history_card(

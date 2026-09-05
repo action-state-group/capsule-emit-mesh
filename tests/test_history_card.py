@@ -25,6 +25,7 @@ from history_card import (
     REQUEST_MALFORMED,
     answer_full_history_request,
     build_history_card,
+    node_id_from_key_id,
     reconciliation_counts_from_ledger_dir,
     verify_history_card,
     with_peer_reconciliation,
@@ -220,7 +221,8 @@ def test_full_history_never_answers_a_query_missing_a_pin_even_with_perfect_hist
 
 def test_verify_history_card_round_trips(tmp_path, fake_witness):
     lines = _build_chain(tmp_path, 4)
-    card = build_history_card(node_id="node-a", log_id="log-a", checkpoint_lines=lines, since_size=0)
+    node_id = node_id_from_key_id(lines[0]["key_id"])
+    card = build_history_card(node_id=node_id, log_id="log-a", checkpoint_lines=lines, since_size=0)
 
     result = verify_history_card(card.to_value(), lines)
     assert result.ok, result.errors
@@ -228,7 +230,8 @@ def test_verify_history_card_round_trips(tmp_path, fake_witness):
 
 def test_verify_history_card_rejects_a_published_card_that_overclaims(tmp_path, fake_witness):
     lines = _build_chain(tmp_path, 4)
-    card = build_history_card(node_id="node-a", log_id="log-a", checkpoint_lines=lines, since_size=0)
+    node_id = node_id_from_key_id(lines[0]["key_id"])
+    card = build_history_card(node_id=node_id, log_id="log-a", checkpoint_lines=lines, since_size=0)
     value = card.to_value()
     value["derivation"]["properties"]["continuity"] = "unbroken"
     value["derivation"]["properties"]["history_depth"] = 999  # lie about depth
@@ -239,7 +242,8 @@ def test_verify_history_card_rejects_a_published_card_that_overclaims(tmp_path, 
 
 def test_verify_history_card_catches_a_tampered_ledger_behind_a_stale_published_card(tmp_path, fake_witness):
     lines = _build_chain(tmp_path, 4)
-    card = build_history_card(node_id="node-a", log_id="log-a", checkpoint_lines=lines, since_size=0)
+    node_id = node_id_from_key_id(lines[0]["key_id"])
+    card = build_history_card(node_id=node_id, log_id="log-a", checkpoint_lines=lines, since_size=0)
     published = card.to_value()  # honest at publish time
 
     tampered_lines = copy.deepcopy(lines)
@@ -247,6 +251,40 @@ def test_verify_history_card_catches_a_tampered_ledger_behind_a_stale_published_
 
     result = verify_history_card(published, tampered_lines)
     assert not result.ok
+
+
+def test_verify_history_card_rejects_a_stolen_history_republished_under_a_stranger_node_id(tmp_path, fake_witness):
+    """The exact `[adv-history-card-identity-binding]` mallory reproduction:
+    a real, honestly witnessed, structurally-valid checkpoint chain
+    republished under a `node_id` that is not its own -- the chain itself
+    recomputes and matches fine, so this must be caught by the identity
+    check, not the chain-walk."""
+    lines = _build_chain(tmp_path, 4)
+    honest_node_id = node_id_from_key_id(lines[0]["key_id"])
+    card = build_history_card(node_id=honest_node_id, log_id="log-a", checkpoint_lines=lines, since_size=0)
+
+    honest_result = verify_history_card(card.to_value(), lines)
+    assert honest_result.ok, honest_result.errors
+
+    stolen = card.to_value()
+    stolen["node_id"] = "mallory-node"
+
+    stolen_result = verify_history_card(stolen, lines)
+    assert not stolen_result.ok
+    assert any("node_id mismatch" in e for e in stolen_result.errors)
+
+
+def test_verify_history_card_rejects_a_history_relabeled_to_a_different_log_id(tmp_path, fake_witness):
+    lines = _build_chain(tmp_path, 4)
+    honest_node_id = node_id_from_key_id(lines[0]["key_id"])
+    card = build_history_card(node_id=honest_node_id, log_id="log-a", checkpoint_lines=lines, since_size=0)
+
+    relabeled = card.to_value()
+    relabeled["log_id"] = "someone-elses-log"
+
+    result = verify_history_card(relabeled, lines)
+    assert not result.ok
+    assert any("log_id mismatch" in e for e in result.errors)
 
 
 # -- chain_segment reuse: input identity is the two boundary digests, never per-checkpoint refs --

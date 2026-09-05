@@ -19,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from history_card import build_history_card, verify_history_card
+from history_card import build_history_card, node_id_from_key_id, verify_history_card
 
 
 def main() -> None:
@@ -41,7 +41,7 @@ def main() -> None:
 
     lines = [json.loads(line) for line in checkpoints_path.read_text().splitlines() if line.strip()]
     log_id = lines[0]["log_id"]
-    node_id = f"node:{lines[0]['key_id'][:16]}"
+    node_id = node_id_from_key_id(lines[0]["key_id"])
 
     log("--- build + self-verify ---")
     card = build_history_card(node_id=node_id, log_id=log_id, checkpoint_lines=lines, since_size=since_size)
@@ -86,6 +86,16 @@ def main() -> None:
         all_ok = all_ok and broken
     else:
         log("only one checkpoint -- dropped-proof mutant needs >= 2, skipping (not a failure)")
+    log("")
+
+    log("--- mutant: republish this node's real, honest chain under a stranger's node_id ---")
+    stolen = copy.deepcopy(published)
+    stolen["node_id"] = "mallory-node"
+    stolen_result = verify_history_card(stolen, lines)
+    log(f"verify a real chain relabeled as 'mallory-node': ok={stolen_result.ok} errors={stolen_result.errors}")
+    theft_detected = not stolen_result.ok
+    log(f"identity theft REJECTED (expected True): {theft_detected}")
+    all_ok = all_ok and theft_detected
     log("")
 
     (ledger_dir / "history-card-verify-transcript.txt").write_text("\n".join(transcript) + "\n")
