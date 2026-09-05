@@ -1,6 +1,13 @@
 mod capsule_emit;
 mod decision;
 mod lifecycle_channel;
+/// Not wired into `on_mesh_event` yet -- see the module doc for why
+/// (`mesh-llm-plugin = "0.75"` predates the `checkpoint` field this needs to
+/// read off `event.peer`). Exercised entirely by its own unit tests today;
+/// kept as the tested, ready-to-wire reconciliation logic for when the
+/// dependency bumps.
+#[allow(dead_code)]
+mod peer_root_ledger;
 
 use axum::{
     extract::State,

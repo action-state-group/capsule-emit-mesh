@@ -25,7 +25,9 @@ from history_card import (
     REQUEST_MALFORMED,
     answer_full_history_request,
     build_history_card,
+    reconciliation_counts_from_ledger_dir,
     verify_history_card,
+    with_peer_reconciliation,
 )
 
 
@@ -286,3 +288,83 @@ def test_inclusion_and_consistency_proofs_are_logarithmic_not_linear(tmp_path, n
     assert len(inclusion.witness) <= bound, "inclusion proof witness path grew faster than O(log n)"
     total_consistency_hashes = len(consistency.old_peaks) + sum(len(w) for w in consistency.witness)
     assert total_consistency_hashes <= bound, "consistency proof size grew faster than O(log n)"
+
+
+# -- [mesh-peer-root-exchange]: reconciled_with / forks_observed folded in
+# from the mesh plugin's own on-disk reconciliation store, cross-language --
+
+
+def _write_reconciliation_state(ledger_dir, *, reconciled_peers, forks):
+    """Write the exact JSON shape the Rust `peer_root_ledger::PersistedState`
+    serializes (`observed`/`reconciled_peers`/`forks`), so this test proves
+    the Python reader actually understands the Rust writer's format rather
+    than a Python-invented one."""
+    state = {
+        "observed": {},
+        "reconciled_peers": list(reconciled_peers),
+        "forks": list(forks),
+    }
+    (ledger_dir / "reconciliation_state.json").write_text(json.dumps(state))
+
+
+def test_reconciliation_counts_are_zero_with_no_ledger_file(tmp_path):
+    assert reconciliation_counts_from_ledger_dir(tmp_path) == (0, 0)
+
+
+def test_reconciliation_counts_are_zero_on_malformed_json(tmp_path):
+    (tmp_path / "reconciliation_state.json").write_text("{not valid json")
+    assert reconciliation_counts_from_ledger_dir(tmp_path) == (0, 0)
+
+
+def test_reconciliation_counts_read_the_rust_ledgers_own_json_shape(tmp_path):
+    _write_reconciliation_state(
+        tmp_path,
+        reconciled_peers=["aaaa", "bbbb"],
+        forks=[{"peer_id": "aaaa", "log_id": "l", "mmr_size": 4}],
+    )
+    assert reconciliation_counts_from_ledger_dir(tmp_path) == (2, 1)
+
+
+def test_three_fork_nodes_gossiping_heads_reconciles_with_two_peers(tmp_path, fake_witness):
+    # The acceptance scenario in prose: M4 observes checkpoint heads gossiped
+    # by two other fork nodes -> its card shows reconciled_with: 2.
+    lines = _build_chain(tmp_path, 2)
+    card = build_history_card(node_id="M4", log_id="log-a", checkpoint_lines=lines, since_size=0)
+    assert card.reconciled_with == 0  # honestly zero before any ledger is folded in
+
+    _write_reconciliation_state(
+        tmp_path,
+        reconciled_peers=["m1-peer-id", "m2-peer-id"],
+        forks=[],
+    )
+    reconciled_card = with_peer_reconciliation(card, tmp_path)
+
+    assert reconciled_card.reconciled_with == 2
+    assert reconciled_card.forks_observed == 0
+    assert reconciled_card.to_value()["peer_reconciliation"] == {
+        "reconciled_with": 2,
+        "forks_observed": 0,
+        "note": reconciled_card.to_value()["peer_reconciliation"]["note"],
+    }
+    # Original card is untouched (no mutation).
+    assert card.reconciled_with == 0
+
+
+def test_with_peer_reconciliation_never_changes_the_chain_walk_verification(tmp_path, fake_witness):
+    # Folding in peer-reconciliation counts must not perturb the digest-bound
+    # chain-walk properties or verify() -- these live in a separate section
+    # precisely so a plugin's observation store can never affect the
+    # cryptographically-verified checkpoint history.
+    lines = _build_chain(tmp_path, 3)
+    card = build_history_card(node_id="node-a", log_id="log-a", checkpoint_lines=lines, since_size=0)
+    assert card.verify()
+
+    _write_reconciliation_state(tmp_path, reconciled_peers=["x", "y", "z"], forks=[{"fake": "fork"}])
+    reconciled_card = with_peer_reconciliation(card, tmp_path)
+
+    assert reconciled_card.verify()
+    assert reconciled_card.properties == card.properties
+    assert reconciled_card.digest() != card.digest(), (
+        "the SERIALIZED card digest changes (peer_reconciliation is part of to_value()), "
+        "but the underlying chain-walk properties and its own verification must not"
+    )
