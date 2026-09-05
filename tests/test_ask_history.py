@@ -17,6 +17,7 @@ permanently deny those three files their stub for the rest of the process.
 """
 from __future__ import annotations
 
+import http.server
 import json
 import sys
 import threading
@@ -34,6 +35,7 @@ from capsule_emit import seal, witness
 import ask_history as ah
 import capsule_sidecar as cs
 import evidence_server as es
+from evidence_responder import handle_evidence_request
 
 
 @pytest.fixture(autouse=True)
@@ -165,3 +167,113 @@ class TestEndToEnd:
         base_url, _state = peer
         with pytest.raises(SystemExit):
             ah.main([base_url, "--subject", "range"])
+
+
+class _MeshToolCallHandler(http.server.BaseHTTPRequestHandler):
+    """Stands in for mesh-llm's ``POST /api/plugins/<name>/tools/<tool>``
+    route driving the Rust admission-policy plugin's ``mesh_evidence_request``
+    tool (``mesh_evidence_bridge::handle_mesh_evidence_request``): unwraps the
+    SAME ``{"peer_id", "request"}`` arguments shape the real handler parses,
+    then answers with the REAL ``evidence_responder.handle_evidence_request``
+    against a REAL ledger -- exactly what the Rust bridge's proxy-to-
+    ``evidence_server.py`` does, minus the Rust process itself. Proves
+    ``ask_history.py``'s mesh-carrier URL/body wiring against the real
+    request/response shape without needing a compiled plugin binary.
+    """
+
+    server_version = "fake-mesh-llm-host/0.1"
+
+    def do_POST(self) -> None:  # BaseHTTPRequestHandler API names this do_POST
+        expected_path = f"/api/plugins/{self.server.plugin_name}/tools/mesh_evidence_request"  # type: ignore[attr-defined]
+        if self.path != expected_path:
+            self._write(404, json.dumps({"error": "not_found"}).encode())
+            return
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        arguments = json.loads(self.rfile.read(length) if length else b"{}")
+        self.server.calls.append(arguments)  # type: ignore[attr-defined]
+
+        if arguments.get("peer_id") == self.server.unreachable_peer_id:  # type: ignore[attr-defined]
+            self._write(502, json.dumps({"error": "peer does not answer evidence requests"}).encode())
+            return
+
+        request_bytes = json.dumps(arguments["request"]).encode("utf-8")
+        result = handle_evidence_request(self.server.state, request_bytes)  # type: ignore[attr-defined]
+        self._write(200, json.dumps(result.to_dict()).encode())
+
+    def _write(self, status: int, body: bytes) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt: str, *args: Any) -> None:  # quiet by default
+        pass
+
+
+class TestMeshCarrier:
+    """``--via mesh`` -- the plugin-mesh-stream carrier, ask #5's build."""
+
+    @pytest.fixture
+    def mesh_host(self, node_state):
+        state = es.EvidenceServerState(ledger_path=node_state.ledger_path, signing_key_path=node_state.signing_key_path)
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _MeshToolCallHandler)
+        server.plugin_name = "admission-policy"
+        server.state = state
+        server.calls = []
+        server.unreachable_peer_id = "ff" * 32
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        yield f"http://127.0.0.1:{port}", server, node_state
+        server.shutdown()
+        thread.join(timeout=5)
+
+    def test_post_mesh_evidence_request_wraps_peer_id_and_request(self, mesh_host):
+        local_host_api, server, state = mesh_host
+        cids = _seal_and_checkpoint(state, 1)
+        req = ah._build_request_map(
+            subject_kind="record", capsule_id=cids[0], selector=None,
+            expected_pin_root=None, expected_pin_mmr_size=None, nonce=None,
+        )
+        payload = ah.post_mesh_evidence_request(local_host_api, "admission-policy", "aa" * 32, req)
+        assert "bundles" in payload
+        assert server.calls == [{"peer_id": "aa" * 32, "request": req}]
+
+    def test_main_cli_via_mesh_renders_artifact(self, mesh_host, capsys):
+        local_host_api, _server, state = mesh_host
+        cids = _seal_and_checkpoint(state, 1)
+        rc = ah.main([
+            "aa" * 32, "--subject", "record", "--capsule-id", cids[0],
+            "--via", "mesh", "--local-host-api", local_host_api,
+        ])
+        assert rc == 0
+        assert "ARTIFACT" in capsys.readouterr().out
+
+    def test_main_cli_via_mesh_reports_a_peer_that_never_answers(self, mesh_host, capsys):
+        local_host_api, server, _state = mesh_host
+        rc = ah.main([
+            server.unreachable_peer_id, "--subject", "range", "--selector", "a" * 64 + ".." + "b" * 64,
+            "--via", "mesh", "--local-host-api", local_host_api,
+        ])
+        assert rc == 1
+        assert "failed" in capsys.readouterr().err
+
+    def test_via_mesh_tamper_check_detects_a_flipped_byte(self, mesh_host):
+        """Mutant proof for the mesh carrier: tamper a COPY of the response
+        the (stubbed) plugin-mesh-stream carrier delivered, in memory, and
+        confirm offline verify flags it -- the SAME discriminating
+        `verify_bundle` the direct-HTTP path uses
+        (`test_tamper_check_detects_a_flipped_byte`), proving verify's
+        tamper-detection is carrier-independent: it inspects the bytes that
+        arrived, never how they arrived.
+        """
+        local_host_api, _server, state = mesh_host
+        cids = _seal_and_checkpoint(state, 1)
+        req = ah._build_request_map(
+            subject_kind="record", capsule_id=cids[0], selector=None,
+            expected_pin_root=None, expected_pin_mmr_size=None, nonce=None,
+        )
+        payload = ah.post_mesh_evidence_request(local_host_api, "admission-policy", "aa" * 32, req)
+        rendered = ah.render_artifact(payload, node_id="m4", tamper_check=True)
+        assert "verify.ok=False (expected False)" in rendered
