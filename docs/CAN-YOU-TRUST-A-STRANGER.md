@@ -34,7 +34,10 @@ A capsule doesn't ask you to believe the stranger. It gives you something to
 
 When the answer comes back, the receipt tells you, in plain terms:
 
-- **What you asked** — your prompt.
+- **What you asked** — your prompt, in *your own* copy of the receipt. The signed,
+  shared record only ever carries a fingerprint of it, never the words themselves — so
+  a stranger checking your receipt can confirm it matches what was asked, without ever
+  seeing what you asked.
 - **Who ran it** — which machine (a stable name for it).
 - **What was running** — the model, its "size/quality" setting (the quantization),
   and the **settings the answer was generated with**: the temperature, the top-p, the
