@@ -59,6 +59,28 @@ checked against #1, never against whatever the newest card later turns out to
 be. This is the same "as of this position, not as of now" discipline
 `history_card`'s chain walk and `advertisement`'s three-state reconciliation
 already use.
+
+**A supersede is itself checked, not just consumed.** Every card the walk
+encounters is graded against the card it claims to replace, BEFORE it becomes
+the new current card: `supersedes` must equal the actual predecessor's digest
+(never a nonexistent digest, never a fork -- two cards both claiming the same
+predecessor), and `node_id` must not change mid-chain (a successor is not a
+license to switch identities). Passing this is necessary but not sufficient
+for trust: a successor that keeps valid lineage but drops a previously-pinned
+claim to absent/empty (models, hardware, measurement_rung,
+announcement_digest) is a WIDEN -- vagueness where the predecessor was
+specific -- and is labeled, never silently accepted as a clean supersede.
+These verdicts live in `CardConsistencyResult.card_transitions`, distinct
+from the per-exchange `entries`, and a non-`ok` transition flips
+`CardConsistencyResult.ok` to `False`.
+
+**A vacuous match is not `STATUS_OK`.** An exchange whose claims share ZERO
+comparable fields with the current card (nothing pinned to check, or nothing
+the exchange carries) renders `STATUS_NOTHING_COMPARED` -- distinct from
+`STATUS_OK`, which requires at least one field to have been actually
+reconciled and none to have broken. Byte-identical `STATUS_OK` for "verified"
+and "nothing to verify" is exactly the silent pass this module's status set
+promises never to produce.
 """
 from __future__ import annotations
 
@@ -77,15 +99,21 @@ __all__ = [
     "STATUS_OK",
     "STATUS_BROKEN",
     "STATUS_NO_CARD_SEALED",
+    "STATUS_NOTHING_COMPARED",
     "FIELD_MATCH",
     "FIELD_MISMATCH",
     "FIELD_ABSENT",
     "ANNOUNCEMENT_MATCH",
     "ANNOUNCEMENT_MISMATCH",
     "ANNOUNCEMENT_ABSENT",
+    "CARD_TRANSITION_OK",
+    "CARD_TRANSITION_LINEAGE_BROKEN",
+    "CARD_TRANSITION_NODE_ID_MISMATCH",
+    "CARD_TRANSITION_WIDENED",
     "ModelRef",
     "Card",
     "ExchangeCardVerdict",
+    "CardTransitionVerdict",
     "CardConsistencyResult",
     "build_card",
     "seal_card",
@@ -112,6 +140,29 @@ STATUS_BROKEN = "broken"
 #: The exchange was sealed before this node ever sealed a card -- honestly
 #: distinct from `STATUS_OK`; there is nothing to check it against.
 STATUS_NO_CARD_SEALED = "no_card_sealed"
+#: The exchange and the current card shared ZERO comparable fields -- nothing
+#: was pinned to check, or nothing the exchange carries lines up with what is
+#: pinned. Honestly distinct from `STATUS_OK`, which requires at least one
+#: field to have been reconciled and none to have broken -- a card and an
+#: exchange with nothing in common is not a kept promise.
+STATUS_NOTHING_COMPARED = "nothing_compared"
+
+#: `card_consistency` per-card-transition status -- graded when a new card is
+#: sealed, against the card it claims to supersede (or `None`, for a node's
+#: first card). A closed set, same discipline as the per-exchange status.
+CARD_TRANSITION_OK = "ok"
+#: `supersedes` does not equal the actual predecessor's digest: a fabricated
+#: prior, a nonexistent digest, or a fork (two cards both claiming the same
+#: predecessor -- the second one to be walked lands here).
+CARD_TRANSITION_LINEAGE_BROKEN = "lineage_broken"
+#: Valid lineage, but `node_id` changed from the predecessor's -- a successor
+#: card is not a license to switch identities mid-chain.
+CARD_TRANSITION_NODE_ID_MISMATCH = "node_id_mismatch"
+#: Valid lineage and identity, but the successor drops a claim the
+#: predecessor had pinned (models, hardware, measurement_rung,
+#: announcement_digest) to absent/empty -- a labeled downgrade, never a
+#: silent widen.
+CARD_TRANSITION_WIDENED = "widened"
 
 #: Per-field verdict inside a broken entry's `mismatches` -- same three-state
 #: shape `advertisement._reconcile_field` already uses (minus
@@ -345,6 +396,7 @@ def _exchange_claims(line: dict[str, Any]) -> dict[str, Any] | None:
             hardware.get("is_soc") if hardware.get("is_soc") is not None else sp.get("hardware_is_soc")
         ),
         "measurement_rung": clean(binary_attestation.get("measurement_class")),
+        "served_by_node_id": clean(sp.get("served_by_node_id")),
     }
 
 
@@ -357,16 +409,78 @@ def _find_model(card: Card, name: Any) -> ModelRef | None:
     return None
 
 
-def _field(mismatches: list[dict[str, Any]], field_name: str, exchange_val: Any, card_val: Any) -> None:
+def _field(mismatches: list[dict[str, Any]], field_name: str, exchange_val: Any, card_val: Any) -> bool:
     """Compare one field; append a mismatch entry (never a silent drop) when
     both sides are present and unequal. Either side absent -> nothing to
     compare, no verdict recorded (same as `advertisement`'s three-state
     discipline: absence is not a pass, but it is not a broken promise either
-    -- it is simply not asserted here)."""
+    -- it is simply not asserted here). Returns True iff both sides were
+    present -- i.e. this field was actually reconciled, matched or not -- so
+    the caller can tell a genuinely-checked exchange apart from one with
+    nothing comparable at all (see `STATUS_NOTHING_COMPARED`)."""
     if exchange_val is None or card_val is None:
-        return
+        return False
     if not _values_equal(exchange_val, card_val):
         mismatches.append({"field": field_name, "exchange": exchange_val, "card": card_val})
+    return True
+
+
+def _card_widened_fields(prior: Card, new: Card) -> tuple[str, ...]:
+    """Fields where `prior` pinned a claim and `new` drops it to absent/empty
+    -- a superseding card going vague where its predecessor was specific.
+    Narrowing (fewer, still-pinned models) or adding a new claim is not
+    flagged; only the drop to nothing is, because only that disables
+    `card_consistency`'s per-field checks for whatever the exchange serves
+    next."""
+    widened: list[str] = []
+    if prior.models and not new.models:
+        widened.append("models")
+    if prior.hardware_inventory is not None and new.hardware_inventory is None:
+        widened.append("hardware_inventory")
+    if prior.measurement_rung is not None and new.measurement_rung is None:
+        widened.append("measurement_rung")
+    if prior.announcement_digest is not None and new.announcement_digest is None:
+        widened.append("announcement_digest")
+    return tuple(widened)
+
+
+def _verify_card_transition(
+    prior_card: "Card | None",
+    prior_digest: str | None,
+    new_card: Card,
+) -> "CardTransitionVerdict":
+    """Grade `new_card` against the card it claims to replace, BEFORE it
+    becomes the walk's current card. Never a silent pass: a fabricated
+    `supersedes` (nonexistent digest, or a fork -- a second card claiming the
+    same predecessor a valid successor already claimed), a node_id switch
+    mid-chain, or a silent widen-to-vague after a pinned predecessor all
+    render as a distinct, non-`CARD_TRANSITION_OK` status."""
+    new_digest = new_card.digest()
+
+    if prior_card is None:
+        # This node's first card. A `supersedes` pointing anywhere is a claim
+        # about a predecessor that does not exist in this ledger.
+        status = CARD_TRANSITION_LINEAGE_BROKEN if new_card.supersedes is not None else CARD_TRANSITION_OK
+        return CardTransitionVerdict(card_digest=new_digest, prior_card_digest=None, status=status)
+
+    if new_card.supersedes != prior_digest:
+        return CardTransitionVerdict(
+            card_digest=new_digest, prior_card_digest=prior_digest, status=CARD_TRANSITION_LINEAGE_BROKEN
+        )
+    if new_card.node_id != prior_card.node_id:
+        return CardTransitionVerdict(
+            card_digest=new_digest, prior_card_digest=prior_digest, status=CARD_TRANSITION_NODE_ID_MISMATCH
+        )
+
+    widened_fields = _card_widened_fields(prior_card, new_card)
+    if widened_fields:
+        return CardTransitionVerdict(
+            card_digest=new_digest,
+            prior_card_digest=prior_digest,
+            status=CARD_TRANSITION_WIDENED,
+            widened_fields=widened_fields,
+        )
+    return CardTransitionVerdict(card_digest=new_digest, prior_card_digest=prior_digest, status=CARD_TRANSITION_OK)
 
 
 @dataclass(frozen=True)
@@ -388,18 +502,44 @@ class ExchangeCardVerdict:
 
 
 @dataclass(frozen=True)
+class CardTransitionVerdict:
+    """`card_consistency`'s verdict for ONE sealed card against the card it
+    claims to supersede (or `None`, for a node's first card). See
+    `CARD_TRANSITION_*` for the closed status set."""
+
+    card_digest: str
+    prior_card_digest: str | None
+    status: str  # CARD_TRANSITION_OK | _LINEAGE_BROKEN | _NODE_ID_MISMATCH | _WIDENED
+    widened_fields: tuple[str, ...] = field(default_factory=tuple)
+
+    def to_value(self) -> dict[str, Any]:
+        return {
+            "card_digest": self.card_digest,
+            "prior_card_digest": self.prior_card_digest,
+            "status": self.status,
+            "widened_fields": list(self.widened_fields),
+        }
+
+
+@dataclass(frozen=True)
 class CardConsistencyResult:
     """Total, offline outcome of `card_consistency` over a ledger. Never
-    raises. `ok` is true iff no exchange came back `STATUS_BROKEN` --
-    `STATUS_NO_CARD_SEALED` entries do not flip `ok` to `False` (there is no
-    broken promise before any card exists) but ARE counted separately so they
-    are never silently indistinguishable from a real pass."""
+    raises. `ok` is true iff no exchange came back `STATUS_BROKEN` and no
+    card transition came back other than `CARD_TRANSITION_OK` --
+    `STATUS_NO_CARD_SEALED` and `STATUS_NOTHING_COMPARED` entries do not flip
+    `ok` to `False` (there is no broken promise before any card exists, and
+    no broken promise where nothing was comparable) but ARE counted
+    separately so they are never silently indistinguishable from a real
+    pass."""
 
     entries: tuple[ExchangeCardVerdict, ...]
+    card_transitions: tuple[CardTransitionVerdict, ...] = field(default_factory=tuple)
 
     @property
     def ok(self) -> bool:
-        return not any(e.status == STATUS_BROKEN for e in self.entries)
+        return not any(e.status == STATUS_BROKEN for e in self.entries) and not any(
+            t.status != CARD_TRANSITION_OK for t in self.card_transitions
+        )
 
     @property
     def broken_count(self) -> int:
@@ -409,20 +549,42 @@ class CardConsistencyResult:
     def no_card_sealed_count(self) -> int:
         return sum(1 for e in self.entries if e.status == STATUS_NO_CARD_SEALED)
 
+    @property
+    def nothing_compared_count(self) -> int:
+        return sum(1 for e in self.entries if e.status == STATUS_NOTHING_COMPARED)
+
+    @property
+    def broken_transition_count(self) -> int:
+        return sum(1 for t in self.card_transitions if t.status != CARD_TRANSITION_OK)
+
     def to_value(self) -> dict[str, Any]:
         return {
             "ok": self.ok,
             "broken_count": self.broken_count,
             "no_card_sealed_count": self.no_card_sealed_count,
+            "nothing_compared_count": self.nothing_compared_count,
+            "broken_transition_count": self.broken_transition_count,
             "entries": [e.to_value() for e in self.entries],
+            "card_transitions": [t.to_value() for t in self.card_transitions],
         }
 
 
 def card_consistency(ledger_lines: list[dict[str, Any]]) -> CardConsistencyResult:
     """Walk `ledger_lines` (cards and exchanges interleaved, single-writer,
-    file order -- exactly the shape this node's own `capsules.jsonl` is) and,
-    for every exchange, check its (model, weights_digest, hardware,
-    measurement_rung) claims against the card CURRENT AT THAT POSITION.
+    file order -- exactly the shape this node's own `capsules.jsonl` is).
+
+    Every CARD is first graded against the card it claims to supersede (see
+    `_verify_card_transition` / `CardConsistencyResult.card_transitions`),
+    then becomes the current card regardless of that verdict -- the walk
+    stays a faithful read of what the ledger actually says happened; a bad
+    transition renders `ok` `False`, it does not get silently skipped.
+
+    Every EXCHANGE is checked against the card CURRENT AT THAT POSITION: its
+    (model, weights_digest, hardware, measurement_rung, served_by_node_id)
+    claims are reconciled field-by-field. An exchange with at least one
+    reconciled field and no mismatches is `STATUS_OK`; one with zero
+    reconciled fields is `STATUS_NOTHING_COMPARED` -- distinct, because
+    "verified" and "nothing to verify" must never render byte-identical.
 
     Hardware comparison is deliberately narrow, stated here rather than
     guessed silently: `hardware_inventory`'s schema (chip name, total system
@@ -436,14 +598,17 @@ def card_consistency(ledger_lines: list[dict[str, Any]]) -> CardConsistencyResul
     than compared against a mapping this module cannot justify.
     """
     entries: list[ExchangeCardVerdict] = []
+    transitions: list[CardTransitionVerdict] = []
     current_card: Card | None = None
     current_card_digest: str | None = None
 
     for line in ledger_lines:
         card_hit = _card_from_ledger_line(line)
         if card_hit is not None:
-            current_card, _capsule_id = card_hit
-            current_card_digest = current_card.digest()
+            new_card, _capsule_id = card_hit
+            transitions.append(_verify_card_transition(current_card, current_card_digest, new_card))
+            current_card = new_card
+            current_card_digest = new_card.digest()
             continue
 
         claims = _exchange_claims(line)
@@ -462,31 +627,52 @@ def card_consistency(ledger_lines: list[dict[str, Any]]) -> CardConsistencyResul
             continue
 
         mismatches: list[dict[str, Any]] = []
-        model_ref = _find_model(current_card, claims["model_name"])
-        if claims["model_name"] is not None and model_ref is None and current_card.models:
-            mismatches.append(
-                {"field": "model", "exchange": claims["model_name"], "card": [m.name for m in current_card.models]}
-            )
-        elif model_ref is not None:
-            _field(mismatches, "weights_digest", claims["weights_digest"], model_ref.weights_digest)
+        fields_compared = 0
 
-        _field(mismatches, "measurement_rung", claims["measurement_rung"], current_card.measurement_rung)
+        model_ref = _find_model(current_card, claims["model_name"])
+        if claims["model_name"] is not None and current_card.models:
+            fields_compared += 1
+            if model_ref is None:
+                mismatches.append(
+                    {
+                        "field": "model",
+                        "exchange": claims["model_name"],
+                        "card": [m.name for m in current_card.models],
+                    }
+                )
+            elif _field(mismatches, "weights_digest", claims["weights_digest"], model_ref.weights_digest):
+                fields_compared += 1
+
+        if _field(mismatches, "measurement_rung", claims["measurement_rung"], current_card.measurement_rung):
+            fields_compared += 1
 
         hw = current_card.hardware_inventory
         if hw is not None and claims["hardware_is_soc"] is True:
-            _field(mismatches, "hardware_chip_vs_gpu", claims["hardware_gpu"], hw.get("chip"))
-            _field(mismatches, "hardware_memory_vs_vram", claims["hardware_vram_bytes"], hw.get("memory_bytes"))
+            if _field(mismatches, "hardware_chip_vs_gpu", claims["hardware_gpu"], hw.get("chip")):
+                fields_compared += 1
+            if _field(mismatches, "hardware_memory_vs_vram", claims["hardware_vram_bytes"], hw.get("memory_bytes")):
+                fields_compared += 1
+
+        if _field(mismatches, "served_by_node_id", claims["served_by_node_id"], current_card.node_id):
+            fields_compared += 1
+
+        if mismatches:
+            status = STATUS_BROKEN
+        elif fields_compared == 0:
+            status = STATUS_NOTHING_COMPARED
+        else:
+            status = STATUS_OK
 
         entries.append(
             ExchangeCardVerdict(
                 exchange_digest=exchange_digest,
                 card_digest=current_card_digest,
-                status=STATUS_BROKEN if mismatches else STATUS_OK,
+                status=status,
                 mismatches=tuple(mismatches),
             )
         )
 
-    return CardConsistencyResult(entries=tuple(entries))
+    return CardConsistencyResult(entries=tuple(entries), card_transitions=tuple(transitions))
 
 
 def check_announcement_consistency(card: Card, observed_digest: str | None) -> dict[str, Any]:
