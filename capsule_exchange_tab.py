@@ -317,7 +317,7 @@ def build_exchange_view(
         "witness_receipt_reverify": witness_receipt_reverify_placeholder(),
         "rungs": {
             "freshness": freshness_grade(poc.get("client_nonce_source")),
-            "cross_party": cross_party_grade(poc),
+            "cross_party": cross_party_grade(poc, capsule_id=record.get("capsule_id")),
             "runtime_binding": measurement_class_grade(poc),
         },
     }

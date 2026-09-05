@@ -216,7 +216,7 @@ def node_cell(peer_id: str, records: list[dict[str, Any]]) -> dict[str, Any]:
 def rung_cell(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Rung column: the WORST cross-party rung across every exchange with
     this peer -- never rounds a peer's row up past its weakest exchange."""
-    grades = [cross_party_grade(_poc_block(r)) for r in records]
+    grades = [cross_party_grade(_poc_block(r), capsule_id=r.get("capsule_id")) for r in records]
     ranked = sorted(grades, key=lambda g: _RUNG_ORDER.index(g["rung"]) if g["rung"] in _RUNG_ORDER else -1)
     worst = ranked[0]
     distinct = sorted({g["rung"] for g in grades}, key=lambda r: _RUNG_ORDER.index(r) if r in _RUNG_ORDER else -1)
