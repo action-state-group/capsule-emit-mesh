@@ -14,7 +14,12 @@ dependencies = [
     # and agent_action_capsule directly; capsule-emit itself depends on agent-action-capsule, but the
     # verify/mesh modules import agent_action_capsule directly too, so it's pinned explicitly here.
     "agent-action-capsule>=0.2.0",
-    "capsule-emit>=0.5.1",
+    # Floor 0.7.1 (matches requirements.txt): evidence_responder.py/ask_history.py
+    # (both packaged below) import capsule_emit.adjudication/evidence_request,
+    # which only ship in the 0.7.1 wheel. This floor is untested by CI (which
+    # installs from requirements.txt, never builds this wheel) so it drifted
+    # stale at 0.5.1 -- the exact broken version this sweep started from.
+    "capsule-emit>=0.7.1",
     # scitt-cose and cryptography are NOT pulled by plain capsule-emit; capsule_sidecar.py imports
     # scitt_cose directly, and requester_commitment.py / node_ownership.py import cryptography directly.
     "scitt-cose>=0.2.2",
