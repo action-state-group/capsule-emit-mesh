@@ -10,6 +10,8 @@ mutant. Each acceptance mutant from the inbox item gets its own test:
   - same-owner twin -> twin_owner_distinct: false, no verdict
   - thin margin -> inconclusive
   - identical -> corroborated, zero network calls
+  - [mesh-provider-no-body-persistence] provider-role half, no disclosed
+    transcript -> no verdict, labeled no_requester_transcript, never a crash
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ from agent_action_capsule.emit import emit
 from capsule_sidecar import digest_json
 from twin_adjudicator import (
     DEFAULT_MARGIN_TAU,
+    NO_VERDICT_NO_REQUESTER_TRANSCRIPT,
     NO_VERDICT_SAME_OWNER_TWIN,
     NO_VERDICT_WEIGHTS_MISMATCH,
     RELATION_ADJUDICATES,
@@ -104,6 +107,36 @@ def _make_half(
     return AdjudicationHalf.from_capsule_and_disclosure(capsule, disclosed, weights_digest=weights_digest)
 
 
+def _make_provider_half_without_transcript(text: str, *, owner_id: str | None = "owner-provider") -> AdjudicationHalf:
+    """[mesh-provider-no-body-persistence] A provider-role half with NO
+    disclosed response body -- the provider role has no disclosure write
+    path at all, so there is, by construction, no requester-held transcript
+    for a provider-role capsule. `disclosed={}`, same as a real caller would
+    get trying to load a disclosure file that was never written."""
+    body = _response_body(text)
+    effect = EffectRecord(
+        status="confirmed",
+        type="inference_completion",
+        request_digest=REQUEST_DIGEST,
+        response_digest=digest_json(body),
+    )
+    disposition = Disposition(decision="accept", approver="policy", human_disposed=False, verdict_class="confirmed")
+    compute_attestation = {
+        "owner": {"owner_id": owner_id},
+        "x-mesh-poc-v1": {"serving_provenance": {"role": "provider"}},
+    }
+    capsule = emit(
+        action_type="decide",
+        operator="test-org",
+        developer="mesh-node@v1",
+        compute_attestation=compute_attestation,
+        effect=effect,
+        disposition=disposition,
+        tool_name="serve_exchange",
+    )
+    return AdjudicationHalf.from_capsule_and_disclosure(capsule, {})
+
+
 # ---------------------------------------------------------------------------
 # compare_transcripts -- pure, offline
 # ---------------------------------------------------------------------------
@@ -175,6 +208,47 @@ def test_forged_half_fails_verify():
     )
     with pytest.raises(ForgedHalfError):
         adjudicate(half_a, forged)
+
+
+# ---------------------------------------------------------------------------
+# [mesh-provider-no-body-persistence] Mutant: provider-role half with no
+# disclosed transcript -> no verdict, labeled no_requester_transcript, never
+# a crash (PreimageDigestMismatchError would otherwise fire on the always-
+# empty disclosed dict a provider-role capsule can ever carry).
+# ---------------------------------------------------------------------------
+
+
+def test_provider_role_half_with_no_transcript_refuses_cleanly():
+    half_a = _make_provider_half_without_transcript("hello world")
+    half_b = _make_half("hello world")
+
+    outcome = adjudicate(half_a, half_b)
+
+    assert outcome.verdict is None
+    assert outcome.no_verdict_reason == NO_VERDICT_NO_REQUESTER_TRANSCRIPT
+    assert not outcome.has_verdict()
+
+
+def test_provider_role_half_on_either_side_refuses_cleanly():
+    half_a = _make_half("hello world")
+    half_b = _make_provider_half_without_transcript("hello world")
+
+    outcome = adjudicate(half_a, half_b)
+
+    assert outcome.no_verdict_reason == NO_VERDICT_NO_REQUESTER_TRANSCRIPT
+
+
+def test_requester_role_half_with_matching_role_field_is_unaffected():
+    """A half whose serving_provenance.role is 'requester' (or absent, the
+    pre-b6a-requester-seal case) and DOES carry a disclosed transcript must
+    adjudicate normally -- the guard only fires for provider-role + empty."""
+    half_a = _make_half("hello world", owner_id="owner-a")
+    half_b = _make_half("hello world", owner_id="owner-b")
+
+    outcome = adjudicate(half_a, half_b)
+
+    assert outcome.no_verdict_reason is None
+    assert outcome.verdict == VERDICT_CORROBORATED
 
 
 # ---------------------------------------------------------------------------

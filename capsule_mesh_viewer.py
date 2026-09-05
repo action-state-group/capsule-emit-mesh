@@ -108,6 +108,8 @@ __all__ = [
     "RESPONSE_BODY_STRICT_JCS_STRINGIFY_FLOATS_V1",
     "RESPONSE_BODY_PLAIN_JCS_RYU_FLOATS_V1",
     "load_disclosures",
+    "load_disclosure_purges",
+    "disclosure_status",
     "to_fragment_payload",
     "encode_fragment",
     "decode_fragment",
@@ -175,6 +177,11 @@ def serving_provenance(record: dict[str, Any]) -> dict[str, Any]:
         "hostname": sp.get("hostname"),
         "served_by_node_id": sp.get("served_by_node_id"),
         "requesting_party": sp.get("requesting_party"),
+        # [mesh-provider-no-body-persistence] Which half of the exchange this
+        # record is ("provider"/"requester") -- read straight off the sealed
+        # x-mesh-poc-v1.serving_provenance.role field (b6a-requester-seal).
+        # `None` for a capsule sealed before that field existed.
+        "role": sp.get("role"),
         "exchange_id": sp.get("exchange_id"),
         "client_nonce_source": poc.get("client_nonce_source"),
         "prompt_tokens": usage.get("prompt_tokens"),
@@ -941,6 +948,8 @@ def build_conversation(
     record: dict[str, Any],
     sp: dict[str, Any],
     disclosed: dict[str, Any] | None,
+    *,
+    purged_at: str | None = None,
 ) -> dict[str, Any]:
     """Build the words-first Prompt -> Response block for one capsule.
 
@@ -958,6 +967,11 @@ def build_conversation(
 
     Every ``verify`` sub-object states which sealed digest it checks and the
     outcome, so the reader sees BOTH the words and the proof-or-honest-gap.
+
+    ``purged_at``, when given (from ``load_disclosure_purges``), feeds
+    ``disclosure_status`` -- the [mesh-provider-no-body-persistence] per-record
+    persistence-honesty badge, distinct from the per-field ``disclosed``/
+    ``verify`` above.
     """
     disclosed = disclosed or {}
     effect = record.get("effect", {}) or {}
@@ -1024,7 +1038,7 @@ def build_conversation(
             ),
         }
 
-    return {
+    conversation = {
         "served_by": {
             "node_id": sp.get("served_by_node_id"),
             "model": sp.get("model"),
@@ -1051,6 +1065,11 @@ def build_conversation(
             "verify": response_verify,
         },
     }
+    # [mesh-provider-no-body-persistence] The per-record persistence-honesty
+    # badge -- computed from the prompt/response blocks just built above, not
+    # duplicated logic.
+    conversation["disclosure_status"] = disclosure_status(sp, conversation, purged_at)
+    return conversation
 
 
 # ---------------------------------------------------------------------------
@@ -1081,12 +1100,16 @@ def _disclosure_view(record: dict[str, Any], disclose: dict[str, str] | None) ->
 
 
 # ---------------------------------------------------------------------------
-# Disclosure preimage store -- [disclosure-default-on] auto-load what
-# capsule_sidecar.py's DEFAULT-ON preimage capture wrote next to the ledger,
-# so a fresh sidecar-sealed capsule shows as DISCLOSED without the caller
-# having to pass --disclose by hand. Capsules sealed before this feature (or
-# sealed with --no-disclose) simply have no file here and stay the honest
-# "sealed — digest only" default -- never retroactively disclosed.
+# Disclosure preimage store -- auto-load whatever capsule_sidecar.py's
+# REQUESTER-ROLE, opt-in (--disclose) preimage capture wrote next to the
+# ledger, so a sidecar-sealed capsule that opted in shows as DISCLOSED
+# without the caller having to pass --disclose to THIS tool by hand.
+# [mesh-provider-no-body-persistence] The provider role has no such file at
+# all -- it has no disclosure write path, structurally, not just a default
+# that's off. Capsules with no file here (provider role, a requester that
+# never passed --disclose, or a purged/expired disclosure -- see
+# capsule_sidecar.prune_disclosures) stay the honest "sealed — digest only"
+# default -- never retroactively disclosed.
 # ---------------------------------------------------------------------------
 
 
@@ -1126,6 +1149,83 @@ def load_disclosures(ledger_dir: str | Path) -> dict[str, dict[str, Any]]:
         if entry:
             disclosures[capsule_id] = entry
     return disclosures
+
+
+#: [mesh-provider-no-body-persistence] Filename capsule_sidecar.
+#: prune_disclosures() (DISCLOSURES_PURGED_LOG there) appends a tombstone
+#: line to for every disclosure it prunes -- a sibling of capsules.jsonl in
+#: the same ledger_dir, never a subdirectory of disclosures/ itself.
+DISCLOSURES_PURGED_LOG = "disclosures_purged.jsonl"
+
+
+def load_disclosure_purges(ledger_dir: str | Path) -> dict[str, str]:
+    """Load ``<ledger_dir>/disclosures_purged.jsonl`` into a
+    ``{capsule_id: purged_at}`` map (the LATEST ``purged_at`` per
+    ``capsule_id``, in the rare case a capsule_id appears more than once).
+
+    Missing file or unreadable/malformed lines are skipped, never fatal to
+    rendering the viewer -- same discipline as ``load_disclosures``.
+    """
+    purges: dict[str, str] = {}
+    path = Path(ledger_dir) / DISCLOSURES_PURGED_LOG
+    if not path.is_file():
+        return purges
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return purges
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        capsule_id = entry.get("capsule_id")
+        purged_at = entry.get("purged_at")
+        if capsule_id and purged_at:
+            purges[capsule_id] = purged_at
+    return purges
+
+
+def disclosure_status(sp: dict[str, Any], conversation: dict[str, Any], purged_at: str | None) -> str | None:
+    """The per-record disclosure honesty state for the ledger view -- an
+    HONESTY STATE about persistence, distinct from ``prompt``/``response``'s
+    own per-field ``disclosed``/``verify`` (which stay unchanged; see
+    ``build_conversation``). One of:
+
+      - ``"never retained (provider role)"`` -- this capsule's
+        ``serving_provenance.role`` is ``"provider"``; there is no code path
+        that could ever have written a disclosure for it (see
+        ``capsule_sidecar.persist_disclosure_preimage``).
+      - ``"purged <ts>"`` -- a disclosure existed once (recorded in
+        ``disclosures_purged.jsonl``) and has since been removed by
+        retention (``capsule_sidecar.prune_disclosures``).
+      - ``"present (verified)"`` / ``"present (digest mismatch!)"`` -- a
+        disclosure file exists; whether its body recomputes to the sealed
+        digest(s) is exactly what ``conversation``'s own ``prompt.verify``/
+        ``response.verify`` already checked -- this collapses those into one
+        badge, red on ANY mismatch, never green unless BOTH resolvable
+        checks matched.
+      - ``None`` -- requester-role record, no disclosure and no purge record
+        (opted out, or never disclosed) -- the existing "sealed — digest
+        only" per-field badges already cover this case honestly.
+    """
+    if sp.get("role") == "provider":
+        return "never retained (provider role)"
+    prompt_disclosed = conversation.get("prompt", {}).get("disclosed")
+    response_disclosed = conversation.get("response", {}).get("disclosed")
+    if prompt_disclosed or response_disclosed:
+        prompt_matches = conversation.get("prompt", {}).get("verify", {}).get("matches")
+        response_matches = conversation.get("response", {}).get("verify", {}).get("matches")
+        mismatched = prompt_matches is False or response_matches is False
+        return "present (digest mismatch!)" if mismatched else "present (verified)"
+    if purged_at:
+        return f"purged {purged_at}"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1192,6 +1292,7 @@ def to_fragment_payload(
     source_log: str = SOURCE_SIDECAR,
     witness_checkpoint: dict[str, Any] | None = None,
     disclose: dict[str, dict[str, Any]] | None = None,
+    disclosure_purges: dict[str, str] | None = None,
     operator: str | None = None,
     ledger_dir: Any = None,
     default_role: str = DEFAULT_ROLE,
@@ -1199,7 +1300,10 @@ def to_fragment_payload(
     """Build the fragment payload for a list of mesh capsules.
 
     ``disclose`` maps ``capsule_id -> {"request"|"response": revealed_text}``;
-    any field not named there stays digest-only. ``witness_checkpoint`` is the
+    any field not named there stays digest-only. ``disclosure_purges`` maps
+    ``capsule_id -> purged_at`` (see ``load_disclosure_purges``), feeding each
+    record's ``conversation.disclosure_status``
+    [mesh-provider-no-body-persistence]. ``witness_checkpoint`` is the
     optional COSE checkpoint receipt covering ``source_log``. ``ledger_dir``,
     when given, lets ``verify_results_for`` reach the DETACHED
     ``signed-statements/<capsule_id>.cose`` producer signatures next to the
@@ -1246,7 +1350,9 @@ def to_fragment_payload(
                 "advertised_vs_served": reconcile_record(rec),
                 # Inference-forward: the words-first Prompt -> Response block,
                 # disclosed + digest-verified, rendered ABOVE the questions.
-                "conversation": build_conversation(rec, sp, cap_disclose),
+                "conversation": build_conversation(
+                    rec, sp, cap_disclose, purged_at=(disclosure_purges or {}).get(cid)
+                ),
                 "role_questions": build_role_questions(
                     rec, source_log=source_log, verify_ok=verify_ok, witness_verdict=witness_verdict
                 ),
@@ -1567,18 +1673,23 @@ def _cmd_html(args: argparse.Namespace) -> int:
     import os
 
     ledger_dir = os.path.dirname(os.path.abspath(args.ledger))
-    # [disclosure-default-on] Auto-load whatever capsule_sidecar.py's DEFAULT-ON
-    # preimage capture wrote next to the ledger, then let explicit --disclose /
-    # --disclose-file flags override individual fields on top of it.
+    # Auto-load whatever capsule_sidecar.py's requester-role, opt-in
+    # (--disclose) preimage capture wrote next to the ledger, then let
+    # explicit --disclose / --disclose-file flags override individual fields
+    # on top of it. [mesh-provider-no-body-persistence] disclosure_purges
+    # feeds the honesty badge for a disclosure that existed once and was
+    # since pruned by retention (capsule_sidecar.prune_disclosures).
     merged_disclose = load_disclosures(ledger_dir)
     for cid, fields in disclose.items():
         merged_disclose.setdefault(cid, {}).update(fields)
+    disclosure_purges = load_disclosure_purges(ledger_dir)
 
     payload = to_fragment_payload(
         records,
         source_log=args.source_log,
         witness_checkpoint=witness,
         disclose=merged_disclose or None,
+        disclosure_purges=disclosure_purges or None,
         operator=args.operator,
         ledger_dir=ledger_dir,
         default_role=args.role,

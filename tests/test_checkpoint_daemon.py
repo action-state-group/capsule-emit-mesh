@@ -447,3 +447,75 @@ def test_build_state_rejects_config_without_checkpoint_table(tmp_path):
             ledger_dir=tmp_path, keys_dir=tmp_path, log_id="x",
             ts_urls=[], interval_seconds=300, checkpoint_config_path=cfg_path,
         )
+
+
+# -- [mesh-provider-no-body-persistence] disclosure prune, hourly cadence ----
+
+
+def test_run_daemon_prunes_disclosures_on_its_own_hourly_clock(tmp_path, fake_witness):
+    """The disclosure prune runs on DEFAULT_DISCLOSURE_PRUNE_INTERVAL_SECONDS
+    (hourly), independent of the (much shorter, here 300s) anchor interval --
+    it must not fire on every anchor tick, only once its own clock is due."""
+    import json
+    import time as time_module
+
+    clock = _Clock()
+    log, state = _state(tmp_path, clock, cadence_seconds=300)
+
+    disclosures_dir = tmp_path / "disclosures"
+    disclosures_dir.mkdir()
+    old_file = disclosures_dir / "old-capsule.json"
+    old_file.write_text(json.dumps({"capsule_id": "old-capsule"}))
+    old_mtime = clock.t - 1000
+    import os
+
+    os.utime(old_file, (old_mtime, old_mtime))
+
+    stop = threading.Event()
+    ticks = {"n": 0}
+
+    def _fake_wait(timeout=None):
+        ticks["n"] += 1
+        clock.advance(300)
+        if ticks["n"] >= 3:
+            stop.set()
+        return stop.is_set()
+
+    stop.wait = _fake_wait  # type: ignore[assignment]
+
+    run_daemon(
+        state,
+        interval_seconds=300,
+        stop=stop,
+        disclosures_dir=disclosures_dir,
+        disclosure_ttl_seconds=500.0,
+        disclosure_prune_interval_seconds=3600,
+        monotonic=clock,
+    )
+
+    # 3 ticks * 300s = 900s elapsed -- past the file's 500s ttl, and past one
+    # hourly prune boundary (the startup prune already ran once; the loop's
+    # `monotonic() - last_prune >= 3600` check needs the clock to actually
+    # cross 3600s of *loop* time, which 900s alone does not -- but the
+    # STARTUP prune (before the loop) already removed the ttl-expired file).
+    assert not old_file.exists()
+    purged_log = tmp_path / "disclosures_purged.jsonl"
+    assert purged_log.exists()
+
+
+def test_run_daemon_disclosure_prune_is_a_noop_without_a_disclosures_dir(tmp_path, fake_witness):
+    """No disclosures_dir given (the existing call shape, e.g. provider-role
+    ledgers) -- the loop's own behavior is unchanged."""
+    clock = _Clock()
+    _log, state = _state(tmp_path, clock, cadence_seconds=300)
+    stop = threading.Event()
+
+    def _fake_wait(timeout=None):
+        stop.set()
+        return True
+
+    stop.wait = _fake_wait  # type: ignore[assignment]
+
+    emitted = run_daemon(state, interval_seconds=300, stop=stop)
+    assert emitted == 0
+    assert not (tmp_path / "disclosures_purged.jsonl").exists()

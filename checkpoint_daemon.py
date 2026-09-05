@@ -72,6 +72,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from capsule_emit.checkpoint import DEFAULT_TS_URL, CheckpointConfig
+from capsule_sidecar import DEFAULT_DISCLOSURE_TTL_SECONDS, prune_disclosures
 from checkpointing import (
     CheckpointState,
     Ed25519Signer,
@@ -85,6 +86,14 @@ from checkpointing import (
 #: is anchored-fresh, while still batching (never per-call). Config- and
 #: flag-overridable.
 DEFAULT_INTERVAL_SECONDS = 300
+
+#: [mesh-provider-no-body-persistence] The disclosure-prune clock -- a
+#: DIFFERENT, coarser cadence than the anchor clock above. Anchoring is
+#: privacy-sensitive (batches to avoid leaking activity timing); pruning
+#: disclosures/ is not, so it runs on its own fixed hourly tick regardless of
+#: --interval. A no-op when the ledger's disclosures/ directory doesn't
+#: exist (provider role, or a requester that has never used --disclose).
+DEFAULT_DISCLOSURE_PRUNE_INTERVAL_SECONDS = 3600
 
 
 def build_state(
@@ -147,6 +156,11 @@ def run_daemon(
     stop: threading.Event | None = None,
     max_iterations: int | None = None,
     on_checkpoint=None,
+    disclosures_dir: Path | None = None,
+    disclosure_ttl_seconds: float | None = DEFAULT_DISCLOSURE_TTL_SECONDS,
+    disclosure_max_bytes: int | None = None,
+    disclosure_prune_interval_seconds: int = DEFAULT_DISCLOSURE_PRUNE_INTERVAL_SECONDS,
+    monotonic=time.monotonic,
 ) -> int:
     """The background loop: reconnect-catch-up once at startup, then tick on
     the interval, then flush on shutdown.
@@ -155,6 +169,13 @@ def run_daemon(
     loop for tests. Returns a count of checkpoints emitted. Never raises out
     of the witness path -- an unreachable witness is handled inside
     `CheckpointState` (offline-first), so the loop keeps running.
+
+    [mesh-provider-no-body-persistence] When `disclosures_dir` is given, this
+    loop ALSO prunes it on its own `disclosure_prune_interval_seconds` clock
+    (default hourly), independent of the anchor `interval_seconds` -- see
+    `prune_disclosures()`. `monotonic` is injectable (a test's hand-cranked
+    clock, same pattern `_Clock` in test_checkpoint_daemon.py already drives
+    `stop.wait` with) so the prune cadence is deterministic under test.
     """
     stop = stop or threading.Event()
     emitted = 0
@@ -167,6 +188,13 @@ def run_daemon(
             if on_checkpoint is not None:
                 on_checkpoint(cp)
 
+    def _maybe_prune() -> None:
+        if disclosures_dir is None:
+            return
+        pruned = prune_disclosures(disclosures_dir, ttl_seconds=disclosure_ttl_seconds, max_bytes=disclosure_max_bytes)
+        if pruned:
+            print(f"[checkpoint-daemon] disclosure prune: removed {len(pruned)} expired file(s)", flush=True)
+
     # Startup catch-up: commit any backlog left by a prior run / offline
     # window in one consistency-proof-chained checkpoint (restart-safe).
     _emitted(state.reconnect())
@@ -176,6 +204,8 @@ def run_daemon(
         f"-- {state.witness_status()}",
         flush=True,
     )
+    last_prune = monotonic()
+    _maybe_prune()
 
     iterations = 0
     while not stop.is_set():
@@ -185,6 +215,9 @@ def run_daemon(
         if stop.is_set():
             break
         _emitted(state.tick())
+        if monotonic() - last_prune >= disclosure_prune_interval_seconds:
+            _maybe_prune()
+            last_prune = monotonic()
         iterations += 1
         if max_iterations is not None and iterations >= max_iterations:
             break
@@ -209,6 +242,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--witness", action="store_true", help=f"shorthand for --ts-url {DEFAULT_TS_URL}")
     parser.add_argument("--checkpoint-config", type=Path, default=None, help="a TOML file with a [checkpoint] table (checkpoint.example.toml) supplying base cadence/ts_urls policy")
     parser.add_argument("--once", action="store_true", help="run a single reconnect checkpoint and exit (no background loop) -- for cron/systemd-timer style invocation")
+    parser.add_argument(
+        "--disclosure-ttl",
+        type=float,
+        default=DEFAULT_DISCLOSURE_TTL_SECONDS,
+        help=f"[mesh-provider-no-body-persistence] prune <ledger-dir>/disclosures/ files older than this "
+        f"many seconds (default {DEFAULT_DISCLOSURE_TTL_SECONDS!r}s = 7 days), on an hourly clock. A "
+        "no-op when the directory doesn't exist (provider role, or a requester that never used --disclose).",
+    )
+    parser.add_argument(
+        "--disclosure-max-bytes",
+        type=int,
+        default=None,
+        help="also cap <ledger-dir>/disclosures/ total size; the OLDEST files (by mtime) are pruned "
+        "first once exceeded. Omit for no size cap (age-based --disclosure-ttl still applies).",
+    )
     args = parser.parse_args(argv)
 
     ts_urls = list(args.ts_url)
@@ -227,12 +275,17 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint_config_path=args.checkpoint_config,
     )
 
+    disclosures_dir = args.ledger_dir / "disclosures"
+
     if args.once:
         cp = state.reconnect()
         if cp is None:
             print(f"[checkpoint-daemon --once] nothing new to checkpoint: {state.witness_status()}")
         else:
             print(f"[checkpoint-daemon --once] anchored: {state.witness_status()}")
+        pruned = prune_disclosures(disclosures_dir, ttl_seconds=args.disclosure_ttl, max_bytes=args.disclosure_max_bytes)
+        if pruned:
+            print(f"[checkpoint-daemon --once] disclosure prune: removed {len(pruned)} expired file(s)")
         return 0
 
     stop = threading.Event()
@@ -244,7 +297,14 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _handle)
     signal.signal(signal.SIGINT, _handle)
 
-    run_daemon(state, interval_seconds=interval, stop=stop)
+    run_daemon(
+        state,
+        interval_seconds=interval,
+        stop=stop,
+        disclosures_dir=disclosures_dir,
+        disclosure_ttl_seconds=args.disclosure_ttl,
+        disclosure_max_bytes=args.disclosure_max_bytes,
+    )
     return 0
 
 

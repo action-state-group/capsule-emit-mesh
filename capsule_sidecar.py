@@ -11,15 +11,20 @@ compatible `/v1` HTTP surface. For every `/v1/chat/completions` call it:
   3. captures the real response (success or error) and digests it too;
   4. emits + signs an Agent Action Capsule recording the exchange, hash-
      chained to the previous capsule this sidecar emitted for this node;
-  5. [disclosure-default-on] ALSO persists the request+response TEXT
+  5. [mesh-provider-no-body-persistence] REQUESTER ROLE ONLY, opt-in
+     (``--disclose``, default OFF): ALSO persists the request+response TEXT
      PREIMAGE -- the exact JSON bodies just digested -- into a local
-     ``<ledger_dir>/disclosures/<capsule_id>.json`` file, DEFAULT ON
-     (``--no-disclose`` turns it off). This is a LOCAL attachment carried
-     alongside the ledger, never part of the signed capsule: the wire object
-     still commits to request/response by digest only. It exists so a human
-     operator can see the actual exchange in capsule-mesh-viewer, which
-     recomputes request_digest/response_digest from this preimage and shows
-     whether it matches the sealed digests. See persist_disclosure_preimage().
+     ``<ledger_dir>/disclosures/<capsule_id>.json`` file. This is a LOCAL
+     attachment carried alongside the ledger, never part of the signed
+     capsule: the wire object still commits to request/response by digest
+     only. It exists so a human operator can see the actual exchange in
+     capsule-mesh-viewer, which recomputes request_digest/response_digest
+     from this preimage and shows whether it matches the sealed digests.
+     See persist_disclosure_preimage(). The PROVIDER role has NO write path
+     here at all -- ``--disclose``/``disclose_preimage`` are rejected outright
+     when combined with ``--role provider`` (see TRUST-MODEL.md's stated
+     property: a provider node retains digests only, structurally, not by
+     configuration).
 
 WHY A SIDECAR AND NOT A MESH-LLM PLUGIN -- see poc/README.md
 "Architecture decision" for the full writeup. Short version: neither of
@@ -127,6 +132,15 @@ SIG_ALG = "EdDSA"
 ROLE_PROVIDER = "provider"
 ROLE_REQUESTER = "requester"
 ROLES = (ROLE_PROVIDER, ROLE_REQUESTER)
+
+#: [mesh-provider-no-body-persistence] Requester-side disclosure retention:
+#: today (pre-fix) there is NO ttl/prune/cap on disclosures/ -- unbounded,
+#: unexpiring. 7 days is the default age at which a disclosure preimage is
+#: pruned (see prune_disclosures()); same cadence PATTERN mesh-llm's own log
+#: store uses (a 36h TTL / 100k rows, mesh-llm-config/src/model.rs:1420-1428),
+#: not the same number -- disclosure preimages are opt-in and human-operator
+#: facing, not a serving-path log.
+DEFAULT_DISCLOSURE_TTL_SECONDS = 7 * 24 * 3600.0
 
 # PROVISIONAL: pending CPB #70 promotion ([mesh-exchange-role-field],
 # scitt-payload-binding's `mesh-inference-exchange` registry entry, issue
@@ -627,20 +641,39 @@ class NodeState:
     #: capsule_id of the sealed identity capsule (the "who"), cited by every
     #: serving capsule whose owner re-check passes (the "did" cites the "who").
     identity_capsule_id: str | None = None
-    #: [disclosure-default-on] Whether this sidecar persists the request +
-    #: response TEXT PREIMAGE (the exact JSON bodies it just digested) into
-    #: ``<ledger_dir>/disclosures/<capsule_id>.json``, DEFAULT ON. This is a
-    #: LOCAL, out-of-band attachment carried alongside the ledger -- it never
-    #: changes the SIGNED capsule, ``capsule_id``, or the digest-parity
-    #: vectors; the wire/verifiable object still commits to request/response
-    #: by digest only. It exists so a human operator can see the actual
-    #: exchange in the viewer and recompute-and-match it against the sealed
-    #: request_digest/response_digest. ``False`` (``--no-disclose``) turns it
-    #: off for privacy -- digest-only, the prior behavior. See
-    #: persist_disclosure_preimage().
-    disclose_preimage: bool = True
+    #: [mesh-provider-no-body-persistence] Whether this sidecar persists the
+    #: request + response TEXT PREIMAGE (the exact JSON bodies it just
+    #: digested) into ``<ledger_dir>/disclosures/<capsule_id>.json``.
+    #: REQUESTER ROLE ONLY, opt-in, DEFAULT OFF (``--disclose`` turns it on;
+    #: there is no flag that turns it on for the provider role -- see the
+    #: ``role`` validation below). This is a LOCAL, out-of-band attachment
+    #: carried alongside the ledger -- it never changes the SIGNED capsule,
+    #: ``capsule_id``, or the digest-parity vectors; the wire/verifiable
+    #: object still commits to request/response by digest only. It exists so
+    #: a human operator can see the actual exchange in the viewer and
+    #: recompute-and-match it against the sealed request_digest/
+    #: response_digest. See persist_disclosure_preimage().
+    disclose_preimage: bool = False
+    #: [mesh-provider-no-body-persistence] Requester-side retention bounds for
+    #: disclosures/ -- see prune_disclosures(). Meaningless for the provider
+    #: role (there is nothing to prune there). Applied once at sidecar
+    #: startup (main()) and, for a long-running node, on the checkpoint
+    #: daemon's own hourly cadence (checkpoint_daemon.py) so retention keeps
+    #: working across restarts without depending on the sidecar staying up.
+    disclosure_ttl_seconds: float = DEFAULT_DISCLOSURE_TTL_SECONDS
+    disclosure_max_bytes: int | None = None
 
     def __post_init__(self) -> None:
+        # [mesh-provider-no-body-persistence] Structural invariant, checked at
+        # construction time (not just at the CLI layer): a provider-role node
+        # can never be configured to retain a disclosure preimage. This is
+        # the property TRUST-MODEL.md states -- there is no configuration
+        # that retains prompt/response content in the provider role.
+        if self.role == ROLE_PROVIDER and self.disclose_preimage:
+            raise ValueError(
+                "disclose_preimage is requester-only -- it cannot be enabled for role="
+                f"{ROLE_PROVIDER!r}. The provider role has no disclosure write path."
+            )
         self.manifest = load_manifest(self.manifest_path)
         self.model_package_digest = model_package_digest(self.manifest)
         self.ledger_dir.mkdir(parents=True, exist_ok=True)
@@ -648,7 +681,7 @@ class NodeState:
         self.statements_dir = self.ledger_dir / "signed-statements"
         self.statements_dir.mkdir(parents=True, exist_ok=True)
         self.disclosures_dir = self.ledger_dir / "disclosures"
-        if self.disclose_preimage:
+        if self.role == ROLE_REQUESTER and self.disclose_preimage:
             self.disclosures_dir.mkdir(parents=True, exist_ok=True)
 
         # [mesh-sequence-per-counterparty] Per-(self, counterparty) seq
@@ -784,7 +817,8 @@ def persist_disclosure_preimage(
 ) -> None:
     """Write the request/response PREIMAGE this sidecar just digested, keyed
     by ``capsule_id``, into ``<ledger_dir>/disclosures/<capsule_id>.json`` --
-    DEFAULT ON (``state.disclose_preimage``; ``--no-disclose`` turns it off).
+    REQUESTER ROLE ONLY, opt-in (``state.disclose_preimage``; ``--disclose``
+    turns it on, default off).
 
     This is a LOCAL, out-of-band attachment carried alongside the ledger: it
     changes nothing about the SIGNED capsule -- ``request_digest``,
@@ -797,7 +831,20 @@ def persist_disclosure_preimage(
     (``capsule_mesh_viewer.build_conversation`` does exactly that recompute-
     and-match). Best-effort: a write failure here must never break request
     handling that already succeeded and was recorded in the ledger.
+
+    [mesh-provider-no-body-persistence] Structural invariant, not a setting:
+    this function REFUSES to run for the provider role. ``NodeState``'s own
+    ``__post_init__`` already rejects ``disclose_preimage=True`` combined with
+    ``role="provider"`` at construction time, and both call sites in this
+    module gate the call on ``state.role == ROLE_REQUESTER`` first -- this
+    check is the third, innermost layer, so a future caller cannot wire a
+    provider-role write path back in by accident.
     """
+    if state.role != ROLE_REQUESTER:
+        raise RuntimeError(
+            "persist_disclosure_preimage() must never be called for the provider role -- "
+            "the provider has no disclosure write path (mesh-provider-no-body-persistence)"
+        )
     if not state.disclose_preimage:
         return
     capsule_id = capsule.get("capsule_id")
@@ -818,6 +865,88 @@ def persist_disclosure_preimage(
         path.write_text(json.dumps(record), encoding="utf-8")
     except OSError as exc:  # noqa: BLE001 -- best-effort, never break the serving path
         print(f"disclosure preimage write failed for {capsule_id} (best-effort, continuing): {exc}")
+
+
+#: Filename (sibling of capsules.jsonl, same ledger_dir) prune_disclosures()
+#: appends a tombstone line to for every file it removes -- so the viewer can
+#: show "purged <ts>" instead of the record silently reverting to looking
+#: never-disclosed. Never touched by anything else; purging never rewrites
+#: or truncates capsules.jsonl itself (see prune_disclosures()'s docstring).
+DISCLOSURES_PURGED_LOG = "disclosures_purged.jsonl"
+
+
+def prune_disclosures(
+    disclosures_dir: Path,
+    *,
+    ttl_seconds: float | None = DEFAULT_DISCLOSURE_TTL_SECONDS,
+    max_bytes: int | None = None,
+) -> list[str]:
+    """Delete disclosure preimage files older than *ttl_seconds* and/or, if
+    the directory's total size exceeds *max_bytes*, the OLDEST remaining
+    files (by mtime) until back under budget.
+
+    [mesh-provider-no-body-persistence] Requester-side retention: today there
+    is no bound on disclosures/ at all -- this is the fix. Purging a
+    disclosure NEVER touches ``capsules.jsonl`` or any signed artifact: the
+    capsule's digests and the ledger record are untouched and stay
+    independently verifiable after the preimage is gone -- only the LOCAL,
+    out-of-band preimage disappears. Each removal appends one line to
+    ``<disclosures_dir>/../disclosures_purged.jsonl`` (capsule_id +
+    purged_at + reason) so a viewer can show "purged <ts>" for a record that
+    once had a disclosure, distinct from "never retained" (provider role) or
+    "not disclosed" (opted out). Returns the list of capsule_ids removed;
+    a missing directory is a no-op, not an error.
+    """
+    if not disclosures_dir.is_dir():
+        return []
+    entries: list[tuple[Path, float, int]] = []
+    for path in disclosures_dir.glob("*.json"):
+        try:
+            info = path.stat()
+        except OSError:
+            continue
+        entries.append((path, info.st_mtime, info.st_size))
+    entries.sort(key=lambda entry: entry[1])  # oldest mtime first
+
+    now = time.time()
+    removed: list[tuple[Path, str]] = []
+    kept: list[tuple[Path, float, int]] = []
+    for path, mtime, size in entries:
+        if ttl_seconds is not None and (now - mtime) >= ttl_seconds:
+            removed.append((path, "ttl"))
+        else:
+            kept.append((path, mtime, size))
+
+    if max_bytes is not None:
+        total = sum(size for _, _, size in kept)
+        i = 0
+        while total > max_bytes and i < len(kept):
+            path, _mtime, size = kept[i]
+            removed.append((path, "max_bytes"))
+            total -= size
+            i += 1
+
+    if not removed:
+        return []
+
+    purged_log = disclosures_dir.parent / DISCLOSURES_PURGED_LOG
+    removed_ids: list[str] = []
+    purged_at = _utc_now_iso()
+    try:
+        with purged_log.open("a", encoding="utf-8") as fh:
+            for path, reason in removed:
+                capsule_id = path.stem
+                fh.write(json.dumps({"capsule_id": capsule_id, "purged_at": purged_at, "reason": reason}) + "\n")
+    except OSError as exc:  # noqa: BLE001 -- best-effort tombstone, never block the actual purge
+        print(f"disclosures_purged.jsonl write failed (best-effort, continuing): {exc}")
+
+    for path, _reason in removed:
+        removed_ids.append(path.stem)
+        try:
+            path.unlink()
+        except OSError as exc:  # noqa: BLE001 -- best-effort, never crash the prune pass
+            print(f"disclosure prune failed for {path} (best-effort, continuing): {exc}")
+    return removed_ids
 
 
 def build_capsule(
@@ -1374,7 +1503,10 @@ def _seal_chat_completion(
         )
     signed_statement = sign_capsule(state, capsule)
     record_capsule(state, capsule, signed_statement)
-    persist_disclosure_preimage(state, capsule, request_json, response_json)
+    # [mesh-provider-no-body-persistence] Requester-role-only call: the
+    # provider half of this shared seal function never reaches this line.
+    if state.role == ROLE_REQUESTER:
+        persist_disclosure_preimage(state, capsule, request_json, response_json)
     return capsule
 
 
@@ -1641,7 +1773,10 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
 
     signed_statement = sign_capsule(state, capsule)
     record_capsule(state, capsule, signed_statement)
-    persist_disclosure_preimage(state, capsule, request_json, response_json)
+    # [mesh-provider-no-body-persistence] Requester-role-only call: the
+    # provider half of this shared handler never reaches this line.
+    if state.role == ROLE_REQUESTER:
+        persist_disclosure_preimage(state, capsule, request_json, response_json)
 
     out_headers = {"Content-Type": "application/json", "X-Capsule-Id": capsule["capsule_id"]}
     return status_code, response_body, out_headers
@@ -1903,7 +2038,9 @@ def default_state(
     node_ownership: SignedNodeOwnership | None = None,
     role: str = ROLE_PROVIDER,
     node_id: str = "mesh-node-demo-1",
-    disclose_preimage: bool = True,
+    disclose_preimage: bool = False,
+    disclosure_ttl_seconds: float = DEFAULT_DISCLOSURE_TTL_SECONDS,
+    disclosure_max_bytes: int | None = None,
 ) -> NodeState:
     if role not in ROLES:
         raise ValueError(f"role must be one of {ROLES}, got {role!r}")
@@ -1926,6 +2063,8 @@ def default_state(
         plugin_checkpoint_config_path=plugin_checkpoint_config_path,
         node_ownership=node_ownership,
         disclose_preimage=disclose_preimage,
+        disclosure_ttl_seconds=disclosure_ttl_seconds,
+        disclosure_max_bytes=disclosure_max_bytes,
     )
 
 
@@ -1982,18 +2121,41 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runtime-label", default="unspecified-real-node")
     parser.add_argument("--runtime-artifact", help="path to a binary/artifact to hash for runtime_digest (read-only, never executed)")
     parser.add_argument(
-        "--no-disclose",
+        "--disclose",
         dest="disclose_preimage",
-        action="store_false",
-        default=True,
+        action="store_true",
+        default=False,
         help=(
-            "[disclosure-default-on] by DEFAULT this sidecar persists the request+response TEXT "
-            "PREIMAGE -- the exact JSON bodies it just digested -- into "
+            "[mesh-provider-no-body-persistence] requester role only, opt-in, default OFF: persist "
+            "the request+response TEXT PREIMAGE -- the exact JSON bodies just digested -- into "
             "<ledger-dir>/disclosures/<capsule_id>.json, so a human operator can see the actual "
             "exchange in capsule-mesh-viewer and it can recompute-and-match the text against the "
             "sealed request_digest/response_digest. This is a LOCAL attachment only: it never "
-            "changes the SIGNED capsule, capsule_id, or the digest vectors. Pass --no-disclose to "
-            "turn this off for privacy (digest-only, the prior behavior)."
+            "changes the SIGNED capsule, capsule_id, or the digest vectors. REJECTED with an error "
+            "when combined with --role provider -- the provider role has no disclosure write path "
+            "at all, not just this flag turned off (see TRUST-MODEL.md)."
+        ),
+    )
+    parser.add_argument(
+        "--disclosure-ttl",
+        type=float,
+        default=DEFAULT_DISCLOSURE_TTL_SECONDS,
+        help=(
+            f"requester role only: how long a disclosure preimage file may live in "
+            f"<ledger-dir>/disclosures/ before an hourly prune removes it (default "
+            f"{DEFAULT_DISCLOSURE_TTL_SECONDS!r}s = 7 days). Purging a disclosure never touches "
+            "capsules.jsonl -- the digests and the ledger record stay verifiable, only the "
+            "preimage goes. Has no effect for --role provider (disclosure is off there)."
+        ),
+    )
+    parser.add_argument(
+        "--disclosure-max-bytes",
+        type=int,
+        default=None,
+        help=(
+            "requester role only: total byte-size cap on <ledger-dir>/disclosures/; when exceeded "
+            "the hourly prune removes the OLDEST files first (by mtime) until back under budget. "
+            "Omit for no size cap (age-based --disclosure-ttl still applies)."
         ),
     )
     parser.add_argument(
@@ -2041,6 +2203,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # [mesh-provider-no-body-persistence] --disclose is requester-only. Catch
+    # this at the CLI layer (a clear, immediate error) rather than letting it
+    # fall through to NodeState.__post_init__'s ValueError -- same invariant,
+    # a friendlier message at the point the operator made the mistake.
+    if args.role == ROLE_PROVIDER and args.disclose_preimage:
+        parser.error("--disclose is requester-only; it cannot be combined with --role provider")
+
     advertisement = None
     if args.advertisement:
         advertisement = Advertisement.from_value(json.loads(Path(args.advertisement).read_text(encoding="utf-8")))
@@ -2080,7 +2249,22 @@ def main(argv: list[str] | None = None) -> int:
         role=args.role,
         node_id=node_id,
         disclose_preimage=args.disclose_preimage,
+        disclosure_ttl_seconds=args.disclosure_ttl,
+        disclosure_max_bytes=args.disclosure_max_bytes,
     )
+
+    # [mesh-provider-no-body-persistence] One prune pass at startup (covers a
+    # restart after a long-idle disclosures/ backlog); a long-running node
+    # additionally wants checkpoint_daemon.py's hourly cadence alongside this
+    # sidecar so retention keeps working without depending on a restart.
+    if state.role == ROLE_REQUESTER and state.disclosures_dir.is_dir():
+        startup_pruned = prune_disclosures(
+            state.disclosures_dir,
+            ttl_seconds=state.disclosure_ttl_seconds,
+            max_bytes=state.disclosure_max_bytes,
+        )
+        if startup_pruned:
+            print(f"disclosure prune at startup: removed {len(startup_pruned)} expired file(s)")
 
     # [b4-who-did] Seal the identity capsule (the "who") ONCE at startup, if a
     # cert is present. Serving capsules then cite its capsule_id. Only cited when
@@ -2102,10 +2286,15 @@ def main(argv: list[str] | None = None) -> int:
     server = run_sidecar(listen_host=args.listen_host, listen_port=args.listen_port, upstream_base=args.upstream, state=state)
     print(f"capsule sidecar listening on http://{args.listen_host}:{args.listen_port} -> upstream {args.upstream}")
     print(f"role={state.role} node_id={state.node_id} model_package_digest={state.model_package_digest}")
-    if state.disclose_preimage:
-        print(f"disclosure preimage: ON (default) -> {state.disclosures_dir} (turn off with --no-disclose)")
+    if state.role == ROLE_PROVIDER:
+        print("disclosure preimage: N/A (provider role has no disclosure write path -- digests only, always)")
+    elif state.disclose_preimage:
+        print(
+            f"disclosure preimage: ON (--disclose) -> {state.disclosures_dir} "
+            f"(ttl={state.disclosure_ttl_seconds:.0f}s, max_bytes={state.disclosure_max_bytes})"
+        )
     else:
-        print("disclosure preimage: OFF (--no-disclose) -- capsules stay digest-only, as before")
+        print("disclosure preimage: OFF (default) -- capsules stay digest-only; pass --disclose to turn it on")
     if state.role == ROLE_REQUESTER:
         print(
             "  requester role: sealing this node's OWN-HALF capsule per request "
