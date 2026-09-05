@@ -200,6 +200,30 @@ def test_mutant_reset_counter_reports_a_broken_pair_not_a_fresh_start():
     assert summary["pair_sequencing"]["broken_pairs"] == ["m4::m3"]
 
 
+def test_mutant_exchanges_filed_under_unknown_are_counted_and_labeled_not_blended():
+    """[adv-stream-membership-authenticated] ADV-6's concealment attack: a
+    dishonest provider files exchanges it wants deniable under the shared
+    `unknown` counterparty bucket while keeping a named pair's stream fully
+    contiguous. `m4` here has a clean 3-record `m4::m3` stream AND 2 records
+    filed under `m4::unknown` -- those 2 must show up as their own labeled
+    total, not vanish into `gaps_detected`/`broken_pairs` (both of which
+    stay green for a stream that, in isolation, IS unbroken)."""
+    records = [
+        _pair_capsule(self_id="m4", counterparty_id="m3", seq=1, prev_seq=None),
+        _pair_capsule(self_id="m4", counterparty_id="m3", seq=2, prev_seq=1),
+        _pair_capsule(self_id="m4", counterparty_id="m3", seq=3, prev_seq=2),
+        _pair_capsule(self_id="m4", counterparty_id="unknown", seq=1, prev_seq=None),
+        _pair_capsule(self_id="m4", counterparty_id="unknown", seq=2, prev_seq=1),
+    ]
+    summary = history_summary(node_id="node-a", log_id="log-a", checkpoint_lines=[], ledger_records=records)
+    pair_sequencing = summary["pair_sequencing"]
+    assert pair_sequencing["gaps_detected"] == 0
+    assert pair_sequencing["broken_pairs"] == []
+    assert pair_sequencing["pairs_checked"] == 2
+    assert pair_sequencing["unauthenticated_pairs"] == ["m4::unknown"]
+    assert pair_sequencing["unauthenticated_records"] == 2
+
+
 def test_pair_sequencing_never_holds_a_rating_field():
     records = [_pair_capsule(self_id="m4", counterparty_id="m3", seq=1, prev_seq=None)]
     summary = history_summary(node_id="node-a", log_id="log-a", checkpoint_lines=[], ledger_records=records)

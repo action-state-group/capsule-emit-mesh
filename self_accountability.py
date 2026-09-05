@@ -155,7 +155,12 @@ def history_summary(
     consistency; this is whether any counterparty pair's ``seq`` stream is
     missing records) -- the two are never blended into one field.
     ``ledger_records`` omitted (the default) means this row simply cannot
-    compute it yet -- honestly absent, never a fabricated zero."""
+    compute it yet -- honestly absent, never a fabricated zero.
+    [adv-stream-membership-authenticated] ``pair_sequencing`` also carries
+    ``unauthenticated_pairs``/``unauthenticated_records``: every pair (and
+    its record count) sealed with no authenticated counterparty binding
+    (the ``UNKNOWN_COUNTERPARTY`` bucket), reported as its own labeled total
+    rather than blended into ``gaps_detected``/``pairs_checked``."""
     card = build_history_card(node_id=node_id, log_id=log_id, checkpoint_lines=checkpoint_lines, since_size=since_size)
     row = {
         "source": "history_card",
@@ -170,12 +175,22 @@ def history_summary(
     }
     if ledger_records is not None:
         pair_results = verify_pair_continuity(ledger_records)
+        # [adv-stream-membership-authenticated] Records filed under the
+        # UNKNOWN_COUNTERPARTY bucket (no authenticated -- or, on the
+        # requester side, no available -- counterparty id) must be VISIBLE
+        # here, counted and labeled, never folded silently into the other
+        # fields below: `gaps_detected`/`pairs_checked`/`broken_pairs` would
+        # otherwise report a dishonest node's deniable, unknown-filed
+        # exchanges as indistinguishable from ordinary named-pair traffic.
+        unauthenticated_pairs = [p for p in pair_results.values() if not p.counterparty_authenticated]
         row["pair_sequencing"] = {
             "source": "sequence_counter",
             "capture_method": "pair_seq_walk",
             "gaps_detected": sum(p.gaps_detected for p in pair_results.values()),
             "pairs_checked": len(pair_results),
             "broken_pairs": sorted(p.pair for p in pair_results.values() if p.continuity != "unbroken"),
+            "unauthenticated_pairs": sorted(p.pair for p in unauthenticated_pairs),
+            "unauthenticated_records": sum(p.records_checked for p in unauthenticated_pairs),
         }
     return row
 
