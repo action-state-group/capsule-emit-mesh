@@ -121,6 +121,11 @@ class _RunningServer:
         except urllib.error.HTTPError as exc:
             return exc.code, json.loads(exc.read())
 
+    def get(self, path: str) -> tuple[int, bytes]:
+        req = urllib.request.Request(f"{self.base_url}{path}", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, resp.read()
+
 
 @pytest.fixture
 def running_server(node_state):
@@ -196,6 +201,19 @@ class TestSelfCheckpointedLedgerOverHTTP:
         tampered["receipt"] = {**tampered["receipt"], "capsule_id": "0" * 64}
         ok, _errors = verify_bundle(Bundle.from_dict(tampered))
         assert ok is False
+
+    def test_get_root_never_leaks_the_ledger_filesystem_path(self, running_server):
+        """[adv-evidence-door-caps-and-subjects] ADV-10: GET / used to echo
+        this node's absolute ledger path -- a gratuitous local-filesystem
+        disclosure a neutral witness has no reason to make. It must carry
+        no evidence, and in particular no path."""
+        server, state = running_server
+        status, body = server.get("/")
+        assert status == 200
+        text = body.decode()
+        assert str(state.ledger_path) not in text
+        assert "ledger" not in text  # no field even naming the concept, let alone its value
+        assert text == "capsule-evidence-server: ready\n"
 
 
 class TestServerWithNoLedgerAtAll:
