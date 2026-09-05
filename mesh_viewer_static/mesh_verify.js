@@ -313,7 +313,10 @@
       noteEl.hidden = false;
       noteEl.textContent = rv.note;
     }
-    return node;
+    // pOk/rOk ride along so the card header can reflect the WORST line in the
+    // checks block, not just the capsule_id recompute -- a sealed-digest
+    // mismatch here must never hide under a green header (see renderEntry).
+    return { node: node, pOk: pOk, rOk: rOk };
   }
 
 
@@ -351,25 +354,38 @@
     } catch (e) {
       idMatch = null;
     }
-    if (idMatch === true) {
-      badge.className = "badge ok";
-      badge.textContent = "✓ verified in your browser";
-    } else if (idMatch === false) {
-      badge.className = "badge fail";
-      badge.textContent = "✗ capsule_id MISMATCH";
-    } else {
-      badge.className = "badge";
-      badge.textContent = "— id not recomputable";
-    }
 
     // Plain-language verdict -- the DEFAULT read, above the conversation.
     renderVerdict(node.querySelector("[data-verdict]"), entry.verdict);
 
     // Inference-forward: lead with the disclosed + digest-verified conversation.
-    var convNode = await renderConversation(entry);
-    if (convNode) {
+    var conv = await renderConversation(entry);
+    var pOk = conv ? conv.pOk : null;
+    var rOk = conv ? conv.rOk : null;
+    if (conv && conv.node) {
       var convSlot = node.querySelector("[data-conv-slot]");
-      if (convSlot) convSlot.appendChild(convNode);
+      if (convSlot) convSlot.appendChild(conv.node);
+    }
+
+    // The card header is the WORST line in the checks block, not just the
+    // capsule_id recompute -- a sealed-digest MISMATCH below (e.g. served
+    // facts vs sealed response_digest) must flip this red, never stay green
+    // next to a failed check. idMatch === false always wins the wording (the
+    // envelope itself didn't recompute); otherwise any other failed check
+    // still forces "fail". A null result (nothing to check, or "sealed") is
+    // neutral -- never counted as a pass or a fail.
+    if (idMatch === false) {
+      badge.className = "badge fail";
+      badge.textContent = "✗ capsule_id MISMATCH";
+    } else if (pOk === false || rOk === false) {
+      badge.className = "badge fail";
+      badge.textContent = "✗ sealed-digest check failed — see below";
+    } else if (idMatch === true) {
+      badge.className = "badge ok";
+      badge.textContent = "✓ verified in your browser";
+    } else {
+      badge.className = "badge";
+      badge.textContent = "— id not recomputable";
     }
 
     // ---- behind the ONE "Show the security checks" toggle -----------------
