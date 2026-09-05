@@ -89,6 +89,41 @@ def _rendered_html() -> str:
     return render_mesh_viewer_html(encode_fragment(payload)), encode_fragment(payload)
 
 
+def _demo_capsule_with_real_capsule_id(*, response_digest_matches: bool):
+    """`_demo_capsule`, but with a REAL `capsule_id` (the actual recompute over
+    this exact content, not the fixed `"a"*64` placeholder `_demo_capsule` uses)
+    -- so the in-browser envelope check (capsule_id recompute) genuinely
+    passes, isolating whatever `response_digest_matches` does to the served-
+    facts-vs-sealed-response_digest check alone.
+
+    ``response_digest_matches=False`` reproduces
+    [mesh-exchange-card-mismatch-bug]: the seal path computed `response_digest`
+    wrong (or something changed the served facts after sealing) -- the
+    envelope itself is untampered, but the served facts do not recompute to
+    the sealed digest. This must flip the card header red, not leave it green
+    next to a failed check."""
+    from agent_action_capsule import compute_capsule_id
+
+    cap = _demo_capsule()
+    if not response_digest_matches:
+        cap["effect"]["response_digest"] = "2" * 64
+        assert cap["effect"]["response_digest"] != served_facts_digest(serving_provenance(cap))
+    cap["capsule_id"] = "0" * 64  # placeholder; recomputed below
+    cap["capsule_id"] = compute_capsule_id(cap)
+    return cap
+
+
+def _rendered_html_for(cap: dict) -> tuple[str, str]:
+    cid = cap["capsule_id"]
+    payload = to_fragment_payload(
+        [cap],
+        source_log="plugin",
+        disclose={cid: {"request": "how great is mesh-llm", "response": "I don't have information about mesh-llm."}},
+        default_role="requester",
+    )
+    return render_mesh_viewer_html(encode_fragment(payload)), encode_fragment(payload)
+
+
 def test_embedded_fragment_is_isolated_and_guard_intact():
     html, frag = _rendered_html()
     m = re.search(r'window\.__MESH_FRAGMENT_B64U__="([A-Za-z0-9_\-]+)";', html)
@@ -135,13 +170,17 @@ function parse(h){
 """
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node not available; delivered-file boot is a local/CI-with-node check")
-def test_delivered_file_boots_clean_and_renders_conversations(tmp_path):
-    html, _ = _rendered_html()
+def _boot_headless(html: str, tmp_path, name: str = "boot.cjs") -> dict:
+    """Boot the delivered HTML's real inline scripts under node + the DOM shim
+    above, and return the render-observable state as a dict: entry/conv
+    counts, prompt/response verify chip counts, the served-facts line text,
+    gen-params line, and the FIRST entry's header badge class/text -- so a
+    test can assert on the card header, not just the individual check chips.
+    """
     html_path = tmp_path / "viewer.html"
     html_path.write_text(html, encoding="utf-8")
 
-    harness = tmp_path / "boot.cjs"
+    harness = tmp_path / name
     harness.write_text(
         _DOM_SHIM
         + textwrap.dedent(
@@ -182,7 +221,10 @@ def test_delivered_file_boots_clean_and_renders_conversations(tmp_path):
               const served=servedEl?servedEl.textContent:"";
               const genparams=gpEl?gpEl.textContent:"";
               const genparamsShown=gpEl?!gpEl.hidden:false;
-              process.stdout.write(JSON.stringify({{entries, convs, ok, fail, served, genparams, genparamsShown}}));
+              const badgeEl=body.querySelector("[data-verify-badge]");
+              const badgeClass=badgeEl?badgeEl.className:"";
+              const badgeText=badgeEl?badgeEl.textContent:"";
+              process.stdout.write(JSON.stringify({{entries, convs, ok, fail, served, genparams, genparamsShown, badgeClass, badgeText}}));
               process.exit(0);
             }}, 400);
             """
@@ -191,7 +233,13 @@ def test_delivered_file_boots_clean_and_renders_conversations(tmp_path):
     )
     result = subprocess.run(["node", str(harness)], capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
-    out = json.loads(result.stdout)
+    return json.loads(result.stdout)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available; delivered-file boot is a local/CI-with-node check")
+def test_delivered_file_boots_clean_and_renders_conversations(tmp_path):
+    html, _ = _rendered_html()
+    out = _boot_headless(html, tmp_path)
     assert out["entries"] == 1, "the entry must render (no blank page)"
     assert out["convs"] == 1, "the conversation block must render"
     assert out["ok"] == 1, "the served-facts digest must recompute to the sealed response_digest"
@@ -202,3 +250,31 @@ def test_delivered_file_boots_clean_and_renders_conversations(tmp_path):
     # the stringified-float temperature tidied ("0.0" -> "0").
     assert out["genparamsShown"], "gen-params line must be visible when params were sealed"
     assert out["genparams"] == "generated with: temperature 0, top-k 40, seed 12345, max_tokens 512", out["genparams"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not available; delivered-file boot is a local/CI-with-node check")
+def test_card_header_is_the_worst_line_in_the_checks_block(tmp_path):
+    """[mesh-exchange-card-mismatch-bug]: the card header (the badge next to
+    the title) must reflect the WORST line in the checks block -- not just
+    the capsule_id recompute. Two capsules, identical except for whether the
+    served facts recompute to the sealed `response_digest`; both have a REAL
+    (not placeholder) `capsule_id`, so the envelope check passes in both.
+
+    Before the fix, the badge was set from the capsule_id recompute alone and
+    would have stayed "✓ verified in your browser" for the MISMATCH capsule
+    too -- a real check that failed, silently outvoted by an unrelated check
+    that passed."""
+    match_html, _ = _rendered_html_for(_demo_capsule_with_real_capsule_id(response_digest_matches=True))
+    match_out = _boot_headless(match_html, tmp_path, name="boot_match.cjs")
+    assert match_out["ok"] == 1 and match_out["fail"] == 0
+    assert "ok" in match_out["badgeClass"].split(), match_out["badgeClass"]
+    assert "fail" not in match_out["badgeClass"].split(), match_out["badgeClass"]
+
+    mismatch_html, _ = _rendered_html_for(_demo_capsule_with_real_capsule_id(response_digest_matches=False))
+    mismatch_out = _boot_headless(mismatch_html, tmp_path, name="boot_mismatch.cjs")
+    assert mismatch_out["ok"] == 0 and mismatch_out["fail"] == 1, "the response verify chip must show the mismatch"
+    assert "fail" in mismatch_out["badgeClass"].split(), (
+        f"header must be the WORST line in the checks block: badgeClass={mismatch_out['badgeClass']!r} "
+        f"badgeText={mismatch_out['badgeText']!r}"
+    )
+    assert "ok" not in mismatch_out["badgeClass"].split(), mismatch_out["badgeClass"]
