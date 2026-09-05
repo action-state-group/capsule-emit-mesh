@@ -30,10 +30,12 @@ from twin_adjudicator import (
     AdjudicationHalf,
     ForgedHalfError,
     PreimageDigestMismatchError,
+    RefereeResult,
     adjudicate,
     compare_transcripts,
     contradicted,
     seal_adjudication_capsule,
+    top2_logprob_margin,
 )
 
 REQUEST_DIGEST = "a" * 64  # a fixed, well-formed stand-in request_digest
@@ -41,6 +43,30 @@ REQUEST_DIGEST = "a" * 64  # a fixed, well-formed stand-in request_digest
 
 def _response_body(text: str) -> dict:
     return {"choices": [{"message": {"role": "assistant", "content": text}}]}
+
+
+def _logprobs_body(text: str, *, index: int, top1: float, top2: float) -> dict:
+    """An OpenAI-compatible chat-completion body (`logprobs: true,
+    top_logprobs: k` shape) whose whitespace-token `index` carries a
+    two-candidate `top_logprobs` list with the given logprob values --
+    everything `top2_logprob_margin` needs at that position. Other
+    positions carry no `top_logprobs` (not needed by any test here).
+    """
+    tokens = text.split()
+    content = [{"token": t, "logprob": -0.01, "top_logprobs": []} for t in tokens]
+    if 0 <= index < len(content):
+        content[index]["top_logprobs"] = [
+            {"token": "a", "logprob": top1},
+            {"token": "b", "logprob": top2},
+        ]
+    return {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": text},
+                "logprobs": {"content": content},
+            }
+        ]
+    }
 
 
 def _make_half(
@@ -271,9 +297,10 @@ def test_seal_adjudication_capsule_none_when_no_verdict():
 
 
 def test_contradicted_shape_reused_by_seal(monkeypatch):
-    """adjudicate() never returns contradicted:<owner> (needs the E17b/E17c
-    referee tiebreak this module doesn't have), but the shape is sealable
-    for a caller (E17b/E17c) that does supply one."""
+    """Without the opt-in logprob_tau/referee gate, adjudicate() never
+    returns contradicted:<owner> -- but the shape is sealable for a caller
+    that constructs (or, per test_wide_logprob_margin_calls_referee below,
+    receives from a referee) an outcome carrying one."""
     half_a = _make_half("hello world", owner_id="owner-a")
     half_b = _make_half("hello world", owner_id="owner-b")
     outcome = adjudicate(half_a, half_b)
@@ -284,10 +311,182 @@ def test_contradicted_shape_reused_by_seal(monkeypatch):
 
 
 def test_adjudicate_never_returns_contradicted():
-    """This module's own adjudicate() has no referee tiebreak -- any
-    divergence resolves to inconclusive, never contradicted:<owner>."""
+    """Without the opt-in logprob_tau/referee gate, adjudicate() has no
+    referee tiebreak -- any divergence resolves to inconclusive, never
+    contradicted:<owner>."""
     half_a = _make_half("the first version of events", owner_id="owner-a")
     half_b = _make_half("a completely different account", owner_id="owner-b")
     outcome = adjudicate(half_a, half_b)
     assert outcome.verdict != "contradicted"
     assert not (outcome.verdict or "").startswith("contradicted:")
+
+
+# ---------------------------------------------------------------------------
+# top2_logprob_margin -- pure, offline
+# ---------------------------------------------------------------------------
+
+
+def test_top2_logprob_margin_computes_top1_minus_top2():
+    body = _logprobs_body("the quick brown fox", index=3, top1=-0.1, top2=-2.3)
+    assert top2_logprob_margin(body, 3) == pytest.approx(2.2)
+
+
+def test_top2_logprob_margin_none_when_choices_missing():
+    assert top2_logprob_margin({}, 0) is None
+
+
+def test_top2_logprob_margin_none_when_logprobs_absent():
+    assert top2_logprob_margin(_response_body("hello world"), 0) is None
+
+
+def test_top2_logprob_margin_none_when_index_out_of_range():
+    body = _logprobs_body("the quick brown fox", index=3, top1=-0.1, top2=-2.3)
+    assert top2_logprob_margin(body, 99) is None
+
+
+def test_top2_logprob_margin_none_when_fewer_than_two_candidates():
+    body = _logprobs_body("the quick brown fox", index=3, top1=-0.1, top2=-2.3)
+    body["choices"][0]["logprobs"]["content"][3]["top_logprobs"] = [{"token": "a", "logprob": -0.1}]
+    assert top2_logprob_margin(body, 3) is None
+
+
+# ---------------------------------------------------------------------------
+# Opt-in logprob_tau/referee gate (inbox [mesh-twin-logprobs-passthrough])
+# ---------------------------------------------------------------------------
+
+
+def test_logprob_tau_requires_referee():
+    half_a = _make_half("the quick brown fox", owner_id="owner-a")
+    half_b = _make_half("the quick brown wolf", owner_id="owner-b")
+    with pytest.raises(ValueError):
+        adjudicate(half_a, half_b, logprob_tau=0.5)
+
+
+def test_thin_logprob_margin_both_sides_is_inconclusive_no_referee_call():
+    """Acceptance: same model both sides, fp-noise divergence -> inconclusive
+    with zero referee calls, margin_a/margin_b recorded."""
+    half_a = _make_half(
+        "the quick brown fox",
+        owner_id="owner-a",
+        response_body=_logprobs_body("the quick brown fox", index=3, top1=-0.10, top2=-0.11),
+    )
+    half_b = _make_half(
+        "the quick brown wolf",
+        owner_id="owner-b",
+        response_body=_logprobs_body("the quick brown wolf", index=3, top1=-0.10, top2=-0.12),
+    )
+
+    def _referee_must_not_be_called(*_args, **_kwargs):
+        raise AssertionError("referee must not be called when both margins are thin")
+
+    outcome = adjudicate(half_a, half_b, logprob_tau=0.5, referee=_referee_must_not_be_called)
+
+    assert outcome.verdict == VERDICT_INCONCLUSIVE
+    assert outcome.referee_called is False
+    assert outcome.logprobs_absent is False
+    assert outcome.tau == 0.5
+    assert outcome.margin_a == pytest.approx(0.01)
+    assert outcome.margin_b == pytest.approx(0.02)
+
+
+def test_wide_logprob_margin_calls_referee_and_returns_contradicted():
+    """Acceptance: q4 vs q8 -> wide margins -> referee -> contradicted, with
+    the referee's own margin recorded (not the text-comparison margin)."""
+    half_a = _make_half(
+        "the quick brown fox",
+        owner_id="owner-a",
+        response_body=_logprobs_body("the quick brown fox", index=3, top1=-0.1, top2=-5.0),
+    )
+    half_b = _make_half(
+        "the quick brown wolf",
+        owner_id="owner-b",
+        response_body=_logprobs_body("the quick brown wolf", index=3, top1=-0.1, top2=-5.2),
+    )
+    calls = []
+
+    def _referee(a, b, comparison):
+        calls.append((a, b, comparison))
+        return RefereeResult(verdict=contradicted("owner-b"), margin=4.9)
+
+    outcome = adjudicate(half_a, half_b, logprob_tau=0.5, referee=_referee)
+
+    assert len(calls) == 1
+    assert outcome.referee_called is True
+    assert outcome.verdict == "contradicted:owner-b"
+    assert outcome.margin == pytest.approx(4.9)  # the referee's margin, not compare_transcripts'
+    assert outcome.logprobs_absent is False
+    assert outcome.margin_a == pytest.approx(4.9)
+    assert outcome.margin_b == pytest.approx(5.1)
+
+
+def test_logprobs_absent_falls_back_to_referee_never_verdict_from_tokens_alone():
+    """Mutant: a provider strips logprobs from its response -> adjudicator
+    labels logprobs_absent and falls back to the referee path, never to a
+    verdict from tokens alone."""
+    half_a = _make_half(
+        "the quick brown fox",
+        owner_id="owner-a",
+        response_body=_logprobs_body("the quick brown fox", index=3, top1=-0.10, top2=-0.11),
+    )
+    # half_b's provider stripped logprobs entirely -- plain response body.
+    half_b = _make_half("the quick brown wolf", owner_id="owner-b")
+    calls = []
+
+    def _referee(a, b, comparison):
+        calls.append((a, b, comparison))
+        return RefereeResult(verdict=VERDICT_INCONCLUSIVE, margin=0.0)
+
+    outcome = adjudicate(half_a, half_b, logprob_tau=0.5, referee=_referee)
+
+    assert len(calls) == 1, "logprobs_absent must still reach the referee, never resolve on its own"
+    assert outcome.referee_called is True
+    assert outcome.logprobs_absent is True
+    assert outcome.margin_a == pytest.approx(0.01)
+    assert outcome.margin_b is None
+    # The verdict came from the referee, not from compare_transcripts' margin
+    # (which would have said "inconclusive" here too, by coincidence -- the
+    # point is it must be the referee's answer, never derived independently).
+    assert outcome.verdict == VERDICT_INCONCLUSIVE
+
+
+def test_seal_adjudication_capsule_publishes_tau_and_margins():
+    half_a = _make_half(
+        "the quick brown fox",
+        owner_id="owner-a",
+        response_body=_logprobs_body("the quick brown fox", index=3, top1=-0.1, top2=-5.0),
+    )
+    half_b = _make_half(
+        "the quick brown wolf",
+        owner_id="owner-b",
+        response_body=_logprobs_body("the quick brown wolf", index=3, top1=-0.1, top2=-5.2),
+    )
+    outcome = adjudicate(
+        half_a,
+        half_b,
+        logprob_tau=0.5,
+        referee=lambda a, b, comparison: RefereeResult(verdict=contradicted("owner-b"), margin=4.9),
+    )
+
+    capsule = seal_adjudication_capsule(outcome, operator="test-org", developer="referee@v1")
+
+    adj = capsule["model_attestation"]["compute_attestation"]["adjudication"]
+    assert adj["verdict"] == "contradicted:owner-b"
+    assert adj["tau"] == "0.5"
+    assert isinstance(adj["margin_a"], str)
+    assert isinstance(adj["margin_b"], str)
+    assert adj["logprobs_absent"] is False
+
+
+def test_seal_adjudication_capsule_omits_tau_fields_when_gate_unused():
+    """The E17a default path (no logprob_tau) must not grow new keys."""
+    half_a = _make_half("same text", owner_id="owner-a")
+    half_b = _make_half("same text", owner_id="owner-b")
+    outcome = adjudicate(half_a, half_b)
+
+    capsule = seal_adjudication_capsule(outcome, operator="test-org", developer="referee@v1")
+
+    adj = capsule["model_attestation"]["compute_attestation"]["adjudication"]
+    assert "tau" not in adj
+    assert "margin_a" not in adj
+    assert "margin_b" not in adj
+    assert "logprobs_absent" not in adj
