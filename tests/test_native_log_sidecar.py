@@ -53,10 +53,20 @@ class _StubUpstream(BaseHTTPRequestHandler):
             # handle_chat_completion -- the sidecar-internal-exception gap.
             payload = b"not json"
             status = 200
+        elif self.__class__.mode == "peer_capsule_id":
+            # [mesh-requester-nonce-addendum] Stands in for mesh-llm having
+            # routed this call to a mesh peer: the peer's own X-Capsule-Id
+            # rides the response header, relayed byte-for-byte.
+            payload = json.dumps(
+                {"id": "chatcmpl-peer-1", "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}]}
+            ).encode("utf-8")
+            status = 200
         else:
             raise AssertionError(f"unknown stub mode {self.__class__.mode!r}")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        if self.__class__.mode == "peer_capsule_id":
+            self.send_header("X-Capsule-Id", "capsule-peer-live-1")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -205,6 +215,69 @@ def test_bad_client_json_never_sealed_and_native_log_shows_unsealed(sidecar):
     report = nlj.coverage_report(entries, capsules)
     assert report["unsealed_count"] == 1
     assert len(report["failed_unsealed"]) == 1
+
+
+# ── [mesh-requester-nonce-addendum] peer X-Capsule-Id read back live ──────
+
+
+@pytest.fixture
+def requester_sidecar(stub_upstream):
+    """Same wiring as `sidecar`, but role=ROLE_REQUESTER -- the role whose
+    outbound call may have been routed (by mesh-llm) to a mesh peer, so its
+    upstream response can carry the peer's own X-Capsule-Id."""
+    upstream_server, handler = stub_upstream
+    d = pathlib.Path(tempfile.mkdtemp())
+    (d / "manifest.json").write_text(
+        json.dumps({"model_id": "m/1", "source_model": {"sha256": "e" * 64, "canonical_ref": "m/1"}, "skippy_abi_version": "1"})
+    )
+    state = cs.default_state(
+        ledger_dir=d / "ledger",
+        manifest_path=d / "manifest.json",
+        keys_dir=d / "keys",
+        runtime_label="rt",
+        runtime_digest="0" * 64,
+        role=cs.ROLE_REQUESTER,
+        node_id="req-live-1",
+    )
+    upstream_base = f"http://127.0.0.1:{upstream_server.server_address[1]}"
+    server = cs.run_sidecar(listen_host="127.0.0.1", listen_port=0, upstream_base=upstream_base, state=state)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server, state, handler
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_requester_records_peer_capsule_id_read_back_from_the_live_upstream_response(requester_sidecar):
+    server, state, handler = requester_sidecar
+    handler.mode = "peer_capsule_id"
+    port = server.server_address[1]
+    status, _ = _post(port, json.dumps({"model": "m", "temperature": 0.1}).encode())
+    assert status == 200
+
+    capsules = _capsules(state)
+    assert len(capsules) == 1
+    sp = capsules[0]["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["serving_provenance"]
+    assert sp["counterparty_ref"] == "capsule-peer-live-1"
+    assert sp["counterparty_ref_provenance"] == "peer_asserted"
+
+
+def test_requester_without_a_peer_capsule_id_header_leaves_counterparty_ref_absent(requester_sidecar):
+    """Mutant: the live upstream response carries no X-Capsule-Id (the
+    ordinary `mode="ok"` stub) -- both fields stay honestly None."""
+    server, state, handler = requester_sidecar
+    handler.mode = "ok"
+    port = server.server_address[1]
+    status, _ = _post(port, json.dumps({"model": "m"}).encode())
+    assert status == 200
+
+    capsules = _capsules(state)
+    assert len(capsules) == 1
+    sp = capsules[0]["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["serving_provenance"]
+    assert sp["counterparty_ref"] is None
+    assert sp["counterparty_ref_provenance"] is None
 
 
 # ── MUTANT-relevant gap 2: sidecar-internal exception never seals either ──
