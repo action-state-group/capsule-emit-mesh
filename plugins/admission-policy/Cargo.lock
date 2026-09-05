@@ -15,6 +15,7 @@ dependencies = [
  "anyhow",
  "axum",
  "capsule-producer",
+ "ed25519-dalek",
  "hex",
  "mesh-llm-plugin",
  "reqwest",

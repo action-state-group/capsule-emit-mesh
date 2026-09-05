@@ -55,8 +55,9 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from agent_action_capsule.emit import emit
@@ -88,6 +89,8 @@ __all__ = [
     "verify_history_card",
     "seal_history_card",
     "answer_full_history_request",
+    "reconciliation_counts_from_ledger_dir",
+    "with_peer_reconciliation",
 ]
 
 #: Schema tag on the serialized history card. Versioned so a consumer can
@@ -321,6 +324,14 @@ class HistoryCard:
     checkpoint_count: int
     witnesses: list[str] = field(default_factory=list)
     witnessed: bool = False
+    #: peer checkpoint-root reconciliation ([mesh-peer-root-exchange]) --
+    #: OUTSIDE `properties`/`core_account()` deliberately: these come from a
+    #: separate observation store (the mesh plugin's gossip-fed reconciliation
+    #: ledger), not from this log's own checkpoint chain, so they must never
+    #: fold into the chain-walk digest `MESH_HISTORY_DEFINITION` binds.
+    #: Defaults to 0 -- "no peer observations recorded yet", never fabricated.
+    reconciled_with: int = 0
+    forks_observed: int = 0
 
     def core_account(self) -> CoreAccount | None:
         """The neutral-core `Account` this card is a view of: a
@@ -395,6 +406,15 @@ class HistoryCard:
                 "witnesses": list(self.witnesses),
                 "witnessed": self.witnessed,
             },
+            "peer_reconciliation": {
+                "reconciled_with": self.reconciled_with,
+                "forks_observed": self.forks_observed,
+                "note": (
+                    "peer count and fork count from this node's own checkpoint-root "
+                    "observation store, not from this log's checkpoint chain -- see "
+                    "reconciliation_counts_from_ledger_dir()"
+                ),
+            },
             "not_a_score": (
                 "This is an account of structural facts about the checkpoint chain, not "
                 "a score or routing recommendation."
@@ -406,6 +426,44 @@ class HistoryCard:
 
     def digest(self) -> str:
         return hashlib.sha256(self.canonical_bytes()).hexdigest()
+
+
+def reconciliation_counts_from_ledger_dir(ledger_dir: Path) -> tuple[int, int]:
+    """Read `(reconciled_with, forks_observed)` from
+    `<ledger_dir>/reconciliation_state.json` -- the peer checkpoint-root
+    observation store a mesh plugin (e.g. the Rust `admission-policy`
+    plugin's `peer_root_ledger`) persists as it reconciles gossiped
+    checkpoint heads. `(0, 0)` when the file is absent or unreadable: "no
+    peer observations recorded (yet)" is the honest reading, never an error
+    that blocks the rest of the history card.
+
+    Cross-language note: this reads the Rust ledger's own on-disk JSON shape
+    directly (`{"observed": {...}, "reconciled_peers": [...], "forks": [...]}`)
+    rather than expecting pre-computed counts, so the two languages can never
+    silently disagree about what a "count" means.
+    """
+    state_path = ledger_dir / "reconciliation_state.json"
+    try:
+        raw = state_path.read_text()
+    except OSError:
+        return (0, 0)
+    try:
+        state = json.loads(raw)
+    except json.JSONDecodeError:
+        return (0, 0)
+    reconciled_with = len(state.get("reconciled_peers") or [])
+    forks_observed = len(state.get("forks") or [])
+    return (reconciled_with, forks_observed)
+
+
+def with_peer_reconciliation(card: HistoryCard, ledger_dir: Path) -> HistoryCard:
+    """Return a copy of `card` with `reconciled_with`/`forks_observed` folded
+    in from `ledger_dir`'s reconciliation store. Never mutates `card` --
+    `HistoryCard.verify()`/`digest()` on the ORIGINAL card are unaffected,
+    since these fields live outside `core_account()`'s asserted result (see
+    the field docstring on `HistoryCard`)."""
+    reconciled_with, forks_observed = reconciliation_counts_from_ledger_dir(ledger_dir)
+    return replace(card, reconciled_with=reconciled_with, forks_observed=forks_observed)
 
 
 def build_history_card(
