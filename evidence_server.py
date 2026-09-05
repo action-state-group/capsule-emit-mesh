@@ -97,7 +97,11 @@ Route:
         SAME ledger + node key ``EvidenceServerState`` already names; this
         route never opens a second ledger.
     GET /
-        200 + a one-line human status. Carries no evidence.
+        200 + a one-line human status. Carries no evidence -- in
+        particular, never this node's own ledger filesystem path (that is
+        local operational detail, not evidence, and telling a stranger
+        where a file lives on this host is a gratuitous disclosure a
+        neutral witness has no reason to make).
     anything else -> 404.
 """
 from __future__ import annotations
@@ -221,7 +225,7 @@ def make_evidence_handler(state: EvidenceServerState):
             self._write_json(404, {"error": "not_found", "path": self.path})
 
         def do_GET(self) -> None:
-            body = f"capsule-evidence-server: ledger={state.ledger_path}\n".encode()
+            body = b"capsule-evidence-server: ready\n"
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.send_header("Content-Length", str(len(body)))

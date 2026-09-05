@@ -277,3 +277,68 @@ class TestMeshCarrier:
         payload = ah.post_mesh_evidence_request(local_host_api, "admission-policy", "aa" * 32, req)
         rendered = ah.render_artifact(payload, node_id="m4", tamper_check=True)
         assert "verify.ok=False (expected False)" in rendered
+
+
+class TestFetchAllPages:
+    """Unit tests for ``fetch_all_pages`` against a FAKE door -- the real
+    ``evidence_server.py`` in this repo still talks to a capsule-emit
+    release that predates paging (see ``evidence_responder.py``'s note), so
+    the client-side pagination-following logic is exercised standalone
+    here rather than end to end. Once a node's capsule-emit floor carries
+    the door-side cap+page fix, these same semantics apply over the wire
+    unchanged -- ``fetch_all_pages`` only ever reads ``next_page_token``
+    off whatever payload it is handed."""
+
+    def _paging_door(self, pages: list[list[str]]):
+        """A fake ``post`` callable serving ``pages`` (each a list of
+        capsule ids) round by round, keyed off the request's ``page.token``
+        (``"0"``, ``"1"``, ... -- absent token means page 0)."""
+
+        def post(request_map: dict) -> dict:
+            token = request_map.get("page", {}).get("token", "0")
+            index = int(token)
+            ids = pages[index]
+            body = {
+                "v": 1,
+                "subject_kind": "range",
+                "bundles": [{"capsule_id": cid} for cid in ids],
+            }
+            if index + 1 < len(pages):
+                body["next_page_token"] = str(index + 1)
+            return body
+
+        return post
+
+    def test_follows_next_page_token_until_absent(self):
+        post = self._paging_door([["a", "b"], ["c", "d"], ["e"]])
+        merged = ah.fetch_all_pages(post, {"subject": {"kind": "range", "selector": "a..e"}, "coverage": {}})
+        assert [b["capsule_id"] for b in merged["bundles"]] == ["a", "b", "c", "d", "e"]
+        assert "next_page_token" not in merged
+
+    def test_single_page_door_runs_once(self):
+        calls = []
+
+        def post(request_map: dict) -> dict:
+            calls.append(request_map)
+            return {"v": 1, "subject_kind": "record", "bundles": [{"capsule_id": "a"}]}
+
+        merged = ah.fetch_all_pages(post, {"subject": {"kind": "record", "capsule_id": "a"}, "coverage": {}})
+        assert len(calls) == 1
+        assert [b["capsule_id"] for b in merged["bundles"]] == ["a"]
+
+    def test_refusal_never_pages(self):
+        def post(request_map: dict) -> dict:
+            return {"request_digest": "d", "reason": "no_such_record", "issued_at": "t", "key_id": "k", "sig": "s"}
+
+        merged = ah.fetch_all_pages(post, {"subject": {"kind": "record", "capsule_id": "ff"}, "coverage": {}})
+        assert merged["reason"] == "no_such_record"
+
+    def test_max_pages_guards_against_a_runaway_token(self):
+        def post(request_map: dict) -> dict:
+            # Always claims more is coming -- the pathological door.
+            return {"v": 1, "subject_kind": "range", "bundles": [], "next_page_token": "0"}
+
+        with pytest.raises(RuntimeError, match="max-pages"):
+            ah.fetch_all_pages(
+                post, {"subject": {"kind": "range", "selector": "a..z"}, "coverage": {}}, max_pages=3
+            )

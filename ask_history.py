@@ -51,10 +51,23 @@ direct HTTP POST -- reached locally via ``--local-host-api`` (the mesh-llm
 host's own API port, default ``http://127.0.0.1:8080``). Verification is
 IDENTICAL either way: this module never trusts the carrier, only the
 response bytes.
+
+**Paging a ``range`` subject.** A door that caps/pages its ``range``
+answers (``capsule_emit.evidence_request.answer()``, once a node's
+capsule-emit floor carries that fix) returns ``next_page_token`` on a
+partial :class:`~capsule_emit.evidence_request.Artifact`. ``--subject
+range`` follows it automatically, POSTing ``page: {token: ...}`` each
+round until a page carries none, and renders the FULL concatenated bundle
+list -- never silently stopping at the first page. A door that predates
+paging never sets ``next_page_token``, so this loop runs exactly once
+against it, unchanged. ``--max-pages`` (default 1000) bounds the loop so a
+misbehaving door handing back an ever-repeating token cannot hang this
+client forever.
 """
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import sys
 import urllib.error
@@ -67,6 +80,7 @@ from capsule_emit.evidence_request import Refusal, verify_refusal_offline
 from history_card import build_history_card
 
 __all__ = [
+    "fetch_all_pages",
     "main",
     "post_evidence_request",
     "post_mesh_evidence_request",
@@ -83,6 +97,7 @@ def _build_request_map(
     expected_pin_root: str | None,
     expected_pin_mmr_size: int | None,
     nonce: str | None,
+    page_token: str | None = None,
 ) -> dict[str, Any]:
     if subject_kind == "record":
         subject: dict[str, Any] = {"kind": "record", "capsule_id": capsule_id}
@@ -94,7 +109,45 @@ def _build_request_map(
     request: dict[str, Any] = {"subject": subject, "coverage": coverage}
     if nonce is not None:
         request["nonce"] = nonce
+    if page_token is not None:
+        request["page"] = {"token": page_token}
     return request
+
+
+def fetch_all_pages(post: Any, request_map: dict[str, Any], *, max_pages: int = 1000) -> dict[str, Any]:
+    """POST ``request_map`` via ``post`` (a zero-arg-besides-the-map
+    callable, e.g. ``functools.partial(post_evidence_request, peer)``),
+    then follow ``next_page_token`` until a page carries none, returning
+    one merged payload -- all pages' ``bundles`` concatenated, in order.
+    A :class:`Refusal` payload (has ``reason``, not ``bundles``) never
+    pages; returned as-is from the first (only) round.
+    """
+    payload = post(request_map)
+    if "reason" in payload:
+        return payload
+
+    bundles = list(payload["bundles"])
+    pages = 1
+    token = payload.get("next_page_token")
+    while token is not None:
+        if pages >= max_pages:
+            raise RuntimeError(f"evidence door kept paging past --max-pages={max_pages}; refusing to loop forever")
+        next_request = dict(request_map)
+        next_request["page"] = {"token": token}
+        next_payload = post(next_request)
+        if "reason" in next_payload:
+            # A refusal mid-pagination (e.g. the ledger shrank between
+            # rounds) ends the walk with what was already collected --
+            # never silently discarded, never a hang.
+            break
+        bundles.extend(next_payload["bundles"])
+        pages += 1
+        token = next_payload.get("next_page_token")
+
+    merged = dict(payload)
+    merged["bundles"] = bundles
+    merged.pop("next_page_token", None)
+    return merged
 
 
 def post_evidence_request(peer_base_url: str, request_map: dict[str, Any]) -> dict[str, Any]:
@@ -235,6 +288,12 @@ def main(argv: list[str] | None = None) -> int:
         default="admission-policy",
         help="--via mesh only: the plugin name carrying the request (its /tools/mesh_evidence_request route)",
     )
+    parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=1000,
+        help="cap on how many next_page_token rounds to follow for a range subject (default 1000)",
+    )
     args = parser.parse_args(argv)
 
     if args.subject == "record" and not args.capsule_id:
@@ -250,11 +309,13 @@ def main(argv: list[str] | None = None) -> int:
         expected_pin_mmr_size=args.expected_pin_mmr_size,
         nonce=args.nonce,
     )
+    if args.via == "mesh":
+        post = functools.partial(post_mesh_evidence_request, args.local_host_api, args.local_plugin_name, args.peer)
+    else:
+        post = functools.partial(post_evidence_request, args.peer)
+
     try:
-        if args.via == "mesh":
-            payload = post_mesh_evidence_request(args.local_host_api, args.local_plugin_name, args.peer, request_map)
-        else:
-            payload = post_evidence_request(args.peer, request_map)
+        payload = fetch_all_pages(post, request_map, max_pages=args.max_pages)
     except urllib.error.URLError as exc:
         print(f"request to {args.peer} (via {args.via}) failed: {exc}", file=sys.stderr)
         return 1

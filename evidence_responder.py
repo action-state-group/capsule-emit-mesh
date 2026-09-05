@@ -28,6 +28,16 @@ def handle_evidence_request(state: Any, request_bytes: bytes, *, now: str | None
     Returns a ``capsule_emit.evidence_request.Artifact`` or ``Refusal`` —
     see that module for the full contract. ``now`` overrides the wall
     clock (for deterministic tests); defaults to the real UTC time.
+
+    Deliberately passes no ``allow_forced_checkpoint`` — that parameter is
+    unreleased on capsule-emit's PyPI floor this repo pins
+    (``[adv-evidence-door-caps-and-subjects]``; ``requirements.txt``'s
+    ``capsule-emit[mcp]>=0.7.1`` predates it). Once a release carrying it
+    ships and the floor bumps, ``answer()``'s own default
+    (``allow_forced_checkpoint=False``, pull-only) applies here
+    automatically — no code change needed to get the safe behavior; wiring
+    an explicit opt-in is a separate follow-up for whenever a node actually
+    wants one.
     """
     from capsule_emit.evidence_request import answer
 
