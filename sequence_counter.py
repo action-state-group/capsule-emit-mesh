@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""Per-`(self, counterparty)` monotone capsule sequencing (history proposal
+§1: continuity is bilateral only). Every sealed capsule carries `seq` and
+`prev_seq` for the pair it was sealed under, so a verifier can later check
+that pair's stream for gaps (missing records) or regressions (a `seq` that
+repeats or goes backward) WITHOUT trusting anything this node did not itself
+sign. Mirrors ``capsule_producer::sequence`` (Rust) field-for-field so a
+verifier never needs to special-case which language sealed a given capsule.
+
+``SequenceCounterStore`` is a WRITE-SIDE convenience cache, not the source of
+truth. It is persisted in a small JSON file beside the ledger
+(``<ledger_dir>/sequence_counters.json``) purely so a restarted sidecar
+resumes counting from where it left off instead of starting every pair back
+at 1 -- which would itself look like a reset to a verifier. But the cache is
+never trusted for continuity: ``verify_pair_continuity`` walks the SEALED
+capsules themselves, in ledger order. A wiped or hand-edited cache file makes
+this node issue ``seq=1`` again for a pair that already has higher ``seq``
+values in the ledger; the verifier catches that regression from the capsule
+stream alone and reports it as a broken pair, never a fresh start.
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Iterable
+
+__all__ = [
+    "UNKNOWN_COUNTERPARTY",
+    "pair_key",
+    "SequenceCounterStore",
+    "PairContinuity",
+    "extract_pair_seq",
+    "verify_pair_continuity",
+]
+
+#: Never invent a counterparty identity: missing/empty collapses to this
+#: explicit, honest bucket rather than a fabricated node id.
+UNKNOWN_COUNTERPARTY = "unknown"
+
+
+def pair_key(self_id: str, counterparty_id: str | None) -> str:
+    """Canonical `(self, counterparty)` key. A missing/empty counterparty
+    collapses to `UNKNOWN_COUNTERPARTY` -- never fabricated, but still a
+    real, stable bucket a verifier can reason about."""
+    return f"{self_id}::{counterparty_id or UNKNOWN_COUNTERPARTY}"
+
+
+class SequenceCounterStore:
+    """Persists the last-issued `seq` per `(self, counterparty)` pair beside
+    the ledger. See the module docstring for why this cache is never the
+    source of truth for continuity."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._state: dict[str, int] = self._load()
+
+    def _load(self) -> dict[str, int]:
+        if not self.path.exists():
+            return {}
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            # Corrupt/unreadable cache -- never invent a value, start
+            # counting from zero for every pair; verify_pair_continuity
+            # (over the ledger, not this file) is what actually catches the
+            # resulting regression.
+            return {}
+        return {str(k): int(v) for k, v in raw.items()}
+
+    def _save(self) -> None:
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self._state, sort_keys=True), encoding="utf-8")
+        tmp.replace(self.path)
+
+    def next_seq(self, self_id: str, counterparty_id: str | None) -> tuple[int, int | None]:
+        """Issues the next `seq` for `(self_id, counterparty_id)`, returning
+        it alongside the pair's previous `seq` (`None` the first time this
+        store has seen the pair)."""
+        key = pair_key(self_id, counterparty_id)
+        prev_seq = self._state.get(key)
+        seq = (prev_seq or 0) + 1
+        self._state[key] = seq
+        self._save()
+        return seq, prev_seq
+
+
+@dataclass(frozen=True)
+class PairContinuity:
+    """Per-pair continuity finding. `continuity` mirrors the `history_card`
+    convention (``"unbroken"`` / ``"broken at seq=<N>: <reason>"``) -- a
+    REGRESSION (a `seq` at or below one already seen for the pair, which can
+    only mean a reset or forgery, never a legitimate fresh start). A pure
+    GAP (missing records, `seq` jumping forward by more than one) is softer:
+    it increments `gaps_detected`, a labeled count and never a score, and
+    does NOT by itself mark the pair broken."""
+
+    pair: str
+    continuity: str
+    gaps_detected: int
+    records_checked: int
+
+
+def _poc_block(capsule: dict[str, Any]) -> dict[str, Any]:
+    return (
+        capsule.get("model_attestation", {}).get("compute_attestation", {}).get("x-mesh-poc-v1", {}) or {}
+    )
+
+
+def extract_pair_seq(capsule: dict[str, Any]) -> tuple[str, str, int, int | None] | None:
+    """Default extractor: reads the standard `serving_provenance` shape both
+    the Rust plugin and this sidecar seal. `self` is always the node that
+    sealed the record (`served_by_node_id` when this capsule's
+    `serving_provenance.role` is `"provider"` -- or absent, which the Rust
+    plugin's shape defaults to, since it only ever seals the provider half;
+    `requesting_party` when `role == "requester"`). Returns `None` when the
+    capsule carries no `seq` (an older record predating this feature) --
+    such records are simply excluded from continuity checking, never
+    assigned a fabricated seq.
+    """
+    serving_provenance = _poc_block(capsule).get("serving_provenance") or {}
+    seq = serving_provenance.get("seq")
+    if seq is None:
+        return None
+    role = serving_provenance.get("role", "provider")
+    served_by_node_id = serving_provenance.get("served_by_node_id")
+    requesting_party = serving_provenance.get("requesting_party")
+    if role == "requester":
+        self_id, counterparty_id = requesting_party, served_by_node_id
+    else:
+        self_id, counterparty_id = served_by_node_id, requesting_party
+    return (
+        self_id or UNKNOWN_COUNTERPARTY,
+        counterparty_id or UNKNOWN_COUNTERPARTY,
+        int(seq),
+        serving_provenance.get("prev_seq"),
+    )
+
+
+def verify_pair_continuity(
+    capsules: Iterable[dict[str, Any]],
+    *,
+    pair_extractor: Callable[[dict[str, Any]], tuple[str, str, int, int | None] | None] = extract_pair_seq,
+) -> dict[str, PairContinuity]:
+    """Walks `capsules` IN THE ORDER GIVEN (ledger/bundle order -- never
+    re-sorted, so an out-of-order delivery reads as a gap, not silently
+    repaired) and reports `PairContinuity` per `(self, counterparty)` pair.
+    """
+    last_seq: dict[str, int] = {}
+    gaps: dict[str, int] = {}
+    broken: dict[str, str] = {}
+    counts: dict[str, int] = {}
+
+    for capsule in capsules:
+        extracted = pair_extractor(capsule)
+        if extracted is None:
+            continue
+        self_id, counterparty_id, seq, _prev_seq = extracted
+        key = pair_key(self_id, counterparty_id)
+        counts[key] = counts.get(key, 0) + 1
+        prior = last_seq.get(key)
+        if prior is not None:
+            if seq <= prior:
+                broken.setdefault(key, f"broken at seq={seq}: not greater than prior seq={prior}")
+            elif seq > prior + 1:
+                gaps[key] = gaps.get(key, 0) + (seq - prior - 1)
+        last_seq[key] = max(prior or 0, seq)
+
+    return {
+        key: PairContinuity(
+            pair=key,
+            continuity=broken.get(key, "unbroken"),
+            gaps_detected=gaps.get(key, 0),
+            records_checked=count,
+        )
+        for key, count in counts.items()
+    }

@@ -149,6 +149,63 @@ def test_history_summary_on_empty_log_is_honestly_empty():
     assert summary["continuous_since"] is None
 
 
+# ── history_summary.pair_sequencing -- [mesh-sequence-per-counterparty] ──
+
+
+def _pair_capsule(*, self_id: str, counterparty_id: str, seq: int, prev_seq: int | None) -> dict:
+    return {
+        "model_attestation": {
+            "compute_attestation": {
+                "x-mesh-poc-v1": {
+                    "serving_provenance": {
+                        "role": "provider",
+                        "served_by_node_id": self_id,
+                        "requesting_party": counterparty_id,
+                        "seq": seq,
+                        "prev_seq": prev_seq,
+                    }
+                }
+            }
+        }
+    }
+
+
+def test_history_summary_omits_pair_sequencing_when_ledger_records_not_supplied():
+    summary = history_summary(node_id="node-a", log_id="log-a", checkpoint_lines=[])
+    assert "pair_sequencing" not in summary, "never a fabricated zero when the caller gave no ledger to check"
+
+
+def test_mutant_dropping_a_record_from_a_bundle_reports_gaps_detected_one():
+    """ACCEPTANCE MUTANT: drop one record from a bundle -> history row shows
+    `gaps_detected: 1` -- a labeled count, not a broken-continuity claim."""
+    records = [
+        _pair_capsule(self_id="m4", counterparty_id="m3", seq=1, prev_seq=None),
+        # seq=2 dropped from this bundle -- the bundle delivers 1, 3.
+        _pair_capsule(self_id="m4", counterparty_id="m3", seq=3, prev_seq=2),
+    ]
+    summary = history_summary(node_id="node-a", log_id="log-a", checkpoint_lines=[], ledger_records=records)
+    assert summary["pair_sequencing"]["gaps_detected"] == 1
+    assert summary["pair_sequencing"]["broken_pairs"] == []
+    assert summary["pair_sequencing"]["pairs_checked"] == 1
+
+
+def test_mutant_reset_counter_reports_a_broken_pair_not_a_fresh_start():
+    records = [
+        _pair_capsule(self_id="m4", counterparty_id="m3", seq=1, prev_seq=None),
+        _pair_capsule(self_id="m4", counterparty_id="m3", seq=2, prev_seq=1),
+        # Counter cache wiped; sealing resumed as if this pair were new.
+        _pair_capsule(self_id="m4", counterparty_id="m3", seq=1, prev_seq=None),
+    ]
+    summary = history_summary(node_id="node-a", log_id="log-a", checkpoint_lines=[], ledger_records=records)
+    assert summary["pair_sequencing"]["broken_pairs"] == ["m4::m3"]
+
+
+def test_pair_sequencing_never_holds_a_rating_field():
+    records = [_pair_capsule(self_id="m4", counterparty_id="m3", seq=1, prev_seq=None)]
+    summary = history_summary(node_id="node-a", log_id="log-a", checkpoint_lines=[], ledger_records=records)
+    assert_no_rating_fields(summary)
+
+
 # ── rung_summary -- weights_digest always honestly absent -----------------
 
 
