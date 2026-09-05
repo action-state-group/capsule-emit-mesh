@@ -69,6 +69,8 @@ import scitt_cose
 
 from advertisement import Advertisement, compute_meter, reconcile_advertised_vs_served
 from checkpointing import CheckpointState, Ed25519Signer, JsonlLogSource, load_checkpoint_config
+from join_card import ModelRef, build_card, latest_card, seal_card
+from mac_hardware_inventory import capture_mac_hardware_inventory
 from model_identity import load_manifest, model_package_digest
 from node_ownership import (
     SignedNodeOwnership,
@@ -1127,6 +1129,60 @@ def maybe_seal_identity_capsule(state: NodeState) -> str | None:
     return state.identity_capsule_id
 
 
+def seal_join_card(state: NodeState) -> str:
+    """[mesh-join-card] Seal + record this node's join card -- what it
+    currently claims about itself (hardware, served models + weights_digest,
+    measurement rung, a digest of its own current advertisement) -- so
+    `join_card.card_consistency` has something to check every later exchange
+    against.
+
+    Called once at startup (this function does not itself watch for
+    "any change to served models / inventory" -- this sidecar loads its
+    manifest once, at `NodeState.__post_init__`, and has no live reload path;
+    a future reload hook should call this again rather than re-implementing
+    it). Reads the ledger's existing cards (if any) to find the prior one's
+    digest + capsule_id, so a second call on the same ledger correctly
+    `supersedes` the first instead of starting a new, unlinked chain.
+
+    Always seals and returns a `capsule_id` -- a missing/empty ledger is a
+    normal first-ever start, not an error (`supersedes=None` in that case).
+    """
+    prior_lines: list[dict[str, Any]] = []
+    if state.ledger_path.exists():
+        for raw_line in state.ledger_path.read_text(encoding="utf-8").splitlines():
+            if raw_line.strip():
+                prior_lines.append(json.loads(raw_line))
+    _prior_card, prior_card_digest, prior_card_capsule_id = latest_card(prior_lines)
+
+    hardware = capture_mac_hardware_inventory()
+    model_id = state.manifest.get("model_id")
+    models = [ModelRef(name=model_id, weights_digest=state.manifest.get("weights_digest"))] if model_id else []
+
+    card = build_card(
+        node_id=state.node_id,
+        hardware_inventory=hardware.to_capsule_block() if hardware else None,
+        models=models,
+        # This sidecar has no binary-attestation path of its own (that is the
+        # Rust producer's runtime_attest.rs, over ITS OWN sealed exchanges,
+        # not this process) -- absent, never fabricated.
+        measurement_rung=None,
+        announcement_digest=state.advertisement.digest() if state.advertisement else None,
+        supersedes=prior_card_digest,
+    )
+    capsule = seal_card(
+        card,
+        operator=state.operator,
+        developer=state.developer,
+        signing_node_id=state.node_id,
+        prior_card_capsule_id=prior_card_capsule_id,
+        provider="mesh-llm",
+    )
+    signed = sign_capsule(state, capsule)
+    record_capsule(state, capsule, signed)
+    print(f"[mesh-join-card] join card sealed: {capsule['capsule_id']} supersedes={prior_card_digest}")
+    return capsule["capsule_id"]
+
+
 def _resolve_client_nonce(state: NodeState, headers: dict[str, str]) -> tuple[str, str]:
     """Resolve the client nonce and label its source honestly.
 
@@ -1924,6 +1980,7 @@ def main(argv: list[str] | None = None) -> int:
     # a record but never presented as a live owner binding.
     if state.node_ownership is not None:
         maybe_seal_identity_capsule(state)
+    seal_join_card(state)
     if state.checkpoint is not None:
         # Latest-checkpoint-on-reconnect: catch up on anything this node
         # accrued locally while this process wasn't running, in one shot.
