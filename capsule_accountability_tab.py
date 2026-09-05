@@ -16,12 +16,21 @@ Presentation only. Nothing here re-derives evidence that already has a home:
   - the cross-party rung comes from ``capsule_sidecar.derive_cross_party_rung``
     / ``identity_limitation_for_rung`` -- the producer's OWN derivation, run
     here exactly as documented. ``has_verified_ack`` (the input that alone
-    can reach ``full_bilateral``) is read from the record's own
-    ``cross_party.ack_verified`` field, since a ledger-only offline viewer
-    has no other evidence of a Move-4 client ack to offer. Real captures
-    today never set it, so this tab honestly caps at ``acknowledged_receipt``
-    for them -- the same "shown honestly-absent, never hidden" discipline
-    the runtime/binding rung below already follows;
+    can reach ``full_bilateral``) is re-derived from a ``cross_party.client_ack``
+    evidence block (the same signed-envelope shape
+    ``stranger_verify_bundle.py`` already knows how to verify), via
+    ``bilateral_demo.verify_client_ack`` -- NEVER read from a bare
+    ``cross_party.ack_verified`` boolean, which is a producer-writable claim
+    with no evidence behind it. A record that carries no verifiable
+    ``client_ack`` caps at ``acknowledged_receipt``; a bare ``ack_verified``
+    claim with nothing to check it against is surfaced as a disclosed,
+    unverified claim, never a green ``full_bilateral``;
+  - the runtime/binding rung's ``tee_measured`` state re-verifies the
+    embedded TDX DCAP quote bytes (``evidence_refs.tee_attestation.quote``)
+    with ``agent_manifest._tdx_verify.verify_tdx_quote`` before rendering
+    green -- a bare ``measurement_class: "tee_measured"`` label with no
+    quote bytes, or bytes that fail the DCAP signature chain, renders as a
+    disclosed claim instead;
   - the in-browser ``capsule_id`` recompute is
     ``mesh_viewer_static/mesh_verify.js``, included byte-for-byte unmodified
     (see ``_load_verify_js``, reused from ``capsule_mesh_viewer``). This page
@@ -39,11 +48,15 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
+from agent_manifest._tdx_verify import TdxVerificationError, verify_tdx_quote
+
+from bilateral_demo import ClientAck, verify_client_ack
 from capsule_mesh_view import _poc_block, _verify_ok_map, verify_results_for
 from capsule_mesh_viewer import _load_verify_js, friendly_model_name, serving_provenance
 from capsule_sidecar import derive_cross_party_rung, identity_limitation_for_rung
@@ -97,21 +110,98 @@ def freshness_grade(client_nonce_source: str | None) -> dict[str, Any]:
     return {"state": state, "client_nonce_source": client_nonce_source}
 
 
-def cross_party_grade(poc: dict[str, Any]) -> dict[str, Any]:
+def _client_ack_from_evidence(block: dict[str, Any]) -> ClientAck:
+    """Reconstruct a ``bilateral_demo.ClientAck`` from a ``cross_party.client_ack``
+    evidence block -- the same b64url envelope shape (``ack_bytes_b64``/``sig_b64``/
+    ``public_key_pem_b64``) ``stranger_verify_bundle.py``'s ``_load_ack`` already
+    knows how to verify a Move-4 ack from, reused here rather than inventing a
+    second schema for the same evidence."""
+    return ClientAck(
+        action_capsule_id=block["action_capsule_id"],
+        request_nonce=block["request_nonce"],
+        timestamp=block.get("timestamp", ""),
+        ack_bytes=base64.urlsafe_b64decode(block["ack_bytes_b64"] + "=="),
+        sig=base64.urlsafe_b64decode(block["sig_b64"] + "=="),
+        public_key_pem=base64.urlsafe_b64decode(block["public_key_pem_b64"] + "=="),
+    )
+
+
+def cross_party_grade(poc: dict[str, Any], *, capsule_id: str | None = None) -> dict[str, Any]:
     """Rung 2 -- cross-party mutuality, via the producer's OWN
     ``derive_cross_party_rung`` (never re-implemented here).
 
     ``unilateral_fallback < acknowledged_receipt < full_bilateral``. The
-    caveat text is always RE-DERIVED from the resulting rung via
-    ``identity_limitation_for_rung`` -- never read from whatever the record's
-    own ``identity_limitation`` field happens to say -- so a record whose
-    ``cross_party`` block was stripped or tampered can never keep a
+    ``identity_limitation`` caveat is always RE-DERIVED from the resulting
+    rung via ``identity_limitation_for_rung`` -- never read from whatever the
+    record's own ``identity_limitation`` field happens to say -- so a record
+    whose ``cross_party`` block was stripped or tampered can never keep a
     full_bilateral caveat it no longer supports.
+
+    ``has_verified_ack`` -- the ONLY input that can reach ``full_bilateral`` --
+    is likewise never read as a bare boolean off the record. It is derived by
+    reconstructing the Move-4 ack from ``cross_party.client_ack`` (evidence
+    bytes: a signature, the signed payload, and the signing public key) and
+    calling ``bilateral_demo.verify_client_ack`` against THIS record's own
+    ``capsule_id`` -- exactly the check ``verify_exchange``/
+    ``stranger_verify_bundle.py`` already perform on the same evidence shape.
+    A record with no ``client_ack`` block cannot reach ``full_bilateral``,
+    full stop. A bare ``cross_party.ack_verified`` claim with nothing behind
+    it to check is never folded into the rung -- it is surfaced via
+    ``unverifiable_claim`` instead, so a forged claim is disclosed rather than
+    silently rendered green.
     """
     cross_party = poc.get("cross_party")
-    has_verified_ack = bool(cross_party and cross_party.get("ack_verified"))
+    has_verified_ack = False
+    unverifiable_claim: str | None = None
+    if cross_party:
+        ack_block = cross_party.get("client_ack")
+        if ack_block:
+            try:
+                ack = _client_ack_from_evidence(ack_block)
+            except (KeyError, TypeError, ValueError, binascii.Error) as exc:
+                unverifiable_claim = f"cross_party.client_ack is malformed: {exc}"
+            else:
+                has_verified_ack, ack_reason = verify_client_ack(
+                    ack, capsule_id=capsule_id or "", correlator=cross_party.get("correlator")
+                )
+                if not has_verified_ack:
+                    unverifiable_claim = f"cross_party.client_ack did not verify: {ack_reason}"
+        elif cross_party.get("ack_verified"):
+            unverifiable_claim = (
+                "record claims cross_party.ack_verified=true but carries no "
+                "cross_party.client_ack evidence to re-derive it from -- claim "
+                "only, never counted toward the rung"
+            )
+
     rung = derive_cross_party_rung(cross_party, has_verified_ack=has_verified_ack)
-    return {"rung": rung, "identity_limitation": identity_limitation_for_rung(rung)}
+    return {
+        "rung": rung,
+        "identity_limitation": identity_limitation_for_rung(rung),
+        "unverifiable_claim": unverifiable_claim,
+    }
+
+
+def _tee_measured_claim_state(quote_hex: str | None) -> tuple[str, str]:
+    """Re-verify a hex-encoded TDX DCAP quote before honoring a
+    ``tee_measured`` claim. Returns ``("tee_measured", "")`` only when the
+    quote's own signature chain (``agent_manifest._tdx_verify.verify_tdx_quote``
+    -- never re-implemented here, same reuse discipline as ``tee_citation_grade``)
+    checks out; otherwise returns a downgraded state plus the reason, so the
+    strongest grade in this vocabulary is never reachable by writing one string.
+    """
+    if not quote_hex:
+        return STATE_PRESENT_UNVERIFIED, "claims tee_measured but carries no quote bytes to re-verify"
+    try:
+        quote_bytes = bytes.fromhex(quote_hex)
+    except (TypeError, ValueError):
+        return STATE_PRESENT_UNVERIFIED, "claims tee_measured but evidence_refs.tee_attestation.quote is not valid hex"
+    try:
+        verified = verify_tdx_quote(quote_bytes)
+    except TdxVerificationError as exc:
+        return STATE_PRESENT_UNVERIFIED, f"claims tee_measured but the quote did not parse: {exc}"
+    if not verified:
+        return STATE_FAILED, "claims tee_measured but the quote's DCAP signature chain did not verify"
+    return "tee_measured", ""
 
 
 def measurement_class_grade(poc: dict[str, Any]) -> dict[str, Any]:
@@ -121,17 +211,30 @@ def measurement_class_grade(poc: dict[str, Any]) -> dict[str, Any]:
     ``binary_attestation`` at all (that evidence is Rust-producer-only) --
     this renders "absent" for those records, never a fabricated default and
     never hidden from the table.
+
+    ``tee_measured`` -- the strongest grade this codebase names -- is never
+    read verbatim off ``evidence_refs.tee_attestation.measurement_class``: a
+    claimed quote is re-parsed and re-verified from its own bytes (see
+    ``_tee_measured_claim_state``) before this function will render it. A
+    claim that does not hold up falls back to whatever ``binary_attestation``
+    can still support, rather than silently erasing a real (if weaker) claim;
+    if there is nothing to fall back to, the rejected claim itself is
+    surfaced with its reason, never folded into "absent".
     """
     evidence_refs = poc.get("evidence_refs") or {}
     binary_class = (evidence_refs.get("binary_attestation") or {}).get("measurement_class")
-    tee_class = (evidence_refs.get("tee_attestation") or {}).get("measurement_class")
-    if tee_class == "tee_measured":
-        state = "tee_measured"
-    elif binary_class in ("os_measured", "self_measured"):
-        state = binary_class
-    else:
-        state = STATE_ABSENT
-    return {"state": state}
+    tee_block = evidence_refs.get("tee_attestation") or {}
+    tee_state: str | None = None
+    tee_reason = ""
+    if tee_block.get("measurement_class") == "tee_measured":
+        tee_state, tee_reason = _tee_measured_claim_state(tee_block.get("quote"))
+    if tee_state == "tee_measured":
+        return {"state": "tee_measured"}
+    if binary_class in ("os_measured", "self_measured"):
+        return {"state": binary_class}
+    if tee_state is not None:
+        return {"state": tee_state, "reason": tee_reason}
+    return {"state": STATE_ABSENT}
 
 
 def tee_citation_grade(poc: dict[str, Any]) -> dict[str, Any]:
@@ -233,7 +336,7 @@ def build_row(record: dict[str, Any], *, verify_ok: bool | None, has_witness_che
         "verify_ok": verify_ok,
         "rungs": {
             "freshness": freshness_grade(poc.get("client_nonce_source")),
-            "cross_party": cross_party_grade(poc),
+            "cross_party": cross_party_grade(poc, capsule_id=record.get("capsule_id")),
             "runtime_binding": measurement_class_grade(poc),
             "tee_citation": tee_citation_grade(poc),
             "hardware_inventory": hardware_inventory_grade(poc),
@@ -445,6 +548,14 @@ _HTML_SHELL = r"""<!DOCTYPE html>
     return span;
   }
 
+  function joinCaveats() {
+    var parts = [];
+    for (var i = 0; i < arguments.length; i++) {
+      if (arguments[i]) { parts.push(arguments[i]); }
+    }
+    return parts.length ? parts.join(" ") : null;
+  }
+
   function rungCard(label, state, text, caveat) {
     var card = document.createElement("div");
     card.className = "rung-card";
@@ -495,10 +606,11 @@ _HTML_SHELL = r"""<!DOCTYPE html>
       grid.appendChild(rungCard("Freshness", r.freshness.state, r.freshness.client_nonce_source || r.freshness.state));
     }
     if (r.cross_party) {
-      grid.appendChild(rungCard("Cross-party", r.cross_party.rung, r.cross_party.rung, r.cross_party.identity_limitation));
+      grid.appendChild(rungCard("Cross-party", r.cross_party.rung, r.cross_party.rung,
+        joinCaveats(r.cross_party.identity_limitation, r.cross_party.unverifiable_claim)));
     }
     if (r.runtime_binding) {
-      grid.appendChild(rungCard("Runtime / binding", r.runtime_binding.state, r.runtime_binding.state));
+      grid.appendChild(rungCard("Runtime / binding", r.runtime_binding.state, r.runtime_binding.state, r.runtime_binding.reason));
     }
     if (r.tee_citation) {
       grid.appendChild(rungCard("TEE (via TRACE citation)", r.tee_citation.state, r.tee_citation.state, r.tee_citation.card_text || r.tee_citation.reason));

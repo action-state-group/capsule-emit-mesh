@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from agent_manifest._tdx_verify import parse_tdx_quote
 
+from bilateral_demo import ClientKey, make_client_ack
 from capsule_accountability_tab import (
     STATE_ABSENT,
     STATE_FAILED,
@@ -36,6 +37,21 @@ from trace_citation import GRADE_PLATFORM_ATTESTED, GRADE_UNATTESTED, trace_reco
 FIXTURES = Path(__file__).parent / "fixtures" / "tdx-attestation"
 QUOTE_A = (FIXTURES / "tdx_quote.bin").read_bytes()
 SHARED_MRTD = parse_tdx_quote(QUOTE_A).mrtd.hex()
+
+
+def _client_ack_block(capsule_id: str, nonce: str = "nonce-1") -> dict:
+    """A genuine, cryptographically-verifiable Move-4 ack, shaped exactly like
+    ``stranger_verify_bundle.py``'s ``--client-ack`` file envelope -- the one
+    evidence shape ``cross_party_grade`` will re-derive ``full_bilateral`` from."""
+    ack = make_client_ack(ClientKey.generate(), capsule_id, nonce)
+    return {
+        "action_capsule_id": ack.action_capsule_id,
+        "request_nonce": ack.request_nonce,
+        "timestamp": ack.timestamp,
+        "ack_bytes_b64": base64.urlsafe_b64encode(ack.ack_bytes).rstrip(b"=").decode(),
+        "sig_b64": base64.urlsafe_b64encode(ack.sig).rstrip(b"=").decode(),
+        "public_key_pem_b64": base64.urlsafe_b64encode(ack.public_key_pem).rstrip(b"=").decode(),
+    }
 
 
 def _trace_record_bytes(*, measurement=SHARED_MRTD, platform="intel-tdx"):
@@ -143,6 +159,7 @@ def test_cross_party_grade_absent_block_is_unilateral_fallback_no_caveat():
     grade = cross_party_grade({})
     assert grade["rung"] == "unilateral_fallback"
     assert grade["identity_limitation"] is None
+    assert grade["unverifiable_claim"] is None
 
 
 def test_cross_party_grade_initiator_ref_without_ack_is_acknowledged_receipt():
@@ -150,13 +167,47 @@ def test_cross_party_grade_initiator_ref_without_ack_is_acknowledged_receipt():
     grade = cross_party_grade(poc)
     assert grade["rung"] == "acknowledged_receipt"
     assert grade["identity_limitation"] is None
+    assert grade["unverifiable_claim"] is None
 
 
-def test_cross_party_grade_verified_ack_reaches_full_bilateral_with_caveat():
-    poc = {"cross_party": {"initiator_ref": "x" * 64, "ack_verified": True}}
-    grade = cross_party_grade(poc)
+def test_cross_party_grade_genuine_client_ack_reaches_full_bilateral_with_caveat():
+    capsule_id = "c" * 64
+    poc = {"cross_party": {"initiator_ref": "x" * 64, "client_ack": _client_ack_block(capsule_id)}}
+    grade = cross_party_grade(poc, capsule_id=capsule_id)
     assert grade["rung"] == "full_bilateral"
     assert grade["identity_limitation"] == IDENTITY_LIMITATION_CAVEAT
+    assert grade["unverifiable_claim"] is None
+
+
+# ADV-3: a producer-written ``ack_verified`` boolean, with no evidence bytes
+# behind it, must NEVER reach full_bilateral -- it is disclosed, not honored.
+def test_mutant_bare_ack_verified_boolean_never_reaches_full_bilateral():
+    poc = {"cross_party": {"initiator_ref": "x" * 64, "ack_verified": True}}
+    grade = cross_party_grade(poc, capsule_id="c" * 64)
+    assert grade["rung"] == "acknowledged_receipt"
+    assert grade["rung"] != "full_bilateral"
+    assert grade["identity_limitation"] is None
+    assert "ack_verified=true" in grade["unverifiable_claim"]
+
+
+def test_mutant_client_ack_bound_to_a_different_capsule_never_lifts():
+    # A genuine ack, but minted for SOME OTHER exchange -- must not lift THIS one.
+    poc = {"cross_party": {"initiator_ref": "x" * 64, "client_ack": _client_ack_block("d" * 64)}}
+    grade = cross_party_grade(poc, capsule_id="c" * 64)
+    assert grade["rung"] == "acknowledged_receipt"
+    assert grade["unverifiable_claim"] is not None
+
+
+def test_mutant_client_ack_with_forged_signature_never_lifts():
+    capsule_id = "c" * 64
+    block = _client_ack_block(capsule_id)
+    tampered = bytearray(base64.urlsafe_b64decode(block["sig_b64"] + "=="))
+    tampered[0] ^= 0xFF
+    block["sig_b64"] = base64.urlsafe_b64encode(bytes(tampered)).rstrip(b"=").decode()
+    poc = {"cross_party": {"initiator_ref": "x" * 64, "client_ack": block}}
+    grade = cross_party_grade(poc, capsule_id=capsule_id)
+    assert grade["rung"] == "acknowledged_receipt"
+    assert grade["unverifiable_claim"] is not None
 
 
 def test_cross_party_grade_ack_verified_without_initiator_ref_stays_unilateral():
@@ -193,10 +244,45 @@ def test_measurement_class_grade_tee_measured_wins_over_binary():
     poc = {
         "evidence_refs": {
             "binary_attestation": {"measurement_class": "os_measured"},
-            "tee_attestation": {"measurement_class": "tee_measured"},
+            "tee_attestation": {"measurement_class": "tee_measured", "quote": QUOTE_A.hex()},
         }
     }
     assert measurement_class_grade(poc)["state"] == "tee_measured"
+
+
+# ADV-4: a bare ``measurement_class: "tee_measured"`` label, with no quote
+# bytes (or bytes that don't verify), must NEVER render the strongest grade.
+def test_mutant_tee_measured_bare_string_no_quote_never_greens():
+    poc = {"evidence_refs": {"tee_attestation": {"measurement_class": "tee_measured"}}}
+    grade = measurement_class_grade(poc)
+    assert grade["state"] != "tee_measured"
+    assert grade["state"] == STATE_PRESENT_UNVERIFIED
+
+
+def test_mutant_tee_measured_forged_quote_bytes_never_greens():
+    forged = bytearray(QUOTE_A)
+    forged[100] ^= 0xFF  # flip a byte inside the signed header||body, not the PEM cert chain
+    poc = {"evidence_refs": {"tee_attestation": {"measurement_class": "tee_measured", "quote": bytes(forged).hex()}}}
+    grade = measurement_class_grade(poc)
+    assert grade["state"] != "tee_measured"
+    assert grade["state"] == STATE_FAILED
+
+
+def test_mutant_tee_measured_malformed_quote_never_greens():
+    poc = {"evidence_refs": {"tee_attestation": {"measurement_class": "tee_measured", "quote": "not-hex"}}}
+    grade = measurement_class_grade(poc)
+    assert grade["state"] != "tee_measured"
+
+
+def test_mutant_tee_measured_falls_back_to_binary_when_unverifiable():
+    # A forged/absent tee quote must not erase a genuinely-weaker, still-standing claim.
+    poc = {
+        "evidence_refs": {
+            "binary_attestation": {"measurement_class": "os_measured"},
+            "tee_attestation": {"measurement_class": "tee_measured"},
+        }
+    }
+    assert measurement_class_grade(poc)["state"] == "os_measured"
 
 
 # ---------------------------------------------------------------------------
@@ -358,13 +444,14 @@ def test_render_accountability_tab_html_escapes_script_breakout():
 
 
 def test_mutant_dropping_cross_party_degrades_to_unilateral_never_upgrades():
-    poc_with_evidence = {"cross_party": {"initiator_ref": "x" * 64, "ack_verified": True}}
-    honest = cross_party_grade(poc_with_evidence)
+    capsule_id = "c" * 64
+    poc_with_evidence = {"cross_party": {"initiator_ref": "x" * 64, "client_ack": _client_ack_block(capsule_id)}}
+    honest = cross_party_grade(poc_with_evidence, capsule_id=capsule_id)
     assert honest["rung"] == "full_bilateral"
 
     # Now drop cross_party entirely, as a mutant/tamper would.
     tampered_poc = {k: v for k, v in poc_with_evidence.items() if k != "cross_party"}
-    tampered = cross_party_grade(tampered_poc)
+    tampered = cross_party_grade(tampered_poc, capsule_id=capsule_id)
     assert tampered["rung"] == "unilateral_fallback"
     assert CROSS_PARTY_ORDER[tampered["rung"]] < CROSS_PARTY_ORDER[honest["rung"]]
     assert tampered["identity_limitation"] is None  # no leftover caveat once the rung drops
@@ -392,7 +479,11 @@ def test_mutant_stripping_measurement_class_degrades_to_absent_never_upgrades():
 
 
 def test_mutant_record_level_cross_party_drop_flows_through_build_row():
-    record = _capsule(cross_party={"initiator_ref": "x" * 64, "ack_verified": True})
+    capsule_id = "c" * 64
+    record = _capsule(
+        capsule_id=capsule_id,
+        cross_party={"initiator_ref": "x" * 64, "client_ack": _client_ack_block(capsule_id)},
+    )
     honest_row = build_row(record, verify_ok=True, has_witness_checkpoint=False)
     assert honest_row["rungs"]["cross_party"]["rung"] == "full_bilateral"
 

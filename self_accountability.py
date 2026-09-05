@@ -192,7 +192,7 @@ def rung_summary(latest_record: dict[str, Any] | None) -> dict[str, Any]:
     owner = poc.get("owner") or {"owner_status": "absent", "owner_id": None, "identity_limitation": None}
     return {
         "freshness": freshness_grade(poc.get("client_nonce_source")),
-        "cross_party": cross_party_grade(poc),
+        "cross_party": cross_party_grade(poc, capsule_id=(latest_record or {}).get("capsule_id")),
         "runtime_binding": measurement_class_grade(poc),
         "weights_digest": {
             "state": "absent",
