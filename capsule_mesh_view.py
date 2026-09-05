@@ -186,12 +186,37 @@ def _issuer_key_for(ledger_dir: Path, issuer_key: Path | None) -> Path | None:
     return candidate if candidate.exists() else None
 
 
+def _authenticated_capsule_id(report) -> str | None:
+    """The capsule_id actually AUTHENTICATED by the COSE_Sign1 signature --
+    either the bare-digest `CAPSULE_ID_MEDIA_TYPE` subject, or (this repo's
+    own scheme: `sign_capsule()` signs the full capsule JSON) the content-hash
+    `agent_action_capsule.verify()` recomputes from the signed payload's own
+    bytes (`report.payload.capsule_id`). Mirrors
+    `stranger_verify_bundle.py::_authenticated_capsule_id`. Never trust a
+    `subject`/filename claim the signature itself doesn't cover."""
+    if report.authenticated_capsule_id is not None:
+        return report.authenticated_capsule_id
+    if report.payload is not None:
+        return report.payload.capsule_id
+    return None
+
+
 def _detached_statement_verified(ledger_dir: Path, capsule_id: str, issuer_key: Path | None) -> bool | None:
     """Verify capsule_id's DETACHED COSE_Sign1 Signed Statement
     (`signed-statements/<capsule_id>.cose`) -- neither the Rust plugin nor
     the Python sidecar embeds a self-attested `signature`/`key_id` inline
     (see `stranger_verify_bundle.py::_transparent_check`, which this
     mirrors); the producer signature for these ledgers lives here instead.
+
+    [mesh-verify-bind-statement-to-capsuleid] A valid signature alone is not
+    enough: `verify_transparent()` only proves SOME statement signed by the
+    issuer key exists, not that it was signed over *this* capsule_id's
+    payload. Without the check below, a statement honestly signed over
+    capsule A's bytes -- filed under capsule B's `signed-statements/<B>.cose`
+    filename (e.g. a keyless relay tampers record B, recomputes its public
+    unkeyed capsule_id, and renames A's original, still-validly-signed
+    statement to `<B>.cose`) -- would verify=True for B. So the authenticated
+    subject is bound back to `capsule_id` here and a mismatch is rejected.
 
     Returns True/False on a definitive verdict, or None when there is
     nothing to check (no statement on disk, or no issuer key resolvable) --
@@ -207,7 +232,12 @@ def _detached_statement_verified(ledger_dir: Path, capsule_id: str, issuer_key: 
         report = verify_transparent(statement_path=str(statement_path), issuer_key_path=str(issuer_key))
     except (OSError, SubstrateInputError):
         return False
-    return bool(report.ok)
+    if not report.ok:
+        return False
+    authenticated_id = _authenticated_capsule_id(report)
+    if authenticated_id is not None and authenticated_id != capsule_id:
+        return False
+    return True
 
 
 def verify_results_for(
