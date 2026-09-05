@@ -87,6 +87,15 @@ Route:
             ``reason`` (Refusal). A missing/empty ledger resolves to a
             signed ``no_such_record`` refusal INSIDE ``answer()`` itself --
             never a 500.
+    POST /evidence/deliver
+        [mesh-adjudication-delivery-ack] -- body = a sealed twin-adjudication
+        capsule's own canonical JSON bytes (opaque at this layer; see
+        ``adjudication_delivery.py`` for the full contract). 200 +
+        ``{"status": "received"}`` or a signed ``Refusal``
+        (``request_malformed`` / ``policy_decline``) -- same
+        signed-answer-always discipline as ``/evidence-request``, and the
+        SAME ledger + node key ``EvidenceServerState`` already names; this
+        route never opens a second ledger.
     GET /
         200 + a one-line human status. Carries no evidence.
     anything else -> 404.
@@ -101,6 +110,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from adjudication_delivery import handle_delivery
 from evidence_responder import handle_evidence_request
 
 __all__ = [
@@ -186,18 +196,29 @@ def make_evidence_handler(state: EvidenceServerState):
             self.wfile.write(body)
 
         def do_POST(self) -> None:  # BaseHTTPRequestHandler API names this do_POST
-            if self.path.strip("/") != "evidence-request":
-                self._write_json(404, {"error": "not_found", "path": self.path})
-                return
+            path = self.path.strip("/")
             length = int(self.headers.get("Content-Length", "0") or "0")
             request_bytes = self.rfile.read(length) if length else b""
 
-            effective_path = _merged_evidence_view(state.ledger_path)
-            effective_state = EvidenceServerState(
-                ledger_path=effective_path, signing_key_path=state.signing_key_path
-            )
-            result = handle_evidence_request(effective_state, request_bytes)
-            self._write_json(200, result.to_dict())
+            if path == "evidence-request":
+                effective_path = _merged_evidence_view(state.ledger_path)
+                effective_state = EvidenceServerState(
+                    ledger_path=effective_path, signing_key_path=state.signing_key_path
+                )
+                result = handle_evidence_request(effective_state, request_bytes)
+                self._write_json(200, result.to_dict())
+                return
+
+            if path == "evidence/deliver":
+                # Delivery targets THIS node's own ledger directly (never
+                # the plugin-ledger bridge's scratch view) -- a delivered
+                # verdict is a NEW record this node holds, not a read
+                # against an existing one.
+                result = handle_delivery(state, request_bytes)
+                self._write_json(200, result)
+                return
+
+            self._write_json(404, {"error": "not_found", "path": self.path})
 
         def do_GET(self) -> None:
             body = f"capsule-evidence-server: ledger={state.ledger_path}\n".encode()

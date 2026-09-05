@@ -118,6 +118,9 @@ jobs:
       - name: Smoke — ask_history (E15 requester CLI -- offline bundle verify + history card render)
         run: python -c "import ask_history; print('ok')"
 
+      - name: Smoke — adjudication_delivery ([mesh-adjudication-delivery-ack] POST /evidence/deliver door + ack-refused sealing)
+        run: python -c "import adjudication_delivery; print('ok')"
+
       - name: Unit tests
         run: |
           pip install pytest
