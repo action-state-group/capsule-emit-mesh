@@ -142,10 +142,34 @@ def verify_pair_continuity(
     capsules: Iterable[dict[str, Any]],
     *,
     pair_extractor: Callable[[dict[str, Any]], tuple[str, str, int, int | None] | None] = extract_pair_seq,
+    checkpoint_covered_count: int | None = None,
 ) -> dict[str, PairContinuity]:
     """Walks `capsules` IN THE ORDER GIVEN (ledger/bundle order -- never
     re-sorted, so an out-of-order delivery reads as a gap, not silently
     repaired) and reports `PairContinuity` per `(self, counterparty)` pair.
+
+    `prev_seq` is READ, not just sealed, in two ways:
+
+    - **Self-consistency**: a record's own `(seq, prev_seq)` must match what
+      `SequenceCounterStore.next_seq` would have issued -- `prev_seq is None`
+      iff `seq == 1`, else `prev_seq == seq - 1`. A record that violates this
+      alone (a lying `prev_seq`, unrelated to whatever came before it in this
+      walk) is `broken`, never silently `unbroken`.
+    - **First-sighted-record check**: the first record this walk sees for a
+      pair must itself claim `prev_seq is None` (a true genesis). One that
+      claims a predecessor (self-consistent or not) reveals that the pair's
+      PREFIX was dropped from what we were handed; every record from seq=1
+      up to that claimed `prev_seq` is counted as a gap rather than treated
+      as an untroubled fresh start.
+
+    Neither check can reveal a dropped TRAIL -- a pair simply stopping mid-
+    ledger looks identical to a pair whose last real exchange happened to be
+    the most recent one. Catching that requires an outside anchor: pass
+    `checkpoint_covered_count`, the number of pair-sequenced records a
+    checkpoint over this same range attests to have existed. Fewer records
+    actually walked than that count means the range we were handed is
+    incomplete, and every pair's continuity in it is reported `broken`
+    rather than a false `unbroken` built on a silently truncated view.
     """
     last_seq: dict[str, int] = {}
     gaps: dict[str, int] = {}
@@ -156,21 +180,39 @@ def verify_pair_continuity(
         extracted = pair_extractor(capsule)
         if extracted is None:
             continue
-        self_id, counterparty_id, seq, _prev_seq = extracted
+        self_id, counterparty_id, seq, prev_seq = extracted
         key = pair_key(self_id, counterparty_id)
         counts[key] = counts.get(key, 0) + 1
         prior = last_seq.get(key)
-        if prior is not None:
+
+        self_consistent = (prev_seq is None and seq <= 1) or (prev_seq is not None and prev_seq == seq - 1)
+        if not self_consistent:
+            broken.setdefault(key, f"broken at seq={seq}: prev_seq={prev_seq!r} does not precede it")
+
+        if prior is None and prev_seq is not None:
+            # First record this walk has seen for the pair, but it claims a
+            # predecessor we never saw -- the prefix was dropped.
+            gaps[key] = gaps.get(key, 0) + prev_seq
+        elif prior is not None:
             if seq <= prior:
                 broken.setdefault(key, f"broken at seq={seq}: not greater than prior seq={prior}")
             elif seq > prior + 1:
                 gaps[key] = gaps.get(key, 0) + (seq - prior - 1)
         last_seq[key] = max(prior or 0, seq)
 
+    total_checked = sum(counts.values())
+    truncated = checkpoint_covered_count is not None and total_checked < checkpoint_covered_count
+
     return {
         key: PairContinuity(
             pair=key,
-            continuity=broken.get(key, "unbroken"),
+            continuity=broken.get(key)
+            or (
+                f"broken: checkpoint covers {checkpoint_covered_count} pair-sequenced records "
+                f"but only {total_checked} were presented"
+                if truncated
+                else "unbroken"
+            ),
             gaps_detected=gaps.get(key, 0),
             records_checked=count,
         )
