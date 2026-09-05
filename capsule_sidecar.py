@@ -109,6 +109,14 @@ CLIENT_NONCE_HEADER = "X-Capsule-Client-Nonce"
 #: minted it one hop upstream" even though both arrive as a present header.
 CLIENT_NONCE_ORIGIN_HEADER = "x-capsule-nonce-origin"
 CLIENT_NONCE_ORIGIN_LOCAL_INGRESS = "local_ingress"
+#: [mesh-requester-nonce-addendum] The rung-ladder response-leg header a
+#: SERVED node stamps on its own response. When THIS sidecar is the
+#: requester, its upstream call may be routed (by mesh-llm) to a peer, so
+#: this header -- read back off that upstream response -- is the PEER's own
+#: id, relayed byte-for-byte. `http.client`/`urllib` header lookups are
+#: case-insensitive, so no `.lower()` normalization is needed here (unlike
+#: `CLIENT_NONCE_HEADER`, read off the pre-lowered inbound `headers` dict).
+PEER_CAPSULE_ID_HEADER = "X-Capsule-Id"
 SIG_ALG = "EdDSA"
 
 # [b6a-requester-seal] The two half-of-exchange roles a sidecar can seal.
@@ -828,6 +836,7 @@ def build_capsule(
     exchange_id_source: str = "unavailable",
     forwarded_copy: dict[str, Any] | None = None,
     bilateral_eval: "BilateralEvalResult | None" = None,
+    peer_capsule_id: str | None = None,
 ) -> dict[str, Any]:
     # Stringified for the same reason as digest_json() above: this dict is
     # committed into compute_attestation, which is itself committed into
@@ -862,9 +871,23 @@ def build_capsule(
     #               served_by_node_id = "unknown" (the requester's outbound
     #               sidecar sees the served MODEL but not the serving node's
     #               id at the /v1 wire — never fabricated).
+    #
+    # [mesh-requester-nonce-addendum] counterparty_ref/counterparty_ref_provenance
+    # narrow that "unknown" gap for the requester half only: `peer_capsule_id`
+    # is the peer's own `X-Capsule-Id`, read back off the raw-proxy return
+    # (this sidecar's upstream response headers) by the caller. It is an
+    # UNAUTHENTICATED, relay-injectable header -- recording it here is
+    # observation, not verification, so it is always labeled
+    # `peer_asserted`, never elevated. `None` when the header was absent --
+    # never invented. A provider-role capsule has no peer to reference here
+    # (it served the request itself), so both fields stay `None`.
+    # Verification -- fetching the referenced capsule via an E15 pull and
+    # checking its digest against this value -- happens downstream, not here.
     if state.role == ROLE_REQUESTER:
         served_by_node_id: str | None = "unknown"
         requesting_party = state.node_id
+        counterparty_ref = peer_capsule_id
+        counterparty_ref_provenance = "peer_asserted" if peer_capsule_id else None
     else:
         served_by_node_id = state.node_id
         requesting_party = (
@@ -872,6 +895,8 @@ def build_capsule(
             if bilateral_eval and bilateral_eval.valid and bilateral_eval.initiator_ref
             else "unknown"
         )
+        counterparty_ref = None
+        counterparty_ref_provenance = None
     # [mesh-sequence-per-counterparty] Per-(self, counterparty) monotone seq
     # (history proposal §1 -- continuity is bilateral only). `self` is
     # always this node (state.node_id); the counterparty is the OTHER half
@@ -897,6 +922,8 @@ def build_capsule(
         "prev_seq": prev_seq,
         "model_canonical_ref": state.manifest.get("model_id"),
         "quantization": "unknown",
+        "counterparty_ref": counterparty_ref,
+        "counterparty_ref_provenance": counterparty_ref_provenance,
     }
     reconciliation = reconcile_advertised_vs_served(state.advertisement, serving_provenance)
 
@@ -1257,6 +1284,7 @@ def _seal_chat_completion(
     latency_ms: float,
     forwarded_copy: dict[str, Any] | None = None,
     bilateral_eval: "BilateralEvalResult | None" = None,
+    peer_capsule_id: str | None = None,
 ) -> dict[str, Any]:
     response_digest = digest_json(response_json)
     # [b6a-requester-seal] The shared per-exchange correlator, off the response
@@ -1278,6 +1306,7 @@ def _seal_chat_completion(
             exchange_id_source=exchange_id_source,
             forwarded_copy=forwarded_copy,
             bilateral_eval=bilateral_eval,
+            peer_capsule_id=peer_capsule_id,
         )
     else:
         # "checked and failed", not "absent" -- see #1233 step 7 (full
@@ -1297,6 +1326,7 @@ def _seal_chat_completion(
             exchange_id_source=exchange_id_source,
             forwarded_copy=forwarded_copy,
             bilateral_eval=bilateral_eval,
+            peer_capsule_id=peer_capsule_id,
         )
     signed_statement = sign_capsule(state, capsule)
     record_capsule(state, capsule, signed_statement)
@@ -1491,9 +1521,17 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
         with urllib.request.urlopen(req, timeout=60) as resp:
             status_code = resp.status
             response_body = resp.read()
+            # [mesh-requester-nonce-addendum] mesh-llm may have routed this
+            # call to a mesh peer instead of serving it locally -- if so, the
+            # peer's own X-Capsule-Id rides this response header, relayed
+            # byte-for-byte. See PEER_CAPSULE_ID_HEADER's docstring: this is
+            # the peer's UNVERIFIED assertion of its own capsule, never
+            # elevated to verified here.
+            peer_capsule_id = resp.headers.get(PEER_CAPSULE_ID_HEADER)
     except urllib.error.HTTPError as exc:
         status_code = exc.code
         response_body = exc.read()
+        peer_capsule_id = exc.headers.get(PEER_CAPSULE_ID_HEADER) if exc.headers else None
     latency_ms = (time.monotonic() - start) * 1000
 
     response_json = json.loads(response_body.decode("utf-8"))
@@ -1526,6 +1564,7 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
             exchange_id_source=exchange_id_source,
             forwarded_copy=forwarded_copy,
             bilateral_eval=bilateral_eval,
+            peer_capsule_id=peer_capsule_id,
         )
     else:
         # "checked and failed", not "absent" -- see #1233 step 7. The
@@ -1553,6 +1592,7 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
             exchange_id_source=exchange_id_source,
             forwarded_copy=forwarded_copy,
             bilateral_eval=bilateral_eval,
+            peer_capsule_id=peer_capsule_id,
         )
 
     signed_statement = sign_capsule(state, capsule)
@@ -1679,6 +1719,9 @@ def make_handler(state: NodeState, upstream_base: str):
             try:
                 with urllib.request.urlopen(req, timeout=120) as resp:
                     status_code = resp.status
+                    # [mesh-requester-nonce-addendum] see PEER_CAPSULE_ID_HEADER's
+                    # docstring -- the peer's unverified, self-asserted capsule id.
+                    peer_capsule_id = resp.headers.get(PEER_CAPSULE_ID_HEADER)
                     for raw_line in resp:
                         line = raw_line.decode("utf-8", errors="replace").strip()
                         if not line.startswith("data:"):
@@ -1692,6 +1735,7 @@ def make_handler(state: NodeState, upstream_base: str):
                             continue
             except urllib.error.HTTPError as exc:
                 status_code = exc.code
+                peer_capsule_id = exc.headers.get(PEER_CAPSULE_ID_HEADER) if exc.headers else None
                 error_body = exc.read()
                 self.send_response(status_code)
                 self.send_header("Content-Type", "application/json")
@@ -1713,6 +1757,7 @@ def make_handler(state: NodeState, upstream_base: str):
                     status_code=status_code,
                     latency_ms=latency_ms,
                     bilateral_eval=bilateral_eval,
+                    peer_capsule_id=peer_capsule_id,
                 )
                 record_native_request(
                     state, request_id=request_id, status=NATIVE_STATUS_FAILED,
@@ -1736,6 +1781,7 @@ def make_handler(state: NodeState, upstream_base: str):
                 latency_ms=latency_ms,
                 forwarded_copy=forwarded_copy_record(forwarded, transforms, upstream_ids),
                 bilateral_eval=bilateral_eval,
+                peer_capsule_id=peer_capsule_id,
             )
             record_native_request(
                 state, request_id=request_id,

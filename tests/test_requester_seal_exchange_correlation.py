@@ -74,7 +74,7 @@ def _serving_provenance(capsule: dict) -> dict:
     return poc["serving_provenance"]
 
 
-def _seal(state: "cs.NodeState", response_json: dict) -> dict:
+def _seal(state: "cs.NodeState", response_json: dict, *, peer_capsule_id: str | None = None) -> dict:
     """Seal one half over a full response object, deriving exchange_id the same
     way the live handler does."""
     cs_mod = _real_capsule_sidecar()
@@ -92,6 +92,7 @@ def _seal(state: "cs.NodeState", response_json: dict) -> dict:
         latency_ms=1.0,
         exchange_id=exchange_id,
         exchange_id_source=source,
+        peer_capsule_id=peer_capsule_id,
     )
 
 
@@ -224,6 +225,77 @@ def test_requester_capsule_does_not_carry_move4_ack(tmp_path: Path) -> None:
     # No ack leg: either no cross_party block at all, or one that carries no
     # counterparty_ref acknowledging a provider capsule_id.
     assert cross_party is None or cross_party.get("counterparty_ref") is None
+
+
+# ---------------------------------------------------------------------------
+# 4b. [mesh-requester-nonce-addendum] serving_provenance.counterparty_ref —
+#     the peer's own X-Capsule-Id, read back off the raw-proxy return.
+#
+# Distinct from the Move-4/bilateral `cross_party.counterparty_ref` the scope
+# guard above pins to None: this is an UNVERIFIED, unauthenticated observation
+# (the peer's raw response header), not an acknowledgment the requester
+# signed. It narrows the "served_by_node_id: unknown" gap without claiming
+# node identity — a capsule_id, not a node_id.
+# ---------------------------------------------------------------------------
+
+
+def test_requester_capsule_carries_peer_capsule_id_as_counterparty_ref(tmp_path: Path) -> None:
+    cs_mod = _real_capsule_sidecar()
+    state = _state(tmp_path, role=cs_mod.ROLE_REQUESTER, node_id="req-1")
+    capsule = _seal(
+        state,
+        {"id": "chatcmpl-peer-ref", "object": "chat.completion"},
+        peer_capsule_id="capsule-peer-abc",
+    )
+    sp = _serving_provenance(capsule)
+    assert sp["counterparty_ref"] == "capsule-peer-abc"
+    assert sp["counterparty_ref_provenance"] == "peer_asserted"
+
+
+def test_requester_capsule_without_a_peer_capsule_id_leaves_counterparty_ref_absent(tmp_path: Path) -> None:
+    """Mutant: no `X-Capsule-Id` header on the upstream response -- both
+    fields stay honestly `None`, never invented."""
+    cs_mod = _real_capsule_sidecar()
+    state = _state(tmp_path, role=cs_mod.ROLE_REQUESTER, node_id="req-2")
+    capsule = _seal(state, {"id": "chatcmpl-no-peer-ref", "object": "chat.completion"})
+    sp = _serving_provenance(capsule)
+    assert sp["counterparty_ref"] is None
+    assert sp["counterparty_ref_provenance"] is None
+
+
+def test_requester_capsule_records_an_injected_peer_capsule_id_as_peer_asserted_never_verified(
+    tmp_path: Path,
+) -> None:
+    """Mutant: a substitute/injected `X-Capsule-Id` is still recorded (this
+    layer cannot distinguish a genuine peer value from an injected one over
+    an unauthenticated header) -- but it is NEVER sealed as anything other
+    than `peer_asserted`. Verification is out of scope here by design."""
+    cs_mod = _real_capsule_sidecar()
+    state = _state(tmp_path, role=cs_mod.ROLE_REQUESTER, node_id="req-3")
+    capsule = _seal(
+        state,
+        {"id": "chatcmpl-injected", "object": "chat.completion"},
+        peer_capsule_id="injected-not-really-the-peers",
+    )
+    sp = _serving_provenance(capsule)
+    assert sp["counterparty_ref"] == "injected-not-really-the-peers"
+    assert sp["counterparty_ref_provenance"] == "peer_asserted"
+
+
+def test_provider_capsule_never_carries_a_counterparty_ref(tmp_path: Path) -> None:
+    """A provider-role capsule served the request itself -- there is no peer
+    to hold a capsule reference for, so both fields stay None even if a
+    caller mistakenly passed one."""
+    cs_mod = _real_capsule_sidecar()
+    state = _state(tmp_path, role=cs_mod.ROLE_PROVIDER, node_id="prov-1")
+    capsule = _seal(
+        state,
+        {"id": "chatcmpl-provider", "object": "chat.completion"},
+        peer_capsule_id="capsule-should-be-ignored",
+    )
+    sp = _serving_provenance(capsule)
+    assert sp["counterparty_ref"] is None
+    assert sp["counterparty_ref_provenance"] is None
 
 
 # ---------------------------------------------------------------------------
