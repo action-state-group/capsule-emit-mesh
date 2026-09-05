@@ -182,6 +182,66 @@ def test_verify_pair_continuity_flags_a_reset_as_broken_not_a_fresh_start() -> N
     assert pair.continuity.startswith("broken"), pair.continuity
 
 
+def test_verify_pair_continuity_detects_a_dropped_prefix_via_first_record_prev_seq() -> None:
+    """ADV-5: dropping records 1..3 leaves the walk seeing only seq=4, whose
+    own `prev_seq` still claims a predecessor. That claim must surface as a
+    gap, never a clean, untroubled fresh start."""
+    capsules = [
+        {"model_attestation": {"compute_attestation": {"x-mesh-poc-v1": {"serving_provenance": {
+            "role": "provider", "served_by_node_id": "m4", "requesting_party": "m3", "seq": 4, "prev_seq": 3,
+        }}}}},
+    ]
+    result = verify_pair_continuity(capsules)
+    pair = result[pair_key("m4", "m3")]
+    assert pair.continuity == "unbroken"
+    assert pair.gaps_detected == 3, "records 1..3 were never seen and must count as a gap"
+
+
+def test_verify_pair_continuity_flags_a_lying_prev_seq_as_broken() -> None:
+    """ADV-5: a record whose `prev_seq` does not actually precede its own
+    `seq` (a lying `prev_seq`, unrelated to what `next_seq` would ever
+    issue) must be flagged broken even though `seq` alone still looks
+    monotone."""
+    capsules = [
+        {"model_attestation": {"compute_attestation": {"x-mesh-poc-v1": {"serving_provenance": {
+            "role": "provider", "served_by_node_id": "m4", "requesting_party": "m3", "seq": 1, "prev_seq": None,
+        }}}}},
+        # Honest seq (2, monotone) but a fabricated prev_seq.
+        {"model_attestation": {"compute_attestation": {"x-mesh-poc-v1": {"serving_provenance": {
+            "role": "provider", "served_by_node_id": "m4", "requesting_party": "m3", "seq": 2, "prev_seq": 99,
+        }}}}},
+    ]
+    result = verify_pair_continuity(capsules)
+    pair = result[pair_key("m4", "m3")]
+    assert pair.continuity.startswith("broken"), pair.continuity
+
+
+def test_verify_pair_continuity_detects_a_dropped_trail_via_checkpoint_cross_check() -> None:
+    """ADV-5: dropping the TRAIL (the last record of a pair) is invisible to
+    any in-band check -- nothing in the delivered records hints a further
+    one ever existed. Only an outside anchor (a checkpoint attesting to the
+    true covered count) can catch it."""
+    capsules = [
+        {"model_attestation": {"compute_attestation": {"x-mesh-poc-v1": {"serving_provenance": {
+            "role": "provider", "served_by_node_id": "m4", "requesting_party": "m3", "seq": 1, "prev_seq": None,
+        }}}}},
+        {"model_attestation": {"compute_attestation": {"x-mesh-poc-v1": {"serving_provenance": {
+            "role": "provider", "served_by_node_id": "m4", "requesting_party": "m3", "seq": 2, "prev_seq": 1,
+        }}}}},
+        # seq=3, the pair's true last record, was dropped from delivery.
+    ]
+    result = verify_pair_continuity(capsules, checkpoint_covered_count=3)
+    pair = result[pair_key("m4", "m3")]
+    assert pair.continuity.startswith("broken"), pair.continuity
+
+    # The same records with no checkpoint anchor, or one that matches what
+    # was actually delivered, are honestly unbroken.
+    honest = verify_pair_continuity(capsules, checkpoint_covered_count=2)
+    assert honest[pair_key("m4", "m3")].continuity == "unbroken"
+    unanchored = verify_pair_continuity(capsules)
+    assert unanchored[pair_key("m4", "m3")].continuity == "unbroken"
+
+
 def test_records_with_no_seq_are_excluded_not_assigned_a_fabricated_one() -> None:
     """A pre-feature record (no `seq` field at all) is simply skipped -- never
     backfilled with an invented sequence number."""
