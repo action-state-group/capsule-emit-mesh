@@ -18,8 +18,13 @@ from join_card import (
     ANNOUNCEMENT_ABSENT,
     ANNOUNCEMENT_MATCH,
     ANNOUNCEMENT_MISMATCH,
+    CARD_TRANSITION_LINEAGE_BROKEN,
+    CARD_TRANSITION_NODE_ID_MISMATCH,
+    CARD_TRANSITION_OK,
+    CARD_TRANSITION_WIDENED,
     STATUS_BROKEN,
     STATUS_NO_CARD_SEALED,
+    STATUS_NOTHING_COMPARED,
     STATUS_OK,
     ModelRef,
     build_card,
@@ -69,6 +74,7 @@ def _exchange_line(
     vram_bytes=None,
     is_soc=None,
     measurement_class=None,
+    served_by_node_id="mesh-node-demo-1",
 ):
     return {
         "capsule_id": capsule_id,
@@ -76,7 +82,7 @@ def _exchange_line(
             "compute_attestation": {
                 "x-mesh-poc-v1": {
                     "serving_provenance": {
-                        "served_by_node_id": "mesh-node-demo-1",
+                        "served_by_node_id": served_by_node_id,
                         "model": {"canonical_ref": model_canonical_ref, "weights_digest": weights_digest},
                         "hardware": {"gpu": gpu, "vram_bytes": vram_bytes, "is_soc": is_soc},
                     },
@@ -303,3 +309,203 @@ def test_announcement_consistency_absent_when_either_side_missing():
     assert check_announcement_consistency(card, "e" * 64)["status"] == ANNOUNCEMENT_ABSENT
     card2 = _card(announcement_digest="d" * 64)
     assert check_announcement_consistency(card2, None)["status"] == ANNOUNCEMENT_ABSENT
+
+
+# ── card_consistency: card-transition lineage (CARD-2) ──────────────────────
+
+
+def test_first_card_transition_is_ok_even_with_no_supersedes():
+    cap = _sealed_card_line(_card())
+    result = card_consistency([cap])
+    assert result.ok is True
+    assert len(result.card_transitions) == 1
+    assert result.card_transitions[0].status == CARD_TRANSITION_OK
+    assert result.card_transitions[0].prior_card_digest is None
+
+
+def test_first_card_claiming_a_supersedes_is_lineage_broken():
+    """No prior card ever existed in this ledger -- a `supersedes` here
+    names a predecessor that does not exist."""
+    fabricated = _card(supersedes="f" * 64)
+    cap = _sealed_card_line(fabricated)
+    result = card_consistency([cap])
+    assert result.ok is False
+    assert result.card_transitions[0].status == CARD_TRANSITION_LINEAGE_BROKEN
+    assert result.broken_transition_count == 1
+
+
+def test_honest_supersede_chain_stays_green():
+    card1 = _card()
+    cap1 = _sealed_card_line(card1)
+    card2 = _card(measurement_rung="tee_measured", supersedes=card1.digest())
+    cap2 = _sealed_card_line(card2, prior_card_capsule_id=cap1["capsule_id"])
+    result = card_consistency([cap1, cap2])
+    assert result.ok is True
+    assert [t.status for t in result.card_transitions] == [CARD_TRANSITION_OK, CARD_TRANSITION_OK]
+
+
+def test_mutant_supersede_to_nonexistent_digest_is_lineage_broken():
+    card1 = _card()
+    cap1 = _sealed_card_line(card1)
+    forged = _card(supersedes="bad" + "0" * 61)  # not card1.digest()
+    cap2 = _sealed_card_line(forged, prior_card_capsule_id=cap1["capsule_id"])
+    result = card_consistency([cap1, cap2])
+    assert result.ok is False
+    assert result.card_transitions[1].status == CARD_TRANSITION_LINEAGE_BROKEN
+    assert result.card_transitions[1].prior_card_digest == card1.digest()
+
+
+def test_mutant_fork_two_cards_claiming_the_same_predecessor_is_lineage_broken():
+    """card2 validly supersedes card1; card3 ALSO claims to supersede card1
+    (a fork off an earlier link, not the actual current card card2)."""
+    card1 = _card()
+    cap1 = _sealed_card_line(card1)
+    card2 = _card(models=[ModelRef(name="mistralai/Mistral-7B", weights_digest="c" * 64)], supersedes=card1.digest())
+    cap2 = _sealed_card_line(card2, prior_card_capsule_id=cap1["capsule_id"])
+    card3 = _card(models=[ModelRef(name="forked/model", weights_digest="e" * 64)], supersedes=card1.digest())
+    cap3 = _sealed_card_line(card3, prior_card_capsule_id=cap1["capsule_id"])
+
+    result = card_consistency([cap1, cap2, cap3])
+    assert result.ok is False
+    assert result.card_transitions[0].status == CARD_TRANSITION_OK  # card1: first card
+    assert result.card_transitions[1].status == CARD_TRANSITION_OK  # card2: honest supersede of card1
+    assert result.card_transitions[2].status == CARD_TRANSITION_LINEAGE_BROKEN  # card3: forks off card1, not card2
+
+
+def test_mutant_supersede_with_wrong_node_id_is_node_id_mismatch():
+    card1 = _card(node_id="mesh-node-demo-1")
+    cap1 = _sealed_card_line(card1)
+    mallory_card = _card(node_id="mallory-node", supersedes=card1.digest())
+    cap2 = _sealed_card_line(mallory_card, prior_card_capsule_id=cap1["capsule_id"])
+
+    result = card_consistency([cap1, cap2])
+    assert result.ok is False
+    assert result.card_transitions[1].status == CARD_TRANSITION_NODE_ID_MISMATCH
+
+
+# ── card_consistency: supersede-to-vagueness (CARD-1) ───────────────────────
+
+
+def test_mutant_supersede_widens_models_to_empty_is_labeled_and_red():
+    """The prior card pinned a model; the successor supersedes-to-vagueness
+    with `models: []`, which would otherwise disable the model/weights_digest
+    checks entirely for every exchange sealed after it."""
+    card1 = _card()  # pins meta/Llama-3.2-3B
+    cap1 = _sealed_card_line(card1)
+    vague = _card(models=[], supersedes=card1.digest())
+    cap2 = _sealed_card_line(vague, prior_card_capsule_id=cap1["capsule_id"])
+
+    result = card_consistency([cap1, cap2])
+    assert result.ok is False
+    transition = result.card_transitions[1]
+    assert transition.status == CARD_TRANSITION_WIDENED
+    assert "models" in transition.widened_fields
+
+
+def test_mutant_supersede_widens_every_pinned_field_lists_them_all():
+    card1 = _card()
+    cap1 = _sealed_card_line(card1)
+    vague = _card(
+        models=[],
+        hardware_inventory=None,
+        measurement_rung=None,
+        announcement_digest=None,
+        supersedes=card1.digest(),
+    )
+    cap2 = _sealed_card_line(vague, prior_card_capsule_id=cap1["capsule_id"])
+
+    result = card_consistency([cap1, cap2])
+    transition = result.card_transitions[1]
+    assert transition.status == CARD_TRANSITION_WIDENED
+    assert set(transition.widened_fields) == {
+        "models",
+        "hardware_inventory",
+        "measurement_rung",
+        "announcement_digest",
+    }
+
+
+def test_honest_narrowing_supersede_is_not_widened():
+    """Dropping from two models to one that is STILL pinned is narrowing,
+    not vagueness -- must not be flagged as a widen."""
+    card1 = _card(
+        models=[
+            ModelRef(name="meta/Llama-3.2-3B", weights_digest="a" * 64),
+            ModelRef(name="mistralai/Mistral-7B", weights_digest="b" * 64),
+        ]
+    )
+    cap1 = _sealed_card_line(card1)
+    narrowed = _card(models=[ModelRef(name="meta/Llama-3.2-3B", weights_digest="a" * 64)], supersedes=card1.digest())
+    cap2 = _sealed_card_line(narrowed, prior_card_capsule_id=cap1["capsule_id"])
+
+    result = card_consistency([cap1, cap2])
+    assert result.ok is True
+    assert result.card_transitions[1].status == CARD_TRANSITION_OK
+
+
+# ── card_consistency: exchange bound to served_by_node_id (CARD-2) ──────────
+
+
+def test_exchange_served_by_wrong_node_id_is_broken():
+    card = _card()
+    cap = _sealed_card_line(card)
+    stolen = _exchange_line(
+        capsule_id="e1",
+        model_canonical_ref="meta/Llama-3.2-3B",
+        weights_digest="a" * 64,
+        served_by_node_id="mallory-node",
+    )
+    result = card_consistency([cap, stolen])
+    assert result.ok is False
+    entry = result.entries[0]
+    assert entry.status == STATUS_BROKEN
+    mismatch = next(m for m in entry.mismatches if m["field"] == "served_by_node_id")
+    assert mismatch["exchange"] == "mallory-node"
+    assert mismatch["card"] == "mesh-node-demo-1"
+
+
+def test_exchange_served_by_honest_node_id_is_ok():
+    card = _card()
+    cap = _sealed_card_line(card)
+    exchange = _exchange_line(
+        capsule_id="e1",
+        model_canonical_ref="meta/Llama-3.2-3B",
+        weights_digest="a" * 64,
+        served_by_node_id="mesh-node-demo-1",
+    )
+    result = card_consistency([cap, exchange])
+    assert result.ok is True
+    assert result.entries[0].status == STATUS_OK
+
+
+# ── card_consistency: vacuous OK (CARD-3) ───────────────────────────────────
+
+
+def test_mutant_exchange_with_nothing_comparable_is_not_status_ok():
+    """The shipped sidecar path for a requester's own-half record: no model,
+    no weights_digest, no hardware, no measurement_class, and
+    `served_by_node_id` left at the honest "unknown" sentinel (cleaned to
+    absent). Zero fields are reconcilable -- this must render as a distinct
+    verdict, never byte-identical to a genuinely verified STATUS_OK."""
+    card = _card()
+    cap = _sealed_card_line(card)
+    vacuous = _exchange_line(capsule_id="e1", served_by_node_id="unknown")
+    result = card_consistency([cap, vacuous])
+    assert result.entries[0].status == STATUS_NOTHING_COMPARED
+    assert result.entries[0].status != STATUS_OK
+    assert result.nothing_compared_count == 1
+    # Nothing-comparable is not itself evidence of a broken promise.
+    assert result.ok is True
+
+
+def test_genuinely_comparable_exchange_stays_status_ok_not_nothing_compared():
+    card = _card()
+    cap = _sealed_card_line(card)
+    exchange = _exchange_line(
+        capsule_id="e1",
+        model_canonical_ref="meta/Llama-3.2-3B",
+        weights_digest="a" * 64,
+    )
+    result = card_consistency([cap, exchange])
+    assert result.entries[0].status == STATUS_OK
+    assert result.nothing_compared_count == 0
