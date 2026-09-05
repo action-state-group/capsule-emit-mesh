@@ -1,6 +1,7 @@
 mod capsule_emit;
 mod decision;
 mod lifecycle_channel;
+mod mesh_evidence_bridge;
 /// Not wired into `on_mesh_event` yet -- see the module doc for why
 /// (`mesh-llm-plugin = "0.75"` predates the `checkpoint` field this needs to
 /// read off `event.peer`). Exercised entirely by its own unit tests today;
@@ -22,8 +23,12 @@ use lifecycle_channel::{
     HostServingProvenance, MirrorUsage, ObservedLifecycleEvents, OpenAiExchangeEnvelope,
     OPENAI_EXCHANGE_CHANNEL,
 };
+use mesh_evidence_bridge::{
+    MeshEvidenceRequestArgs, EVIDENCE_REQUEST_CHANNEL, EVIDENCE_REQUEST_OPERATION,
+};
 use mesh_llm_plugin::{
-    capability, inference, mesh_channel, plugin, plugin_server_info, PluginMetadata, PluginRuntime,
+    capability, inference, json_schema_operation, mesh_channel, plugin_server_info,
+    DeclarativePluginBuilder, OperationRouter, PluginMetadata, PluginRuntime,
 };
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -292,22 +297,35 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(serve_admission_http(listener, app_state));
 
     let lifecycle_events_for_handler = lifecycle_events.clone();
-    let plugin = plugin! {
-        metadata: PluginMetadata::new(
+
+    let mut evidence_operations = OperationRouter::new();
+    evidence_operations.add_json(
+        json_schema_operation::<MeshEvidenceRequestArgs>(
+            EVIDENCE_REQUEST_OPERATION,
+            "Ask a mesh peer's admission-policy plugin for E15 evidence (an E14 request map) over \
+             the plugin mesh stream, for peers with no reachable evidence_server.py HTTP door \
+             (e.g. relay-only). Returns the peer's own Artifact-or-Refusal JSON unchanged.",
+        ),
+        |args, context| Box::pin(mesh_evidence_bridge::handle_mesh_evidence_request(args, context)),
+    );
+
+    let plugin = DeclarativePluginBuilder::new(PluginMetadata::new(
+        PLUGIN_ID,
+        PLUGIN_VERSION,
+        plugin_server_info(
             PLUGIN_ID,
             PLUGIN_VERSION,
-            plugin_server_info(
-                PLUGIN_ID,
-                PLUGIN_VERSION,
-                "Admission policy",
-                "Denies OpenAI-compatible exchanges whose model matches a blocked prefix, and emits a signed chained ledgered AAC for every one it admits.",
-                None::<String>,
-            ),
+            "Admission policy",
+            "Denies OpenAI-compatible exchanges whose model matches a blocked prefix, and emits a signed chained ledgered AAC for every one it admits.",
+            None::<String>,
         ),
-        provides: [capability("admission_policy.v1")],
-        mesh: [mesh_channel(OPENAI_EXCHANGE_CHANNEL)],
-        inference: [inference::provider(ENDPOINT_ID, address)],
-        on_channel_message: move |message, _context| {
+    ))
+    .provide(capability("admission_policy.v1"))
+    .mesh_item(mesh_channel(OPENAI_EXCHANGE_CHANNEL))
+    .mesh_item(mesh_channel(EVIDENCE_REQUEST_CHANNEL))
+    .inference_item(inference::provider(ENDPOINT_ID, address))
+    .customize(move |plugin| {
+        plugin.on_channel_message(move |message, _context| {
             let lifecycle_events = lifecycle_events_for_handler.clone();
             let capsules = capsules_for_handler.clone();
             Box::pin(async move {
@@ -335,8 +353,15 @@ async fn main() -> anyhow::Result<()> {
                 }
                 Ok(())
             })
-        },
-    };
+        })
+    })
+    .customize(|plugin| {
+        plugin.on_open_stream(|request, context| {
+            Box::pin(mesh_evidence_bridge::handle_open_stream(request, context))
+        })
+    })
+    .customize(|plugin| plugin.with_operation_router(evidence_operations))
+    .build();
 
     PluginRuntime::run(plugin).await
 }

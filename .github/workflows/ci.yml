@@ -178,6 +178,14 @@ jobs:
       - name: Interop tests (real Envelope wire protocol + real HTTP dispatch)
         run: cargo test --locked --test interop -- --test-threads=1
 
+      # `evidence-request/1` plugin-mesh-stream carrier: same fake-host
+      # approach as `interop.rs` above (real Envelope wire protocol, real
+      # compiled plugin binary), extended with `OpenStreamRequest` (responder
+      # role) and `OpenMeshStreamRequest`/`tools/call` (requester role) --
+      # no real mesh-llm-host-runtime process needed, so this runs in CI.
+      - name: Mesh evidence-carrier interop tests (real Envelope wire protocol)
+        run: cargo test --locked --test mesh_evidence_bridge_interop -- --test-threads=1
+
       # This test's own scenarios are #[ignore]'d and gated on MESH_LLM_HOST_BIN:
       # running them needs a real mesh-llm-host-runtime binary, which isn't
       # buildable in this repo's CI (see

@@ -41,6 +41,16 @@ Usage:
 range. ``--tamper-check`` proves the negative end to end: flips one byte of
 the FIRST returned bundle's receipt in memory (never touching the peer) and
 confirms ``verify_bundle`` now reports not-ok -- raises if it doesn't.
+
+``--via mesh <peer-id>`` -- for a peer with no reachable ``evidence_server.py``
+HTTP door (e.g. relay-only mesh peers): the first positional argument becomes
+a hex mesh peer id instead of a base URL, and the request rides THIS node's
+own admission-policy plugin's plugin-mesh-stream carrier
+(``mesh_evidence_bridge``, channel ``evidence-request/1``) instead of a
+direct HTTP POST -- reached locally via ``--local-host-api`` (the mesh-llm
+host's own API port, default ``http://127.0.0.1:8080``). Verification is
+IDENTICAL either way: this module never trusts the carrier, only the
+response bytes.
 """
 from __future__ import annotations
 
@@ -59,6 +69,7 @@ from history_card import build_history_card
 __all__ = [
     "main",
     "post_evidence_request",
+    "post_mesh_evidence_request",
     "render_artifact",
     "render_refusal",
 ]
@@ -92,6 +103,28 @@ def post_evidence_request(peer_base_url: str, request_map: dict[str, Any]) -> di
     unmodified."""
     body = json.dumps(request_map).encode("utf-8")
     url = peer_base_url.rstrip("/") + "/evidence-request"
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read())
+
+
+def post_mesh_evidence_request(
+    local_host_api: str, plugin_name: str, peer_id: str, request_map: dict[str, Any]
+) -> dict[str, Any]:
+    """The mesh carrier for a peer with no reachable ``evidence_server.py``
+    HTTP door (e.g. relay-only): ask THIS node's own admission-policy plugin
+    to carry ``request_map`` to ``peer_id`` over the plugin mesh stream
+    (``mesh_evidence_bridge::handle_mesh_evidence_request``, channel
+    ``evidence-request/1``), via the plugin's ``mesh_evidence_request`` tool,
+    reached locally through mesh-llm's own
+    ``POST /api/plugins/<name>/tools/<tool>`` tool-call route -- never a new
+    host route, never new host code. Returns the peer's own Artifact-or-
+    Refusal dict unmodified, same as ``post_evidence_request``; a peer that
+    never declared the channel surfaces as a non-2xx ``urllib.error.HTTPError``
+    (the plugin's bounded wait timed out), never a hang.
+    """
+    body = json.dumps({"peer_id": peer_id, "request": request_map}).encode("utf-8")
+    url = f"{local_host_api.rstrip('/')}/api/plugins/{plugin_name}/tools/mesh_evidence_request"
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read())
@@ -171,7 +204,10 @@ def render_artifact(payload: dict[str, Any], *, node_id: str, tamper_check: bool
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("peer", help="peer's evidence_server.py base URL, e.g. http://m3.example:8091")
+    parser.add_argument(
+        "peer",
+        help="peer's evidence_server.py base URL (default) or, with --via mesh, the peer's hex mesh peer id",
+    )
     parser.add_argument("--subject", choices=["record", "range"], default="range")
     parser.add_argument("--capsule-id", default=None, help="required for --subject record")
     parser.add_argument("--selector", default=None, help="required for --subject range, e.g. id1..id2")
@@ -181,6 +217,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--node-id", default="requester", help="label only, for the rendered history card")
     parser.add_argument(
         "--tamper-check", action="store_true", help="prove a corrupted COPY of the response fails verify"
+    )
+    parser.add_argument(
+        "--via",
+        choices=["http", "mesh"],
+        default="http",
+        help="http (default): POST peer directly. mesh: carry the request over THIS node's own "
+        "admission-policy plugin's plugin-mesh-stream (for peers with no reachable HTTP door).",
+    )
+    parser.add_argument(
+        "--local-host-api",
+        default="http://127.0.0.1:8080",
+        help="--via mesh only: this node's own mesh-llm host API base URL",
+    )
+    parser.add_argument(
+        "--local-plugin-name",
+        default="admission-policy",
+        help="--via mesh only: the plugin name carrying the request (its /tools/mesh_evidence_request route)",
     )
     args = parser.parse_args(argv)
 
@@ -198,9 +251,12 @@ def main(argv: list[str] | None = None) -> int:
         nonce=args.nonce,
     )
     try:
-        payload = post_evidence_request(args.peer, request_map)
+        if args.via == "mesh":
+            payload = post_mesh_evidence_request(args.local_host_api, args.local_plugin_name, args.peer, request_map)
+        else:
+            payload = post_evidence_request(args.peer, request_map)
     except urllib.error.URLError as exc:
-        print(f"request to {args.peer} failed: {exc}", file=sys.stderr)
+        print(f"request to {args.peer} (via {args.via}) failed: {exc}", file=sys.stderr)
         return 1
 
     if "reason" in payload:
