@@ -58,6 +58,7 @@ import os
 import stat
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
@@ -2009,7 +2010,52 @@ def make_handler(state: NodeState, upstream_base: str):
             self.wfile.write(body)
 
         def do_GET(self):  # noqa: N802
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path == "/accountability/finder":
+                self._handle_finder(parsed)
+                return
             self._proxy_passthrough("GET", b"")
+
+        def _handle_finder(self, parsed: urllib.parse.ParseResult) -> None:
+            """[mesh-ui-ledger-finder] The Accountability page's Finder,
+            served fresh from this node's own ledger on every request (same
+            "re-derive every call, never cache" discipline as
+            ``evidence_server._merged_evidence_view`` -- see
+            ``ledger_store_backend``'s module docstring).
+
+            ``ledger_finder`` is imported HERE, lazily, not at module level:
+            it pulls in ``capsule_exchange_tab`` -> ``capsule_accountability_
+            tab`` -> ``bilateral_demo``, and ``bilateral_demo`` imports
+            NodeState etc. straight back from this module -- a module-level
+            import here would be a real cycle (this module is still
+            mid-way through its OWN top-level imports, before NodeState
+            exists, the first time Python would try to resolve it). Every
+            other cross-cycle case in this codebase resolves the same way
+            (e.g. ``ledger_store_backend``'s lazy ``checkpointing``/
+            ``capsule_emit.ledger`` imports, ``capsule_exchange_tab``'s own
+            lazy ``capsule_emit.checkpoint`` import).
+            """
+            from ledger_finder import find_capsules, render_finder_page_html
+
+            params = urllib.parse.parse_qs(parsed.query)
+
+            def _one(name: str) -> str | None:
+                values = params.get(name)
+                return values[0] if values and values[0] else None
+
+            result = find_capsules(
+                state.ledger_dir,
+                start=_one("start"),
+                end=_one("end"),
+                id_query=_one("id_query"),
+                peer=_one("peer"),
+            )
+            body = render_finder_page_html(result, source_log="sidecar").encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def _proxy_passthrough(self, method: str, raw: bytes) -> None:
             req = urllib.request.Request(url=f"{upstream_base}{self.path}", data=raw or None, method=method)

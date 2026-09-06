@@ -239,6 +239,14 @@ def _read_store_capsules(ledger_dir: Path) -> tuple[list[dict[str, Any]], list[d
                             "segment": seg.name,
                             "first_seq": manifest.first_seq,
                             "last_seq": manifest.last_seq,
+                            # [mesh-ui-ledger-finder] the segment's own closing
+                            # date range -- read off its SegmentManifest (never
+                            # moved on unmount, unlike the segment's .jsonl
+                            # bytes), so the Finder can list "archived — mount
+                            # to view" with a date range without opening the
+                            # archived file.
+                            "first_ts": manifest.first_ts,
+                            "last_ts": manifest.last_ts,
                             "record_count": manifest.record_count,
                             "checkpoint_root": seg.checkpoint_root,
                             "mmr_size": seg.mmr_size,
@@ -267,9 +275,10 @@ def read_all_capsules(ledger_dir: Path) -> tuple[list[dict[str, Any]], list[dict
 
     Returns ``(records, archived_segments)``. ``archived_segments`` is
     always ``[]`` for a flat ledger; for a store, it carries one
-    ``{kind, segment, first_seq, last_seq, record_count, checkpoint_root,
-    mmr_size, note}`` dict per unmounted segment this reader could not open
-    -- never raises :class:`~cll.ledger.segments.SegmentUnmounted`, and
+    ``{kind, segment, first_seq, last_seq, first_ts, last_ts, record_count,
+    checkpoint_root, mmr_size, note}`` dict per unmounted segment this
+    reader could not open -- never raises
+    :class:`~cll.ledger.segments.SegmentUnmounted`, and
     never silently drops an archived segment's existence even though its
     content isn't available (the rotation-demo acceptance line: "unmount
     one -> readers report archived -- mount to view, never a 500").
