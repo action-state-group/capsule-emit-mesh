@@ -23,7 +23,8 @@ use capsule_producer::sequence::SequenceCounterStore;
 use capsule_producer::timestamp::utc_now_iso8601;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// Derive `(role, observation_point)` for an exchange this plugin only
@@ -40,12 +41,23 @@ use std::sync::Mutex;
 /// fork.
 ///
 /// `served_by_node_id` (fork-only enrichment; `None` on bare upstream) is
-/// then a CONSISTENCY CHECK, applied only when present: agreement seals the
-/// `dispatch_path`-derived role unchanged; disagreement seals `role:
-/// "conflict"` instead of guessing which signal is right. Both raw facts
-/// (`dispatch_path` and `served_by_node_id`) still ride the sealed record
-/// (see `ServingProvenance::dispatch_path`/`served_by_node_id`) so a reader
-/// never has to take the resolved label's word for it.
+/// then a CONSISTENCY CHECK, applied only when BOTH it and `self_node_id`
+/// are present -- agreement seals the `dispatch_path`-derived role
+/// unchanged; disagreement seals `role: "conflict"` instead of guessing
+/// which signal is right. Both raw facts (`dispatch_path` and
+/// `served_by_node_id`) still ride the sealed record (see
+/// `ServingProvenance::dispatch_path`/`served_by_node_id`) so a reader never
+/// has to take the resolved label's word for it.
+///
+/// `self_node_id` (2026-09-06 domain fix) is this node's own mesh identity
+/// in the SAME domain as `served_by_node_id` -- LEARNED from a prior
+/// locally-served terminal event (see [`LearnedSelfNodeId`]), never a
+/// compile-time plugin-type label like `PLUGIN_ID`. `None` until learned
+/// (fresh node, or no locally-served event observed yet): the check is then
+/// SKIPPED (same as the `served_by_node_id: None` arm) rather than compared
+/// against a placeholder that can never legitimately match, which was the
+/// bug (`PLUGIN_ID` vs mesh node id domain confusion sealed `role:
+/// "conflict"` on every locally-served exchange).
 ///
 /// `observation_point` is complementary vantage provenance (ruling option
 /// C): `Some("client_egress")` on the `RemoteMesh` path only, `None`
@@ -53,7 +65,7 @@ use std::sync::Mutex;
 fn role_and_observation_point(
     dispatch_path: &DispatchPath,
     served_by_node_id: Option<&str>,
-    self_node_id: &str,
+    self_node_id: Option<&str>,
 ) -> (String, Option<String>) {
     let dispatch_role = role_for_dispatch_path(dispatch_path);
     let observation_point =
@@ -62,19 +74,22 @@ fn role_and_observation_point(
     let role = if dispatch_role == "unknown" {
         "unknown".to_string()
     } else {
-        match served_by_node_id {
-            // No fork enrichment on this event -- the dispatch_path-derived
-            // role is the only signal available.
-            None => dispatch_role.to_string(),
-            Some(served_by) => {
+        match (served_by_node_id, self_node_id) {
+            // Both signals present -- the actual consistency check.
+            (Some(served_by), Some(self_id)) => {
                 let dispatch_implies_this_node_served = dispatch_role == "served";
-                let node_id_implies_this_node_served = served_by == self_node_id;
+                let node_id_implies_this_node_served = served_by == self_id;
                 if dispatch_implies_this_node_served == node_id_implies_this_node_served {
                     dispatch_role.to_string()
                 } else {
                     "conflict".to_string()
                 }
             }
+            // No fork enrichment on this event, or this node's own mesh
+            // identity is not yet learned -- the dispatch_path-derived role
+            // is the only signal available; never compared against a
+            // placeholder.
+            _ => dispatch_role.to_string(),
         }
     };
     (role, observation_point)
@@ -246,6 +261,80 @@ fn output_sub_digests(response_bytes: &[u8]) -> (Option<String>, Option<String>)
 const CAPSULE_CONTENT_TYPE: &str =
     "application/vnd.agent-action-capsule+json; profile=draft-mih-scitt-agent-action-capsule-02";
 
+/// Persisted cache of this node's own mesh identity (2026-09-06 self-id
+/// domain fix), beside the ledger at `<data_dir>/learned_self_node_id.json`
+/// (same restart-safe, best-effort convention as `SequenceCounterStore`).
+///
+/// `PLUGIN_ID` (`"admission-policy"`) is a compile-time plugin-TYPE label,
+/// not a mesh node id, and this plugin has no other source for its own real
+/// mesh identity -- the host never sends one directly. But the host DOES
+/// tell us, on every locally-served terminal event
+/// (`dispatch_path` in {`TypedFrontend`, `RawProxy`}) that carries the
+/// fork's `served_by_node_id` enrichment, exactly who served it -- and since
+/// this plugin observed that event as locally-served, that value IS this
+/// node's own asserted mesh identity. So: LEARN it from the first such
+/// observation; a later locally-served event naming a DIFFERENT id is a
+/// real identity ROTATION (replace + log), never a conflict -- conflict is
+/// reserved for a REMOTE-dispatched event that claims our own learned id
+/// (see `role_and_observation_point`).
+struct LearnedSelfNodeId {
+    path: PathBuf,
+    value: Option<String>,
+}
+
+impl LearnedSelfNodeId {
+    fn open(path: PathBuf) -> Self {
+        let value = fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Option<String>>(&bytes).ok())
+            .flatten();
+        Self { path, value }
+    }
+
+    fn get(&self) -> Option<&str> {
+        self.value.as_deref()
+    }
+
+    /// Learn, confirm, or rotate this node's self id from a locally-served
+    /// terminal event's `served_by_node_id`. No-op when unchanged; logs and
+    /// replaces on rotation; persists on any change. A persist failure is
+    /// logged, never panics -- the in-memory value still updates so the
+    /// current process behaves correctly even if the disk write failed.
+    fn observe(&mut self, served_by_node_id: &str) {
+        match self.value.as_deref() {
+            Some(current) if current == served_by_node_id => {}
+            Some(current) => {
+                tracing::warn!(
+                    previous_self_node_id = current,
+                    new_self_node_id = served_by_node_id,
+                    "learned self node id rotated"
+                );
+                self.value = Some(served_by_node_id.to_string());
+                self.save();
+            }
+            None => {
+                tracing::info!(self_node_id = served_by_node_id, "learned self node id");
+                self.value = Some(served_by_node_id.to_string());
+                self.save();
+            }
+        }
+    }
+
+    fn save(&self) {
+        let Ok(bytes) = serde_json::to_vec(&self.value) else {
+            return;
+        };
+        let tmp = self.path.with_extension("tmp");
+        if let Err(err) = fs::write(&tmp, bytes) {
+            tracing::warn!(%err, "failed to write learned_self_node_id.json.tmp");
+            return;
+        }
+        if let Err(err) = fs::rename(&tmp, &self.path) {
+            tracing::warn!(%err, "failed to persist learned_self_node_id.json");
+        }
+    }
+}
+
 pub struct CapsuleState {
     keys: KeyPair,
     ledger: Mutex<Ledger>,
@@ -255,6 +344,11 @@ pub struct CapsuleState {
     /// `capsule_producer::sequence` for why this cache is never the source
     /// of truth for continuity).
     sequence_counters: Mutex<SequenceCounterStore>,
+    /// This node's own mesh identity, LEARNED from observed traffic -- see
+    /// [`LearnedSelfNodeId`]. Distinct from `node_id` above (a plugin-type
+    /// label used for the ledger issuer / sequence-counter key), which is
+    /// NEVER used as a stand-in for the mesh node id domain.
+    learned_self_node_id: Mutex<LearnedSelfNodeId>,
 }
 
 pub struct EmittedCapsule {
@@ -325,12 +419,26 @@ impl CapsuleState {
             "capsule-producer ledger opened"
         );
         let sequence_counters = SequenceCounterStore::open(data_dir.join("sequence_counters.json"));
+        let learned_self_node_id =
+            LearnedSelfNodeId::open(data_dir.join("learned_self_node_id.json"));
         Ok(Self {
             keys,
             ledger: Mutex::new(ledger),
             node_id: node_id.into(),
             sequence_counters: Mutex::new(sequence_counters),
+            learned_self_node_id: Mutex::new(learned_self_node_id),
         })
+    }
+
+    /// This node's own mesh identity as LEARNED so far (see
+    /// [`LearnedSelfNodeId`]) -- `None` until a locally-served terminal
+    /// event has carried the fork's `served_by_node_id` enrichment.
+    fn learned_self_node_id(&self) -> Option<String> {
+        self.learned_self_node_id
+            .lock()
+            .expect("learned self node id mutex poisoned")
+            .get()
+            .map(str::to_string)
     }
 
     /// Not read by this binary today (the e2e test reads the persisted PEM
@@ -450,12 +558,15 @@ impl CapsuleState {
                 // path; the live plugin only has the request's model name.
                 model_name_digest: hex_sha256(model.as_bytes()),
                 serving_provenance: ServingProvenance {
-                    // Prefer the host event's serving node id; fall back to this
-                    // emitting node (single-node PoC) when the host reported none.
-                    served_by_node_id: host
-                        .served_by_node_id
-                        .clone()
-                        .unwrap_or_else(|| self.node_id.clone()),
+                    // Prefer the host event's serving node id; fall back to
+                    // this node's LEARNED mesh identity (real domain, never
+                    // the `PLUGIN_ID` plugin-type label) when the host
+                    // reported none; honest "unknown" when nothing has been
+                    // learned yet -- never a fabricated identity claim.
+                    served_by_node_id: host.served_by_node_id.clone().unwrap_or_else(|| {
+                        self.learned_self_node_id()
+                            .unwrap_or_else(|| "unknown".to_string())
+                    }),
                     // This admitted exchange came through this plugin's own
                     // `/v1` handler directly -- no host envelope, so no
                     // dispatch_path signal exists on this path at all.
@@ -673,10 +784,26 @@ impl CapsuleState {
             usage.clone(),
         );
         let host = host_provenance.clone();
+
+        // LEARN (or confirm, or rotate) this node's own mesh identity: a
+        // locally-served event (`TypedFrontend`/`RawProxy`) that carries the
+        // fork's `served_by_node_id` enrichment IS this node telling us who
+        // it is -- see `LearnedSelfNodeId`. A `RemoteMesh` event never
+        // learns (this node is the REQUESTER there, not the server).
+        if role_for_dispatch_path(dispatch_path) == "served" {
+            if let Some(served_by) = host.served_by_node_id.as_deref() {
+                self.learned_self_node_id
+                    .lock()
+                    .expect("learned self node id mutex poisoned")
+                    .observe(served_by);
+            }
+        }
+        let learned_self = self.learned_self_node_id();
+
         let (role, observation_point) = role_and_observation_point(
             dispatch_path,
             host.served_by_node_id.as_deref(),
-            &self.node_id,
+            learned_self.as_deref(),
         );
 
         // agent_input_digest: the host-forwarded canonical request-body digest
@@ -793,15 +920,19 @@ impl CapsuleState {
                 client_nonce_source: "host_served_observed".to_string(),
                 model_name_digest: hex_sha256(model.as_bytes()),
                 serving_provenance: ServingProvenance {
-                    // Fall back to this emitting node ONLY when dispatch_path
-                    // itself says this node served the exchange -- for a
-                    // RemoteMesh event with no served_by_node_id (bare
-                    // upstream, pre-enrichment), the honest value is
-                    // "unknown", never a fabricated claim that this node
-                    // served an exchange it just labeled `role: "requested"`.
+                    // Fall back to this node's LEARNED mesh identity ONLY
+                    // when dispatch_path itself says this node served the
+                    // exchange -- for a RemoteMesh event with no
+                    // served_by_node_id (bare upstream, pre-enrichment), the
+                    // honest value is "unknown", never a fabricated claim
+                    // that this node served an exchange it just labeled
+                    // `role: "requested"`. And when this IS a served event
+                    // but nothing has been learned yet (no prior enrichment
+                    // observed), "unknown" is still the honest answer --
+                    // never the `PLUGIN_ID` plugin-type label.
                     served_by_node_id: host.served_by_node_id.clone().unwrap_or_else(|| {
                         if role_for_dispatch_path(dispatch_path) == "served" {
-                            self.node_id.clone()
+                            learned_self.clone().unwrap_or_else(|| "unknown".to_string())
                         } else {
                             "unknown".to_string()
                         }
@@ -1691,6 +1822,10 @@ mod tests {
     }
 
     /// `TypedFrontend`/`RawProxy` both mean this node served the exchange.
+    /// With no fork enrichment AND nothing learned yet, `served_by_node_id`
+    /// seals the honest "unknown" -- NEVER `PLUGIN_ID`/`node_id` (the
+    /// 2026-09-06 domain fix: a plugin-type label is not a mesh node id, so
+    /// it must never be substituted as if it were one).
     #[test]
     fn typed_frontend_and_raw_proxy_seal_role_served() {
         for dispatch_path in [DispatchPath::TypedFrontend, DispatchPath::RawProxy] {
@@ -1708,10 +1843,7 @@ mod tests {
             let poc = poc_block(&emitted.capsule);
             assert_eq!(poc["role"], "served");
             assert!(poc["observation_point"].is_null());
-            assert_eq!(
-                poc["serving_provenance"]["served_by_node_id"],
-                "node-under-test"
-            );
+            assert_eq!(poc["serving_provenance"]["served_by_node_id"], "unknown");
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
@@ -1741,7 +1873,10 @@ mod tests {
     /// CONSISTENCY CHECK, agreeing case: a `RemoteMesh` event whose
     /// fork-enrichment `served_by_node_id` names a DIFFERENT node agrees
     /// with the dispatch_path-derived "requested" -- role stays "requested",
-    /// not "conflict".
+    /// not "conflict". Also: SKIP-PATH -- this node has never learned a
+    /// self id (no prior locally-served event), so the check has nothing to
+    /// compare against regardless; the dispatch-derived role is sealed
+    /// unchanged either way.
     #[test]
     fn remote_mesh_with_agreeing_served_by_node_id_stays_requested() {
         let dir = std::env::temp_dir().join(format!("cap-role-rm-agree-{}", std::process::id()));
@@ -1757,17 +1892,119 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// CONSISTENCY CHECK, disagreeing case: a `RemoteMesh` event (this node
-    /// routed it, "requested") whose fork-enrichment `served_by_node_id`
-    /// names THIS node itself contradicts that -- seals `role: "conflict"`,
-    /// never a guess at which signal is right. Both raw facts still ride the
-    /// record so a reader can see why.
+    /// SKIP-PATH, explicit: BEFORE any self id has been learned, a
+    /// `RemoteMesh` event whose `served_by_node_id` happens to equal this
+    /// node's OWN `node_id` (the old, buggy fallback value) must NOT be
+    /// treated as a conflict -- `node_id` is a plugin-type label, not this
+    /// node's mesh identity, and the check is skipped until a real self id
+    /// is learned. This is the regression guard for the domain-confusion
+    /// bug: comparing against `PLUGIN_ID`/`node_id` directly (as the old
+    /// code did) would have wrongly sealed `role: "conflict"` here.
     #[test]
-    fn remote_mesh_with_conflicting_served_by_node_id_seals_conflict() {
-        let dir = std::env::temp_dir().join(format!("cap-role-rm-conflict-{}", std::process::id()));
+    fn remote_mesh_before_self_id_learned_never_conflicts_even_if_it_names_node_id() {
+        let dir = std::env::temp_dir().join(format!("cap-role-rm-preskip-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
         let observed = observed_with(DispatchPath::RemoteMesh, Some("node-under-test"));
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal");
+        let poc = poc_block(&emitted.capsule);
+        assert_eq!(
+            poc["role"], "requested",
+            "no self id learned yet -- the check must be skipped, never compared \
+             against the plugin-type node_id label"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LEARN: the FIRST locally-served (`TypedFrontend`/`RawProxy`) event
+    /// that carries the fork's `served_by_node_id` enrichment teaches this
+    /// node its own mesh identity -- THE regression guard for the domain
+    /// bug: `served_by_node_id` here is a real mesh-node-id-shaped value
+    /// (hash-like, never equal to `PLUGIN_ID`/`node_id`), and role must seal
+    /// "served", never "conflict" (mutant: reintroducing a naive `self.node_id`
+    /// comparison here would flip this red).
+    #[test]
+    fn typed_frontend_learns_self_node_id_from_first_observation_and_seals_served() {
+        let dir = std::env::temp_dir().join(format!("cap-role-tf-learn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let real_mesh_node_id = "fa28d0dfe5f0b2c4a8f0fcb15838075e4e5f0b32d6dd5df029588e8992fad5ac";
+        let observed = observed_with(DispatchPath::TypedFrontend, Some(real_mesh_node_id));
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal");
+        let poc = poc_block(&emitted.capsule);
+        assert_eq!(poc["role"], "served");
+        assert_eq!(
+            poc["serving_provenance"]["served_by_node_id"],
+            real_mesh_node_id
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ROTATE: a SECOND locally-served event naming a DIFFERENT
+    /// `served_by_node_id` than the one already learned replaces the
+    /// cached self id -- a rotation, never a "conflict" (per the standing
+    /// ruling: locally-served events are the source of truth for this
+    /// node's own identity and can never conflict with themselves).
+    #[test]
+    fn typed_frontend_with_new_served_by_node_id_rotates_learned_self_not_conflict() {
+        let dir = std::env::temp_dir().join(format!("cap-role-tf-rotate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+
+        let first = state
+            .emit_for_observed_host_exchange(&observed_with(
+                DispatchPath::TypedFrontend,
+                Some("node-id-a"),
+            ))
+            .expect("seal 1");
+        assert_eq!(poc_block(&first.capsule)["role"], "served");
+
+        let second = state
+            .emit_for_observed_host_exchange(&observed_with(
+                DispatchPath::TypedFrontend,
+                Some("node-id-b"),
+            ))
+            .expect("seal 2");
+        let poc = poc_block(&second.capsule);
+        assert_eq!(
+            poc["role"], "served",
+            "a rotated self id is NOT a conflict"
+        );
+        assert_eq!(poc["serving_provenance"]["served_by_node_id"], "node-id-b");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONSISTENCY CHECK, genuine conflict: ONLY reachable after a self id
+    /// has been learned from a locally-served event. A subsequent
+    /// `RemoteMesh` event (this node routed it out, "requested") whose
+    /// fork-enrichment `served_by_node_id` names THIS node's own LEARNED id
+    /// contradicts that -- seals `role: "conflict"`. Mutant guard: disabling
+    /// the consistency check (always skip) would flip this red, since it
+    /// would seal "requested" instead.
+    #[test]
+    fn remote_mesh_with_learned_self_node_id_seals_conflict() {
+        let dir = std::env::temp_dir().join(format!("cap-role-rm-conflict-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+
+        // First, learn this node's real mesh identity from a locally-served
+        // event -- the same way `typed_frontend_learns_...` does.
+        state
+            .emit_for_observed_host_exchange(&observed_with(
+                DispatchPath::TypedFrontend,
+                Some("node-under-test-real-id"),
+            ))
+            .expect("seal learning event");
+
+        // Now a RemoteMesh event claims served_by_node_id == the id we just
+        // learned -- a real anomaly: we dispatched this exchange to a peer,
+        // yet the enrichment says we ourselves served it.
+        let observed = observed_with(DispatchPath::RemoteMesh, Some("node-under-test-real-id"));
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
             .expect("seal");
@@ -1778,29 +2015,7 @@ mod tests {
         assert_eq!(poc["observation_point"], "client_egress");
         let sp = &poc["serving_provenance"];
         assert_eq!(sp["dispatch_path"], "remote_mesh");
-        assert_eq!(sp["served_by_node_id"], "node-under-test");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// CONSISTENCY CHECK, the mirror-image disagreeing case: a
-    /// `TypedFrontend` event (this node served it, "served") whose
-    /// fork-enrichment `served_by_node_id` names a DIFFERENT node
-    /// contradicts that -- also `role: "conflict"`, not a silent "served".
-    #[test]
-    fn typed_frontend_with_conflicting_served_by_node_id_seals_conflict() {
-        let dir = std::env::temp_dir().join(format!("cap-role-tf-conflict-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
-        let observed = observed_with(DispatchPath::TypedFrontend, Some("peer-node-3"));
-        let emitted = state
-            .emit_for_observed_host_exchange(&observed)
-            .expect("seal");
-        let poc = poc_block(&emitted.capsule);
-        assert_eq!(poc["role"], "conflict");
-        assert!(poc["observation_point"].is_null());
-        let sp = &poc["serving_provenance"];
-        assert_eq!(sp["dispatch_path"], "typed_frontend");
-        assert_eq!(sp["served_by_node_id"], "peer-node-3");
+        assert_eq!(sp["served_by_node_id"], "node-under-test-real-id");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1820,6 +2035,83 @@ mod tests {
         assert_eq!(poc["role"], "served");
         assert!(poc["observation_point"].is_null());
         assert!(poc["serving_provenance"]["dispatch_path"].is_null());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// MUTANT GUARD (kills the restored-fallback mutant): the plugin's own
+    /// directly-served `/v1` path (`emit_for_exchange`, no host envelope at
+    /// all) seals the honest "unknown" `served_by_node_id` when nothing has
+    /// been learned yet -- NEVER `PLUGIN_ID`/`node_id`. Reintroducing
+    /// `unwrap_or_else(|| self.node_id.clone())` here would flip this red.
+    #[test]
+    fn plugin_served_exchange_seals_unknown_served_by_node_id_before_learning() {
+        let dir = std::env::temp_dir().join(format!("cap-role-plugin-unk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let emitted = state
+            .emit_for_exchange(&sample_exchange("party-1"))
+            .expect("seal");
+        let poc = poc_block(&emitted.capsule);
+        assert_eq!(poc["serving_provenance"]["served_by_node_id"], "unknown");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Once a self id HAS been learned (from an earlier locally-served
+    /// observed-host exchange on the SAME `CapsuleState`), the plugin's own
+    /// directly-served path uses that real learned identity instead of
+    /// "unknown" -- an honest fact this node genuinely knows, never a
+    /// fabricated one.
+    #[test]
+    fn plugin_served_exchange_uses_learned_self_node_id_once_known() {
+        let dir = std::env::temp_dir().join(format!("cap-role-plugin-learned-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+
+        state
+            .emit_for_observed_host_exchange(&observed_with(
+                DispatchPath::TypedFrontend,
+                Some("learned-real-id"),
+            ))
+            .expect("seal learning event");
+
+        let emitted = state
+            .emit_for_exchange(&sample_exchange("party-1"))
+            .expect("seal");
+        let poc = poc_block(&emitted.capsule);
+        assert_eq!(
+            poc["serving_provenance"]["served_by_node_id"],
+            "learned-real-id"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// RESTART SAFETY: the learned self id is persisted beside the ledger
+    /// (`learned_self_node_id.json`), not held only in memory -- reopening
+    /// `CapsuleState` against the SAME `data_dir` (simulating a process
+    /// restart) still has it learned, and a subsequent `RemoteMesh` event
+    /// naming that same id still seals a genuine conflict.
+    #[test]
+    fn learned_self_node_id_survives_a_simulated_restart() {
+        let dir = std::env::temp_dir().join(format!("cap-role-restart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        {
+            let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+            state
+                .emit_for_observed_host_exchange(&observed_with(
+                    DispatchPath::TypedFrontend,
+                    Some("persisted-real-id"),
+                ))
+                .expect("seal learning event");
+        }
+        // Fresh CapsuleState over the same data_dir -- the restart.
+        let restarted = CapsuleState::open(&dir, "node-under-test").expect("reopen state");
+        let emitted = restarted
+            .emit_for_observed_host_exchange(&observed_with(
+                DispatchPath::RemoteMesh,
+                Some("persisted-real-id"),
+            ))
+            .expect("seal after restart");
+        assert_eq!(poc_block(&emitted.capsule)["role"], "conflict");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
