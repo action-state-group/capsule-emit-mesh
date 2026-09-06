@@ -27,10 +27,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 /// Derive `(role, observation_point)` for an exchange this plugin only
-/// OBSERVED on the `openai.exchange.v1` channel (2026-09-06 role ruling,
-/// upstream-clean half: keys ONLY on `dispatch_path`, not on the fork-only
-/// `served_by_node_id` enrichment -- a `served_by_node_id`-vs-self
-/// CONSISTENCY CHECK lands as a separate, later commit).
+/// OBSERVED on the `openai.exchange.v1` channel (2026-09-06 role ruling).
 ///
 /// `dispatch_path` is the AUTHORITATIVE signal: `RemoteMesh` means this node
 /// routed the exchange to a peer (role `"requested"`), `TypedFrontend`/
@@ -42,13 +39,44 @@ use std::sync::Mutex;
 /// bare upstream `main` the day mesh-llm#1668 merges, not only against the
 /// fork.
 ///
+/// `served_by_node_id` (fork-only enrichment; `None` on bare upstream) is
+/// then a CONSISTENCY CHECK, applied only when present: agreement seals the
+/// `dispatch_path`-derived role unchanged; disagreement seals `role:
+/// "conflict"` instead of guessing which signal is right. Both raw facts
+/// (`dispatch_path` and `served_by_node_id`) still ride the sealed record
+/// (see `ServingProvenance::dispatch_path`/`served_by_node_id`) so a reader
+/// never has to take the resolved label's word for it.
+///
 /// `observation_point` is complementary vantage provenance (ruling option
 /// C): `Some("client_egress")` on the `RemoteMesh` path only, `None`
 /// elsewhere -- independent of `role`, never a restatement of it.
-fn role_and_observation_point(dispatch_path: &DispatchPath) -> (String, Option<String>) {
-    let role = role_for_dispatch_path(dispatch_path).to_string();
+fn role_and_observation_point(
+    dispatch_path: &DispatchPath,
+    served_by_node_id: Option<&str>,
+    self_node_id: &str,
+) -> (String, Option<String>) {
+    let dispatch_role = role_for_dispatch_path(dispatch_path);
     let observation_point =
         matches!(dispatch_path, DispatchPath::RemoteMesh).then(|| "client_egress".to_string());
+
+    let role = if dispatch_role == "unknown" {
+        "unknown".to_string()
+    } else {
+        match served_by_node_id {
+            // No fork enrichment on this event -- the dispatch_path-derived
+            // role is the only signal available.
+            None => dispatch_role.to_string(),
+            Some(served_by) => {
+                let dispatch_implies_this_node_served = dispatch_role == "served";
+                let node_id_implies_this_node_served = served_by == self_node_id;
+                if dispatch_implies_this_node_served == node_id_implies_this_node_served {
+                    dispatch_role.to_string()
+                } else {
+                    "conflict".to_string()
+                }
+            }
+        }
+    };
     (role, observation_point)
 }
 
@@ -645,7 +673,11 @@ impl CapsuleState {
             usage.clone(),
         );
         let host = host_provenance.clone();
-        let (role, observation_point) = role_and_observation_point(dispatch_path);
+        let (role, observation_point) = role_and_observation_point(
+            dispatch_path,
+            host.served_by_node_id.as_deref(),
+            &self.node_id,
+        );
 
         // agent_input_digest: the host-forwarded canonical request-body digest
         // when present; an explicit honest sentinel otherwise (never fabricated).
@@ -1703,6 +1735,72 @@ mod tests {
         let poc = poc_block(&emitted.capsule);
         assert_eq!(poc["role"], "unknown");
         assert!(poc["observation_point"].is_null());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONSISTENCY CHECK, agreeing case: a `RemoteMesh` event whose
+    /// fork-enrichment `served_by_node_id` names a DIFFERENT node agrees
+    /// with the dispatch_path-derived "requested" -- role stays "requested",
+    /// not "conflict".
+    #[test]
+    fn remote_mesh_with_agreeing_served_by_node_id_stays_requested() {
+        let dir = std::env::temp_dir().join(format!("cap-role-rm-agree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let observed = observed_with(DispatchPath::RemoteMesh, Some("peer-node-3"));
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal");
+        let poc = poc_block(&emitted.capsule);
+        assert_eq!(poc["role"], "requested");
+        assert_eq!(poc["serving_provenance"]["served_by_node_id"], "peer-node-3");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONSISTENCY CHECK, disagreeing case: a `RemoteMesh` event (this node
+    /// routed it, "requested") whose fork-enrichment `served_by_node_id`
+    /// names THIS node itself contradicts that -- seals `role: "conflict"`,
+    /// never a guess at which signal is right. Both raw facts still ride the
+    /// record so a reader can see why.
+    #[test]
+    fn remote_mesh_with_conflicting_served_by_node_id_seals_conflict() {
+        let dir = std::env::temp_dir().join(format!("cap-role-rm-conflict-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let observed = observed_with(DispatchPath::RemoteMesh, Some("node-under-test"));
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal");
+        let poc = poc_block(&emitted.capsule);
+        assert_eq!(poc["role"], "conflict");
+        // Complementary vantage provenance is independent of the conflict --
+        // this node still observed the exchange at its client-egress vantage.
+        assert_eq!(poc["observation_point"], "client_egress");
+        let sp = &poc["serving_provenance"];
+        assert_eq!(sp["dispatch_path"], "remote_mesh");
+        assert_eq!(sp["served_by_node_id"], "node-under-test");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONSISTENCY CHECK, the mirror-image disagreeing case: a
+    /// `TypedFrontend` event (this node served it, "served") whose
+    /// fork-enrichment `served_by_node_id` names a DIFFERENT node
+    /// contradicts that -- also `role: "conflict"`, not a silent "served".
+    #[test]
+    fn typed_frontend_with_conflicting_served_by_node_id_seals_conflict() {
+        let dir = std::env::temp_dir().join(format!("cap-role-tf-conflict-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let observed = observed_with(DispatchPath::TypedFrontend, Some("peer-node-3"));
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal");
+        let poc = poc_block(&emitted.capsule);
+        assert_eq!(poc["role"], "conflict");
+        assert!(poc["observation_point"].is_null());
+        let sp = &poc["serving_provenance"];
+        assert_eq!(sp["dispatch_path"], "typed_frontend");
+        assert_eq!(sp["served_by_node_id"], "peer-node-3");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
