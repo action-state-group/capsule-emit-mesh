@@ -38,16 +38,62 @@ pub const OPENAI_EXCHANGE_CHANNEL: &str = "openai.exchange.v1";
 pub enum DispatchPath {
     TypedFrontend,
     RawProxy,
-    /// Catch-all for any dispatch_path value this mirror predates (e.g. a
-    /// future host adding `remote_mesh` for routed exchanges). `#[serde(other)]`
+    /// The raw-proxy ingress routed this exchange to a peer on the mesh
+    /// rather than serving it locally (`route_missing_local_model`'s
+    /// remote-mesh branch, `mesh-llm-host-runtime`'s
+    /// `OpenAiExchangeDispatchPath::RemoteMesh`). This node is the
+    /// requester/router for the exchange, never the server -- the
+    /// authoritative signal `is_sealable_requester_side`-style role
+    /// derivation keys on (Steven's 2026-09-06 ruling). Present on the
+    /// fork's enrichment-aware host today; ships on bare upstream main the
+    /// day mesh-llm#1668 merges, so keying role on this field (not on the
+    /// fork-only `served_by_node_id` enrichment) labels correctly either way.
+    RemoteMesh,
+    /// Catch-all for any dispatch_path value this mirror predates. `#[serde(other)]`
     /// is required here -- `#[serde(default)]` on the *field* does not apply to
     /// an unrecognized *variant*; without this, an old plugin build fails to
     /// parse the WHOLE envelope the moment a newer host emits a value this
     /// enum doesn't know, silently dropping every field, not just this one.
     /// Same "unknown != trusted" discipline as the `tpm_measured` registry
-    /// values: an unrecognized dispatch path is observed, never guessed at.
+    /// values: an unrecognized dispatch path is observed, never guessed at --
+    /// and, per the 2026-09-06 role ruling, never silently defaulted to
+    /// `served` either (see `role_for_dispatch_path`).
     #[serde(other)]
     Unknown,
+}
+
+/// The top-level `x-mesh-poc-v1.role` value derived from an observed
+/// exchange's `dispatch_path` -- the AUTHORITATIVE signal (Steven's
+/// 2026-09-06 ruling): `RemoteMesh` means this node routed the exchange to a
+/// peer, so it is the REQUESTER, never the server, no matter what a heuristic
+/// might otherwise guess. `Unknown` is labeled `"unknown"`, never silently
+/// defaulted to `"served"` -- a missing/unrecognized field must never become
+/// a claim. The `served_by_node_id`-vs-self CONSISTENCY CHECK (fork-only
+/// enrichment, applied where that field is present) can still upgrade this to
+/// `"conflict"` -- see `capsule_emit::role_and_observation_point`.
+pub fn role_for_dispatch_path(dispatch_path: &DispatchPath) -> &'static str {
+    match dispatch_path {
+        DispatchPath::RemoteMesh => "requested",
+        DispatchPath::TypedFrontend | DispatchPath::RawProxy => "served",
+        DispatchPath::Unknown => "unknown",
+    }
+}
+
+/// The raw wire value a `DispatchPath` was (or would be) serialized as --
+/// e.g. for `ServingProvenance::dispatch_path`, so a sealed record carries
+/// the actual observed signal `role_for_dispatch_path` derived from, not just
+/// the resolved label. Matches the `#[serde(rename_all = "snake_case")]` wire
+/// form exactly (kept as a hand-written match, not a serde round-trip,
+/// because `Unknown` has no single canonical wire string -- it is a
+/// catch-all for whatever unrecognized value the host actually sent, which
+/// this mirror never retains).
+pub fn dispatch_path_wire_value(dispatch_path: &DispatchPath) -> &'static str {
+    match dispatch_path {
+        DispatchPath::TypedFrontend => "typed_frontend",
+        DispatchPath::RawProxy => "raw_proxy",
+        DispatchPath::RemoteMesh => "remote_mesh",
+        DispatchPath::Unknown => "unknown",
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -442,16 +488,44 @@ mod tests {
     }
 
     /// A host newer than this plugin build emitting a `dispatch_path` this
-    /// mirror predates (e.g. a future `remote_mesh`) must not fail to parse
-    /// the WHOLE envelope -- `#[serde(other)]` catches it as `Unknown` rather
-    /// than rejecting every field in the record. Never treated as sealable:
-    /// an unrecognized dispatch path is observed, never guessed at.
+    /// mirror predates (e.g. some future dispatch path not yet named here --
+    /// `remote_mesh` itself graduated out of this role once the plugin
+    /// learned to recognize it) must not fail to parse the WHOLE envelope --
+    /// `#[serde(other)]` catches it as `Unknown` rather than rejecting every
+    /// field in the record. Never treated as sealable, and (2026-09-06 role
+    /// ruling) never silently labeled `served`: an unrecognized dispatch path
+    /// is observed and labeled `role: "unknown"`, never guessed at.
     #[test]
     fn unknown_dispatch_path_parses_as_unknown_not_a_parse_failure() {
-        let wire = r#"{"dispatch_path":"remote_mesh","phase":"terminal","model":"m","status":200}"#;
+        let wire = r#"{"dispatch_path":"some_future_dispatch_path","phase":"terminal","model":"m","status":200}"#;
         let env: OpenAiExchangeEnvelope = serde_json::from_str(wire)
             .expect("a forward host value must not break parsing of the whole envelope");
         assert_eq!(env.dispatch_path, DispatchPath::Unknown);
+    }
+
+    /// `remote_mesh` is now a KNOWN variant (2026-09-06 role ruling), not the
+    /// `Unknown` catch-all -- this is the precondition for
+    /// `role_for_dispatch_path` to tell "this node routed the exchange" apart
+    /// from "this mirror predates whatever the host just sent".
+    #[test]
+    fn remote_mesh_dispatch_path_parses_as_its_own_known_variant() {
+        let wire = r#"{"dispatch_path":"remote_mesh","phase":"terminal","model":"m","status":200}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse remote_mesh");
+        assert_eq!(env.dispatch_path, DispatchPath::RemoteMesh);
+    }
+
+    #[test]
+    fn role_for_dispatch_path_matches_the_2026_09_06_ruling() {
+        assert_eq!(
+            role_for_dispatch_path(&DispatchPath::RemoteMesh),
+            "requested"
+        );
+        assert_eq!(
+            role_for_dispatch_path(&DispatchPath::TypedFrontend),
+            "served"
+        );
+        assert_eq!(role_for_dispatch_path(&DispatchPath::RawProxy), "served");
+        assert_eq!(role_for_dispatch_path(&DispatchPath::Unknown), "unknown");
     }
 
     /// `latest_provenance_for_model` returns the MOST RECENT provenance for the

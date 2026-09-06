@@ -107,6 +107,22 @@ def test_role_field_overrides_the_heuristic_even_when_they_would_disagree():
     assert label_role(rec, SOURCE_SIDECAR) == "requested"
 
 
+def test_role_field_unknown_is_trusted_as_is_never_reguessed_served():
+    """[2026-09-06 role ruling, upstream-clean half]: the admission-policy
+    plugin now seals `role: "unknown"` (an unrecognized dispatch_path) as an
+    explicit, authoritative value -- exactly like "requested"/"served".
+    Before this widening, label_role only recognized two of its legal
+    values, so an "unknown" record fell through to the observation_point
+    heuristic and silently came back "served" (this record's
+    `observation_point="client_egress"` is IN `_SERVED_OBSERVATION_POINTS`,
+    so a regression to the narrower `in ("requested", "served")` check
+    flips this test red by returning "served" instead)."""
+    rec = _capsule(
+        "a" * 64, "2026-08-28T00:00:00Z", role="unknown", observation_point="client_egress"
+    )
+    assert label_role(rec, SOURCE_PLUGIN) == "unknown"
+
+
 # ---------------------------------------------------------------------------
 # label_counterparty
 # ---------------------------------------------------------------------------

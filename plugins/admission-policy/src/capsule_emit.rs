@@ -11,6 +11,7 @@
 //! whitespace) does not change the digest, and it stays comparable across
 //! implementations. Mutating the actual content still changes `capsule_id`.
 
+use crate::lifecycle_channel::{dispatch_path_wire_value, role_for_dispatch_path, DispatchPath};
 use capsule_producer::capsule::{
     seal, CapsuleInput, ChainLink, HostBinding, MeshPocV1, ServingProvenance, TokenUsage,
 };
@@ -24,6 +25,32 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::Mutex;
+
+/// Derive `(role, observation_point)` for an exchange this plugin only
+/// OBSERVED on the `openai.exchange.v1` channel (2026-09-06 role ruling,
+/// upstream-clean half: keys ONLY on `dispatch_path`, not on the fork-only
+/// `served_by_node_id` enrichment -- a `served_by_node_id`-vs-self
+/// CONSISTENCY CHECK lands as a separate, later commit).
+///
+/// `dispatch_path` is the AUTHORITATIVE signal: `RemoteMesh` means this node
+/// routed the exchange to a peer (role `"requested"`), `TypedFrontend`/
+/// `RawProxy` mean this node served it (`"served"`), and an unrecognized
+/// value is labeled `"unknown"` -- NEVER silently defaulted to `"served"`,
+/// which was the actual bug (a missing/unrecognized field silently became a
+/// claim). Keying on `dispatch_path` rather than the fork-only
+/// `served_by_node_id` enrichment means this plugin labels correctly against
+/// bare upstream `main` the day mesh-llm#1668 merges, not only against the
+/// fork.
+///
+/// `observation_point` is complementary vantage provenance (ruling option
+/// C): `Some("client_egress")` on the `RemoteMesh` path only, `None`
+/// elsewhere -- independent of `role`, never a restatement of it.
+fn role_and_observation_point(dispatch_path: &DispatchPath) -> (String, Option<String>) {
+    let role = role_for_dispatch_path(dispatch_path).to_string();
+    let observation_point =
+        matches!(dispatch_path, DispatchPath::RemoteMesh).then(|| "client_egress".to_string());
+    (role, observation_point)
+}
 
 /// Recursively replace JSON floats with their exact decimal-string form,
 /// mirroring `capsule_sidecar._stringify_floats` in the Python reference:
@@ -401,6 +428,10 @@ impl CapsuleState {
                         .served_by_node_id
                         .clone()
                         .unwrap_or_else(|| self.node_id.clone()),
+                    // This admitted exchange came through this plugin's own
+                    // `/v1` handler directly -- no host envelope, so no
+                    // dispatch_path signal exists on this path at all.
+                    dispatch_path: None,
                     requesting_party: requesting_party_id.clone(),
                     exchange_id: exchange_id.unwrap_or("unknown").to_string(),
                     hostname: host.hostname.clone(),
@@ -431,6 +462,12 @@ impl CapsuleState {
                     seq: sequence.seq,
                     prev_seq: sequence.prev_seq,
                 },
+                // This exchange was admitted and served by THIS plugin's own
+                // `/v1` handler -- unambiguously "served", not a guess: there
+                // is no dispatch_path signal on this path because there is no
+                // ambiguity to resolve on it.
+                role: "served".to_string(),
+                observation_point: None,
                 generation_parameters,
                 latency_ms: format!("{latency_ms:.3}"),
                 binary_attestation,
@@ -522,6 +559,7 @@ fn observer_runtime_field(
 ///   - the canonical digest of the REAL request body (`request_digest`),
 ///     forwarded by the host so the capsule's `agent_input_digest` binds the
 ///     real bytes without the plugin ever seeing the prompt.
+///
 /// Every field is real-or-honest-default; nothing is fabricated.
 pub struct ObservedHostExchange<'a> {
     pub model: &'a str,
@@ -552,6 +590,10 @@ pub struct ObservedHostExchange<'a> {
     pub usage: Option<TokenUsage>,
     /// The host's serving provenance for this served model.
     pub host_provenance: HostProvenance,
+    /// Which real dispatch path produced this terminal event -- the
+    /// AUTHORITATIVE signal `role_and_observation_point` derives `role` from
+    /// (2026-09-06 role ruling). See `lifecycle_channel::DispatchPath`.
+    pub dispatch_path: DispatchPath,
 }
 
 impl CapsuleState {
@@ -591,6 +633,7 @@ impl CapsuleState {
             reasoning_digest,
             usage,
             host_provenance,
+            dispatch_path,
         } = observed;
         let (model, exchange_id, request_digest, response_digest, tool_calls_digest, reasoning_digest, usage) = (
             *model,
@@ -602,6 +645,7 @@ impl CapsuleState {
             usage.clone(),
         );
         let host = host_provenance.clone();
+        let (role, observation_point) = role_and_observation_point(dispatch_path);
 
         // agent_input_digest: the host-forwarded canonical request-body digest
         // when present; an explicit honest sentinel otherwise (never fabricated).
@@ -717,10 +761,20 @@ impl CapsuleState {
                 client_nonce_source: "host_served_observed".to_string(),
                 model_name_digest: hex_sha256(model.as_bytes()),
                 serving_provenance: ServingProvenance {
-                    served_by_node_id: host
-                        .served_by_node_id
-                        .clone()
-                        .unwrap_or_else(|| self.node_id.clone()),
+                    // Fall back to this emitting node ONLY when dispatch_path
+                    // itself says this node served the exchange -- for a
+                    // RemoteMesh event with no served_by_node_id (bare
+                    // upstream, pre-enrichment), the honest value is
+                    // "unknown", never a fabricated claim that this node
+                    // served an exchange it just labeled `role: "requested"`.
+                    served_by_node_id: host.served_by_node_id.clone().unwrap_or_else(|| {
+                        if role_for_dispatch_path(dispatch_path) == "served" {
+                            self.node_id.clone()
+                        } else {
+                            "unknown".to_string()
+                        }
+                    }),
+                    dispatch_path: Some(dispatch_path_wire_value(dispatch_path).to_string()),
                     // Requesting party is not carried on the host-served
                     // observe path -- honest "unknown", never invented.
                     requesting_party: "unknown".to_string(),
@@ -747,6 +801,8 @@ impl CapsuleState {
                     seq: sequence.seq,
                     prev_seq: sequence.prev_seq,
                 },
+                role,
+                observation_point,
                 generation_parameters,
                 // Latency is not carried on the observe path (the plugin did not
                 // time the host's own dispatch) -- honest zero-marker, not faked.
@@ -996,6 +1052,7 @@ mod tests {
             reasoning_digest: None,
             usage: None,
             host_provenance: HostProvenance::default(),
+            dispatch_path: DispatchPath::RawProxy,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1031,6 +1088,7 @@ mod tests {
             reasoning_digest: None,
             usage: None,
             host_provenance: HostProvenance::default(),
+            dispatch_path: DispatchPath::RawProxy,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1074,6 +1132,7 @@ mod tests {
             reasoning_digest: None,
             usage: None,
             host_provenance: HostProvenance::default(),
+            dispatch_path: DispatchPath::RawProxy,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1159,6 +1218,7 @@ mod tests {
                 model_identity_hash: Some("904548955b8a6478".to_string()),
                 ..Default::default()
             },
+            dispatch_path: DispatchPath::RawProxy,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1218,6 +1278,7 @@ mod tests {
                 architecture: Some("llama".to_string()),
                 ..Default::default()
             },
+            dispatch_path: DispatchPath::RawProxy,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1497,6 +1558,7 @@ mod tests {
             reasoning_digest: None,
             usage: None,
             host_provenance: HostProvenance::default(),
+            dispatch_path: DispatchPath::RawProxy,
         };
         let first = state
             .emit_for_observed_host_exchange(&observed)
@@ -1539,6 +1601,127 @@ mod tests {
             .expect("seal 3");
         assert_eq!(seq_of(&third.capsule), (3, Some(2)));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The 2026-09-06 role ruling: `x-mesh-poc-v1.role`/`observation_point`
+    /// live TOP-LEVEL, siblings of `serving_provenance` -- NOT nested inside
+    /// it (that block has its own unrelated `role`-shaped fields on the
+    /// Python sidecar path; colliding with them was the whole reason this
+    /// ruling called out "deliberately top-level siblings").
+    fn poc_block(capsule: &Value) -> &Value {
+        &capsule["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]
+    }
+
+    fn observed_with(
+        dispatch_path: DispatchPath,
+        served_by_node_id: Option<&str>,
+    ) -> ObservedHostExchange<'static> {
+        ObservedHostExchange {
+            model: "m",
+            exchange_id: Some("e"),
+            request_digest: None,
+            response_digest: None,
+            tool_calls_digest: None,
+            reasoning_digest: None,
+            usage: None,
+            host_provenance: HostProvenance {
+                served_by_node_id: served_by_node_id.map(str::to_string),
+                architecture: Some("llama".to_string()),
+                ..Default::default()
+            },
+            dispatch_path,
+        }
+    }
+
+    /// THE BUG THIS RULING CLOSES: a `RemoteMesh`-routed exchange (this node
+    /// is the REQUESTER) must never be silently labeled `served` just
+    /// because no `served_by_node_id` was reported (bare upstream, pre-#1668
+    /// enrichment). `dispatch_path` alone is authoritative here.
+    #[test]
+    fn remote_mesh_with_no_enrichment_seals_role_requested_not_served() {
+        let dir = std::env::temp_dir().join(format!("cap-role-rm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let observed = observed_with(DispatchPath::RemoteMesh, None);
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal");
+        let poc = poc_block(&emitted.capsule);
+        assert_eq!(poc["role"], "requested");
+        assert_eq!(poc["observation_point"], "client_egress");
+        let sp = &poc["serving_provenance"];
+        assert_eq!(sp["dispatch_path"], "remote_mesh");
+        // No enrichment reported who served it -- honest "unknown", never a
+        // fabricated claim that THIS node (the requester) served itself.
+        assert_eq!(sp["served_by_node_id"], "unknown");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `TypedFrontend`/`RawProxy` both mean this node served the exchange.
+    #[test]
+    fn typed_frontend_and_raw_proxy_seal_role_served() {
+        for dispatch_path in [DispatchPath::TypedFrontend, DispatchPath::RawProxy] {
+            let dir = std::env::temp_dir().join(format!(
+                "cap-role-served-{:?}-{}",
+                dispatch_path,
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+            let observed = observed_with(dispatch_path, None);
+            let emitted = state
+                .emit_for_observed_host_exchange(&observed)
+                .expect("seal");
+            let poc = poc_block(&emitted.capsule);
+            assert_eq!(poc["role"], "served");
+            assert!(poc["observation_point"].is_null());
+            assert_eq!(
+                poc["serving_provenance"]["served_by_node_id"],
+                "node-under-test"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// An unrecognized `dispatch_path` (a host newer than this mirror) is
+    /// labeled `role: "unknown"` -- NEVER silently defaulted to `"served"`.
+    /// This is the actual bug the ruling closes: a missing/unrecognized
+    /// signal must never become a claim, regardless of what
+    /// `served_by_node_id` says.
+    #[test]
+    fn unknown_dispatch_path_seals_role_unknown_never_served() {
+        let dir = std::env::temp_dir().join(format!("cap-role-unk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        // Even a served_by_node_id that would otherwise agree with "served"
+        // must not upgrade an unrecognized dispatch_path out of "unknown".
+        let observed = observed_with(DispatchPath::Unknown, Some("node-under-test"));
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal");
+        let poc = poc_block(&emitted.capsule);
+        assert_eq!(poc["role"], "unknown");
+        assert!(poc["observation_point"].is_null());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The plugin's own directly-served `/v1` exchanges have no host
+    /// envelope at all, so no `dispatch_path` signal exists on that path --
+    /// but they are unambiguously "served" (this plugin admitted and served
+    /// them itself), so `role` is sealed accordingly, never left `null`.
+    #[test]
+    fn plugin_served_exchange_seals_role_served_with_no_dispatch_path() {
+        let dir = std::env::temp_dir().join(format!("cap-role-plugin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let emitted = state
+            .emit_for_exchange(&sample_exchange("party-1"))
+            .expect("seal");
+        let poc = poc_block(&emitted.capsule);
+        assert_eq!(poc["role"], "served");
+        assert!(poc["observation_point"].is_null());
+        assert!(poc["serving_provenance"]["dispatch_path"].is_null());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

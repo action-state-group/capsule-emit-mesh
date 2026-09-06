@@ -76,6 +76,7 @@ fn sample_capsule_input() -> CapsuleInput {
             model_name_digest: "d".repeat(64),
             serving_provenance: ServingProvenance {
                 served_by_node_id: "conformance-node".to_string(),
+                dispatch_path: None,
                 requesting_party: "conformance-client".to_string(),
                 exchange_id: "conformance-exchange".to_string(),
                 quantization: "unknown".to_string(),
@@ -100,6 +101,8 @@ fn sample_capsule_input() -> CapsuleInput {
                 seq: 1,
                 prev_seq: None,
             },
+            role: "served".to_string(),
+            observation_point: None,
             generation_parameters,
             latency_ms: "123.456".to_string(),
             binary_attestation: None,

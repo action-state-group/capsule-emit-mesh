@@ -140,6 +140,9 @@ fn step_input(step: &Step, chain: Option<ChainLink>) -> CapsuleInput {
             serving_provenance: ServingProvenance {
                 // Single-node demo: served-by == the demo node itself.
                 served_by_node_id: "capsule-emit-mesh-demo3-node".to_string(),
+                // Deterministic demo, no host envelope -- no dispatch_path
+                // signal exists on this path (mirrors emit_for_exchange).
+                dispatch_path: None,
                 requesting_party: "capsule-emit-mesh-demo3-client".to_string(),
                 exchange_id: step.exchange_id.to_string(),
                 // This deterministic demo ledger is generated without a live
@@ -173,6 +176,9 @@ fn step_input(step: &Step, chain: Option<ChainLink>) -> CapsuleInput {
                 seq: step.seq,
                 prev_seq: if step.seq > 1 { Some(step.seq - 1) } else { None },
             },
+            // Single-node demo: this node always serves its own steps.
+            role: "served".to_string(),
+            observation_point: None,
             generation_parameters,
             latency_ms: "42.0".to_string(),
             binary_attestation: None,
