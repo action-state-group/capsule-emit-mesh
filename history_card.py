@@ -71,6 +71,7 @@ from capsule_emit.account import (
 from capsule_emit.account import Account as CoreAccount
 from capsule_emit.checkpoint import CheckpointRecord
 from capsule_emit.checkpoint.cose_wire import verify_checkpoint_cose_offline
+from capsule_emit.numbers import float_to_str
 
 __all__ = [
     "HISTORY_CARD_SCHEMA",
@@ -194,6 +195,8 @@ class HistoryProperties:
     #: Cadence over the verified prefix: checkpoint count, span, and interval
     #: stats (seconds). `{"checkpoints": N}` only when N < 2 (insufficient
     #: data for interval stats -- never a fabricated average from one point).
+    #: The stat values are exact decimal STRINGS (`float_to_str`), never JSON
+    #: floats -- this dict lands in a digest-bearing field via `seal_history_card`.
     cadence: dict[str, Any] = field(default_factory=dict)
 
     def to_value(self) -> dict[str, Any]:
@@ -215,12 +218,17 @@ def _cadence(checkpoints: list[CheckpointRecord]) -> dict[str, Any]:
     times = [_parse_ts(cp.timestamp) for cp in checkpoints]
     intervals = [(b - a).total_seconds() for a, b in zip(times, times[1:])]
     span = (times[-1] - times[0]).total_seconds()
+    # §5.1: a JSON float in a digest-bearing field raises FloatInDigestError --
+    # cadence stats travel as exact decimal strings (RFC 8785 §3.2.2.3), same
+    # class as `twin_adjudicator.py`'s margin/margin_tau.
     return {
         "checkpoints": len(checkpoints),
-        "span_seconds": span,
-        "mean_interval_seconds": sum(intervals) / len(intervals),
-        "min_interval_seconds": min(intervals),
-        "max_interval_seconds": max(intervals),
+        "span_seconds": float_to_str(span, field="history_card.cadence.span_seconds"),
+        "mean_interval_seconds": float_to_str(
+            sum(intervals) / len(intervals), field="history_card.cadence.mean_interval_seconds"
+        ),
+        "min_interval_seconds": float_to_str(min(intervals), field="history_card.cadence.min_interval_seconds"),
+        "max_interval_seconds": float_to_str(max(intervals), field="history_card.cadence.max_interval_seconds"),
     }
 
 
