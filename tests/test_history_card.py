@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import copy
 import json
+from dataclasses import replace
 
 import pytest
 
 import checkpointing
+from agent_action_capsule.canonical import FloatInDigestError
+from agent_action_capsule.verify import verify as verify_capsule
 from capsule_emit.checkpoint import CheckpointConfig, MmrLedger, WitnessRecord
 from checkpointing import CheckpointState, Ed25519Signer, JsonlLogSource
 
@@ -27,6 +30,7 @@ from history_card import (
     build_history_card,
     node_id_from_key_id,
     reconciliation_counts_from_ledger_dir,
+    seal_history_card,
     verify_history_card,
     with_peer_reconciliation,
 )
@@ -406,3 +410,39 @@ def test_with_peer_reconciliation_never_changes_the_chain_walk_verification(tmp_
         "the SERIALIZED card digest changes (peer_reconciliation is part of to_value()), "
         "but the underlying chain-walk properties and its own verification must not"
     )
+
+
+# --------------------------------------------------------------------------- #
+# [mesh-history-card-float-cadence]: cadence stats are exact decimal STRINGS  #
+# --------------------------------------------------------------------------- #
+def test_multi_checkpoint_cadence_seals_and_round_trip_verifies(tmp_path, fake_witness):
+    # A >=2-checkpoint selection populates span_seconds/mean_interval_seconds/
+    # min_interval_seconds/max_interval_seconds -- these must ride the seal as
+    # exact decimal strings, never raw JSON floats, or emit() fails closed
+    # with FloatInDigestError (the bug this test guards against).
+    lines = _build_chain(tmp_path, 3)
+    card = build_history_card(node_id="node-a", log_id="log-a", checkpoint_lines=lines, since_size=0)
+    cadence = card.properties.cadence
+    assert cadence["checkpoints"] == 3
+    for key in ("span_seconds", "mean_interval_seconds", "min_interval_seconds", "max_interval_seconds"):
+        assert isinstance(cadence[key], str), f"{key} must be an exact decimal string, not a JSON float"
+
+    cap = seal_history_card(card, operator="op", developer="dev", signing_node_id="node-a")
+
+    assert cap["action_type"] == "fyi"
+    assert isinstance(cap["capsule_id"], str) and len(cap["capsule_id"]) == 64
+    assert verify_capsule(cap).ok
+
+
+def test_cadence_raw_float_fails_closed_with_float_in_digest_error(tmp_path, fake_witness):
+    # Mutant: revert one cadence field to a raw float (the pre-fix shape) --
+    # sealing must fail closed with FloatInDigestError, never silently digest
+    # a non-reproducible binary64 value.
+    lines = _build_chain(tmp_path, 3)
+    card = build_history_card(node_id="node-a", log_id="log-a", checkpoint_lines=lines, since_size=0)
+    tampered_cadence = dict(card.properties.cadence)
+    tampered_cadence["span_seconds"] = 12.5  # raw float, not the exact-decimal-string form
+    tampered_card = replace(card, properties=replace(card.properties, cadence=tampered_cadence))
+
+    with pytest.raises(FloatInDigestError):
+        seal_history_card(tampered_card, operator="op", developer="dev", signing_node_id="node-a")
