@@ -22,15 +22,21 @@ from join_card import (
     CARD_TRANSITION_NODE_ID_MISMATCH,
     CARD_TRANSITION_OK,
     CARD_TRANSITION_WIDENED,
+    PROMISE_BROKEN,
+    PROMISE_CHANGED_WITHOUT_SAYING,
+    PROMISE_KEPT,
+    PROMISE_NOTHING_PROMISED,
     STATUS_BROKEN,
     STATUS_NO_CARD_SEALED,
     STATUS_NOTHING_COMPARED,
     STATUS_OK,
+    CardTransitionVerdict,
     ModelRef,
     build_card,
     card_consistency,
     check_announcement_consistency,
     latest_card,
+    promise_line,
     seal_card,
 )
 
@@ -302,6 +308,87 @@ def test_announcement_consistency_mismatch_labeled_advertised_mismatch():
     assert result["status"] == "advertised_mismatch"
     assert result["card_announcement_digest"] == "d" * 64
     assert result["observed_digest"] == "e" * 64
+
+
+# ── promise_line: the higher-order-bit vocabulary ───────────────────────────
+
+
+def test_promise_line_ok_entry_is_kept():
+    card = _card()
+    cap = _sealed_card_line(card)
+    exchange = _exchange_line(capsule_id="e1", model_canonical_ref="meta/Llama-3.2-3B", weights_digest="a" * 64)
+    result = card_consistency([cap, exchange])
+    line = promise_line(result.entries[0])
+    assert line == {"state": PROMISE_KEPT, "detail": None}
+
+
+def test_promise_line_broken_entry_names_the_field():
+    card = _card()
+    cap = _sealed_card_line(card)
+    tampered = _exchange_line(capsule_id="e1", model_canonical_ref="meta/Llama-3.2-3B", weights_digest="f" * 64)
+    result = card_consistency([cap, tampered])
+    line = promise_line(result.entries[0])
+    assert line["state"] == PROMISE_BROKEN
+    assert "weights_digest" in line["detail"]
+
+
+def test_promise_line_no_card_sealed_is_nothing_promised_never_kept():
+    ledger = [_exchange_line(capsule_id="e1", model_canonical_ref="meta/Llama-3.2-3B")]
+    result = card_consistency(ledger)
+    line = promise_line(result.entries[0])
+    assert line["state"] == PROMISE_NOTHING_PROMISED
+    assert line["state"] != PROMISE_KEPT
+
+
+def test_promise_line_nothing_compared_is_nothing_promised_never_kept():
+    card = _card()
+    cap = _sealed_card_line(card)
+    vacuous = _exchange_line(capsule_id="e1", served_by_node_id="unknown")
+    result = card_consistency([cap, vacuous])
+    assert result.entries[0].status == STATUS_NOTHING_COMPARED
+    line = promise_line(result.entries[0])
+    assert line["state"] == PROMISE_NOTHING_PROMISED
+
+
+def test_promise_line_none_entry_is_nothing_promised():
+    line = promise_line(None)
+    assert line["state"] == PROMISE_NOTHING_PROMISED
+
+
+def test_promise_line_widened_transition_overrides_an_otherwise_ok_entry():
+    """A widened card transition is a `changed_without_saying` state --
+    a lying node cannot launder that by ensuring its next exchange still
+    lines up with the (already vaguer) card."""
+    card = _card()
+    cap = _sealed_card_line(card)
+    exchange = _exchange_line(capsule_id="e1", model_canonical_ref="meta/Llama-3.2-3B", weights_digest="a" * 64)
+    result = card_consistency([cap, exchange])
+    assert result.entries[0].status == STATUS_OK  # the exchange itself is fine
+
+    widened_transition = CardTransitionVerdict(
+        card_digest="x" * 64, prior_card_digest=card.digest(), status=CARD_TRANSITION_WIDENED, widened_fields=("models",)
+    )
+    line = promise_line(result.entries[0], latest_transition=widened_transition)
+    assert line["state"] == PROMISE_CHANGED_WITHOUT_SAYING
+    assert "models" in line["detail"]
+
+
+def test_promise_line_lineage_broken_transition_is_changed_without_saying():
+    broken_transition = CardTransitionVerdict(
+        card_digest="x" * 64, prior_card_digest="y" * 64, status=CARD_TRANSITION_LINEAGE_BROKEN
+    )
+    line = promise_line(None, latest_transition=broken_transition)
+    assert line["state"] == PROMISE_CHANGED_WITHOUT_SAYING
+
+
+def test_promise_line_ok_transition_does_not_mask_a_broken_entry():
+    card = _card()
+    cap = _sealed_card_line(card)
+    tampered = _exchange_line(capsule_id="e1", model_canonical_ref="meta/Llama-3.2-3B", weights_digest="f" * 64)
+    result = card_consistency([cap, tampered])
+    ok_transition = CardTransitionVerdict(card_digest=card.digest(), prior_card_digest=None, status=CARD_TRANSITION_OK)
+    line = promise_line(result.entries[0], latest_transition=ok_transition)
+    assert line["state"] == PROMISE_BROKEN
 
 
 def test_announcement_consistency_absent_when_either_side_missing():

@@ -80,21 +80,34 @@ except Exception:  # pragma: no cover - only when capsule-emit isn't installed
     read_ledger = None  # type: ignore[assignment]
 
 __all__ = [
+    "EXCHANGE_ROLE_ASKED",
+    "EXCHANGE_ROLE_SERVED",
+    "FILTER_ALL",
+    "FILTER_ASKED",
+    "FILTER_ISSUES",
+    "FILTER_SERVED",
     "PENDING",
     "SEQUENCE_CAPTURE_METHOD",
     "SEQUENCE_SOURCE",
     "TWIN_ADJUDICATION_PENDING_REASON",
     "WITNESS_REVERIFY_PENDING_REASON",
+    "build_exchange_list_payload",
+    "build_exchange_row",
     "build_exchange_view",
     "digest_match_grade",
     "exchange_id_for",
+    "exchange_key_for",
+    "filter_exchange_rows",
+    "group_exchanges",
     "half_by_role",
     "identity_chain_for",
     "records_for_exchange",
+    "render_exchange_list_html",
     "render_exchange_subtab_html",
     "sequence_position",
     "twin_adjudication_placeholder",
     "witness_receipt_reverify_placeholder",
+    "worst_state",
 ]
 
 #: A fifth state, distinct from the four-state discipline
@@ -114,14 +127,23 @@ SEQUENCE_CAVEAT = (
     "not be caught by this number alone."
 )
 
+#: STALE REASON, SUPERSEDED (kept in this comment only so the history is
+#: legible): both [mesh-e17a-offline-adjudicator] (PR #84) and
+#: [mesh-e2-witness-checkpoints] (PR #87) are MERGED on `main` today.
+#: `twin_adjudicator.py` and the re-verified witness path both exist -- the
+#: real, current gap is that THIS per-exchange view does not yet call them
+#: (a twin comparison needs the served weights + logprobs this view does
+#: not have on hand; the witness re-verify needs the checkpoint chain this
+#: view does not currently thread through). Still honestly `pending` for
+#: THIS integration, just not for the reason the old text gave.
 TWIN_ADJUDICATION_PENDING_REASON = (
-    "twin comparison / adjudication is not available on this view: "
-    "[mesh-e17a-offline-adjudicator] (capsule-emit-mesh PR #84) is not yet merged"
+    "twin_adjudicator.py exists on main (PR #84 merged) but is not wired into this per-exchange "
+    "view yet -- a comparison needs the served weights/logprobs this view does not have on hand"
 )
 WITNESS_REVERIFY_PENDING_REASON = (
-    "the presence-only witness line above is real and unchanged; RE-VERIFYING the receipt "
-    "(rather than just checking one rides along) is not available on this view: "
-    "[mesh-e2-witness-checkpoints] (capsule-emit-mesh PR #87) is not yet merged"
+    "the presence-only witness line above is real and unchanged; RE-VERIFYING the receipt is "
+    "possible now that [mesh-e2-witness-checkpoints] (PR #87) is merged, but this per-exchange "
+    "view does not yet thread the checkpoint chain through to call it"
 )
 
 #: effect.* fields both halves of one exchange independently observe at the
@@ -324,6 +346,205 @@ def build_exchange_view(
 
 
 # ---------------------------------------------------------------------------
+# Regroup by exchange (mesh-accountability-panes-v2-2026-09-05.md §3/§4):
+# one row per exchange_id (fallback: request_digest), a role tag
+# (SERVED/ASKED), and the two halves as two COLUMNS inside the row --
+# double-entry as one line, never two rows. ``received()`` foreign capsules
+# (this node's own copy of a counterparty's half -- passed here via
+# `counterparty_records` since no live receive-into-ledger mechanism is
+# wired yet) render in the `theirs` column of their exchange, never as
+# their own row.
+# ---------------------------------------------------------------------------
+
+EXCHANGE_ROLE_SERVED = "SERVED"
+EXCHANGE_ROLE_ASKED = "ASKED"
+
+FILTER_ALL = "all"
+FILTER_SERVED = "served"
+FILTER_ASKED = "asked"
+FILTER_ISSUES = "issues"
+
+#: The worst-line fold rule ([mesh-exchange-card-mismatch-bug]'s principle,
+#: reapplied here for the list header -- that fix lives in
+#: mesh_viewer_static/mesh_verify.js for a different page; this is an
+#: independent implementation of the same principle for this module's own
+#: list view). `pending` is intentionally rank 0: an upstream branch not yet
+#: wired into this view is a view limitation, not a failed check, and must
+#: never force a red/amber header on its own.
+#: Rank tiers mirror this codebase's own established tone conventions
+#: (capsule_accountability_tab.py's client-side TONE map): unilateral_fallback
+#: is neutral/absent-tier here, same as everywhere else it renders -- it is
+#: the honest default absent cross-party evidence produces, not a warning.
+_STATE_RANK = {
+    STATE_FAILED: 3,
+    "bad": 3,
+    STATE_PRESENT_UNVERIFIED: 2,
+    "warn": 2,
+    "acknowledged_receipt": 2,
+    "self_measured": 2,
+    "os_measured": 2,
+    STATE_ABSENT: 1,
+    "unilateral_fallback": 1,
+    PENDING: 0,
+    STATE_VERIFIED: 0,
+    "ok": 0,
+    "full_bilateral": 0,
+    "tee_measured": 0,
+}
+
+
+def worst_state(view: dict[str, Any]) -> str:
+    """The row header state = the worst line among this exchange's checks
+    ([mesh-exchange-card-mismatch-bug]'s rule): any real failure (a digest
+    mismatch, a failed verdict line, a failed rung) forces
+    ``STATE_FAILED`` regardless of what any other line says; any
+    unverified/warn-shaped line (with nothing worse) forces
+    ``STATE_PRESENT_UNVERIFIED``; only when every line is either verified/ok
+    or honestly absent/pending does the header read ``STATE_VERIFIED``.
+    Never rounds up.
+
+    ``build_verdict``'s line 2 (the witness line) always reads ``warn`` today
+    because this view's witness re-verify is still the
+    ``witness_receipt_reverify`` PENDING placeholder -- doc §3's own color
+    rule says that exact case ("witness receipt isn't in this bundle") is
+    grey (a view limitation), not amber (a real limitation of the record).
+    So line 2 is excluded from the fold ONLY while that placeholder is
+    pending; a real ``bad`` witness verdict (a receipt that fails to
+    verify), once wired, still forces ``STATE_FAILED`` like any other line.
+    """
+    candidates = [view["pair"]["digest_match"]["state"]]
+    witness_pending = view["witness_receipt_reverify"]["state"] == PENDING
+    for index, line in enumerate(view["verdict"]):
+        if index == 1 and witness_pending and line["mark"] != "bad":
+            continue
+        candidates.append(line["mark"])
+    for key, rung in view["rungs"].items():
+        candidates.append(rung.get("rung") if key == "cross_party" else rung.get("state"))
+    worst = max((_STATE_RANK.get(c, 1) for c in candidates), default=0)
+    if worst >= 3:
+        return STATE_FAILED
+    if worst >= 2:
+        return STATE_PRESENT_UNVERIFIED
+    return STATE_VERIFIED
+
+
+def exchange_key_for(record: dict[str, Any]) -> str | None:
+    """The exchange correlator, with the doc's fallback: `exchange_id`, or
+    (when absent/"unknown") `effect.request_digest` -- never both mixed
+    silently, and `None` when neither is present (nothing to group this
+    record by)."""
+    eid = exchange_id_for(record)
+    if eid and eid != "unknown":
+        return eid
+    digest = (record.get("effect") or {}).get("request_digest")
+    return f"digest:{digest}" if digest else None
+
+
+def build_exchange_row(
+    exchange_key: str,
+    mine_records: list[dict[str, Any]],
+    theirs_records: list[dict[str, Any]],
+    group: list[dict[str, Any]],
+    source_log: str,
+) -> dict[str, Any]:
+    """One list row: role tag, `mine`/`theirs` as two columns, header state =
+    the worst line among the checks. A row with only one half says so in the
+    empty column (`unilateral`), never blank."""
+    mine = mine_records[0] if mine_records else None
+    theirs = theirs_records[0] if theirs_records else None
+    anchor = mine or theirs
+    view = build_exchange_view(anchor, all_records=group, source_log=source_log) if anchor is not None else None
+
+    if mine is not None:
+        # `mine`'s role field already reflects THIS node's own perspective.
+        role_tag = EXCHANGE_ROLE_SERVED if label_role(mine, source_log) == "served" else EXCHANGE_ROLE_ASKED
+    elif theirs is not None:
+        # No half of mine sealed -- `theirs`' role is from THEIR perspective,
+        # so this node's role tag is the inverse: they served means I asked.
+        role_tag = EXCHANGE_ROLE_ASKED if label_role(theirs, source_log) == "served" else EXCHANGE_ROLE_SERVED
+    else:
+        role_tag = EXCHANGE_ROLE_ASKED
+
+    def _side(record: dict[str, Any] | None, *, side: str) -> dict[str, Any]:
+        if record is not None:
+            return {"state": STATE_PRESENT_UNVERIFIED, "capsule_id": record.get("capsule_id"), "role": label_role(record, source_log)}
+        text = "none (unilateral)" if side == "theirs" else "none — received without a commitment"
+        return {"state": STATE_ABSENT, "text": text, "capsule_id": None}
+
+    timestamps = [r.get("timestamp") for r in (mine, theirs) if r and r.get("timestamp")]
+    return {
+        "exchange_key": exchange_key,
+        "role_tag": role_tag,
+        "header_state": worst_state(view) if view is not None else STATE_ABSENT,
+        "mine": _side(mine, side="mine"),
+        "theirs": _side(theirs, side="theirs"),
+        "unilateral": mine is None or theirs is None,
+        "timestamp": max(timestamps, default=None),
+        "view": view,
+    }
+
+
+def group_exchanges(
+    my_records: list[dict[str, Any]],
+    *,
+    counterparty_records: list[dict[str, Any]] | None = None,
+    source_log: str = "sidecar",
+) -> list[dict[str, Any]]:
+    """Group every record sharing an exchange key into one row each --
+    `my_records` (this node's own ledger) anchors a row's role tag;
+    `counterparty_records` (a received foreign half, when this view has one)
+    fills the `theirs` column of the SAME row, never a row of its own."""
+    counterparty_records = counterparty_records or []
+    my_ids = {r.get("capsule_id") for r in my_records if r.get("capsule_id")}
+    all_records = my_records + counterparty_records
+
+    keys: list[str] = []
+    seen: set[str] = set()
+    for record in all_records:
+        key = exchange_key_for(record)
+        if key is not None and key not in seen:
+            seen.add(key)
+            keys.append(key)
+
+    rows = []
+    for key in keys:
+        group = [r for r in all_records if exchange_key_for(r) == key]
+        mine_records = [r for r in group if r.get("capsule_id") in my_ids]
+        theirs_records = [r for r in group if r.get("capsule_id") not in my_ids]
+        rows.append(build_exchange_row(key, mine_records, theirs_records, group, source_log))
+
+    rows.sort(key=lambda r: r["timestamp"] or "", reverse=True)
+    return rows
+
+
+def filter_exchange_rows(rows: list[dict[str, Any]], filter_name: str) -> list[dict[str, Any]]:
+    """The four filter chips: All · Served · Asked · Issues. `Issues` is any
+    row whose header is NOT `STATE_VERIFIED` -- an honest `absent`/`pending`
+    row (nothing to check yet) is not an issue, only a real warn/failed is."""
+    if filter_name == FILTER_ALL:
+        return rows
+    if filter_name == FILTER_SERVED:
+        return [r for r in rows if r["role_tag"] == EXCHANGE_ROLE_SERVED]
+    if filter_name == FILTER_ASKED:
+        return [r for r in rows if r["role_tag"] == EXCHANGE_ROLE_ASKED]
+    if filter_name == FILTER_ISSUES:
+        return [r for r in rows if r["header_state"] in (STATE_FAILED, STATE_PRESENT_UNVERIFIED)]
+    raise ValueError(f"unknown filter {filter_name!r}")
+
+
+def build_exchange_list_payload(
+    my_records: list[dict[str, Any]],
+    *,
+    counterparty_records: list[dict[str, Any]] | None = None,
+    source_log: str = "sidecar",
+) -> dict[str, Any]:
+    """Assemble the whole Pane C list payload: rows grouped by exchange,
+    default-sorted most recent first."""
+    rows = group_exchanges(my_records, counterparty_records=counterparty_records, source_log=source_log)
+    return {"row_count": len(rows), "default_sort": "timestamp", "filters": [FILTER_ALL, FILTER_SERVED, FILTER_ASKED, FILTER_ISSUES], "rows": rows}
+
+
+# ---------------------------------------------------------------------------
 # Presentation -- a small self-contained HTML fragment styled to match
 # capsule_accountability_tab.py's pill vocabulary (state -> tone), plain
 # server-rendered (this panel's fields are already Python-side graded, so --
@@ -417,6 +638,102 @@ def render_exchange_subtab_html(view: dict[str, Any]) -> str:
 </section>"""
 
 
+_LIST_STYLE = """
+  :root {
+    --bg: oklch(0.17 0.015 250); --panel: oklch(0.2 0.018 250); --panel-strong: oklch(0.23 0.02 250);
+    --border: oklch(0.3 0.02 250 / 0.9); --border-soft: oklch(0.3 0.02 250 / 0.45);
+    --fg: oklch(0.96 0.005 80); --fg-dim: oklch(0.78 0.01 80); --fg-faint: oklch(0.6 0.01 80);
+    --good: oklch(0.78 0.14 150); --warn: oklch(0.8 0.12 80); --bad: oklch(0.7 0.18 25);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 13.5px/1.55 "Inter Tight","Inter",system-ui,sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 16.5px; margin: 0 0 4px; }
+  p.caption { color: var(--fg-dim); font-size: 12px; margin: 0 0 14px; }
+  .filters { display: flex; gap: 6px; margin-bottom: 14px; }
+  .filter-chip { font-size: 12px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--border-soft);
+    background: var(--panel-strong); color: var(--fg-dim); cursor: pointer; }
+  .filter-chip.active { color: var(--fg); border-color: var(--fg-dim); }
+  details.exchange-row { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); margin-bottom: 8px; padding: 8px 12px; }
+  details.exchange-row summary { cursor: pointer; display: flex; align-items: center; gap: 10px; list-style: none; }
+  details.exchange-row summary::-webkit-details-marker { display: none; }
+  .role-tag { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; padding: 1px 8px; border-radius: 5px; background: var(--panel-strong); color: var(--fg-dim); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg-faint); font-size: 12px; }
+  .halves { display: flex; gap: 24px; padding: 8px 0; font-size: 12.5px; color: var(--fg-dim); }
+  .pill { display: inline-flex; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; margin-left: auto; }
+  .pill-good { color: var(--good); background: color-mix(in oklab, var(--good) 14%, transparent); }
+  .pill-warn { color: var(--warn); background: color-mix(in oklab, var(--warn) 14%, transparent); }
+  .pill-bad { color: var(--bad); background: color-mix(in oklab, var(--bad) 14%, transparent); }
+  .pill-neutral { color: var(--fg-dim); background: color-mix(in oklab, var(--fg-dim) 10%, transparent); }
+  .drawer { border-top: 1px solid var(--border-soft); margin-top: 8px; padding-top: 8px; }
+"""
+
+
+def render_exchange_list_html(payload: dict[str, Any]) -> str:
+    """Pane C's list view: one `<details>` row per exchange, role-tagged,
+    `mine`/`theirs` as two columns, filter chips (All/Served/Asked/Issues),
+    the header pill = `worst_state`. The drawer (opened by clicking the row,
+    the same component reached from Logs' `CAPSULE` line or the answer-
+    footer `receipt` link) is `render_exchange_subtab_html`'s unchanged
+    fragment for that exchange's anchor record -- "Show the security
+    checks" and everything under it keep their existing logic verbatim."""
+    rows_html = []
+    for row in payload["rows"]:
+        drawer = render_exchange_subtab_html(row["view"]) if row["view"] is not None else "<p>no view available for this exchange</p>"
+        mine, theirs = row["mine"], row["theirs"]
+        mine_text = f"capsule_id: {_esc(mine['capsule_id'])}" if mine.get("capsule_id") else _esc(mine.get("text"))
+        theirs_text = f"capsule_id: {_esc(theirs['capsule_id'])}" if theirs.get("capsule_id") else _esc(theirs.get("text"))
+        rows_html.append(
+            f"""<details class="exchange-row" data-role="{_esc(row['role_tag'])}" data-state="{_esc(row['header_state'])}">
+  <summary>
+    <span class="role-tag">{_esc(row['role_tag'])}</span>
+    <span class="mono">{_esc(row['exchange_key'])} · {_esc(row['timestamp'])}</span>
+    {_pill(row['header_state'])}
+  </summary>
+  <div class="halves">
+    <div>mine: {mine_text}</div>
+    <div>theirs: {theirs_text}</div>
+  </div>
+  <div class="drawer">{drawer}</div>
+</details>"""
+        )
+    filters_html = "".join(f'<button class="filter-chip" data-filter="{_esc(f)}">{_esc(f.capitalize())}</button>' for f in payload["filters"])
+    return f"""<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mesh-llm · Accountability · This exchange</title>
+<style>{_LIST_STYLE}</style>
+</head>
+<body>
+<main>
+  <h1>Accountability · This exchange</h1>
+  <p class="caption">{payload['row_count']} exchange(s) · default sort: {_esc(payload['default_sort'])}</p>
+  <div class="filters" data-filters>{filters_html}</div>
+  <div class="rows" data-rows>{"".join(rows_html)}</div>
+</main>
+<script>
+(function () {{
+  "use strict";
+  var chips = document.querySelectorAll("[data-filters] .filter-chip");
+  var rows = document.querySelectorAll("[data-rows] .exchange-row");
+  function apply(filterName) {{
+    chips.forEach(function (c) {{ c.classList.toggle("active", c.dataset.filter === filterName); }});
+    rows.forEach(function (row) {{
+      var show = filterName === "all"
+        || (filterName === "issues" ? row.dataset.state !== "verified" : row.dataset.role.toLowerCase() === filterName);
+      row.style.display = show ? "" : "none";
+    }});
+  }}
+  chips.forEach(function (chip) {{ chip.addEventListener("click", function () {{ apply(chip.dataset.filter); }}); }});
+  apply("all");
+}})();
+</script>
+</body>
+</html>"""
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -466,29 +783,61 @@ def _cmd_html(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_list(args: argparse.Namespace) -> int:
+    my_records = _read_records(args.ledger)
+    counterparty_records = _read_records(args.counterparty_ledger) if args.counterparty_ledger else None
+    payload = build_exchange_list_payload(my_records, counterparty_records=counterparty_records, source_log=args.source_log)
+    html = render_exchange_list_html(payload)
+    with open(args.out, "w", encoding="utf-8") as fh:
+        fh.write(html)
+    print(f"exchange list: {payload['row_count']} exchange(s) -> {args.out}")
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="capsule-exchange-tab",
-        description='Render Pane C ("This exchange") -- the requester/provider pair drill-down '
-        "for one capsule, as a subtab under the Accountability tab.",
+        description='Render Pane C ("This exchange") -- regrouped by exchange (list), or the '
+        "requester/provider pair drill-down for one capsule (single).",
     )
-    parser.add_argument("--ledger", required=True, metavar="PATH", help="this node's mesh capsule JSONL ledger")
-    parser.add_argument(
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    single = sub.add_parser("single", help="render one exchange's drill-down card")
+    single.add_argument("--ledger", required=True, metavar="PATH", help="this node's mesh capsule JSONL ledger")
+    single.add_argument(
         "--counterparty-ledger",
         metavar="PATH",
         default=None,
         help="optional second ledger (the counterparty's) to find the other half of the pair in",
     )
-    parser.add_argument("--capsule-id", required=True, help="capsule_id of the half to drill into")
-    parser.add_argument("--out", required=True, metavar="PATH", help="output HTML path")
-    parser.add_argument("--witness", metavar="PATH", default=None, help="optional COSE checkpoint receipt (json/jsonl)")
-    parser.add_argument("--source-log", default="sidecar", choices=["plugin", "sidecar"])
+    single.add_argument("--capsule-id", required=True, help="capsule_id of the half to drill into")
+    single.add_argument("--out", required=True, metavar="PATH", help="output HTML path")
+    single.add_argument("--witness", metavar="PATH", default=None, help="optional COSE checkpoint receipt (json/jsonl)")
+    single.add_argument("--source-log", default="sidecar", choices=["plugin", "sidecar"])
+
+    list_cmd = sub.add_parser("list", help="render the exchange list, regrouped by exchange_id/request_digest")
+    list_cmd.add_argument("--ledger", required=True, metavar="PATH", help="this node's mesh capsule JSONL ledger")
+    list_cmd.add_argument(
+        "--counterparty-ledger",
+        metavar="PATH",
+        default=None,
+        help="optional second ledger -- received foreign halves render in the theirs column",
+    )
+    list_cmd.add_argument("--out", required=True, metavar="PATH", help="output HTML path")
+    list_cmd.add_argument("--source-log", default="sidecar", choices=["plugin", "sidecar"])
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    return _cmd_html(args)
+    if args.command == "single":
+        return _cmd_html(args)
+    if args.command == "list":
+        return _cmd_list(args)
+    parser = _build_parser()
+    parser.error(f"unknown command {args.command!r}")
+    return 1
 
 
 if __name__ == "__main__":

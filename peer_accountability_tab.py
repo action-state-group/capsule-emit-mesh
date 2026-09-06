@@ -18,21 +18,40 @@ Composes verbs that already exist; re-derives none of their evidence:
     byte-for-byte) applied to every exchange with a peer, folded to the
     WORST rung seen -- never rounds up a peer's row past its weakest
     exchange.
-  - **history / continuity / witnessed**: ``history_card.build_history_card()``
-    over THIS node's own checkpoint chain. Computed ONCE per payload and
-    shown on every peer row: a fork or gap in this node's own chain is not
-    a per-peer fact, it degrades accountability toward every peer equally,
-    so hiding it on some rows would be the silent-green failure TRUST-
-    MODEL.md's three-state discipline exists to prevent.
-  - **evidence-requests**: honestly ``absent`` until
-    [mesh-e14-evidence-responder] is wired (see ``EVIDENCE_REQUEST_ABSENT_REASON``);
-    the cell function itself is real and tested against synthetic
-    request/response pairs so the refusal/absence rendering is exercised
-    now, not left for whenever the responder lands.
-  - **adjudications / pair**: STUB cells, labeled ``pending`` -- placeholders
-    for [mesh-e17a-offline-adjudicator] (PR #84, held) and E9
-    (sequence-continuity, held) respectively. Neither module exists on
-    ``main`` yet; nothing here imports them.
+  - **role + directional counts**: ``role_and_count_cell()`` -- this node's
+    own ``x-mesh-poc-v1.role``/``label_role()`` per record, folded to "you
+    asked them" / "they asked you" / "both" plus a count each way. Never a
+    trust signal, purely a direction-of-exchange fact.
+  - **history (theirs)**: v2 (mesh-accountability-panes-v2-2026-09-05.md
+    §2/§4) calls out that today's cell shows THIS node's own
+    ``history_card.build_history_card()`` chain on every peer row -- a
+    documented shortcut, not the peer's own card. There is still no evidence
+    subject a peer's OWN history card can be fetched over (the merged
+    responder answers ``record``/``range`` only, never ``checkpoints`` /
+    ``full_history``), so this cell is now honestly ``pending`` rather than
+    silently mislabeling this node's chain as theirs -- see
+    ``peer_history_cell`` / ``THEIRS_HISTORY_PENDING_REASON``. The real
+    grading logic (``history_cell`` / ``continuity_cell`` / ``witnessed_cell``)
+    stays, unchanged and still tested, as the "mine, for reference" detail
+    under that pending cell.
+  - **served (theirs)**: pending [mesh-served-summary-derivation] --
+    ``served_summary.py`` does not exist on ``main`` yet.
+  - **pair (me<->them)**: real now. Reuses
+    ``capsule_exchange_tab.digest_match_grade`` (never re-derived) over
+    every ``exchange_id`` this peer's records carry, folded to a per-peer
+    reconciliation count -- the only cell that can say "missing".
+  - **verdicts**: real for the half this node itself sealed (adjudication
+    capsules in this node's own ledger naming one of this peer's capsule
+    ids), via the same detection ``capsule_accountability_tab``'s
+    counterparty-held block uses. The "held by others" half -- what my
+    counterparties report when *I* ask them -- is pending
+    [mesh-ask-the-references].
+  - **asked**: this node's own evidence-request carrier now exists
+    ([mesh-e14-evidence-responder] / [mesh-e15-evidence-http-route], both
+    merged) -- but that carrier only ANSWERS requests a peer sends to this
+    node; nothing yet logs requests this node SENDS to a peer, so this cell
+    stays honestly ``absent`` for a different, current reason (see
+    ``ASKED_ABSENT_REASON``), not the stale pre-merge one.
 
 Every cell is a small dict carrying ``state`` + ``text`` (plus whatever
 detail backs it) so a renderer never has to guess what an empty cell means
@@ -47,11 +66,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-from capsule_accountability_tab import cross_party_grade
-from capsule_mesh_view import _poc_block, label_counterparty
+from capsule_accountability_tab import STATE_FAILED, STATE_VERIFIED, cross_party_grade
+from capsule_exchange_tab import digest_match_grade, exchange_id_for, half_by_role, records_for_exchange
+from capsule_mesh_view import _poc_block, label_counterparty, label_role
 from history_card import HistoryCard, build_history_card
 
 __all__ = [
+    "ASKED_ABSENT_REASON",
     "CELL_ABSENT",
     "CELL_CONTRADICTED",
     "CELL_FAILED",
@@ -60,25 +81,30 @@ __all__ = [
     "CELL_REFUSED",
     "CELL_UNILATERAL",
     "CELL_VERIFIED",
-    "EVIDENCE_REQUEST_ABSENT_REASON",
     "FORBIDDEN_RATING_KEYS",
     "FORBIDDEN_SORT_KEYS",
+    "SERVED_PENDING_REASON",
+    "THEIRS_HISTORY_PENDING_REASON",
+    "VERDICTS_REFERENCES_PENDING_REASON",
     "RatingFieldError",
     "UNKNOWN_PEER",
-    "adjudications_cell",
+    "asked_cell",
     "assert_no_rating_fields",
     "build_peer_row",
     "build_peers_payload",
     "continuity_cell",
-    "evidence_request_cell",
     "group_by_peer",
     "history_cell",
     "node_cell",
     "pair_cell",
+    "peer_history_cell",
     "render_cell_text",
     "render_peers_tab_html",
+    "role_and_count_cell",
     "rung_cell",
+    "served_cell",
     "sort_peer_rows",
+    "verdicts_cell",
     "witnessed_cell",
 ]
 
@@ -103,18 +129,40 @@ CELL_PENDING = "pending"
 #: NEVER rendered as though it names one identified node -- see `node_cell`.
 UNKNOWN_PEER = "unknown"
 
-#: [mesh-e14-evidence-responder] is not merged yet (capsule-emit-mesh PR #83
-#: CI red, pending upstream capsule-emit PR #148) -- cited here, not
-#: re-litigated, so this stays a single place to update once it lands.
-EVIDENCE_REQUEST_ABSENT_REASON = (
-    "no evidence-request log is wired to this peer yet: [mesh-e14-evidence-responder] "
-    "is not merged (capsule-emit-mesh #83 CI red pending capsule-emit #148)"
+#: STALE REASON, SUPERSEDED (kept only in this comment so the history is
+#: legible): "[mesh-e14-evidence-responder] is not merged yet (capsule-emit-
+#: mesh PR #83 CI red, pending upstream capsule-emit PR #148)". Both #83 and
+#: [mesh-e15-evidence-http-route] are MERGED on `main` today -- the carrier
+#: that ANSWERS a peer's request exists. The current, real gap is different:
+#: nothing yet logs the requests THIS node SENDS to a peer (no evidence
+#: client, no send-log persistence) -- see `ASKED_ABSENT_REASON` below.
+ASKED_ABSENT_REASON = (
+    "no log of evidence-requests this node has SENT to this peer exists yet: the responder "
+    "that answers a peer's request is merged (capsule-emit-mesh #83, [mesh-e15-evidence-http-route]), "
+    "but nothing persists a per-peer send/answer log for requests this node initiates"
 )
 
-#: pending-column reasons, named so a future coder wiring the real module
-#: only has to delete these two constants and their call sites.
-ADJUDICATIONS_PENDING_REASON = "pending twin_adjudicator (E17a, PR #84 held)"
-PAIR_PENDING_REASON = "pending sequence-continuity (E9, held)"
+#: v2 (mesh-accountability-panes-v2-2026-09-05.md §4): "History (theirs) must
+#: be THEIR card fetched via the evidence client (checkpoints subject,
+#: cached per pin)". No such subject exists yet -- the merged responder
+#: (capsule_emit.evidence_request.SUBJECT_KINDS) answers only
+#: `record`/`range`, never `checkpoints`/`full_history`. Rather than keep
+#: silently showing this node's OWN card as if it were the peer's (the
+#: documented shortcut the doc calls out to fix), this cell is honestly
+#: pending a peer-fetch carrier that does not exist in this repo yet.
+THEIRS_HISTORY_PENDING_REASON = (
+    "this node cannot fetch the peer's OWN history card yet: the evidence-request carrier only "
+    "answers record/range subjects, not checkpoints/full_history -- showing this node's own chain "
+    "here would misrepresent it as the peer's, so this cell is pending a peer-fetch carrier "
+    "(no task id filed yet for this gap -- flagged in the outbox)"
+)
+
+SERVED_PENDING_REASON = "pending [mesh-served-summary-derivation] -- served_summary.py does not exist on main yet"
+
+VERDICTS_REFERENCES_PENDING_REASON = (
+    "what my counterparties report when asked about this peer is not available on this view yet: "
+    "pending [mesh-ask-the-references]"
+)
 
 #: Rung ordering per `capsule_sidecar.derive_cross_party_rung`'s own
 #: docstring: unilateral_fallback < acknowledged_receipt < full_bilateral.
@@ -315,18 +363,18 @@ def witnessed_cell(card: HistoryCard) -> dict[str, Any]:
     }
 
 
-def evidence_request_cell(evidence_requests: list[dict[str, Any]] | None) -> dict[str, Any]:
-    """Evidence-requests column.
+def asked_cell(evidence_requests: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Asked column: evidence requests THIS node sent to this peer.
 
     ``evidence_requests``, when supplied, is a list of already-answered
     ``{request, response}`` pairs for THIS peer, ``response`` shaped
     ``{status: "refused"|"no_answer"|"ok", ...}`` (the evidence-request
-    carrier's own shape, per [mesh-e14-evidence-responder] -- cited by
-    shape, not imported; that module is not merged). ``None``/``[]`` is the
-    honest, and today ONLY reachable, state: no responder is wired yet.
+    carrier's own shape). ``None``/``[]`` is the honest, and today ONLY
+    reachable, state: see ``ASKED_ABSENT_REASON`` for why (not the stale
+    pre-merge reason this cell used to cite).
     """
     if not evidence_requests:
-        return {"state": CELL_ABSENT, "text": EVIDENCE_REQUEST_ABSENT_REASON, "count": 0}
+        return {"state": CELL_ABSENT, "text": ASKED_ABSENT_REASON, "count": 0}
 
     refused = [r for r in evidence_requests if (r.get("response") or {}).get("status") == "refused"]
     if refused:
@@ -359,18 +407,132 @@ def evidence_request_cell(evidence_requests: list[dict[str, Any]] | None) -> dic
     }
 
 
-def adjudications_cell() -> dict[str, Any]:
-    """Adjudications column -- STUB. Placeholder for
-    [mesh-e17a-offline-adjudicator] (`twin_adjudicator`, PR #84, held).
-    ``twin_adjudicator.py`` does not exist on `main`; nothing here imports
-    it."""
-    return {"state": CELL_PENDING, "text": ADJUDICATIONS_PENDING_REASON}
+def peer_history_cell(card: HistoryCard, checkpoint_lines: list[dict[str, Any]]) -> dict[str, Any]:
+    """History (theirs) column -- v2. Honestly ``pending``: see
+    ``THEIRS_HISTORY_PENDING_REASON``. This node's own chain state (the old
+    shortcut's data) rides along as ``mine_for_reference``, computed via the
+    unchanged, still-real ``history_cell``/``continuity_cell``/
+    ``witnessed_cell`` graders -- never discarded, just no longer presented
+    as though it were the peer's."""
+    return {
+        "state": CELL_PENDING,
+        "text": THEIRS_HISTORY_PENDING_REASON,
+        "mine_for_reference": {
+            "history": history_cell(card),
+            "continuity": continuity_cell(card, checkpoint_lines),
+            "witnessed": witnessed_cell(card),
+        },
+    }
 
 
-def pair_cell() -> dict[str, Any]:
-    """Pair (me<->them) column -- STUB. Placeholder for E9
-    (sequence-continuity, held)."""
-    return {"state": CELL_PENDING, "text": PAIR_PENDING_REASON}
+def served_cell() -> dict[str, Any]:
+    """Served (theirs) column -- pending [mesh-served-summary-derivation]."""
+    return {"state": CELL_PENDING, "text": SERVED_PENDING_REASON, "source": "self_derived"}
+
+
+def role_and_count_cell(records: list[dict[str, Any]], source_log: str = "sidecar") -> dict[str, Any]:
+    """Role + directional-count column: `label_role()` per record, folded to
+    "you asked them" / "they asked you" / "both", with a count each way.
+    Never a trust signal -- purely which direction each exchange ran."""
+    served = sum(1 for r in records if label_role(r, source_log) == "served")
+    requested = sum(1 for r in records if label_role(r, source_log) == "requested")
+    total = len(records)
+    if served and requested:
+        role, text = "both", f"both · {total} ({requested} you→them, {served} them→you)"
+    elif requested:
+        role, text = "you_to_them", f"you→them · {requested}"
+    elif served:
+        role, text = "them_to_you", f"them→you · {served}"
+    else:
+        role, text = "unknown", f"unknown role · {total}"
+    return {
+        "state": CELL_PRESENT,
+        "text": text,
+        "role": role,
+        "you_to_them_count": requested,
+        "them_to_you_count": served,
+        "exchange_count": total,
+    }
+
+
+def pair_cell(records: list[dict[str, Any]], all_records: list[dict[str, Any]], source_log: str = "sidecar") -> dict[str, Any]:
+    """Pair (me<->them) column -- real. Folds
+    ``capsule_exchange_tab.digest_match_grade`` (never re-derived) over
+    every ``exchange_id`` this peer's records carry -- the only cell that
+    can say "missing", since a lone half is exactly what ``digest_match_grade``
+    grades ``absent``."""
+    exchange_ids = sorted({eid for eid in (exchange_id_for(r) for r in records) if eid and eid != "unknown"})
+    if not exchange_ids:
+        return {"state": CELL_ABSENT, "text": "no exchange_id on these records -- nothing to reconcile", "verified": 0, "failed": 0, "missing": 0}
+
+    verified = failed = missing = 0
+    details: list[dict[str, Any]] = []
+    for exchange_id in exchange_ids:
+        group = records_for_exchange(all_records, exchange_id)
+        requester_half, provider_half = half_by_role(group, source_log)
+        grade = digest_match_grade(requester_half[0] if requester_half else None, provider_half[0] if provider_half else None)
+        if grade["state"] == STATE_VERIFIED:
+            verified += 1
+        elif grade["state"] == STATE_FAILED:
+            failed += 1
+        else:
+            missing += 1
+        details.append({"exchange_id": exchange_id, "state": grade["state"]})
+
+    if failed:
+        state, text = CELL_FAILED, f"{failed} pair(s) digest-mismatched, {verified} reconciled"
+    elif missing:
+        state, text = CELL_PRESENT, f"{verified} reconciled, {missing} missing a half on this view"
+    else:
+        state, text = CELL_VERIFIED, f"{verified} pair(s) reconciled, 0 missing"
+    return {"state": state, "text": text, "verified": verified, "failed": failed, "missing": missing, "details": details}
+
+
+def _adjudications_about(capsule_ids: set[str], all_records: list[dict[str, Any]]) -> tuple[int, dict[str, int], str | None]:
+    """Sealed adjudication capsules (anywhere in ``all_records``) naming one
+    of *capsule_ids* as either half -- same detection
+    ``capsule_accountability_tab.build_counterparty_held_block`` uses."""
+    tally = {"corroborated": 0, "contradicted": 0, "inconclusive": 0}
+    sealed = 0
+    contradicted_capsule_id: str | None = None
+    for record in all_records:
+        adjudication = (record.get("model_attestation") or {}).get("compute_attestation", {}).get("adjudication")
+        if not adjudication:
+            continue
+        if adjudication.get("half_a_capsule_id") not in capsule_ids and adjudication.get("half_b_capsule_id") not in capsule_ids:
+            continue
+        sealed += 1
+        verdict = adjudication.get("verdict") or ""
+        if verdict.startswith("contradicted"):
+            tally["contradicted"] += 1
+            contradicted_capsule_id = record.get("capsule_id")
+        elif verdict == "corroborated":
+            tally["corroborated"] += 1
+        elif verdict == "inconclusive":
+            tally["inconclusive"] += 1
+    return sealed, tally, contradicted_capsule_id
+
+
+def verdicts_cell(records: list[dict[str, Any]], all_records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Verdicts column -- real for the half this node itself sealed
+    (adjudication capsules in this node's own ledger naming one of this
+    peer's capsule ids); ``VERDICTS_REFERENCES_PENDING_REASON`` for the
+    "held by others" half (pending [mesh-ask-the-references])."""
+    peer_capsule_ids = {r.get("capsule_id") for r in records if r.get("capsule_id")}
+    sealed, tally, contradicted_capsule_id = _adjudications_about(peer_capsule_ids, all_records)
+    if sealed == 0:
+        return {"state": CELL_PENDING, "text": VERDICTS_REFERENCES_PENDING_REASON, "tally": tally, "source": "self_sealed"}
+    text = f"{tally['corroborated']} ✓ · {tally['contradicted']} ✗ · {tally['inconclusive']} ? (self-sealed) -- {VERDICTS_REFERENCES_PENDING_REASON}"
+    cell: dict[str, Any] = {
+        "state": CELL_CONTRADICTED if tally["contradicted"] else CELL_PRESENT,
+        "text": text,
+        "tally": tally,
+        "source": "self_sealed",
+        "references_pending_reason": VERDICTS_REFERENCES_PENDING_REASON,
+    }
+    if contradicted_capsule_id:
+        cell["adjudication_capsule_id"] = contradicted_capsule_id
+    return cell
 
 
 # ---------------------------------------------------------------------------
@@ -384,23 +546,36 @@ def build_peer_row(
     *,
     history_card: HistoryCard,
     checkpoint_lines: list[dict[str, Any]],
+    all_records: list[dict[str, Any]],
+    source_log: str = "sidecar",
     evidence_requests: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """One Pane B row for *peer_id*."""
+    """One Pane B row for *peer_id* -- the 7 columns of
+    mesh-accountability-panes-v2-2026-09-05.md §2, plus a row-expand pair
+    ledger (the "their card in Pane A layout" half of row-expand stays
+    pending the same peer-fetch gap as ``peer_history_cell``)."""
     timestamps = [r.get("timestamp") for r in records if r.get("timestamp")]
+    pair = pair_cell(records, all_records, source_log)
     return {
         "peer_id": peer_id if peer_id != UNKNOWN_PEER else None,
         "node": node_cell(peer_id, records),
         "rung": rung_cell(records),
-        "history": history_cell(history_card),
-        "continuity": continuity_cell(history_card, checkpoint_lines),
-        "witnessed": witnessed_cell(history_card),
-        "evidence_requests": evidence_request_cell(evidence_requests),
-        "adjudications": adjudications_cell(),
-        "pair": pair_cell(),
+        "role": role_and_count_cell(records, source_log),
+        "history": peer_history_cell(history_card, checkpoint_lines),
+        "served": served_cell(),
+        "pair": pair,
+        "verdicts": verdicts_cell(records, all_records),
+        "asked": asked_cell(evidence_requests),
         "exchange_count": len(records),
         "first_seen": min(timestamps, default=None),
         "last_seen": max(timestamps, default=None),
+        "expand": {
+            "pair_ledger": pair.get("details", []),
+            "their_card": {
+                "state": CELL_PENDING,
+                "text": THEIRS_HISTORY_PENDING_REASON,
+            },
+        },
     }
 
 
@@ -411,11 +586,12 @@ def build_peers_payload(
     log_id: str,
     checkpoint_lines: list[dict[str, Any]] | None = None,
     since_size: int = 0,
+    source_log: str = "sidecar",
     evidence_requests_by_peer: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Assemble the whole Pane B payload: one row per peer this node has
-    exchanged capsules with, per the module docstring's history/continuity/
-    witnessed sharing rationale.
+    exchanged capsules with, default-sorted most-recent-first (never by
+    trust -- `sort_peer_rows` refuses that regardless of this default).
 
     Raises `RatingFieldError` (never returns a payload that could) if any
     composed cell smuggled in a field that looks like a rating.
@@ -429,11 +605,14 @@ def build_peers_payload(
             peer_records,
             history_card=card,
             checkpoint_lines=checkpoint_lines,
+            all_records=records,
+            source_log=source_log,
             evidence_requests=(evidence_requests_by_peer or {}).get(peer_id),
         )
         for peer_id, peer_records in groups.items()
     ]
-    payload = {"node_id": node_id, "peer_count": len(rows), "rows": rows}
+    rows = sort_peer_rows(rows, "last_seen", reverse=True)
+    payload = {"node_id": node_id, "peer_count": len(rows), "default_sort": "last_seen", "rows": rows}
     assert_no_rating_fields(payload)
     return payload
 
@@ -507,6 +686,11 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   .rerun-btn { margin-left: 6px; font-size: 11px; padding: 1px 7px; border-radius: 5px; border: 1px solid var(--border-soft);
     background: var(--panel-strong); color: var(--fg-dim); cursor: pointer; }
   .empty { padding: 30px; text-align: center; color: var(--fg-faint); }
+  tbody tr.row { cursor: pointer; }
+  tbody tr.row:hover { background: var(--panel-strong); }
+  tbody tr.detail-row { display: none; background: var(--bg); }
+  tbody tr.detail-row.open { display: table-row; }
+  .expand-block { padding: 10px 4px; font-size: 12px; color: var(--fg-dim); }
 </style>
 </head>
 <body>
@@ -523,9 +707,9 @@ _HTML_SHELL = r"""<!DOCTYPE html>
 <script>
 (function () {
   "use strict";
-  var COLUMNS = ["node","rung","history","continuity","witnessed","pair","adjudications","evidence_requests"];
-  var LABELS = {node:"Node",rung:"Rung",history:"History",continuity:"Continuity",witnessed:"Witnessed",
-    pair:"Pair (me↔them)",adjudications:"Adjudications",evidence_requests:"Evidence-requests"};
+  var COLUMNS = ["node","role","history","served","pair","verdicts","asked"];
+  var LABELS = {node:"Node",role:"Role · exchanges",history:"History (theirs)",served:"Served (theirs)",
+    pair:"Pair (me↔them)",verdicts:"Verdicts",asked:"Asked"};
   var TONE = {absent:"neutral", present:"good", verified:"good", unilateral:"warn", pending:"neutral",
     failed:"bad", refused:"bad", contradicted:"bad"};
 
@@ -552,8 +736,22 @@ _HTML_SHELL = r"""<!DOCTYPE html>
     });
   }
 
+  function buildExpandRow(row) {
+    var tr = document.createElement("tr");
+    tr.className = "detail-row";
+    var td = document.createElement("td");
+    td.colSpan = COLUMNS.length;
+    var expand = row.expand || {};
+    var ledger = (expand.pair_ledger || []).map(function (e) { return e.exchange_id + ": " + e.state; }).join(", ") || "no exchanges to reconcile";
+    td.innerHTML = "<div class='expand-block'><strong>Pair ledger (my halves ↔ their halves):</strong> " + ledger +
+      "<br><strong>Their card (Pane A layout):</strong> " + cellText(expand.their_card) + "</div>";
+    tr.appendChild(td);
+    return tr;
+  }
+
   function renderRow(row, tbody) {
     var tr = document.createElement("tr");
+    tr.className = "row";
     COLUMNS.forEach(function (col) {
       var td = document.createElement("td");
       var cell = row[col];
@@ -568,7 +766,10 @@ _HTML_SHELL = r"""<!DOCTYPE html>
       }
       tr.appendChild(td);
     });
+    var detailTr = buildExpandRow(row);
+    tr.addEventListener("click", function () { detailTr.classList.toggle("open"); });
     tbody.appendChild(tr);
+    tbody.appendChild(detailTr);
   }
 
   function renderAll() {
@@ -591,7 +792,7 @@ _HTML_SHELL = r"""<!DOCTYPE html>
       document.querySelector("[data-empty]").hidden = false;
       return;
     }
-    meta.textContent = payload.peer_count + " peer(s)";
+    meta.textContent = payload.peer_count + " peer(s) · default sort: " + (payload.default_sort || "unsorted");
     payload.rows.forEach(function (row) { renderRow(row, tbody); });
   }
 
@@ -638,6 +839,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         log_id=args.log_id,
         checkpoint_lines=_read_jsonl(Path(args.checkpoints)) if args.checkpoints else [],
         since_size=args.since_size,
+        source_log=args.source_log,
     )
 
     if args.html:
@@ -664,6 +866,7 @@ def _build_parser() -> argparse.ArgumentParser:
     build.add_argument("--ledger", required=True, metavar="PATH", help="the sealed capsule JSONL ledger (capsules.jsonl)")
     build.add_argument("--checkpoints", metavar="PATH", default=None, help="checkpoints.jsonl")
     build.add_argument("--since-size", type=int, default=0)
+    build.add_argument("--source-log", default="sidecar", choices=["plugin", "sidecar"])
     build.add_argument("--html", action="store_true", help="render the self-contained HTML tab instead of JSON")
     build.add_argument("--out", metavar="PATH", default=None, help="write output here instead of stdout")
 

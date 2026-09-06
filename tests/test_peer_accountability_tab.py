@@ -24,33 +24,38 @@ from capsule_emit.checkpoint import WitnessRecord, CheckpointConfig
 from checkpointing import CheckpointState, Ed25519Signer, JsonlLogSource
 
 from peer_accountability_tab import (
-    ADJUDICATIONS_PENDING_REASON,
+    ASKED_ABSENT_REASON,
     CELL_ABSENT,
+    CELL_CONTRADICTED,
     CELL_FAILED,
     CELL_PENDING,
     CELL_PRESENT,
     CELL_REFUSED,
     CELL_UNILATERAL,
     CELL_VERIFIED,
-    EVIDENCE_REQUEST_ABSENT_REASON,
     FORBIDDEN_RATING_KEYS,
-    PAIR_PENDING_REASON,
+    SERVED_PENDING_REASON,
+    THEIRS_HISTORY_PENDING_REASON,
+    VERDICTS_REFERENCES_PENDING_REASON,
     RatingFieldError,
     UNKNOWN_PEER,
-    adjudications_cell,
+    asked_cell,
     assert_no_rating_fields,
     build_peer_row,
     build_peers_payload,
     continuity_cell,
-    evidence_request_cell,
     group_by_peer,
     history_cell,
     node_cell,
     pair_cell,
+    peer_history_cell,
     render_cell_text,
     render_peers_tab_html,
+    role_and_count_cell,
     rung_cell,
+    served_cell,
     sort_peer_rows,
+    verdicts_cell,
     witnessed_cell,
 )
 
@@ -70,6 +75,40 @@ def _capsule(*, capsule_id, timestamp, cross_party=None) -> dict:
         "timestamp": timestamp,
         "model_attestation": {"model_id": "m", "compute_attestation": {"x-mesh-poc-v1": poc}},
         "effect": {"request_digest": "1" * 64, "response_digest": "2" * 64, "effect_attestation": "gate_executed"},
+        "disposition": {"decision": "accept", "verdict_class": "executed"},
+    }
+
+
+def _exchange_capsule(
+    *,
+    capsule_id,
+    role,
+    exchange_id="ex-1",
+    timestamp="2026-09-03T00:00:00Z",
+    request_digest="a" * 64,
+    response_digest="b" * 64,
+    cross_party=None,
+) -> dict:
+    """Same shape `test_capsule_exchange_tab.py::_capsule` uses -- role +
+    exchange_id + effect digests -- for the cells that fold over
+    `capsule_exchange_tab`'s pairing machinery (pair_cell, verdicts_cell,
+    role_and_count_cell)."""
+    poc: dict = {
+        "role": role,
+        "serving_provenance": {
+            "model": {"canonical_ref": "meta-llama/Llama-3.2-3B-Instruct"},
+            "exchange_id": exchange_id,
+        },
+        "evidence_refs": {"binary_attestation": None, "tee_attestation": None},
+    }
+    if cross_party is not None:
+        poc["cross_party"] = cross_party
+    return {
+        "capsule_id": capsule_id,
+        "operator": "op",
+        "timestamp": timestamp,
+        "model_attestation": {"model_id": "m", "compute_attestation": {"x-mesh-poc-v1": poc}},
+        "effect": {"request_digest": request_digest, "response_digest": response_digest, "effect_attestation": "gate_executed"},
         "disposition": {"decision": "accept", "verdict_class": "executed"},
     }
 
@@ -259,19 +298,21 @@ def test_witnessed_cell_absent_never_fabricated_with_no_checkpoints():
 
 
 # ---------------------------------------------------------------------------
-# evidence_request_cell -- refusal / absence / pending, never blank
+# asked_cell -- refusal / absence / pending, never blank
 # ---------------------------------------------------------------------------
 
 
-def test_evidence_request_cell_absent_by_default_names_e14():
-    cell = evidence_request_cell(None)
+def test_asked_cell_absent_by_default_names_the_real_current_gap():
+    cell = asked_cell(None)
 
     assert cell["state"] == CELL_ABSENT
-    assert cell["text"] == EVIDENCE_REQUEST_ABSENT_REASON
-    assert render_cell_text(cell) == EVIDENCE_REQUEST_ABSENT_REASON
+    assert cell["text"] == ASKED_ABSENT_REASON
+    assert render_cell_text(cell) == ASKED_ABSENT_REASON
+    # the stale pre-merge framing must be gone, not just renamed
+    assert "capsule-emit #148" not in cell["text"]
 
 
-def test_evidence_request_cell_renders_a_signed_refusal_never_blank():
+def test_asked_cell_renders_a_signed_refusal_never_blank():
     requests = [
         {
             "request": {"subject": "full_history"},
@@ -279,7 +320,7 @@ def test_evidence_request_cell_renders_a_signed_refusal_never_blank():
         }
     ]
 
-    cell = evidence_request_cell(requests)
+    cell = asked_cell(requests)
 
     assert cell["state"] == CELL_REFUSED
     assert cell["text"] == "card refused: coverage_unsatisfiable"
@@ -287,40 +328,175 @@ def test_evidence_request_cell_renders_a_signed_refusal_never_blank():
     assert render_cell_text(cell) == "card refused: coverage_unsatisfiable"
 
 
-def test_evidence_request_cell_refusal_with_no_reason_still_never_blank():
+def test_asked_cell_refusal_with_no_reason_still_never_blank():
     requests = [{"request": {}, "response": {"status": "refused", "sig": "abc"}}]
 
-    cell = evidence_request_cell(requests)
+    cell = asked_cell(requests)
 
     assert cell["text"] == "card refused: no reason given"
     assert render_cell_text(cell)
 
 
-def test_evidence_request_cell_absence_names_transport_and_timeout():
+def test_asked_cell_absence_names_transport_and_timeout():
     requests = [{"request": {}, "response": {"status": "no_answer", "transport": "nostr", "timeout_seconds": 30}}]
 
-    cell = evidence_request_cell(requests)
+    cell = asked_cell(requests)
 
     assert cell["state"] == CELL_ABSENT
     assert cell["text"] == "no answer within 30s over nostr"
 
 
-def test_evidence_request_cell_ok_response_present():
+def test_asked_cell_ok_response_present():
     requests = [{"request": {}, "response": {"status": "ok"}}]
 
-    cell = evidence_request_cell(requests)
+    cell = asked_cell(requests)
 
     assert cell["state"] == CELL_PRESENT
     assert "1 evidence-request(s) answered" == cell["text"]
 
 
-def test_adjudications_and_pair_cells_are_pending_stubs_never_blank():
-    adj = adjudications_cell()
-    pair = pair_cell()
+# ---------------------------------------------------------------------------
+# peer_history_cell / served_cell -- v2 "either wired or pending", never a
+# stale reason and never the old my-card-as-theirs shortcut
+# ---------------------------------------------------------------------------
 
-    assert adj == {"state": CELL_PENDING, "text": ADJUDICATIONS_PENDING_REASON}
-    assert pair == {"state": CELL_PENDING, "text": PAIR_PENDING_REASON}
-    assert render_cell_text(adj) and render_cell_text(pair)
+
+def test_peer_history_cell_is_pending_and_carries_mine_for_reference(tmp_path, fake_witness):
+    lines = _build_chain(tmp_path, 2)
+    from history_card import build_history_card
+
+    card = build_history_card(node_id="node-a", log_id="log-a", checkpoint_lines=lines, since_size=0)
+    cell = peer_history_cell(card, lines)
+
+    assert cell["state"] == CELL_PENDING
+    assert cell["text"] == THEIRS_HISTORY_PENDING_REASON
+    assert cell["mine_for_reference"]["history"] == history_cell(card)
+    assert cell["mine_for_reference"]["continuity"] == continuity_cell(card, lines)
+    assert render_cell_text(cell)
+
+
+def test_served_cell_is_pending_never_a_fabricated_count():
+    cell = served_cell()
+    assert cell["state"] == CELL_PENDING
+    assert "mesh-served-summary-derivation" in cell["text"]
+
+
+# ---------------------------------------------------------------------------
+# pair_cell -- real, folds capsule_exchange_tab.digest_match_grade per peer
+# ---------------------------------------------------------------------------
+
+
+def test_pair_cell_absent_when_records_carry_no_exchange_id():
+    records = [_capsule(capsule_id="c1", timestamp="t")]
+    cell = pair_cell(records, records)
+    assert cell["state"] == CELL_ABSENT
+    assert cell["verified"] == 0
+
+
+def test_pair_cell_verified_when_both_halves_present_and_digests_agree():
+    requester = _exchange_capsule(capsule_id="r1", role="requested", exchange_id="ex-1")
+    provider = _exchange_capsule(capsule_id="p1", role="served", exchange_id="ex-1")
+    all_records = [requester, provider]
+
+    cell = pair_cell([requester], all_records)
+
+    assert cell["state"] == CELL_VERIFIED
+    assert cell["verified"] == 1
+    assert cell["missing"] == 0
+    assert cell["failed"] == 0
+
+
+def test_pair_cell_mutant_a_digest_mismatch_flips_failed_never_verified():
+    requester = _exchange_capsule(capsule_id="r1", role="requested", exchange_id="ex-1", response_digest="b" * 64)
+    provider = _exchange_capsule(capsule_id="p1", role="served", exchange_id="ex-1", response_digest="c" * 64)
+    all_records = [requester, provider]
+
+    cell = pair_cell([requester], all_records)
+
+    assert cell["state"] == CELL_FAILED
+    assert cell["failed"] == 1
+    assert cell["state"] != CELL_VERIFIED
+
+
+def test_pair_cell_is_missing_not_verified_when_only_one_half_is_in_this_view():
+    requester = _exchange_capsule(capsule_id="r1", role="requested", exchange_id="ex-1")
+
+    cell = pair_cell([requester], [requester])
+
+    assert cell["missing"] == 1
+    assert cell["verified"] == 0
+    assert cell["state"] != CELL_VERIFIED
+
+
+# ---------------------------------------------------------------------------
+# verdicts_cell -- real for self-sealed adjudications about this peer;
+# references-path always pending
+# ---------------------------------------------------------------------------
+
+
+def _adjudication_capsule(*, capsule_id, half_a, half_b, verdict):
+    return {
+        "capsule_id": capsule_id,
+        "model_attestation": {
+            "compute_attestation": {
+                "adjudication": {"verdict": verdict, "half_a_capsule_id": half_a, "half_b_capsule_id": half_b}
+            }
+        },
+    }
+
+
+def test_verdicts_cell_pending_when_nothing_sealed_about_this_peer():
+    records = [_capsule(capsule_id="c1", timestamp="t")]
+    cell = verdicts_cell(records, records)
+    assert cell["state"] == CELL_PENDING
+    assert cell["text"] == VERDICTS_REFERENCES_PENDING_REASON
+
+
+def test_verdicts_cell_contradicted_never_folded_into_a_clean_pass():
+    peer_records = [_capsule(capsule_id="peer-c1", timestamp="t")]
+    adjudication = _adjudication_capsule(capsule_id="adj1", half_a="peer-c1", half_b="other", verdict="contradicted:owner-x")
+    all_records = peer_records + [adjudication]
+
+    cell = verdicts_cell(peer_records, all_records)
+
+    assert cell["state"] == CELL_CONTRADICTED
+    assert cell["tally"]["contradicted"] == 1
+    assert cell["adjudication_capsule_id"] == "adj1"
+    assert VERDICTS_REFERENCES_PENDING_REASON in cell["text"]
+
+
+def test_verdicts_cell_never_counts_an_adjudication_about_a_different_peer():
+    peer_records = [_capsule(capsule_id="peer-c1", timestamp="t")]
+    unrelated = _adjudication_capsule(capsule_id="adj1", half_a="someone-else", half_b="another", verdict="corroborated")
+
+    cell = verdicts_cell(peer_records, peer_records + [unrelated])
+
+    assert cell["state"] == CELL_PENDING
+    assert cell["tally"]["corroborated"] == 0
+
+
+# ---------------------------------------------------------------------------
+# role_and_count_cell -- direction of exchange, never a trust signal
+# ---------------------------------------------------------------------------
+
+
+def test_role_and_count_cell_both_directions():
+    records = [
+        _exchange_capsule(capsule_id="r1", role="requested", exchange_id="ex-1"),
+        _exchange_capsule(capsule_id="p1", role="served", exchange_id="ex-2"),
+    ]
+    cell = role_and_count_cell(records)
+    assert cell["role"] == "both"
+    assert cell["you_to_them_count"] == 1
+    assert cell["them_to_you_count"] == 1
+
+
+def test_role_and_count_cell_one_direction_only():
+    records = [_exchange_capsule(capsule_id="p1", role="served", exchange_id="ex-1")]
+    cell = role_and_count_cell(records)
+    assert cell["role"] == "them_to_you"
+    assert cell["them_to_you_count"] == 1
+    assert cell["you_to_them_count"] == 0
 
 
 def test_render_cell_text_never_returns_blank_even_with_no_text_key():
@@ -381,14 +557,21 @@ def test_build_peers_payload_assembles_one_row_per_peer(tmp_path, fake_witness):
     payload = build_peers_payload(records, node_id="node-a", log_id="log-a", checkpoint_lines=lines)
 
     assert payload["peer_count"] == 2
+    assert payload["default_sort"] == "last_seen"
     identified = next(r for r in payload["rows"] if r["peer_id"] is not None)
     unattributed = next(r for r in payload["rows"] if r["peer_id"] is None)
     assert identified["exchange_count"] == 2
     assert identified["first_seen"] == "2026-09-01T00:00:00Z"
     assert identified["last_seen"] == "2026-09-02T00:00:00Z"
     assert unattributed["node"]["state"] == CELL_ABSENT
-    # every row shares the same node-level history/continuity facts
-    assert identified["continuity"] == unattributed["continuity"]
+    # every row shares the same node-level history facts, now folded into
+    # the single (pending) "history (theirs)" cell's mine_for_reference
+    assert identified["history"]["mine_for_reference"]["continuity"] == unattributed["history"]["mine_for_reference"]["continuity"]
+    # default sort is most-recent first
+    assert payload["rows"][0]["last_seen"] >= payload["rows"][-1]["last_seen"]
+    # the 7 v2 columns, never the old 8
+    for row in payload["rows"]:
+        assert set(row) >= {"node", "rung", "role", "history", "served", "pair", "verdicts", "asked", "expand"}
 
 
 def test_build_peers_payload_raises_on_a_smuggled_rating_field(monkeypatch):

@@ -15,17 +15,30 @@ import pytest
 
 from capsule_accountability_tab import STATE_ABSENT, STATE_FAILED, STATE_PRESENT_UNVERIFIED, STATE_VERIFIED
 from capsule_exchange_tab import (
+    EXCHANGE_ROLE_ASKED,
+    EXCHANGE_ROLE_SERVED,
+    FILTER_ALL,
+    FILTER_ASKED,
+    FILTER_ISSUES,
+    FILTER_SERVED,
     PENDING,
+    build_exchange_list_payload,
+    build_exchange_row,
     build_exchange_view,
     digest_match_grade,
     exchange_id_for,
+    exchange_key_for,
+    filter_exchange_rows,
+    group_exchanges,
     half_by_role,
     identity_chain_for,
     records_for_exchange,
+    render_exchange_list_html,
     render_exchange_subtab_html,
     sequence_position,
     twin_adjudication_placeholder,
     witness_receipt_reverify_placeholder,
+    worst_state,
 )
 
 
@@ -236,13 +249,18 @@ def test_twin_adjudication_placeholder_is_pending_not_a_pass():
     placeholder = twin_adjudication_placeholder()
     assert placeholder["state"] == PENDING
     assert placeholder["state"] not in (STATE_VERIFIED, STATE_FAILED)
-    assert "mesh-e17a" in placeholder["reason"]
+    # twin_adjudicator.py is merged on main now -- the pending reason must
+    # say so honestly (this per-exchange view just doesn't call it yet),
+    # never the stale "PR #84 not merged" framing.
+    assert "twin_adjudicator.py exists on main" in placeholder["reason"]
+    assert "not yet merged" not in placeholder["reason"]
 
 
 def test_witness_receipt_reverify_placeholder_is_pending_not_a_pass():
     placeholder = witness_receipt_reverify_placeholder()
     assert placeholder["state"] == PENDING
     assert "mesh-e2-witness-checkpoints" in placeholder["reason"]
+    assert "is merged" in placeholder["reason"]
 
 
 # ---------------------------------------------------------------------------
@@ -312,3 +330,223 @@ def test_render_exchange_subtab_html_escapes_hostile_owner_id():
     html = render_exchange_subtab_html(view)
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;" in html
+
+
+# ---------------------------------------------------------------------------
+# worst_state -- the header = the worst line among this exchange's checks
+# ([mesh-exchange-card-mismatch-bug]'s principle, reapplied to this module)
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_view(*, digest_match_state=STATE_VERIFIED, verdict_marks=("ok", "warn", "warn"), rung_states=None, witness_pending=True):
+    """A hand-built view dict, decoupled from `build_exchange_view`'s real
+    fixtures, to unit-test `worst_state`'s fold logic in isolation. The
+    default marks mirror what `build_verdict` actually returns today for any
+    exchange without cross-party evidence (line 2 warn = no witness receipt
+    in this bundle -- excluded from the fold while pending, per doc §3; line
+    3 warn = "who asked: self-attested" -- a REAL limitation, always folded)."""
+    rung_states = rung_states or {"freshness": {"state": STATE_ABSENT}, "cross_party": {"rung": "unilateral_fallback"}, "runtime_binding": {"state": STATE_ABSENT}}
+    return {
+        "pair": {"digest_match": {"state": digest_match_state}},
+        "verdict": [{"mark": m, "text": ""} for m in verdict_marks],
+        "rungs": rung_states,
+        "witness_receipt_reverify": {"state": PENDING if witness_pending else STATE_VERIFIED},
+    }
+
+
+def test_worst_state_is_verified_when_everything_checked_is_clean():
+    view = _synthetic_view(verdict_marks=("ok", "warn", "ok"))  # line 3 clean too (named counterparty)
+    assert worst_state(view) == STATE_VERIFIED
+
+
+def test_worst_state_real_pair_fixture_reads_present_unverified_not_a_fabricated_pass():
+    """The shared `_pair()` fixture carries no cross-party evidence, so
+    `cross_party_grade` is honestly `unilateral_fallback` and build_verdict's
+    line 3 ("who asked: self-attested") is a REAL limitation -- doc §3 keeps
+    that one amber. The header must reflect it, not round up to verified."""
+    requester, provider = _pair()
+    view = build_exchange_view(requester, all_records=[requester, provider], source_log="sidecar")
+    assert worst_state(view) == STATE_PRESENT_UNVERIFIED
+    assert worst_state(view) != STATE_VERIFIED
+
+
+def test_worst_state_mutant_a_digest_mismatch_forces_failed_even_if_other_lines_are_green():
+    requester, provider = _pair(response_digest="b" * 64)
+    provider["effect"]["response_digest"] = "c" * 64  # sealed-digest mismatch, header must go red
+    view = build_exchange_view(requester, all_records=[requester, provider], source_log="sidecar")
+    assert worst_state(view) == STATE_FAILED
+    assert worst_state(view) != STATE_VERIFIED
+
+
+def test_worst_state_a_lone_half_is_unverified_never_a_fabricated_pass():
+    requester, _provider = _pair()
+    view = build_exchange_view(requester, all_records=[requester], source_log="sidecar")
+    assert worst_state(view) != STATE_VERIFIED
+
+
+def test_worst_state_pending_witness_line_alone_never_forces_a_bad_header():
+    """The witness line's honest `warn` (no receipt in this bundle) is a
+    view limitation while `witness_receipt_reverify` is pending -- doc §3
+    keeps that one grey, so it must not, by itself, push the header down."""
+    clean = _synthetic_view(verdict_marks=("ok", "warn", "ok"), witness_pending=True)
+    assert worst_state(clean) == STATE_VERIFIED
+
+
+def test_worst_state_a_real_bad_witness_verdict_still_forces_failed_even_while_pending():
+    """The exclusion is for the PLACEHOLDER warn only -- a genuine `bad`
+    witness mark (a tampered/forged receipt), should this view ever produce
+    one, must never be swallowed by the pending exclusion."""
+    tampered = _synthetic_view(verdict_marks=("ok", "bad", "ok"), witness_pending=True)
+    assert worst_state(tampered) == STATE_FAILED
+
+
+# ---------------------------------------------------------------------------
+# exchange_key_for -- exchange_id, falling back to request_digest
+# ---------------------------------------------------------------------------
+
+
+def test_exchange_key_for_uses_exchange_id_when_present():
+    requester, _ = _pair(exchange_id="ex-42")
+    assert exchange_key_for(requester) == "ex-42"
+
+
+def test_exchange_key_for_falls_back_to_request_digest_when_exchange_id_absent():
+    record = _capsule(capsule_id="c" * 64, role="requested", exchange_id="unknown", request_digest="f" * 64)
+    assert exchange_key_for(record) == f"digest:{'f' * 64}"
+
+
+def test_exchange_key_for_none_when_neither_is_present():
+    record = _capsule(capsule_id="c" * 64, role="requested", exchange_id="unknown")
+    del record["effect"]["request_digest"]
+    assert exchange_key_for(record) is None
+
+
+# ---------------------------------------------------------------------------
+# group_exchanges / build_exchange_row -- one row per exchange, role tag,
+# mine/theirs as two columns, never a blank cell
+# ---------------------------------------------------------------------------
+
+
+def test_group_exchanges_one_row_per_exchange_id():
+    requester, provider = _pair(exchange_id="ex-1")
+    rows = group_exchanges([requester, provider])
+    assert len(rows) == 1
+    assert rows[0]["exchange_key"] == "ex-1"
+
+
+def test_group_exchanges_role_tag_served_when_this_node_served():
+    requester, provider = _pair(exchange_id="ex-1")
+    rows = group_exchanges([provider], counterparty_records=[requester])
+    assert rows[0]["role_tag"] == EXCHANGE_ROLE_SERVED
+    assert rows[0]["mine"]["capsule_id"] == provider["capsule_id"]
+    assert rows[0]["theirs"]["capsule_id"] == requester["capsule_id"]
+
+
+def test_group_exchanges_role_tag_asked_when_this_node_requested():
+    requester, provider = _pair(exchange_id="ex-1")
+    rows = group_exchanges([requester], counterparty_records=[provider])
+    assert rows[0]["role_tag"] == EXCHANGE_ROLE_ASKED
+
+
+def test_group_exchanges_unilateral_when_only_mine_is_present_never_blank():
+    requester, _provider = _pair(exchange_id="ex-1")
+    rows = group_exchanges([requester])
+    assert rows[0]["unilateral"] is True
+    assert rows[0]["theirs"]["text"] == "none (unilateral)"
+    assert rows[0]["theirs"]["state"] == STATE_ABSENT
+
+
+def test_group_exchanges_received_without_a_commitment_never_blank():
+    """A received foreign half with no `mine` record for the same exchange
+    -- rare, but must render its own honest reason, never a blank cell."""
+    _requester, provider = _pair(exchange_id="ex-1")
+    rows = group_exchanges([], counterparty_records=[provider])
+    assert len(rows) == 1
+    assert rows[0]["mine"]["text"] == "none — received without a commitment"
+    assert rows[0]["mine"]["state"] == STATE_ABSENT
+
+
+def test_group_exchanges_default_sort_is_most_recent_first():
+    older_r, older_p = _pair(exchange_id="ex-old", request_digest="1" * 64, response_digest="2" * 64)
+    older_r["timestamp"] = "2026-09-01T00:00:00Z"
+    older_p["timestamp"] = "2026-09-01T00:00:01Z"
+    newer_r, newer_p = _pair(exchange_id="ex-new", request_digest="3" * 64, response_digest="4" * 64)
+    newer_r["timestamp"] = "2026-09-05T00:00:00Z"
+    newer_p["timestamp"] = "2026-09-05T00:00:01Z"
+
+    rows = group_exchanges([older_r, older_p, newer_r, newer_p])
+
+    assert [r["exchange_key"] for r in rows] == ["ex-new", "ex-old"]
+
+
+def test_group_exchanges_fallback_key_never_mixes_two_different_exchanges():
+    a = _capsule(capsule_id="a" * 64, role="requested", exchange_id="unknown", request_digest="1" * 64)
+    b = _capsule(capsule_id="b" * 64, role="requested", exchange_id="unknown", request_digest="2" * 64)
+    rows = group_exchanges([a, b])
+    assert len(rows) == 2
+
+
+# ---------------------------------------------------------------------------
+# filter_exchange_rows -- All / Served / Asked / Issues
+# ---------------------------------------------------------------------------
+
+
+def test_filter_exchange_rows_served_and_asked():
+    requester, provider = _pair(exchange_id="ex-1")
+    rows = group_exchanges([provider], counterparty_records=[requester])
+    assert len(filter_exchange_rows(rows, FILTER_SERVED)) == 1
+    assert len(filter_exchange_rows(rows, FILTER_ASKED)) == 0
+    assert len(filter_exchange_rows(rows, FILTER_ALL)) == 1
+
+
+def test_filter_exchange_rows_issues_excludes_a_verified_row():
+    clean_row = {"role_tag": EXCHANGE_ROLE_SERVED, "header_state": STATE_VERIFIED}
+    assert filter_exchange_rows([clean_row], FILTER_ISSUES) == []
+
+
+def test_filter_exchange_rows_issues_excludes_an_absent_row_too():
+    """A row with nothing to check yet (`STATE_ABSENT`) is not an "issue" --
+    only a real warn/failed header is."""
+    absent_row = {"role_tag": EXCHANGE_ROLE_ASKED, "header_state": STATE_ABSENT}
+    assert filter_exchange_rows([absent_row], FILTER_ISSUES) == []
+
+
+def test_filter_exchange_rows_issues_includes_a_digest_mismatch_row():
+    requester, provider = _pair(exchange_id="ex-1")
+    provider["effect"]["response_digest"] = "tampered" + "0" * 56
+    rows = group_exchanges([requester, provider])
+    assert rows[0]["header_state"] == STATE_FAILED
+    assert len(filter_exchange_rows(rows, FILTER_ISSUES)) == 1
+
+
+def test_filter_exchange_rows_rejects_unknown_filter():
+    with pytest.raises(ValueError):
+        filter_exchange_rows([], "bogus")
+
+
+# ---------------------------------------------------------------------------
+# build_exchange_list_payload / render_exchange_list_html
+# ---------------------------------------------------------------------------
+
+
+def test_build_exchange_list_payload_shape():
+    requester, provider = _pair(exchange_id="ex-1")
+    payload = build_exchange_list_payload([requester, provider])
+    assert payload["row_count"] == 1
+    assert payload["default_sort"] == "timestamp"
+    assert set(payload["filters"]) == {FILTER_ALL, FILTER_SERVED, FILTER_ASKED, FILTER_ISSUES}
+
+
+def test_render_exchange_list_html_includes_role_tag_and_drawer():
+    requester, provider = _pair(exchange_id="ex-1")
+    payload = build_exchange_list_payload([requester, provider])
+    html = render_exchange_list_html(payload)
+    assert "ex-1" in html
+    assert "This exchange" in html  # the drawer reuses render_exchange_subtab_html verbatim
+    assert "filter-chip" in html
+
+
+def test_render_exchange_list_html_empty_never_crashes():
+    payload = build_exchange_list_payload([])
+    html = render_exchange_list_html(payload)
+    assert "0 exchange(s)" in html
