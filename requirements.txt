@@ -75,6 +75,14 @@ agent-manifest>=0.11.2
 # trusted issuer key -- no deployment does yet, pending a registry decision explicitly out of scope
 # before 2026-09-09) depends on agentrust_trace.sign.verify_record, same never-re-implement rule.
 # Pinned so the reject-on-tampered-envelope mutant test always runs in CI rather than skipping.
+#
+# 2026-09-06 STOP-THE-LINE re-check: the floating floor picked up 0.10.0 and briefly broke
+# "Import smoke (clean venv)" (test_untampered_signed_record_still_grades_platform_attested).
+# #134 fixed trace_citation._record() to conform to the real TRACE v0.2 schema, which was the
+# actual root cause -- confirmed the emergency "pin <0.10" recommendation is now MOOT: CI run
+# 34044223100 (PR #135, on top of #134) installed agentrust-trace-0.10.0 fresh and passed clean.
+# Left unpinned deliberately; see [mesh-agentrust-0.10-assessment] for the still-open question of
+# what 0.10.0's grading behavior actually changed and whether it needs a permanent floor.
 agentrust-trace>=0.9.0
 
 # nostr_account.py signs account-capsule events with BIP-340 Schnorr over
