@@ -34,8 +34,13 @@ Composes verbs that already exist; re-derives none of their evidence:
     grading logic (``history_cell`` / ``continuity_cell`` / ``witnessed_cell``)
     stays, unchanged and still tested, as the "mine, for reference" detail
     under that pending cell.
-  - **served (theirs)**: pending [mesh-served-summary-derivation] --
-    ``served_summary.py`` does not exist on ``main`` yet.
+  - **served (theirs)**: ``served_summary.py`` now exists
+    ([mesh-served-summary-derivation]), but this cell is still honestly
+    ``pending`` -- same peer-fetch gap as History (theirs): nothing here
+    SENDS a ``served_summary/1`` request to a peer, the merged responder
+    only ANSWERS one sent to it. This node's OWN served summary rides along
+    as ``mine_for_reference``, same discipline as the history cell's
+    ``mine_for_reference``.
   - **pair (me<->them)**: real now. Reuses
     ``capsule_exchange_tab.digest_match_grade`` (never re-derived) over
     every ``exchange_id`` this peer's records carry, folded to a per-peer
@@ -157,7 +162,19 @@ THEIRS_HISTORY_PENDING_REASON = (
     "(no task id filed yet for this gap -- flagged in the outbox)"
 )
 
-SERVED_PENDING_REASON = "pending [mesh-served-summary-derivation] -- served_summary.py does not exist on main yet"
+#: [mesh-served-summary-derivation] ``served_summary.py`` now exists, but
+#: there is still no evidence-request CLIENT on this node to PULL a peer's
+#: OWN served summary -- the same peer-fetch gap
+#: ``THEIRS_HISTORY_PENDING_REASON`` documents for history (the merged
+#: responder only ANSWERS a request sent to it; nothing here sends one to a
+#: peer yet). This node's own summary rides along as ``mine_for_reference``,
+#: same discipline ``peer_history_cell`` already follows -- never presented
+#: as though it were the peer's.
+SERVED_PENDING_REASON = (
+    "this node cannot fetch the peer's OWN served summary yet: the evidence-request carrier "
+    "only ANSWERS a request sent to it, and nothing here sends served_summary/1 requests to a "
+    "peer -- same peer-fetch gap as history's THEIRS_HISTORY_PENDING_REASON"
+)
 
 VERDICTS_REFERENCES_PENDING_REASON = (
     "what my counterparties report when asked about this peer is not available on this view yet: "
@@ -178,6 +195,13 @@ _RUNG_ORDER = ("unilateral_fallback", "acknowledged_receipt", "full_bilateral")
 #: level as well as here; this list catches the general scoring shape.
 FORBIDDEN_RATING_KEYS = ("score", "rating", "trust_level", "grade_percent")
 
+#: Same exact-match allowlist as `self_accountability.SAFE_DISCLAIMER_KEYS`,
+#: duplicated for the same sibling-branch reason as `FORBIDDEN_RATING_KEYS`
+#: above. Needed here because `served_cell`'s `mine_for_reference` now
+#: embeds a `served_summary.ServedSummary.to_value()` verbatim, which
+#: carries a `not_a_score` disclaimer key (contains "score").
+SAFE_DISCLAIMER_KEYS = frozenset({"not_a_score"})
+
 #: "No sort by trust — sort by any property." A sort key containing any of
 #: these substrings is refused outright, never silently ignored.
 FORBIDDEN_SORT_KEYS = ("trust", "score", "rating")
@@ -192,9 +216,13 @@ class RatingFieldError(ValueError):
 def assert_no_rating_fields(value: Any, *, _path: str = "$") -> None:
     """Walk *value* recursively and raise `RatingFieldError` on the first key
     whose name contains one of `FORBIDDEN_RATING_KEYS`. Recursive: a rating
-    buried three dicts deep must be caught exactly like a top-level one."""
+    buried three dicts deep must be caught exactly like a top-level one.
+    `SAFE_DISCLAIMER_KEYS` is checked by exact match first -- a key naming
+    the ABSENCE of a rating is not the thing this guards against."""
     if isinstance(value, dict):
         for key, sub in value.items():
+            if key in SAFE_DISCLAIMER_KEYS:
+                continue
             lowered = str(key).lower()
             for forbidden in FORBIDDEN_RATING_KEYS:
                 if forbidden in lowered:
@@ -425,9 +453,33 @@ def peer_history_cell(card: HistoryCard, checkpoint_lines: list[dict[str, Any]])
     }
 
 
-def served_cell() -> dict[str, Any]:
-    """Served (theirs) column -- pending [mesh-served-summary-derivation]."""
-    return {"state": CELL_PENDING, "text": SERVED_PENDING_REASON, "source": "self_derived"}
+def _own_served_summary_value(
+    node_id: str, records: list[dict[str, Any]], checkpoint_lines: list[dict[str, Any]], source_log: str
+) -> dict[str, Any]:
+    """This node's own ``served_summary`` -- computed once per payload
+    (never re-derived per peer row) and threaded into every row's ``served``
+    cell as ``mine_for_reference``, same as ``peer_history_cell`` does for
+    the history chain."""
+    from capsule_emit.checkpoint import CheckpointRecord
+    from served_summary import build_served_summary
+
+    latest_checkpoint = CheckpointRecord.from_dict(checkpoint_lines[-1]) if checkpoint_lines else None
+    summary = build_served_summary(
+        node_id=node_id, capsule_records=records, latest_checkpoint=latest_checkpoint, source_log=source_log
+    )
+    return summary.to_value()
+
+
+def served_cell(own_summary_value: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Served (theirs) column. Honestly ``pending``: see
+    ``SERVED_PENDING_REASON``. ``own_summary_value``, when supplied, is THIS
+    node's own ``served_summary.ServedSummary.to_value()`` -- carried as
+    ``mine_for_reference`` exactly like ``peer_history_cell`` carries this
+    node's own chain, never presented as though it were the peer's."""
+    cell: dict[str, Any] = {"state": CELL_PENDING, "text": SERVED_PENDING_REASON, "source": "self_derived"}
+    if own_summary_value is not None:
+        cell["mine_for_reference"] = own_summary_value
+    return cell
 
 
 def role_and_count_cell(records: list[dict[str, Any]], source_log: str = "sidecar") -> dict[str, Any]:
@@ -549,6 +601,7 @@ def build_peer_row(
     all_records: list[dict[str, Any]],
     source_log: str = "sidecar",
     evidence_requests: list[dict[str, Any]] | None = None,
+    own_served_summary_value: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One Pane B row for *peer_id* -- the 7 columns of
     mesh-accountability-panes-v2-2026-09-05.md §2, plus a row-expand pair
@@ -562,7 +615,7 @@ def build_peer_row(
         "rung": rung_cell(records),
         "role": role_and_count_cell(records, source_log),
         "history": peer_history_cell(history_card, checkpoint_lines),
-        "served": served_cell(),
+        "served": served_cell(own_served_summary_value),
         "pair": pair,
         "verdicts": verdicts_cell(records, all_records),
         "asked": asked_cell(evidence_requests),
@@ -598,6 +651,7 @@ def build_peers_payload(
     """
     checkpoint_lines = checkpoint_lines or []
     card = build_history_card(node_id=node_id, log_id=log_id, checkpoint_lines=checkpoint_lines, since_size=since_size)
+    own_served_summary_value = _own_served_summary_value(node_id, records, checkpoint_lines, source_log)
     groups = group_by_peer(records)
     rows = [
         build_peer_row(
@@ -608,6 +662,7 @@ def build_peers_payload(
             all_records=records,
             source_log=source_log,
             evidence_requests=(evidence_requests_by_peer or {}).get(peer_id),
+            own_served_summary_value=own_served_summary_value,
         )
         for peer_id, peer_records in groups.items()
     ]

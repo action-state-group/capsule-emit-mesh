@@ -224,12 +224,28 @@ let a stronger-sounding source stand in for a weaker one that was actually used.
 
 | Source label | Means | Who can lie, and how it's caught |
 |---|---|---|
-| `self_derived` | A node's own deterministic fold over its own witnessed ledger (`history_card.py`'s history properties, the not-yet-built `served_summary/1`, `account_capsule.py`'s served/success fold). Carries a `definition_digest` so a reader recomputes and matches. | The node itself; a tampered count is a signed lie a witness-checkpoint cross-check can catch, never taken on say-so. |
-| `sampled` (a verification method, not a fourth source) | A relying party's own spot-check of a `self_derived` claim — pull `k` records by position with inclusion proofs and confirm they agree with the summary. | Nobody; this is the reader checking, not a claim. Cited alongside `self_derived`, never standing alone. |
-| `counterparty_held` (rendered `self_held` when it is *this* node's own copy of what a counterparty gave it) | A fact asserted by someone OTHER than the node it is about — an adjudication a twin sealed, a verdict a peer reports when asked. `self_held` marks the special case where THIS view only has its own retained copy (`received()`) of that counterparty fact, not a fresh ask. | The node the fact is about cannot edit it; this is the source that carries weight in an adversarial reading, per the design doc's Pane A block 3. |
+| `self_derived` | A node's own deterministic fold over its own witnessed ledger (`history_card.py`'s history properties, `served_summary.py`'s `served_summary/1` — landed [mesh-served-summary-derivation] — `account_capsule.py`'s served/success fold). Carries a `definition_digest` so a reader recomputes and matches. | The node itself; a tampered count is a signed lie a witness-checkpoint cross-check can catch, never taken on say-so. |
+| `sampled` (a verification method, not a fourth source) | A relying party's own spot-check of a `self_derived` claim — pull `k` records by position with inclusion proofs and confirm they agree with the summary (`served_summary.verify_served_summary`). | Nobody; this is the reader checking, not a claim. Cited alongside `self_derived`, never standing alone. |
+| `counterparty_held` (rendered `self_held` when it is *this* node's own copy of what a counterparty gave it) | A fact asserted by someone OTHER than the node it is about — an adjudication a twin sealed, a verdict a peer reports when asked. `self_held` marks the special case where THIS view only has its own retained copy (`received()`) of that counterparty fact, not a fresh ask. `served_summary/1`'s `adjudications_received` is exactly this: never treated as the node's own judgment of itself. | The node the fact is about cannot edit it; this is the source that carries weight in an adversarial reading, per the design doc's Pane A block 3. |
 
 `assert_no_rating_fields` / `sort_peer_rows`'s trust-sort refusal apply to values from all three
-sources equally — a source label is a provenance tag, never a trust signal itself.
+sources equally — a source label is a provenance tag, never a trust signal itself. The one exact-key
+exception is `not_a_score`: a disclaimer key that legitimately contains the substring `score` while
+meaning the opposite of one (`self_accountability.SAFE_DISCLAIMER_KEYS` / `peer_accountability_tab
+.SAFE_DISCLAIMER_KEYS`, exact-match allowlisted, never a substring one).
+
+#### 9.1.1 Floor redaction — a `self_derived` privacy rule, not a fourth source
+
+A `self_derived` aggregate that breaks down by a low-cardinality key (e.g. `served_summary/1`'s
+per-model breakdown) publishes an exact count only when that bucket's total meets a floor (5); below
+the floor every count in the bucket reads `"fewer than 5"` and its latency percentiles are omitted
+entirely, rather than a number precise enough to let a requester dictionary-infer one specific rare
+exchange. This is a **display-time transform over the same deterministic fold** — recompute+match
+still holds because the floor is applied identically at recompute time, not selectively at publish
+time. A `sampled` check against a floored bucket can therefore only still confirm the bucket's
+presence (a model actually served vs. one invented out of thin air), not its exact counts or
+latency — a documented, intentional weakening traded for the floor's privacy guarantee, never
+silently presented as a full check.
 
 ### 9.2 The promise line — the higher-order bit
 

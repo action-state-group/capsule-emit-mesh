@@ -76,7 +76,6 @@ except Exception:  # pragma: no cover - only when capsule-emit isn't installed
 
 __all__ = [
     "BLOCK_PENDING",
-    "SERVED_SUMMARY_PENDING_REASON",
     "REFERENCES_PENDING_REASON",
     "build_card_face",
     "build_counterparty_held_block",
@@ -101,10 +100,6 @@ __all__ = [
 #: capsule_id/rung discipline above.
 BLOCK_PENDING = "pending"
 
-SERVED_SUMMARY_PENDING_REASON = (
-    "counted-by-this-node served/completed/failed/refused summary is not available on this "
-    "view yet: pending [mesh-served-summary-derivation]"
-)
 REFERENCES_PENDING_REASON = (
     "what my counterparties report when asked about me is not available on this view yet: "
     "pending [mesh-ask-the-references]"
@@ -395,12 +390,49 @@ def build_history_block(history_summary: dict[str, Any]) -> dict[str, Any]:
     return {"state": state, "text": text, **history_summary}
 
 
-def build_served_summary_block() -> dict[str, Any]:
-    """Block 2 -- served summary (self-derived, sampled). Not available on
-    this view yet: `served_summary.py` (`[mesh-served-summary-derivation]`)
-    does not exist on `main`. An honest pending block, never a fabricated
-    count."""
-    return {"state": BLOCK_PENDING, "text": SERVED_SUMMARY_PENDING_REASON, "source": "self_derived"}
+def build_served_summary_block(
+    records: list[dict[str, Any]],
+    *,
+    node_id: str,
+    checkpoint_lines: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Block 2 -- served summary (self-derived, sampled). Real now
+    ([mesh-served-summary-derivation]): ``served_summary.build_served_summary``
+    (never re-derived) folded over this node's own witnessed range. Honestly
+    ``absent`` when there is no witnessed checkpoint yet -- never a
+    fabricated zero -- and ``failed`` (never silently green) if the summary's
+    own recompute+match fails."""
+    from capsule_emit.checkpoint import CheckpointRecord
+    from served_summary import build_served_summary, verify_served_summary_recompute
+
+    checkpoint_lines = checkpoint_lines or []
+    latest_checkpoint = CheckpointRecord.from_dict(checkpoint_lines[-1]) if checkpoint_lines else None
+    summary = build_served_summary(node_id=node_id, capsule_records=records, latest_checkpoint=latest_checkpoint)
+    value = summary.to_value()
+
+    if not summary.coverage_root:
+        return {
+            "state": STATE_ABSENT,
+            "text": "no witnessed checkpoint yet -- nothing served falls inside a witnessed range",
+            "source": "self_derived",
+            "served_summary": value,
+        }
+    recompute_result = verify_served_summary_recompute(value, records, checkpoint_lines)
+    if not recompute_result.ok:
+        return {
+            "state": STATE_FAILED,
+            "text": f"served summary failed its own recompute+match: {'; '.join(recompute_result.errors)}",
+            "source": "self_derived",
+            "served_summary": value,
+        }
+
+    by_model = value["derivation"]["by_model"]
+    if not by_model:
+        text = "0 exchanges served in the witnessed range"
+    else:
+        parts = [f"{model}: {stats['served']} served" for model, stats in sorted(by_model.items())]
+        text = "; ".join(parts)
+    return {"state": STATE_VERIFIED, "text": text, "source": "self_derived", "served_summary": value}
 
 
 def build_counterparty_held_block(adjudications_summary: dict[str, Any]) -> dict[str, Any]:
@@ -484,11 +516,11 @@ def build_card_face(
 
     Composes ``self_accountability``'s own row-builders (``history_summary``/
     ``adjudications_summary``/``shared_summary``) for the facts that module
-    already computes correctly -- never re-derives them -- and adds only the
-    genuinely new v2 pieces: the promise line and the (pending) served-
-    summary block. Imported locally: ``self_accountability`` itself imports
-    from this module (the rung graders), so a module-level import here would
-    be circular.
+    already computes correctly -- never re-derives them -- and adds the v2
+    pieces: the promise line and the served-summary block
+    (``served_summary.build_served_summary``, [mesh-served-summary-derivation]).
+    Imported locally: ``self_accountability`` itself imports from this module
+    (the rung graders), so a module-level import here would be circular.
     """
     from self_accountability import adjudications_summary, history_summary, shared_summary
 
@@ -502,7 +534,7 @@ def build_card_face(
     return {
         "promise": build_promise_block(records),
         "history": build_history_block(history),
-        "served_summary": build_served_summary_block(),
+        "served_summary": build_served_summary_block(records, node_id=node_id, checkpoint_lines=checkpoint_lines),
         "counterparty_held": build_counterparty_held_block(adjudications),
         "footer": build_footer_block(
             native_log_entries=native_log_entries,

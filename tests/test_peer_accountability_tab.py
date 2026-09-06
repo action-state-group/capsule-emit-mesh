@@ -378,7 +378,15 @@ def test_peer_history_cell_is_pending_and_carries_mine_for_reference(tmp_path, f
 def test_served_cell_is_pending_never_a_fabricated_count():
     cell = served_cell()
     assert cell["state"] == CELL_PENDING
-    assert "mesh-served-summary-derivation" in cell["text"]
+    assert "served_summary/1" in cell["text"]
+    assert "mine_for_reference" not in cell
+
+
+def test_served_cell_carries_mine_for_reference_when_own_summary_supplied():
+    own_summary = {"schema": "mesh-served-summary/1", "node_id": "n1"}
+    cell = served_cell(own_summary)
+    assert cell["state"] == CELL_PENDING
+    assert cell["mine_for_reference"] == own_summary
 
 
 # ---------------------------------------------------------------------------
