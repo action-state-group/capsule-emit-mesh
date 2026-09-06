@@ -19,19 +19,23 @@ those rungs get their own red-team rows when they land.
 """
 from __future__ import annotations
 
+import copy
 import pathlib
 import platform
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 import pytest
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
+import node_ownership as no  # noqa: E402
 import sep_attestation as sepa  # noqa: E402
 
 HAS_SEP_LAB = (
@@ -188,3 +192,91 @@ def test_attack13b_helper_reporting_ok_true_is_required_for_hardware_claim(monke
     result = sepa.sign_binding(b"probe")
     assert result.custody == sepa.CUSTODY_SOFTWARE
     assert result.tee_protected is False
+
+
+# ── Attack 14 (merge-gate mutant): SEP-unaware verifier stays unaffected ────
+
+def _recheck_from_record(record: dict, *, node_endpoint_id: str, now_unix_ms: int) -> no.OwnershipRecheck:
+    """What a real, SEP-unaware verifier does: read ONLY the pre-existing
+    ``signed_node_ownership`` sub-dict out of the sealed identity capsule and
+    re-run the unmodified B4 check on it. Never looks at ``tee_key_custody`` --
+    that field does not exist as far as this function is concerned."""
+    who = record["model_attestation"]["compute_attestation"][no.OWNERSHIP_SUBJECT_KEY]
+    ownership = no.SignedNodeOwnership.from_value(who["signed_node_ownership"])
+    return no.recheck_ownership_validity(
+        ownership, expected_node_endpoint_id=node_endpoint_id, now_unix_ms=now_unix_ms
+    )
+
+
+def test_attack14_sep_unaware_verifier_unaffected_by_tee_key_custody_tamper(monkeypatch):
+    """CAUGHT -- this is the merge-gate mutant Steven named for #69: "a mutant
+    proving an SEP-unaware verifier still verifies the Ed25519 record
+    unchanged." ``tee_key_custody`` rides as an ADDITIVE sibling field next to
+    the pre-existing B4 owner cert inside the sealed identity capsule
+    (``node_ownership.seal_identity_capsule``); the pre-existing,
+    SEP-unaware verifier (``node_ownership.recheck_ownership_validity``) reads
+    only ``signed_node_ownership`` and has no code path that touches
+    ``tee_key_custody`` at all.
+
+    Evidence: seal a real identity capsule carrying both a valid owner cert
+    AND a tee_key_custody block, re-derive the SAME SignedNodeOwnership from
+    the capsule's own bytes and recheck it (PASS), then corrupt ONLY the
+    tee_key_custody sibling field (flip a hex digit of its signature) and
+    recheck AGAIN from the tampered record's bytes -- the result must be
+    byte-for-byte IDENTICAL, not merely "still valid": a verifier that
+    consulted tee_key_custody for its verdict (the mutant) would diverge
+    here even though it should not.
+    """
+    key = Ed25519PrivateKey.generate()
+    pub_hex = key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    ).hex()
+    node_endpoint_id = "42" * 32
+    now = int(time.time() * 1000)
+    claim = no.NodeOwnershipClaim(
+        version=1,
+        cert_id="cert-sep-mutant",
+        owner_id="owner-sep-mutant",
+        owner_sign_public_key=pub_hex,
+        node_endpoint_id=node_endpoint_id,
+        issued_at_unix_ms=now,
+        expires_at_unix_ms=now + 60_000,
+        node_label="studio",
+        hostname_hint="host",
+    )
+    ownership = no.SignedNodeOwnership(
+        claim=claim, signature=key.sign(no.canonical_claim_bytes(claim)).hex()
+    )
+
+    monkeypatch.setattr(sepa, "_secure_enclave_available", lambda: False)
+    tee_block = sepa.tee_key_custody_block(
+        pathlib.Path(tempfile.mkdtemp()),
+        ed25519_public_key_hex=pub_hex,
+        node_endpoint_id=node_endpoint_id,
+        owner_id=claim.owner_id,
+    )
+    assert tee_block["custody"] == sepa.CUSTODY_SOFTWARE  # forced fallback above, not hardware-gated
+
+    record = no.seal_identity_capsule(
+        ownership,
+        operator="op",
+        developer="dev",
+        signing_node_id=node_endpoint_id,
+        tee_key_custody=tee_block,
+    )
+
+    before = _recheck_from_record(record, node_endpoint_id=node_endpoint_id, now_unix_ms=now)
+    assert before.valid is True, before.reason
+
+    tampered = copy.deepcopy(record)
+    tampered_tee = tampered["model_attestation"]["compute_attestation"][no.OWNERSHIP_SUBJECT_KEY]["tee_key_custody"]
+    good_sig_hex = tampered_tee["signature_der_hex"]
+    tampered_tee["signature_der_hex"] = ("0" if good_sig_hex[0] != "0" else "1") + good_sig_hex[1:]
+    assert tampered_tee["signature_der_hex"] != good_sig_hex
+
+    after = _recheck_from_record(tampered, node_endpoint_id=node_endpoint_id, now_unix_ms=now)
+    assert after == before, (
+        "an SEP-unaware verifier must be blind to a tampered tee_key_custody "
+        "sibling field -- corrupting it must change NEITHER the pass/fail "
+        "verdict NOR any other field of the recheck result"
+    )
