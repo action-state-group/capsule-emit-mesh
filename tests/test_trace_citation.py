@@ -47,14 +47,33 @@ assert parse_tdx_quote(QUOTE_A).report_data != parse_tdx_quote(QUOTE_B).report_d
 
 
 def _record(*, measurement: str | None = SHARED_MRTD, platform="intel-tdx", weights_digest=None, cnf=None):
+    """A TRACE v0.2-conforming record, less the fields each test mutates to exercise
+    one specific rejection path. `policy.enforcement_mode: declared` and
+    `appraisal.status: none` are the honest minimum for a synthetic fixture that no
+    real policy engine or EAR verifier ever touched -- not "advisory" or
+    "affirming", which would claim evaluation that did not happen. Digests are
+    synthetic (fixed hex fill), not computed from anything real.
+
+    NOTE: `runtime.evidence` is NOT a field agentrust-trace's v0.2 schema recognizes
+    (`runtime` is `additionalProperties: false`); embedding it here means a record
+    from this fixture fails `agentrust_trace.validate_json` regardless of every
+    other field being conformant. Tracked as a blocking finding in this lane's
+    outbox (mesh-trace-v02-schema-fixture-update) -- see the `xfail` markers on the
+    two tests below that exercise the trusted-issuer-key path.
+    """
     runtime: dict = {"platform": platform, "evidence": {"format": "tdx-quote-v4", "collateral": "embedded"}}
     if measurement is not None:
         runtime["measurement"] = f"sha384:{measurement}"
     record = {
         "eat_profile": "tag:agentrust-io.com,2026:trace-v0.2",
+        "iat": 1753056000,
         "subject": "spiffe://trust.example.org/agent/evidence-demo/prod",
         "runtime": runtime,
         "model": {"provider": "meta", "model_id": "llama-3.3-70b-instruct"},
+        "policy": {"bundle_hash": "sha256:" + "aa" * 32, "enforcement_mode": "declared"},
+        "data_class": "internal",
+        "build_provenance": {"slsa_level": 0, "digest": "sha256:" + "bb" * 32},
+        "appraisal": {"status": "none", "verifier": "https://example.org/verifier"},
     }
     if weights_digest is not None:
         record["model"]["weights_digest"] = weights_digest
@@ -263,7 +282,17 @@ def test_no_declared_measurement_no_lift():
 
 # --------------------------------------------------------------------------- record-envelope mutant
 
+_SCHEMA_BLOCKS_EVIDENCE_REASON = (
+    "BLOCKED [mesh-trace-v02-schema-fixture-update]: agentrust-trace's real v0.2 "
+    "schema has `additionalProperties: false` on `runtime` and does not recognize "
+    "`runtime.evidence` at all, so `verify_record` raises a schema ValidationError "
+    "on ANY record built by `_record()` before it ever reaches the signature check "
+    "-- no combination of fields fixes this while evidence lives inside the signed "
+    "record. See the neutral lane outbox `## Needs decision` entry for this task."
+)
 
+
+@pytest.mark.xfail(reason=_SCHEMA_BLOCKS_EVIDENCE_REASON, strict=True)
 def test_tampered_record_envelope_rejects_even_with_a_perfect_quote():
     """When a trusted issuer key IS configured (the future-registry case), a
     record whose signature does not verify against it earns no grade at all --
@@ -275,7 +304,6 @@ def test_tampered_record_envelope_rejects_even_with_a_perfect_quote():
     signing_key = generate_key()
     trusted_jwk = key_to_jwk(signing_key)
     record = _record()
-    record["iat"] = 1753056000
     signed = sign_record(record, signing_key)
 
     # Tamper AFTER signing -- the record we actually cite no longer matches what was signed.
@@ -292,8 +320,13 @@ def test_tampered_record_envelope_rejects_even_with_a_perfect_quote():
     )
     assert result.grade == GRADE_UNATTESTED
     assert result.record_signature_state == "failed"
+    # Assert the FAILURE IS a signature mismatch, never a schema-conformance
+    # coincidence -- the exact "passes for the wrong reason" trap this fixture
+    # update was built to catch (mesh-trace-v02-schema-fixture-update).
+    assert "InvalidSignature" in result.record_signature_detail
 
 
+@pytest.mark.xfail(reason=_SCHEMA_BLOCKS_EVIDENCE_REASON, strict=True)
 def test_untampered_signed_record_still_grades_platform_attested():
     pytest.importorskip("agentrust_trace")
     from agentrust_trace.sign import generate_key, key_to_jwk, sign_record
@@ -301,7 +334,6 @@ def test_untampered_signed_record_still_grades_platform_attested():
     signing_key = generate_key()
     trusted_jwk = key_to_jwk(signing_key)
     record = _record()
-    record["iat"] = 1753056000
     signed = sign_record(record, signing_key)
     signed_bytes = _record_bytes(signed)
     reference = trace_record_reference(signed_bytes, slot="runtime.tee_attestation")
