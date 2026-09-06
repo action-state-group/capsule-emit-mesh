@@ -535,11 +535,45 @@ def test_build_history_block_no_checkpoints_is_absent_never_verified():
     assert block["source"] == "history_card"
 
 
-def test_build_served_summary_block_is_pending_never_a_fabricated_count():
-    block = build_served_summary_block()
-    assert block["state"] == BLOCK_PENDING
-    assert "mesh-served-summary-derivation" in block["text"]
+def test_build_served_summary_block_is_absent_never_a_fabricated_count_with_no_checkpoint():
+    block = build_served_summary_block([], node_id="n1", checkpoint_lines=[])
+    assert block["state"] == STATE_ABSENT
     assert block["source"] == "self_derived"
+    assert block["served_summary"]["coverage"]["checkpoint_root"] == ""
+
+
+def test_build_served_summary_block_verified_over_a_real_witnessed_range(tmp_path):
+    from checkpointing import CheckpointConfig, CheckpointState, Ed25519Signer, JsonlLogSource
+
+    def _capsule(i, *, status="confirmed", model="m/1", latency="10.0"):
+        return {
+            "capsule_id": f"{i:064x}",
+            "effect": {"status": status},
+            "model_attestation": {
+                "compute_attestation": {
+                    "x-mesh-poc-v1": {
+                        "latency_ms": latency,
+                        "serving_provenance": {"model_canonical_ref": model, "quantization": "Q4", "role": "provider"},
+                    }
+                }
+            },
+        }
+
+    caps = [_capsule(i) for i in range(6)]
+    log = JsonlLogSource(tmp_path / "capsules.jsonl")
+    cfg = CheckpointConfig(cadence_entries=6, max_lag_entries=10_000, ts_urls=[])
+    signer = Ed25519Signer(tmp_path / "node-a.pem")
+    state = CheckpointState.load(ledger_dir=tmp_path, log_source=log, cfg=cfg, signer=signer, log_id="log-a")
+    for c in caps:
+        log.append(c)
+        state.record_appended()
+    checkpoint_lines = [json.loads(line) for line in (tmp_path / "checkpoints.jsonl").read_text().splitlines()]
+
+    block = build_served_summary_block(caps, node_id="n1", checkpoint_lines=checkpoint_lines)
+    assert block["state"] == STATE_VERIFIED
+    assert block["source"] == "self_derived"
+    assert "m/1" in block["text"]
+    assert block["served_summary"]["derivation"]["by_model"]["m/1"]["served"] == 6
 
 
 def test_build_counterparty_held_block_counts_adjudications_naming_my_capsule_ids():

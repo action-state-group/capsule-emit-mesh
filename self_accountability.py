@@ -91,6 +91,15 @@ SHARED_ABSENT_REASON = (
 #: here; this list catches the general scoring shape.
 FORBIDDEN_RATING_KEYS = ("score", "rating", "trust_level", "grade_percent")
 
+#: Exact key names that legitimately CONTAIN a forbidden substring while
+#: meaning the opposite of one -- `history_card.py`/`account_capsule.py`/
+#: `served_summary.py` all carry a `not_a_score` disclaimer key (contains
+#: "score") on their `to_value()` output. An exact-match allowlist, never a
+#: substring one, so a real `not_a_score_but_actually_is` or similar could
+#: never sneak past this the way the substring check itself would otherwise
+#: be tricked.
+SAFE_DISCLAIMER_KEYS = frozenset({"not_a_score"})
+
 
 class RatingFieldError(ValueError):
     """Raised when a card would carry a field that could hold a rating."""
@@ -100,9 +109,12 @@ def assert_no_rating_fields(value: Any, *, _path: str = "$") -> None:
     """Walk *value* recursively and raise `RatingFieldError` on the first key
     whose name contains one of `FORBIDDEN_RATING_KEYS`. Total and recursive:
     a rating buried three dicts deep must be caught exactly like a top-level
-    one."""
+    one. `SAFE_DISCLAIMER_KEYS` is checked by exact match first -- a key
+    naming the ABSENCE of a rating is not the thing this guards against."""
     if isinstance(value, dict):
         for key, sub in value.items():
+            if key in SAFE_DISCLAIMER_KEYS:
+                continue
             lowered = str(key).lower()
             for forbidden in FORBIDDEN_RATING_KEYS:
                 if forbidden in lowered:

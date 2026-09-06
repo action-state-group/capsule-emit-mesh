@@ -62,4 +62,9 @@ py-modules = [
     "requester_commitment",
     "capsule_coordinator_verify",
     "capsule_disclosure_endpoint",
+    # [mesh-served-summary-derivation]: evidence_responder.py's served_summary/1
+    # dispatch pulls in these three at runtime.
+    "served_summary",
+    "capsule_mesh_view",
+    "twin_adjudicator",
 ]
