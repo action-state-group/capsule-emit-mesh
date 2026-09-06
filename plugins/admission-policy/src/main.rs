@@ -134,6 +134,7 @@ fn seal_observed_host_exchange(capsules: &CapsuleState, envelope: &OpenAiExchang
         reasoning_digest: envelope.reasoning_digest.as_deref(),
         usage,
         host_provenance,
+        dispatch_path: envelope.dispatch_path.clone(),
     };
     match capsules.emit_for_observed_host_exchange(&observed) {
         Ok(emitted) => {

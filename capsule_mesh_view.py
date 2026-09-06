@@ -102,6 +102,20 @@ def _poc_block(record: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+#: Every value an explicit `x-mesh-poc-v1.role` field may carry. Widened
+#: 2026-09-06 (role ruling, upstream-clean half) from `{"requested",
+#: "served"}` to also accept `"unknown"` (an unrecognized dispatch_path) --
+#: MUST be trusted as-is, same as "requested"/"served", never fall through
+#: to the observation_point/source-log heuristic below. That fallthrough was
+#: the actual bug this ruling closes: a role field that only recognized two
+#: of its own legal values would silently re-guess "served" for the others
+#: via `_SERVED_OBSERVATION_POINTS`/`_DEFAULT_ROLE_BY_SOURCE` -- turning an
+#: honest "I don't know" back into a fabricated claim. (A `"conflict"` value
+#: -- the served_by_node_id-vs-self consistency check, fork-only enrichment
+#: -- lands as a separate, later commit.)
+_EXPLICIT_POC_ROLES = frozenset({"requested", "served", "unknown"})
+
+
 def label_role(record: dict[str, Any], source_log: str) -> str:
     """Display-only role label -- never persisted here.
 
@@ -109,11 +123,11 @@ def label_role(record: dict[str, Any], source_log: str) -> str:
     seals its own `x-mesh-poc-v1.role` (see its `PROVISIONAL: pending CPB
     #70 promotion` definition site) -- when a record carries that field, it
     is the authoritative source-of-truth and is returned as-is. Records
-    without it (e.g. the Rust plugin's, or older sidecar records) fall back
+    without it (e.g. older sidecar records predating this field) fall back
     to the pre-existing observation_point/source-log heuristic below.
     """
     poc_role = _poc_block(record).get("role")
-    if poc_role in ("requested", "served"):
+    if poc_role in _EXPLICIT_POC_ROLES:
         return poc_role
     observation_point = _lifecycle_block(record).get("observation_point")
     if observation_point in _SERVED_OBSERVATION_POINTS:

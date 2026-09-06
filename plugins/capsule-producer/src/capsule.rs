@@ -61,6 +61,15 @@ pub struct ServingProvenance {
     /// `served_by_node_id` when observed; otherwise the emitting plugin's own
     /// `node_id` (single-node PoC).
     pub served_by_node_id: String,
+    /// The raw `dispatch_path` wire value this record was derived from (e.g.
+    /// `"remote_mesh"`, `"typed_frontend"`, `"raw_proxy"`, `"unknown"`), or
+    /// `None` on a path that never received one (this plugin's own directly
+    /// admitted `/v1` exchanges, which have no host envelope at all). Carried
+    /// alongside `MeshPocV1::role` (a sibling, top-level field on the
+    /// enclosing block -- see its doc comment for why it lives there and not
+    /// here) even when they agree -- on a `role: "conflict"` this is one of
+    /// the two raw facts a reader needs to see why, not just a resolved label.
+    pub dispatch_path: Option<String>,
     /// The requesting party / client identity for this exchange. `"unknown"`
     /// when the caller supplied no identity beyond the (optional) client nonce.
     pub requesting_party: String,
@@ -127,6 +136,7 @@ impl ServingProvenance {
         };
         json!({
             "served_by_node_id": self.served_by_node_id,
+            "dispatch_path": self.dispatch_path,
             "requesting_party": self.requesting_party,
             "exchange_id": self.exchange_id,
             "hostname": self.hostname,
@@ -174,6 +184,32 @@ pub struct MeshPocV1 {
     pub model_name_digest: String,
     /// Detailed serving provenance: what ran where, for which exchange.
     pub serving_provenance: ServingProvenance,
+    /// Which half of this exchange this record is: `"requested"` (this node
+    /// routed the exchange to a peer, never served it), `"served"` (this node
+    /// served it), `"conflict"` (the `dispatch_path`-derived expectation and
+    /// the `served_by_node_id`-vs-self consistency check disagree -- both raw
+    /// signals still ride alongside in `serving_provenance` so a reader never
+    /// has to take this label's word for it), or `"unknown"` (an
+    /// unrecognized `dispatch_path`). 2026-09-06 role ruling.
+    /// `capsule_mesh_view.label_role()` reads this exact top-level field
+    /// FIRST, as the authoritative signal -- mirrors `capsule_sidecar.py`'s
+    /// own top-level `x-mesh-poc-v1.role` field exactly, and deliberately
+    /// lives HERE, a sibling of `serving_provenance`, not nested inside it:
+    /// `serving_provenance` there already has its own `role` key in the
+    /// Python sidecar's unrelated CLI-role vocabulary ("provider"/
+    /// "requester"), a different axis this field must never collide with.
+    /// NEVER silently defaulted to `"served"` -- a missing/unrecognized
+    /// signal must never become a claim; that silent default was the actual
+    /// bug this field exists to close.
+    pub role: String,
+    /// Complementary vantage provenance (2026-09-06 ruling, option C):
+    /// `Some("client_egress")` on the `RemoteMesh` dispatch path only -- this
+    /// node observed the exchange at its own outbound/client-facing vantage
+    /// point, not a serving vantage. `None` on every other path. A top-level
+    /// sibling of `role`, mirroring where `capsule_sidecar.py` places its own
+    /// (provisional) `observation_point` field. Independent of `role`: one
+    /// more honestly-scoped fact, not a restatement of it.
+    pub observation_point: Option<String>,
     /// Generation parameters as exact decimal STRINGS (§5.1 forbids floats in
     /// digest-bearing fields) — e.g. `{"temperature": "0.7"}`.
     pub generation_parameters: Map<String, Value>,
@@ -203,6 +239,8 @@ impl MeshPocV1 {
             "client_nonce_source": self.client_nonce_source,
             "model_name_digest": self.model_name_digest,
             "serving_provenance": self.serving_provenance.to_value(),
+            "role": self.role,
+            "observation_point": self.observation_point,
             "generation_parameters": self.generation_parameters,
             "latency_ms": self.latency_ms,
             // Typed reference fields, present-but-empty (issue #1233 step 4,
@@ -592,6 +630,7 @@ mod tests {
                 model_name_digest: "d".repeat(64),
                 serving_provenance: ServingProvenance {
                     served_by_node_id: "node-under-test".to_string(),
+                    dispatch_path: None,
                     requesting_party: "client-under-test".to_string(),
                     exchange_id: "exch-under-test".to_string(),
                     quantization: "Q4_K_M".to_string(),
@@ -616,6 +655,8 @@ mod tests {
                     seq: 1,
                     prev_seq: None,
                 },
+                role: "served".to_string(),
+                observation_point: None,
                 generation_parameters,
                 latency_ms: "1.0".to_string(),
                 binary_attestation: None,

@@ -59,6 +59,7 @@ fn sample_input(seed: &str, chain: Option<ChainLink>) -> CapsuleInput {
             model_name_digest: "d".repeat(64),
             serving_provenance: ServingProvenance {
                 served_by_node_id: "chain-ledger-node".to_string(),
+                dispatch_path: None,
                 requesting_party: "chain-ledger-client".to_string(),
                 exchange_id: "chain-ledger-exchange".to_string(),
                 quantization: "unknown".to_string(),
@@ -83,6 +84,8 @@ fn sample_input(seed: &str, chain: Option<ChainLink>) -> CapsuleInput {
                 seq: 1,
                 prev_seq: None,
             },
+            role: "served".to_string(),
+            observation_point: None,
             generation_parameters,
             latency_ms: "42.0".to_string(),
             binary_attestation: None,
