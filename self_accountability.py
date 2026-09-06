@@ -69,15 +69,19 @@ __all__ = [
 #: design docs' own wording -- not paraphrased card to card).
 HONESTY_LINE = "coverage is checked by counterparties, not by this node; hardware is OS-reported."
 
-#: [mesh-e14-evidence-responder] is blocked on an upstream capsule-emit
-#: merge (capsule-emit-mesh PR #83 CI red pending capsule-emit PR #148) --
-#: cited here, not re-litigated, so this stays a single place to update
-#: once E14 lands.
+#: STALE REASON, SUPERSEDED (kept in this comment only so the history is
+#: legible): "[mesh-e14-evidence-responder] depends on capsule_emit
+#: .evidence_request, an upstream capsule-emit module not yet merged
+#: (capsule-emit-mesh #83 CI red pending capsule-emit #148)". Both #83 and
+#: [mesh-e15-evidence-http-route] are MERGED on `main` today -- the
+#: responder that ANSWERS a request exists. The current, real gap: nothing
+#: persists a served/refused count for this card to tally (same gap
+#: `peer_accountability_tab.ASKED_ABSENT_REASON` documents for the
+#: per-peer view).
 SHARED_ABSENT_REASON = (
-    "evidence-request responder counts are not yet available on this node: "
-    "[mesh-e14-evidence-responder] depends on capsule_emit.evidence_request, "
-    "an upstream capsule-emit module not yet merged (capsule-emit-mesh #83 "
-    "CI red pending capsule-emit #148)"
+    "evidence-request responder counts are not yet available on this node: [mesh-e14-evidence-"
+    "responder]'s responder is merged (capsule-emit-mesh #83, [mesh-e15-evidence-http-route]), "
+    "but nothing persists a served/refused count for it to tally"
 )
 
 #: Substrings that must never appear as a dict key anywhere in a Pane A

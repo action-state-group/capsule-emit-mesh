@@ -60,6 +60,12 @@ from bilateral_demo import ClientAck, verify_client_ack
 from capsule_mesh_view import _poc_block, _verify_ok_map, verify_results_for
 from capsule_mesh_viewer import _load_verify_js, friendly_model_name, serving_provenance
 from capsule_sidecar import derive_cross_party_rung, identity_limitation_for_rung
+from join_card import (
+    CardTransitionVerdict,
+    ExchangeCardVerdict,
+    card_consistency,
+    promise_line,
+)
 from mac_hardware_inventory import GRADE_OS_MEASURED as HARDWARE_INVENTORY_OS_MEASURED
 from trace_citation import GRADE_UNATTESTED, grade_tee_citation
 
@@ -69,7 +75,16 @@ except Exception:  # pragma: no cover - only when capsule-emit isn't installed
     read_ledger = None  # type: ignore[assignment]
 
 __all__ = [
+    "BLOCK_PENDING",
+    "SERVED_SUMMARY_PENDING_REASON",
+    "REFERENCES_PENDING_REASON",
+    "build_card_face",
+    "build_counterparty_held_block",
+    "build_footer_block",
+    "build_history_block",
+    "build_promise_block",
     "build_row",
+    "build_served_summary_block",
     "build_tab_payload",
     "cross_party_grade",
     "freshness_grade",
@@ -79,6 +94,21 @@ __all__ = [
     "render_accountability_tab_html",
     "tee_citation_grade",
 ]
+
+#: The doc's copy-pass color rule (§7 rule 4): grey = not applicable / not in
+#: view / not yet asked -- never amber for "not shown here". A block that is
+#: honestly not wired yet uses this state, distinct from the four-state
+#: capsule_id/rung discipline above.
+BLOCK_PENDING = "pending"
+
+SERVED_SUMMARY_PENDING_REASON = (
+    "counted-by-this-node served/completed/failed/refused summary is not available on this "
+    "view yet: pending [mesh-served-summary-derivation]"
+)
+REFERENCES_PENDING_REASON = (
+    "what my counterparties report when asked about me is not available on this view yet: "
+    "pending [mesh-ask-the-references]"
+)
 
 # The three-state discipline (TRUST-MODEL.md §10 Rule 1), plus an explicit
 # fourth for evidence that was checked and came back bad -- "absent" and
@@ -320,6 +350,169 @@ def log_integrity_grade(verify_ok: bool | None, has_witness_checkpoint: bool) ->
     return {"state": state, "witness_checkpoint_supplied": bool(has_witness_checkpoint)}
 
 
+# ---------------------------------------------------------------------------
+# Pane A card face -- mesh-accountability-panes-v2-2026-09-05.md §1: three
+# stacked blocks (history / served summary / what others hold), each labeled
+# with its own source and never merged into one number, plus the promise
+# line (§-2) and the native-log footer.
+# ---------------------------------------------------------------------------
+
+
+def build_promise_block(ledger_lines: list[dict[str, Any]]) -> dict[str, Any]:
+    """The first line of the card face: `join_card.promise_line()` over this
+    node's own ledger, graded against the LATEST exchange entry and the most
+    recent card transition -- a bad transition (widened / lineage-broken /
+    node-id-mismatch) always outranks an otherwise-clean latest exchange."""
+    result = card_consistency(ledger_lines)
+    latest_entry: ExchangeCardVerdict | None = result.entries[-1] if result.entries else None
+    latest_transition: CardTransitionVerdict | None = result.card_transitions[-1] if result.card_transitions else None
+    return promise_line(latest_entry, latest_transition=latest_transition)
+
+
+def build_history_block(history_summary: dict[str, Any]) -> dict[str, Any]:
+    """Block 1 -- history card. A thin re-shaping of
+    ``self_accountability.history_summary()`` (never re-derived -- that
+    function already wraps ``history_card.build_history_card()``) into the
+    v2 card face's one-sentence-plus-detail shape. The checkpoint list /
+    receipt status / in-browser `verify_history_card` result are the
+    "underneath" (not built here -- the existing per-exchange table below
+    this block already serves that drill-down role for this view)."""
+    continuity = history_summary["continuity"]
+    broken = continuity.startswith("broken at")
+    if broken:
+        text = f"broken history: {continuity}"
+        state = STATE_FAILED
+    elif history_summary["checkpoint_count"] == 0:
+        text = "no checkpoints since the requested size"
+        state = STATE_ABSENT
+    else:
+        witnessed_by = f", seen by {len(history_summary['witnesses'])} peer(s)" if history_summary["witnessed"] else ", not witnessed"
+        text = (
+            f"{'Unbroken' if history_summary['unforked'] else 'Forked'} history: "
+            f"{history_summary['checkpoint_count']} checkpoint(s){witnessed_by}"
+        )
+        state = STATE_VERIFIED if history_summary["unforked"] else STATE_FAILED
+    return {"state": state, "text": text, **history_summary}
+
+
+def build_served_summary_block() -> dict[str, Any]:
+    """Block 2 -- served summary (self-derived, sampled). Not available on
+    this view yet: `served_summary.py` (`[mesh-served-summary-derivation]`)
+    does not exist on `main`. An honest pending block, never a fabricated
+    count."""
+    return {"state": BLOCK_PENDING, "text": SERVED_SUMMARY_PENDING_REASON, "source": "self_derived"}
+
+
+def build_counterparty_held_block(adjudications_summary: dict[str, Any]) -> dict[str, Any]:
+    """Block 3 -- what others hold about me. A thin re-shaping of
+    ``self_accountability.adjudications_summary()`` (never re-derived) --
+    ``source: self_held``, never claimed as this node's own property. The
+    references path (what my counterparties report when *I* ask them) is
+    pending [mesh-ask-the-references]."""
+    tally = {k: adjudications_summary[k] for k in ("corroborated", "contradicted", "inconclusive")}
+    received = sum(tally.values())
+    return {
+        "adjudications_received": {
+            "state": STATE_PRESENT_UNVERIFIED if received else STATE_ABSENT,
+            "count": received,
+            "tally": tally,
+            "source": "self_held",
+            "text": (
+                f"{received} adjudication(s) received about this node's exchanges (self-held count)"
+                if received
+                else "no adjudications received yet"
+            ),
+        },
+        "references": {"state": BLOCK_PENDING, "text": REFERENCES_PENDING_REASON, "source": "counterparty_held"},
+    }
+
+
+def build_footer_block(
+    *,
+    native_log_entries: list[dict[str, Any]] | None,
+    capsule_records: list[dict[str, Any]],
+    lifecycle_events: list[dict[str, Any]] | None = None,
+    shared_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The fixed two-line footer: the native-log join (the node auditing
+    itself -- real, via ``self_accountability.sealing_summary`` [never
+    re-derived]) plus the refusal/absence counts. `shared_summary`, when
+    supplied, is ``self_accountability.shared_summary()``'s own honestly-
+    pending refusals count (never re-derived); an absence-recorded-against-
+    me count is counterparty-held, same gap as the references block above --
+    both pending states are never fabricated as `0`."""
+    if native_log_entries is None:
+        native = {"state": BLOCK_PENDING, "text": "no native_log supplied to this view"}
+    else:
+        from self_accountability import sealing_summary
+
+        sealing = sealing_summary(native_log_entries, capsule_records, lifecycle_events)
+        native = {
+            "state": STATE_VERIFIED if sealing["unsealed_count"] == 0 else STATE_FAILED,
+            "text": sealing["coverage_summary"],
+            "unsealed_count": sealing["unsealed_count"],
+        }
+    refusals = (shared_summary or {}).get("refusals_issued") or {
+        "state": BLOCK_PENDING,
+        "text": "no evidence-request log is persisted yet to count refusals issued",
+    }
+    return {
+        "native_log_join": native,
+        "refusals_issued": refusals,
+        "absences_recorded_against_me": {
+            "state": BLOCK_PENDING,
+            "text": REFERENCES_PENDING_REASON,
+        },
+    }
+
+
+def build_card_face(
+    records: list[dict[str, Any]],
+    *,
+    node_id: str,
+    log_id: str,
+    checkpoint_lines: list[dict[str, Any]] | None = None,
+    since_size: int = 0,
+    native_log_entries: list[dict[str, Any]] | None = None,
+    lifecycle_events: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Assemble Pane A's card face: "the card a stranger would receive" --
+    three labeled blocks + the promise line + the footer. `records` is this
+    node's full ledger (cards, exchanges, adjudications received, etc. --
+    the same ``capsules.jsonl`` the existing per-exchange table below reads),
+    never just the exchange subset.
+
+    Composes ``self_accountability``'s own row-builders (``history_summary``/
+    ``adjudications_summary``/``shared_summary``) for the facts that module
+    already computes correctly -- never re-derives them -- and adds only the
+    genuinely new v2 pieces: the promise line and the (pending) served-
+    summary block. Imported locally: ``self_accountability`` itself imports
+    from this module (the rung graders), so a module-level import here would
+    be circular.
+    """
+    from self_accountability import adjudications_summary, history_summary, shared_summary
+
+    checkpoint_lines = checkpoint_lines or []
+    own_capsule_ids = {r.get("capsule_id") for r in records if r.get("capsule_id")}
+    history = history_summary(
+        node_id=node_id, log_id=log_id, checkpoint_lines=checkpoint_lines, since_size=since_size, ledger_records=records
+    )
+    adjudications = adjudications_summary(records, own_capsule_ids=own_capsule_ids)
+    shared = shared_summary()
+    return {
+        "promise": build_promise_block(records),
+        "history": build_history_block(history),
+        "served_summary": build_served_summary_block(),
+        "counterparty_held": build_counterparty_held_block(adjudications),
+        "footer": build_footer_block(
+            native_log_entries=native_log_entries,
+            capsule_records=records,
+            lifecycle_events=lifecycle_events,
+            shared_summary=shared,
+        ),
+    }
+
+
 def build_row(record: dict[str, Any], *, verify_ok: bool | None, has_witness_checkpoint: bool) -> dict[str, Any]:
     """One exchange row: claimed model/hardware + when, the rung detail that
     backs the row's expand panel, and the record itself (so the browser can
@@ -352,8 +545,19 @@ def build_tab_payload(
     ledger_dir: Path | None = None,
     witness_checkpoint: dict[str, Any] | None = None,
     operator: str | None = None,
+    node_id: str | None = None,
+    log_id: str | None = None,
+    checkpoint_lines: list[dict[str, Any]] | None = None,
+    since_size: int = 0,
+    native_log_entries: list[dict[str, Any]] | None = None,
+    lifecycle_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Assemble the whole tab's payload for one node's log."""
+    """Assemble the whole tab's payload for one node's log: the existing
+    per-exchange table (unchanged) plus, when `node_id`/`log_id` are
+    supplied, the v2 card face (`build_card_face`) -- "the card a stranger
+    would receive", with the per-exchange table as its "underneath" detail.
+    `card` is `None` (never a fabricated empty face) when the caller has not
+    supplied enough to build one."""
     verify_results = verify_results_for(records, ledger_dir=ledger_dir)
     vmap = _verify_ok_map(records, verify_results)
     has_witness = witness_checkpoint is not None
@@ -362,10 +566,22 @@ def build_tab_payload(
         for record in records
     ]
     rows.sort(key=lambda row: row.get("timestamp") or "")
+    card = None
+    if node_id is not None and log_id is not None:
+        card = build_card_face(
+            records,
+            node_id=node_id,
+            log_id=log_id,
+            checkpoint_lines=checkpoint_lines,
+            since_size=since_size,
+            native_log_entries=native_log_entries,
+            lifecycle_events=lifecycle_events,
+        )
     return {
         "operator": operator or (records[0].get("operator") if records else None),
         "witness_checkpoint_supplied": has_witness,
         "rows": rows,
+        "card": card,
     }
 
 
@@ -469,6 +685,18 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   .rung-card .caveat { margin-top: 6px; font-size: 12px; color: var(--fg-dim); }
   .empty { padding: 30px; text-align: center; color: var(--fg-faint); }
   footer.note { margin-top: 14px; font-size: 12px; color: var(--fg-faint); }
+  .card-face { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 14px 16px; margin-bottom: 16px; }
+  .card-face .promise-line { font-size: 14px; font-weight: 700; margin-bottom: 10px; }
+  .card-face .promise-kept { color: var(--good); }
+  .card-face .promise-broken { color: var(--bad); }
+  .card-face .promise-nothing_promised { color: var(--fg-faint); }
+  .card-face .promise-changed_without_saying { color: var(--warn); }
+  .card-block { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--border-soft); font-size: 13px; }
+  .card-block:last-of-type { border-bottom: none; }
+  .card-block .block-label { color: var(--fg-faint); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; min-width: 108px; }
+  .card-footer { margin-top: 10px; font-size: 12px; color: var(--fg-dim); }
+  .copy-btn { margin-top: 10px; font-size: 11.5px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border-soft);
+    background: var(--panel-strong); color: var(--fg-dim); cursor: pointer; }
 </style>
 </head>
 <body>
@@ -484,6 +712,14 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   <main>
     <h1 class="type-headline">Accountability</h1>
     <p class="type-caption" data-meta>loading…</p>
+    <section class="card-face" data-card-face hidden>
+      <div class="promise-line" data-promise-line></div>
+      <div class="card-block"><span class="block-label">History</span><span data-block-history></span></div>
+      <div class="card-block"><span class="block-label">Served</span><span data-block-served></span></div>
+      <div class="card-block"><span class="block-label">Held by others</span><span data-block-held></span></div>
+      <div class="card-footer" data-card-footer></div>
+      <button class="copy-btn" type="button" data-copy-card>Copy card</button>
+    </section>
     <div class="panel-shell">
       <table>
         <thead>
@@ -637,10 +873,67 @@ _HTML_SHELL = r"""<!DOCTYPE html>
 
   function el(sel) { return document.querySelector(sel); }
 
+  // Copy-pass color rule (§7 rule 4): grey = not applicable/not in view,
+  // amber = a real limitation of the record, red = a check failed, green =
+  // checked. "pending" is grey, never amber -- a not-yet-wired block is not
+  // a limitation OF THIS RECORD, it is a limitation of this view.
+  var BLOCK_TONE = { verified: "good", "present-unverified": "warn", failed: "bad", absent: "neutral", pending: "neutral" };
+
+  function renderCardFace(card) {
+    if (!card) { return; }
+    el("[data-card-face]").hidden = false;
+    var promise = card.promise || {};
+    var pl = el("[data-promise-line]");
+    pl.className = "promise-line promise-" + (promise.state || "nothing_promised");
+    var PROMISE_TEXT = {
+      kept: "Promise: kept",
+      broken: "Promise: broken" + (promise.detail ? ": " + promise.detail : ""),
+      nothing_promised: "Promise: nothing promised",
+      changed_without_saying: "Promise: changed without saying" + (promise.detail ? " (" + promise.detail + ")" : "")
+    };
+    pl.textContent = PROMISE_TEXT[promise.state] || "Promise: nothing promised";
+
+    function fill(sel, block, sourceLabel) {
+      var span = el(sel);
+      var tone = BLOCK_TONE[(block && block.state) || ""] || "neutral";
+      span.innerHTML = "";
+      var pillEl = document.createElement("span");
+      pillEl.className = "pill pill-" + tone;
+      pillEl.textContent = (block && block.text) || "no evidence recorded";
+      span.appendChild(pillEl);
+      if (sourceLabel) {
+        var src = document.createElement("span");
+        src.className = "caveat";
+        src.textContent = " (" + sourceLabel + ")";
+        span.appendChild(src);
+      }
+    }
+    fill("[data-block-history]", card.history, "local_ledger");
+    fill("[data-block-served]", card.served_summary, "self_derived, sampled");
+    var held = (card.counterparty_held || {}).adjudications_received;
+    fill("[data-block-held]", held, "counterparty_held, self_held count");
+
+    var footer = card.footer || {};
+    var nativeLog = footer.native_log_join || {};
+    el("[data-card-footer]").textContent =
+      (nativeLog.text || "native-log join not available") +
+      " · refusals issued: " + (footer.refusals_issued ? footer.refusals_issued.text : "pending") +
+      " · absences against me: " + (footer.absences_recorded_against_me ? footer.absences_recorded_against_me.text : "pending") +
+      ". Coverage is checked by counterparties, not by this node; hardware is OS-reported.";
+
+    el("[data-copy-card]").addEventListener("click", function () {
+      var text = JSON.stringify(card, null, 2);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text);
+      }
+    });
+  }
+
   async function boot() {
     var payload = window.__ACCOUNTABILITY_PAYLOAD__;
     var meta = el("[data-meta]");
     var tbody = el("[data-rows]");
+    renderCardFace(payload && payload.card);
     if (!payload || !payload.rows || !payload.rows.length) {
       meta.textContent = "no exchanges";
       el("[data-empty]").hidden = false;
@@ -703,6 +996,10 @@ def _cmd_html(args: argparse.Namespace) -> int:
         ledger_dir=Path(args.ledger).resolve().parent,
         witness_checkpoint=witness,
         operator=args.operator,
+        node_id=args.node_id,
+        log_id=args.log_id,
+        checkpoint_lines=_read_records(args.checkpoints) if args.checkpoints else [],
+        native_log_entries=_read_records(args.native_log) if args.native_log else None,
     )
     html = render_accountability_tab_html(payload)
     with open(args.out, "w", encoding="utf-8") as fh:
@@ -722,6 +1019,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out", required=True, metavar="PATH", help="output HTML path")
     parser.add_argument("--witness", metavar="PATH", default=None, help="optional COSE checkpoint receipt (json/jsonl)")
     parser.add_argument("--operator", default=None, help="operator label for the view header")
+    parser.add_argument(
+        "--node-id", default=None, help="this node's id -- when supplied, renders the v2 card face above the table"
+    )
+    parser.add_argument("--log-id", default=None, help="this node's log id, for the card face's history block")
+    parser.add_argument("--checkpoints", metavar="PATH", default=None, help="checkpoints.jsonl, for the card face's history block")
+    parser.add_argument("--native-log", metavar="PATH", default=None, help="native_log.jsonl, for the card face's footer")
     return parser
 
 

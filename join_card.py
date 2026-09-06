@@ -120,6 +120,11 @@ __all__ = [
     "latest_card",
     "card_consistency",
     "check_announcement_consistency",
+    "PROMISE_KEPT",
+    "PROMISE_BROKEN",
+    "PROMISE_NOTHING_PROMISED",
+    "PROMISE_CHANGED_WITHOUT_SAYING",
+    "promise_line",
 ]
 
 #: Schema tag on the serialized card -- versioned so a consumer can refuse a
@@ -698,3 +703,51 @@ def check_announcement_consistency(card: Card, observed_digest: str | None) -> d
         "card_announcement_digest": card.announcement_digest,
         "observed_digest": observed_digest,
     }
+
+
+#: The "higher-order bit" vocabulary (mesh-accountability-panes-v2-2026-09-05.md
+#: §-2): every card face and peer row leads with one of these four states,
+#: never a fifth. `nothing_promised` is grey and must never be rendered as
+#: `kept` -- it means there was nothing comparable, not that a promise held.
+PROMISE_KEPT = "kept"
+PROMISE_BROKEN = "broken"
+PROMISE_NOTHING_PROMISED = "nothing_promised"
+PROMISE_CHANGED_WITHOUT_SAYING = "changed_without_saying"
+
+
+def promise_line(
+    entry: "ExchangeCardVerdict | None",
+    *,
+    latest_transition: "CardTransitionVerdict | None" = None,
+) -> dict[str, Any]:
+    """Fold one exchange's `card_consistency` verdict (plus, when supplied,
+    the most recent card TRANSITION verdict) into the promise-line four-state
+    vocabulary.
+
+    A bad card transition (a widen, a broken lineage, or a node_id switch)
+    takes priority over the per-exchange status: the node changed what it
+    claims about itself without a clean supersede, and that is
+    `changed_without_saying` regardless of whether the exchange itself lined
+    up with the (already-suspect) card current at the time. `entry=None`
+    (no exchange to grade -- e.g. a peer row with no shared history yet, or a
+    card face with nothing selected) is honestly `nothing_promised`, never
+    `kept`.
+    """
+    if latest_transition is not None and latest_transition.status != CARD_TRANSITION_OK:
+        detail = latest_transition.status
+        if latest_transition.status == CARD_TRANSITION_WIDENED:
+            detail = f"widened: {', '.join(latest_transition.widened_fields)}"
+        return {"state": PROMISE_CHANGED_WITHOUT_SAYING, "detail": detail}
+
+    if entry is None:
+        return {"state": PROMISE_NOTHING_PROMISED, "detail": "no exchange to compare against a card"}
+
+    if entry.status == STATUS_OK:
+        return {"state": PROMISE_KEPT, "detail": None}
+    if entry.status == STATUS_BROKEN:
+        fields = ", ".join(m["field"] for m in entry.mismatches)
+        return {"state": PROMISE_BROKEN, "detail": fields}
+    # STATUS_NO_CARD_SEALED or STATUS_NOTHING_COMPARED -- nothing was pinned
+    # to check, or nothing the exchange carries lines up with what is pinned.
+    # Neither is a kept promise; both are honestly "nothing promised".
+    return {"state": PROMISE_NOTHING_PROMISED, "detail": entry.status}

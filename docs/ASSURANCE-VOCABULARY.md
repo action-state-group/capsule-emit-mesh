@@ -204,3 +204,48 @@ beyond insisting there be one, and that whichever document holds it names the ot
 
 *Offered as a proposal. Corrections to the mapping in §5.1 and §6 are the most useful form of
 disagreement.*
+
+---
+
+## 9. The Accountability panes' source labels + the promise line (added 2026-09-05)
+
+Not a new axis proposal — a record of a vocabulary already shipped in code
+(`capsule_accountability_tab.py`, `peer_accountability_tab.py`,
+`capsule_exchange_tab.py`, `join_card.py`), per
+`_work/mesh-accountability-panes-v2-2026-09-05.md`. Included here because it is exactly the kind
+of small, easily-diverging vocabulary §0 warns about: three panes, three source labels, and a
+four-state "did it keep its promise" line that must read the same way on every card and every row.
+
+### 9.1 Three property sources, labeled, never merged
+
+Every property the Accountability panes publish about a node names which of three sources produced
+it. The rule is normative for all three panes: **never merge two sources into one number, and never
+let a stronger-sounding source stand in for a weaker one that was actually used.**
+
+| Source label | Means | Who can lie, and how it's caught |
+|---|---|---|
+| `self_derived` | A node's own deterministic fold over its own witnessed ledger (`history_card.py`'s history properties, the not-yet-built `served_summary/1`, `account_capsule.py`'s served/success fold). Carries a `definition_digest` so a reader recomputes and matches. | The node itself; a tampered count is a signed lie a witness-checkpoint cross-check can catch, never taken on say-so. |
+| `sampled` (a verification method, not a fourth source) | A relying party's own spot-check of a `self_derived` claim — pull `k` records by position with inclusion proofs and confirm they agree with the summary. | Nobody; this is the reader checking, not a claim. Cited alongside `self_derived`, never standing alone. |
+| `counterparty_held` (rendered `self_held` when it is *this* node's own copy of what a counterparty gave it) | A fact asserted by someone OTHER than the node it is about — an adjudication a twin sealed, a verdict a peer reports when asked. `self_held` marks the special case where THIS view only has its own retained copy (`received()`) of that counterparty fact, not a fresh ask. | The node the fact is about cannot edit it; this is the source that carries weight in an adversarial reading, per the design doc's Pane A block 3. |
+
+`assert_no_rating_fields` / `sort_peer_rows`'s trust-sort refusal apply to values from all three
+sources equally — a source label is a provenance tag, never a trust signal itself.
+
+### 9.2 The promise line — the higher-order bit
+
+Every card face and every peer/exchange row leads with one of exactly four states
+(`join_card.promise_line`, folding `card_consistency`'s per-exchange verdict and the most recent
+card-transition verdict):
+
+| State | Color | Means |
+|---|---|---|
+| `kept` | green | The exchange's claims matched the card that was current when it was sealed, and no card transition since has widened or broken lineage. |
+| `broken: <field>` | red | A claim (model, weights digest, hardware, measurement rung, or serving node id) disagreed with the card current at that position. |
+| `nothing_promised` | grey | No card had been sealed yet, or the exchange shared zero comparable fields with the card that was current — never rendered as `kept`; a vacuous match is not a kept promise. |
+| `changed_without_saying` | amber | A card transition widened a previously-pinned claim to absent, broke its lineage (`supersedes` doesn't match), or switched `node_id` mid-chain — always outranks an otherwise-clean exchange verdict, so a node cannot launder a bad transition by immediately lining back up with the vaguer card. |
+
+This is axis-4-shaped (an assurance rung about *keeping a self-issued claim*, not about identity,
+execution, or confidentiality) but is kept as its own four-state enum rather than folded into §5's
+table: it grades a **promise against its own later behavior**, not a claim against independent
+evidence, and mixing the two would let a card's internal consistency stand in for the external
+checks §5 already covers.

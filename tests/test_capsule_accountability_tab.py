@@ -17,11 +17,18 @@ from agent_manifest._tdx_verify import parse_tdx_quote
 
 from bilateral_demo import ClientKey, make_client_ack
 from capsule_accountability_tab import (
+    BLOCK_PENDING,
     STATE_ABSENT,
     STATE_FAILED,
     STATE_PRESENT_UNVERIFIED,
     STATE_VERIFIED,
+    build_card_face,
+    build_counterparty_held_block,
+    build_footer_block,
+    build_history_block,
+    build_promise_block,
     build_row,
+    build_served_summary_block,
     build_tab_payload,
     cross_party_grade,
     freshness_grade,
@@ -32,6 +39,7 @@ from capsule_accountability_tab import (
     tee_citation_grade,
 )
 from capsule_sidecar import IDENTITY_LIMITATION_CAVEAT
+from join_card import PROMISE_KEPT, PROMISE_NOTHING_PROMISED, ModelRef, build_card, seal_card
 from trace_citation import GRADE_PLATFORM_ATTESTED, GRADE_UNATTESTED, trace_record_reference
 
 FIXTURES = Path(__file__).parent / "fixtures" / "tdx-attestation"
@@ -491,3 +499,127 @@ def test_mutant_record_level_cross_party_drop_flows_through_build_row():
     del poc["cross_party"]
     tampered_row = build_row(record, verify_ok=True, has_witness_checkpoint=False)
     assert tampered_row["rungs"]["cross_party"]["rung"] == "unilateral_fallback"
+
+
+# ── Pane A card face (v2): promise line / history / served / held / footer ──
+
+
+def _sealed_card(model_name="meta-llama/Llama-3.2-3B-Instruct", node_id="mesh-node-demo-1"):
+    card = build_card(node_id=node_id, hardware_inventory=None, models=[ModelRef(name=model_name)])
+    return seal_card(card, operator="op", developer="dev", signing_node_id=node_id)
+
+
+def test_build_promise_block_kept_when_exchange_matches_current_card():
+    ledger = [_sealed_card(), _capsule(capsule_id="c" * 64)]
+    line = build_promise_block(ledger)
+    assert line["state"] == PROMISE_KEPT
+
+
+def test_build_promise_block_nothing_promised_before_any_card():
+    ledger = [_capsule(capsule_id="c" * 64)]
+    line = build_promise_block(ledger)
+    assert line["state"] == PROMISE_NOTHING_PROMISED
+
+
+def test_build_promise_block_empty_ledger_is_nothing_promised():
+    assert build_promise_block([])["state"] == PROMISE_NOTHING_PROMISED
+
+
+def test_build_history_block_no_checkpoints_is_absent_never_verified():
+    from self_accountability import history_summary
+
+    summary = history_summary(node_id="n1", log_id="l1", checkpoint_lines=[])
+    block = build_history_block(summary)
+    assert block["state"] == STATE_ABSENT
+    assert block["state"] != STATE_VERIFIED
+    assert block["source"] == "history_card"
+
+
+def test_build_served_summary_block_is_pending_never_a_fabricated_count():
+    block = build_served_summary_block()
+    assert block["state"] == BLOCK_PENDING
+    assert "mesh-served-summary-derivation" in block["text"]
+    assert block["source"] == "self_derived"
+
+
+def test_build_counterparty_held_block_counts_adjudications_naming_my_capsule_ids():
+    from self_accountability import adjudications_summary
+
+    adjudication_about_me = {
+        "capsule_id": "d" * 64,
+        "chain": {"relation": "adjudicates"},
+        "model_attestation": {
+            "compute_attestation": {
+                "adjudication": {
+                    "verdict": "contradicted:owner-x",
+                    "half_a_capsule_id": "a" * 64,
+                    "half_b_capsule_id": "e" * 64,
+                }
+            }
+        },
+    }
+    summary = adjudications_summary([adjudication_about_me], own_capsule_ids={"a" * 64, "b" * 64})
+    block = build_counterparty_held_block(summary)
+    held = block["adjudications_received"]
+    assert held["count"] == 1
+    assert held["tally"]["contradicted"] == 1
+    assert held["source"] == "self_held"
+    assert block["references"]["state"] == BLOCK_PENDING
+    assert "mesh-ask-the-references" in block["references"]["text"]
+
+
+def test_build_counterparty_held_block_never_counts_an_adjudication_about_someone_else():
+    from self_accountability import adjudications_summary
+
+    unrelated_adjudication = {
+        "capsule_id": "d" * 64,
+        "chain": {"relation": "adjudicates"},
+        "model_attestation": {
+            "compute_attestation": {
+                "adjudication": {
+                    "verdict": "corroborated",
+                    "half_a_capsule_id": "x" * 64,
+                    "half_b_capsule_id": "y" * 64,
+                }
+            }
+        },
+    }
+    summary = adjudications_summary([unrelated_adjudication], own_capsule_ids={"a" * 64})
+    block = build_counterparty_held_block(summary)
+    held = block["adjudications_received"]
+    assert held["count"] == 0
+    assert held["state"] == STATE_ABSENT
+
+
+def test_build_footer_block_pending_without_native_log_never_a_fabricated_zero():
+    footer = build_footer_block(native_log_entries=None, capsule_records=[])
+    assert footer["native_log_join"]["state"] == BLOCK_PENDING
+    assert footer["refusals_issued"]["state"] == BLOCK_PENDING
+    assert footer["absences_recorded_against_me"]["state"] == BLOCK_PENDING
+
+
+def test_build_footer_block_real_coverage_when_native_log_supplied():
+    cap = _capsule(capsule_id="c" * 64)
+    native_entries = [{"request_digest": "1" * 64, "timestamp": "2026-08-30T00:00:01Z", "status": "ok"}]
+    footer = build_footer_block(native_log_entries=native_entries, capsule_records=[cap])
+    assert footer["native_log_join"]["state"] in (STATE_VERIFIED, STATE_FAILED)
+    assert "coverage" in footer["native_log_join"]["text"]
+
+
+def test_build_card_face_assembles_every_block():
+    ledger = [_sealed_card(), _capsule(capsule_id="c" * 64)]
+    face = build_card_face(ledger, node_id="mesh-node-demo-1", log_id="l1", checkpoint_lines=[])
+    assert set(face) == {"promise", "history", "served_summary", "counterparty_held", "footer"}
+    assert face["promise"]["state"] == PROMISE_KEPT
+
+
+def test_build_tab_payload_card_is_none_without_node_id_backward_compatible():
+    payload = build_tab_payload([_capsule()], ledger_dir=None)
+    assert payload["card"] is None
+
+
+def test_build_tab_payload_card_present_when_node_id_and_log_id_supplied():
+    ledger = [_sealed_card(), _capsule(capsule_id="c" * 64)]
+    payload = build_tab_payload(ledger, ledger_dir=None, node_id="mesh-node-demo-1", log_id="l1")
+    assert payload["card"] is not None
+    assert payload["card"]["promise"]["state"] == PROMISE_KEPT
