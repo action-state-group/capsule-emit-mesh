@@ -92,6 +92,7 @@ __all__ = [
     "answer_full_history_request",
     "reconciliation_counts_from_ledger_dir",
     "with_peer_reconciliation",
+    "with_references",
 ]
 
 #: Schema tag on the serialized history card. Versioned so a consumer can
@@ -333,6 +334,16 @@ class HistoryCard:
     #: Defaults to 0 -- "no peer observations recorded yet", never fabricated.
     reconciled_with: int = 0
     forks_observed: int = 0
+    #: [mesh-ask-the-references] discovery-mechanism-1 counts -- ALSO outside
+    #: `properties`/`core_account()`: these come from `ask_history.py
+    #: references <X>` live-asking a SAMPLE of this card's own counterparties
+    #: about a DIFFERENT node's history, never from this log's own checkpoint
+    #: chain, and never a score. Defaults are the honest "never asked"
+    #: state, not zero-as-if-asked-and-clean.
+    references_asked: int = 0
+    references_answered: int = 0
+    adjudications_about_x: dict[str, int] = field(default_factory=dict)
+    ack_refusals_about_x: int = 0
 
     def core_account(self) -> CoreAccount | None:
         """The neutral-core `Account` this card is a view of: a
@@ -416,6 +427,18 @@ class HistoryCard:
                     "reconciliation_counts_from_ledger_dir()"
                 ),
             },
+            "references": {
+                "asked": self.references_asked,
+                "answered": self.references_answered,
+                "adjudications_about_x": dict(self.adjudications_about_x),
+                "ack_refusals_about_x": self.ack_refusals_about_x,
+                "note": (
+                    "counts from live-asking a SAMPLE of this card's own counterparties "
+                    "(discovery mechanism 1, [mesh-ask-the-references]) about a DIFFERENT "
+                    "node's history -- never derived from this log's own checkpoint chain, "
+                    "never a score; refusals are counted, never inferred from"
+                ),
+            },
             "not_a_score": (
                 "This is an account of structural facts about the checkpoint chain, not "
                 "a score or routing recommendation."
@@ -465,6 +488,32 @@ def with_peer_reconciliation(card: HistoryCard, ledger_dir: Path) -> HistoryCard
     the field docstring on `HistoryCard`)."""
     reconciled_with, forks_observed = reconciliation_counts_from_ledger_dir(ledger_dir)
     return replace(card, reconciled_with=reconciled_with, forks_observed=forks_observed)
+
+
+def with_references(
+    card: HistoryCard,
+    *,
+    references_asked: int,
+    references_answered: int,
+    adjudications_about_x: dict[str, int],
+    ack_refusals_about_x: int,
+) -> HistoryCard:
+    """Return a copy of `card` with the `[mesh-ask-the-references]` fields
+    folded in -- never mutates `card`, same discipline as
+    `with_peer_reconciliation`. These counts come from `ask_history.py
+    references <X>` live-asking a sample of `card`'s own counterparties
+    about a DIFFERENT node's (`x`'s) history, so they sit outside
+    `core_account()`/`verify()`'s scope exactly like peer reconciliation
+    does -- folding them in never perturbs the cryptographically-verified
+    chain-walk properties.
+    """
+    return replace(
+        card,
+        references_asked=references_asked,
+        references_answered=references_answered,
+        adjudications_about_x=dict(adjudications_about_x),
+        ack_refusals_about_x=ack_refusals_about_x,
+    )
 
 
 def node_id_from_key_id(key_id: str) -> str:

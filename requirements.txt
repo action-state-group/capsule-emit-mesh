@@ -40,7 +40,16 @@
 # evidence_server.py) pass no new arguments, so the safe defaults apply automatically the moment
 # this floor bumps to whatever release ships them -- no code change needed here for that. Bump
 # once that release is cut; until then this floor is exactly what was tested against.
-capsule-emit[mcp]>=0.7.1
+#
+# TEMPORARY git-SHA pin ([mesh-ask-the-references], same shape as the 2026-09-03 "git pins
+# approved over cutting a release" precedent): ask_history.py's `references <X>` subcommand
+# actively BUILDS `subject: {kind: "correlation", ...}` requests -- unlike the additive fields
+# above, this is a NEW subject kind evidence_request.answer() must recognize, so it is not merely
+# passive-safe on an old floor; against 0.7.1 (whose SUBJECT_KINDS predates correlation),
+# parse_request() refuses it as request_malformed. capsule-emit PR #155 (merged main @
+# ae1255e7c53198e709f50a2b969793b36392f1f8, 2026-09-05) is the correlation subject; no release
+# has cut it yet. Revert to `capsule-emit[mcp]>=<next release>` once one does.
+capsule-emit[mcp] @ git+https://github.com/action-state-group/capsule-emit@ae1255e7c53198e709f50a2b969793b36392f1f8
 scitt-cose>=0.2.2
 cbor2
 mcp<2

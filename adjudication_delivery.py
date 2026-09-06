@@ -198,11 +198,32 @@ def seal_adjudication_ack_refused(
     twin -- the contradicted party's own chain never carries it; this
     capsule is where it lives instead, discoverable later by a
     ``correlation`` evidence-request subject naming this requester's
-    counterparty)."""
+    counterparty).
+
+    ``counterparty_ref`` names that declining counterparty explicitly --
+    the ``contradicted:<owner_id>`` suffix of the original verdict, parsed
+    back out once here rather than making every caller re-parse it. Without
+    this field a ``correlation{by: counterparty, value: <owner_id>}`` ask
+    of the REQUESTER's own door has nothing to match against
+    (``capsule_emit.evidence_request``'s ``counterparty`` alias set is
+    ``{counterparty_ref}`` plus its own separate scan for a nested
+    ``adjudication.verdict`` -- this block is named
+    ``adjudication_ack_refused``, not ``adjudication``, so that second path
+    never sees it either); this is what makes the docstring's own
+    "discoverable later" claim actually true. `None` when the original
+    verdict was not a ``contradicted:<owner_id>`` shape (never fabricated).
+    """
+    original_verdict = _adjudication_block(adjudication_capsule).get("verdict")
+    counterparty_ref = (
+        original_verdict.split(":", 1)[1]
+        if isinstance(original_verdict, str) and original_verdict.startswith("contradicted:")
+        else None
+    )
     compute_attestation = {
         "adjudication_ack_refused": {
             "adjudication_capsule_id": adjudication_capsule["capsule_id"],
-            "verdict": _adjudication_block(adjudication_capsule).get("verdict"),
+            "verdict": original_verdict,
+            "counterparty_ref": counterparty_ref,
             "refusal": refusal,
         }
     }
