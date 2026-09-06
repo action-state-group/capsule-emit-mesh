@@ -34,22 +34,17 @@
 # capsule_emit.evidence_request (#148); those shipped in the 0.7.1 wheel (2026-09-04), replacing the
 # temporary git-SHA pin used before that release was cut.
 #
-# NOT YET bumped ([adv-evidence-door-caps-and-subjects]): evidence_request.answer() gained
-# range cap/paging and a pull-only-by-default allow_forced_checkpoint gate on top of 0.7.1's
-# subject kinds. Both are additive and this repo's callers (evidence_responder.py,
-# evidence_server.py) pass no new arguments, so the safe defaults apply automatically the moment
-# this floor bumps to whatever release ships them -- no code change needed here for that. Bump
-# once that release is cut; until then this floor is exactly what was tested against.
-#
-# TEMPORARY git-SHA pin ([mesh-ask-the-references], same shape as the 2026-09-03 "git pins
-# approved over cutting a release" precedent): ask_history.py's `references <X>` subcommand
-# actively BUILDS `subject: {kind: "correlation", ...}` requests -- unlike the additive fields
-# above, this is a NEW subject kind evidence_request.answer() must recognize, so it is not merely
-# passive-safe on an old floor; against 0.7.1 (whose SUBJECT_KINDS predates correlation),
-# parse_request() refuses it as request_malformed. capsule-emit PR #155 (merged main @
-# c9aff29afb111ba2c031c7d62460c9da1c6a6700, 2026-09-05) adds the correlation subject AND the store-layout ledger show/read_ledger (#156); no release
-# has cut it yet. Revert to `capsule-emit[mcp]>=<next release>` once one does.
-capsule-emit[mcp] @ git+https://github.com/action-state-group/capsule-emit@c9aff29afb111ba2c031c7d62460c9da1c6a6700
+# Floor is now 0.8.0, replacing the TEMPORARY git-SHA pin at c9aff29 ([mesh-ask-the-references]):
+# ask_history.py's `references <X>` subcommand BUILDS `subject: {kind: "correlation", ...}`
+# requests -- a NEW subject kind evidence_request.answer() must recognize, which 0.7.1's
+# SUBJECT_KINDS predates (parse_request() refused it as request_malformed). 0.8.0 ships the
+# correlation subject (#155), the store-layout ledger show/read_ledger (#156), AND
+# capsule_emit.chain_segment (the module that motivated cutting 0.8.0 in the first place --
+# [capsule-emit-pypi-tag-behind-main]). Also folds in evidence_request.answer()'s range
+# cap/paging and pull-only-by-default allow_forced_checkpoint gate
+# ([adv-evidence-door-caps-and-subjects]) -- additive, this repo's callers pass no new arguments,
+# so the safe defaults apply automatically.
+capsule-emit[mcp]>=0.8.0
 scitt-cose>=0.2.2
 cbor2
 mcp<2
