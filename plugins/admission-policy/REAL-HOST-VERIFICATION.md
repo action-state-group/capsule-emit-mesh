@@ -136,6 +136,82 @@ topology. `tests/host_runtime_e2e.rs`'s third test verifies what the real
 host actually does instead (fails safe at its own layer, never a silent 200),
 and its doc comment records this finding in full so it isn't silently lost.
 
+## `[mesh-sidecar-provenance-fold-option3]` — a false assumption found and corrected (2026-09-06)
+
+`sidecar_and_plugin_hardware_provenance_join_for_a_real_gguf_exchange` (added
+by this task) drives a REAL loaded GGUF (`mesh-llm serve --gguf`, real Apple
+M4 Max hardware) through a REAL `capsule_sidecar.py` reverse proxy fronting
+the REAL admission-policy plugin, to prove the sidecar's real-I/O capsule and
+the plugin's real-hardware capsule can be joined for ONE exchange (Option
+3b's whole premise). Building it surfaced a genuine defect in the DESIGN,
+not just in this test:
+
+**`exchange_id` does not correlate across the two producers.** Both
+`capsule_sidecar.py`'s `EXCHANGE_ID_SOURCE` doc comment and `lifecycle_
+channel.OpenAiExchangeEnvelope.exchange_id`'s doc comment assert the
+sidecar's response-`id`-derived value and the host's own minted value are
+"the same" for one exchange. Verified false, directly, against a real host
+(`mesh-llm` 0.76.0-rc6, `feat/serving-provenance-host-served-terminal`):
+
+```
+$ curl -s -X POST http://127.0.0.1:18337/v1/chat/completions -d '{"model":"local-gguf/sha256-1993f98e085eaa51", ...}'
+{"id":"chatcmpl-1788674397355", ...}                     # <- sidecar derives exchange_id from THIS
+
+$ cat capsule-data/lifecycle-events.jsonl
+{"exchange_id":"5b9a2b06-f929-4fe7-b272-649681ac9263", ...,"request_digest":"77c0e133..."}
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a host-minted UUID, unrelated to the response id
+```
+
+**What DOES correlate**: `request_digest` (host-forwarded; sealed as the
+top-level `compute_attestation.agent_input_digest` on both producers'
+capsules) — the canonical JSON digest of the real request body, computed
+independently by each producer over the same wire bytes:
+
+```
+$ python3 -c "from capsule_sidecar import digest_json; print(digest_json({'model':'local-gguf/sha256-1993f98e085eaa51','messages':[{'role':'user','content':'Say the word: banana'}],'max_tokens':8}))"
+77c0e133dc7b0a84c6231171efe2d190998b550275dc528ff1a605e40feef4db      # <- byte-identical to the host's forwarded request_digest above
+```
+
+`provenance_fold_join.py` (the new join module) therefore correlates on
+`agent_input_digest`, never `exchange_id`. Manually verified end-to-end
+against the real captured ledgers from this same run (sidecar capsule +
+plugin capsule, both real, both signed):
+
+```
+sidecar agent_input_digest: 77c0e133dc7b0a84c6231171efe2d190998b550275dc528ff1a605e40feef4db
+found plugin capsule: 9e12020f85e20bd3f4225cf18a8402e0d0f19cc6a70a4d5c63ecc16060bfc37f
+hardware_provenance_status: present
+JOIN SUCCEEDED, capsule_id: e85d22063280e6e3ffaa7aaa2a1ffda63a91b73a75f2307985f94d84554a9979
+references: [{'type': 'capsule', 'digest_alg': 'SHA-256', 'digest': '9e12020f...', 'citation_purpose': 'cites_host_provenance'}]
+join verify().ok: True [Finding(code='chain_check_store_level', ..., severity='info')]
+```
+
+A second, real shape correction found the same way: the plugin's
+`x-mesh-poc-v1.serving_provenance` nests hardware/model facts under
+`hardware`/`model` sub-objects on the wire (`serving_provenance.hardware.gpu`,
+`serving_provenance.model.architecture`), not the flat `hardware_gpu`/
+`architecture` names the Rust struct's field-literal construction site
+suggests. `provenance_fold_join.py` and its test fixtures use the real
+(nested) shape.
+
+**Disclosed limitation, not hidden**: `agent_input_digest` collides on two
+byte-identical requests to the same model (reproduced directly: two
+identical curl bodies to the real host produced the same digest both times).
+`find_host_provenance_capsule()` resolves this deterministically to the most
+recently sealed match; a high-traffic node with frequently repeated prompts
+would need a stronger disambiguator. Raised under `## Needs decision` in the
+`neutral` lane outbox rather than silently accepted.
+
+**GPU contention, observed**: running this test's own `mesh-llm serve --gguf`
+process concurrently with another mesh-llm process already serving on the
+same Metal GPU produces `ggml_metal_graph_compute: backend is in error state
+from a previous command buffer failure` and the exchange 502s. Run this test
+with no other GPU-serving mesh-llm process active. The design/join-logic
+verification above does not depend on this test passing in a
+resource-contended environment — it was confirmed independently via the
+manual transcript and via `tests/test_provenance_fold_join.py`'s fixtures
+(built from this exact run's captured JSON).
+
 ## Coverage summary against this task's acceptance check
 
 | Scenario | Real host, real plugin process | Mutant proves it discriminates |
