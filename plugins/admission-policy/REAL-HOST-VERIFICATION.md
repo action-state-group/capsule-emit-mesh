@@ -202,6 +202,27 @@ recently sealed match; a high-traffic node with frequently repeated prompts
 would need a stronger disambiguator. Raised under `## Needs decision` in the
 `neutral` lane outbox rather than silently accepted.
 
+## `[mesh-sidecar-provenance-fold-option3-routing-companion]` — confirmed, documented (2026-09-06)
+
+Raised at close of `[mesh-sidecar-provenance-fold-option3]`: does a mesh-routed peer that hits this
+node's advertised API port directly — bypassing the sidecar's own reverse-proxy listener entirely —
+still get sealed by this plugin? **Yes, confirmed by the test above.** The curl in the digest-collision
+section above (`model: "local-gguf/sha256-1993f98e085eaa51"`) is the node's own real-weights local
+model, **not** one this plugin advertises or is the HTTP backend for (`inference::provider()`/
+`try_route_plugin_model` never sees it) — yet the plugin's lifecycle-events log captured it, because
+`feat/serving-provenance-host-served-terminal` now publishes the same `openai.exchange.v1`
+effective/terminal pair from the host's real-weights local-routing branch, independent of which path
+(sidecar-as-client or a mesh peer connecting directly) reached the node's ingress. See the corrected
+module doc in `src/lifecycle_channel.rs` for the code-level detail.
+
+**What is NOT closed by this**: a mesh-routed peer that bypasses the sidecar still leaves the sidecar
+with no I/O-side capsule for that exchange (the sidecar's reverse proxy never saw the bytes to seal),
+so `provenance_fold_join.py` has nothing on that side to join the plugin's hardware capsule against.
+That is a sidecar-side gap, not a plugin-observation gap — closing it means either advertising the
+sidecar's own port as the node's mesh API, or fronting the local model through the plugin (both named,
+neither built, in the original task text) — **never** patching this by forcing traffic through the
+sidecar's process without changing what the mesh actually routes to.
+
 **GPU contention, observed**: running this test's own `mesh-llm serve --gguf`
 process concurrently with another mesh-llm process already serving on the
 same Metal GPU produces `ggml_metal_graph_compute: backend is in error state

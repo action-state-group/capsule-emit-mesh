@@ -1,14 +1,30 @@
 //! Consumes the #1331 lifecycle-hook terminal-event broadcast on the
 //! `openai.exchange.v1` mesh channel (`mesh-llm-host-runtime`'s
 //! `plugin::openai_exchange` module, `StevenMih/mesh-llm` branch
-//! `mesh1331-lifecycle-hooks-m2`). The host wires this channel's *raw-proxy*
-//! dispatch path into production (`network/openai/ingress.rs`'s
-//! `try_route_plugin_model`, which is exactly the path this plugin's own
-//! `inference::provider()` registration is routed through) -- so a real host
-//! actually publishes on this channel for every exchange this plugin serves,
-//! independent of this plugin's own HTTP handler. This module is the second,
-//! independent proof that the plugin observed the same exchange the host
-//! itself terminal-logged, not just its own view of the call.
+//! `mesh1331-lifecycle-hooks-m2`). The host originally wired only the
+//! *plugin-dispatch* raw-proxy path into production
+//! (`network/openai/ingress.rs`'s `try_route_plugin_model`, the path this
+//! plugin's own `inference::provider()` registration is routed through), so
+//! early testing only proved the plugin observed exchanges it was itself the
+//! HTTP backend for.
+//!
+//! **Routing-companion finding (`[mesh-sidecar-provenance-fold-option3-
+//! routing-companion]`, 2026-09-06): this is broader than that.** The
+//! host-served (real-weights) local-routing branch in `ingress.rs` — the one
+//! that serves a node's own loaded GGUF model directly, used whether the
+//! caller is this node's sidecar or a mesh-routed peer hitting the node's
+//! advertised API port directly — now publishes the same effective/terminal
+//! pair on this channel (`feat/serving-provenance-host-served-terminal`;
+//! previously that branch published nothing). Proven empirically in
+//! `REAL-HOST-VERIFICATION.md`'s real-GGUF test: the captured exchange's
+//! model (`local-gguf/sha256-...`) is not a plugin-advertised name, yet the
+//! plugin's own lifecycle-events log recorded it. So a mesh-routed peer that
+//! bypasses this node's sidecar entirely is still sealed by this plugin
+//! (real hardware citation) via this channel — the routing gap that remains
+//! is sidecar-side only: that traffic has no sidecar I/O capsule to join
+//! against, since the sidecar's reverse proxy never saw it. This module is
+//! independent proof, either way, that the plugin observed the same exchange
+//! the host itself terminal-logged, not just its own view of the call.
 //!
 //! `OpenAiExchangeEnvelope` here is a hand-mirrored copy of the host-side
 //! struct, not a shared dependency -- the host lives in a different repo
