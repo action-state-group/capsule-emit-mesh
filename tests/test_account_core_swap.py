@@ -48,8 +48,14 @@ coincurve = pytest.importorskip("coincurve", reason="Nostr Schnorr signing needs
 # neutral stack. It is what the account capsule + Nostr event carry. Pinning   #
 # it as a literal is the "before" fixed point: any change to it flags that the #
 # definition DOCUMENT moved — never an accidental internals change.            #
+#                                                                              #
+# Updated 2026-09-05 [mesh-account-role-conflict-blindness]: `reads` narrowed  #
+# from the old local-heuristic field list to `("effect.status", "role")` when  #
+# `_role_of` was switched to delegate to `capsule_mesh_view.label_role`        #
+# (closing #127's conflict-blindness gap) — a genuine DOCUMENT change, so this #
+# golden value moved deliberately, not as an accidental internals side effect. #
 # --------------------------------------------------------------------------- #
-GOLDEN_DEFINITION_DIGEST = "97130cc74ae73c93042980c71415945e042e92757daa49b341854906d8b4051a"
+GOLDEN_DEFINITION_DIGEST = "57f04999cda073b58e822e4cf73b566b0bfc92dc292b7b703af7bbe84e2266a7"
 
 
 def _sample_account(*, witnessed: bool = True) -> ac.AccountCapsule:
