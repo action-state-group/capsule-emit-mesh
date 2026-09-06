@@ -29,7 +29,7 @@ from ledger_finder import (
     render_archived_segments_html,
     render_finder_page_html,
 )
-from ledger_store_backend import import_flat_ledger_once, materialize_flat_view, open_ledger_store
+from ledger_store_backend import import_flat_ledger_once, open_ledger_store
 
 REPO_ROOT = Path(__file__).parent.parent
 REAL_DEMO_LEDGERS = ["ledger-checkpoint-demo", "ledger-real-deployment"]
@@ -88,15 +88,11 @@ def test_id_query_returns_the_same_record_ledger_show_returns(demo_name: str, tm
     target = baseline["all_records"][0]
     prefix = target["capsule_id"][:10]
 
-    # `show()` is handed `materialize_flat_view`'s bridge output, not the
-    # store dir directly: capsule-emit's OWN store-awareness (PR #156)
-    # merged to its main but is not yet in a released package version, and
-    # this repo deliberately did not bump its pinned floor for it (see
-    # [mesh-ledger-store-migration]'s closure notes) -- exactly the
-    # situation `materialize_flat_view` exists to bridge, independent of
-    # which capsule-emit version is actually installed.
+    # `show()` reads the store dir directly -- the same call a real CLI
+    # user makes -- now that requirements.txt's capsule-emit pin is past
+    # #156's store-layout awareness.
     out = io.StringIO()
-    found = show(materialize_flat_view(ledger_dir), prefix, out=out)
+    found = show(ledger_dir, prefix, out=out)
     assert found is True
     cli_text = out.getvalue()
     assert target["capsule_id"] in cli_text
