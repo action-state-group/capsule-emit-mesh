@@ -75,7 +75,10 @@ def _make_state(cs, tmp_dir: pathlib.Path, *, model_id: str = "meta/Llama-3.2-3B
 
 
 def _ledger_lines(state) -> list[dict]:
-    return [json.loads(line) for line in state.ledger_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    from ledger_store_backend import read_all_capsules
+
+    records, _archived = read_all_capsules(state.ledger_dir)
+    return records
 
 
 def test_seal_join_card_first_start_has_no_supersedes(cs):

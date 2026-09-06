@@ -36,7 +36,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from capsule_emit.checkpoint import DEFAULT_TS_URL, CheckpointConfig
-from checkpointing import CheckpointState, Ed25519Signer, JsonlLogSource
+from checkpointing import CheckpointState, Ed25519Signer
+from ledger_store_backend import open_log_source_for_checkpointing
 
 
 def checkpoint_ledger(
@@ -48,12 +49,13 @@ def checkpoint_ledger(
     cadence_entries: int = 1,
     max_lag_entries: int = 10,
 ) -> tuple[CheckpointState, object | None]:
-    """Load `<ledger_dir>/capsules.jsonl`, emit one reconnect checkpoint
+    """Load `ledger_dir` (a cll.ledger.store.LedgerStore if already migrated,
+    else the legacy flat `capsules.jsonl`), emit one reconnect checkpoint
     covering everything on disk, and return (state, checkpoint_or_None).
     `checkpoint_or_None` is None only when the ledger has nothing new since
     the last checkpoint already recorded in `<ledger_dir>/checkpoints.jsonl`.
     """
-    log_source = JsonlLogSource(ledger_dir / "capsules.jsonl")
+    log_source = open_log_source_for_checkpointing(ledger_dir, log_id=log_id)
     signer = Ed25519Signer(keys_dir / "node-key.pem")
     cfg = CheckpointConfig(ts_urls=ts_urls, cadence_entries=cadence_entries, max_lag_entries=max_lag_entries)
     state = CheckpointState.load(ledger_dir=ledger_dir, log_source=log_source, cfg=cfg, signer=signer, log_id=log_id)

@@ -36,6 +36,7 @@ from pathlib import Path
 import pytest
 
 import capsule_sidecar as cs
+from ledger_store_backend import read_all_capsules
 
 # `agent_action_capsule/__init__.py` does `from .emit import emit`, which
 # shadows the `emit` SUBMODULE attribute on the package with the `emit`
@@ -98,8 +99,8 @@ class TestRecordCapsuleVerifiesBeforeWriting:
 
         cs.record_capsule(state, capsule, signed_statement)
 
-        assert state.ledger_path.exists()
-        assert len(state.ledger_path.read_text().splitlines()) == 1
+        records, _archived = read_all_capsules(state.ledger_dir)
+        assert len(records) == 1
         assert state.last_capsule_id == capsule["capsule_id"]
         assert capsule in state.emitted
 
@@ -115,8 +116,9 @@ class TestRecordCapsuleVerifiesBeforeWriting:
         with pytest.raises(RuntimeError, match="fails its own verify"):
             cs.record_capsule(state, capsule, signed_statement)
 
-        assert not state.ledger_path.exists(), (
-            "a capsule that fails verify() must never reach the ledger file"
+        records, _archived = read_all_capsules(state.ledger_dir)
+        assert records == [], (
+            "a capsule that fails verify() must never reach the ledger store"
         )
         statement_path = state.statements_dir / f"{capsule['capsule_id']}.cose"
         assert not statement_path.exists(), (

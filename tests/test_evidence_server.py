@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import threading
 import types
 import urllib.error
@@ -69,34 +70,38 @@ def node_state(tmp_path, stub_witness):
     manifest_path.write_text(
         json.dumps({"model_id": "m/1", "source_model": {"sha256": "e" * 64, "canonical_ref": "m/1"}, "skippy_abi_version": "1"})
     )
+    checkpoint_config_path = tmp_path / "checkpoint.toml"
+    checkpoint_config_path.write_text('[checkpoint]\nlog_id = "test-node"\ncadence_entries = 1\n')
     return cs.default_state(
         ledger_dir=tmp_path / "ledger",
         manifest_path=manifest_path,
         keys_dir=tmp_path / "keys",
         runtime_label="test-runtime",
         runtime_digest="deadbeef" * 8,
+        checkpoint_config_path=checkpoint_config_path,
     )
 
 
-def _resolve_signer(state):
-    from capsule_emit.signing import resolve_signer
-
-    return resolve_signer(str(state.ledger_path), key_path=state.signing_key_path)
-
-
 def _seal_and_checkpoint(state, n: int) -> list[str]:
-    caps = [
-        seal(
+    """Mint N well-formed capsules via capsule_emit's own ``seal()`` (a
+    convenient, already-verified builder), land them in the sidecar's REAL
+    cll.ledger.store.LedgerStore -- ``state.log_source`` -- and force a real
+    checkpoint through the sidecar's OWN (out-of-band) checkpointing, same
+    as [mesh-ledger-store-migration]'s test_evidence_responder.py."""
+    caps = []
+    for i in range(n):
+        scratch_ledger = tempfile.mktemp(suffix="-capsule-emit-seal-scratch.jsonl")
+        capsule = seal(
             None,
             action=f"act-{i}",
             operator="acme",
             anchor=False,
-            ledger=state.ledger_path,
+            ledger=scratch_ledger,
             signing_key_path=state.signing_key_path,
         ).capsule
-        for i in range(n)
-    ]
-    witness.push(str(state.ledger_path), signer=_resolve_signer(state))
+        state.log_source.append(capsule)
+        caps.append(capsule)
+    assert state.checkpoint.reconnect() is not None
     return [c["capsule_id"] for c in caps]
 
 
@@ -129,7 +134,9 @@ class _RunningServer:
 
 @pytest.fixture
 def running_server(node_state):
-    state = es.EvidenceServerState(ledger_path=node_state.ledger_path, signing_key_path=node_state.signing_key_path)
+    state = es.EvidenceServerState(
+        ledger_dir=node_state.ledger_dir, ledger_path=node_state.ledger_path, signing_key_path=node_state.signing_key_path
+    )
     server = _RunningServer(state)
     yield server, node_state
     server.close()
@@ -225,6 +232,7 @@ class TestServerWithNoLedgerAtAll:
 
         load_or_create_signing_key(keys_dir)
         state = es.EvidenceServerState(
+            ledger_dir=tmp_path / "nonexistent-ledger",
             ledger_path=tmp_path / "nonexistent-ledger" / "capsules.jsonl",
             signing_key_path=keys_dir / NODE_KEY_FILENAME,
         )
@@ -278,7 +286,7 @@ class TestPluginLedgerBridge:
 
     def test_bridged_request_over_http_returns_artifact(self, tmp_path, stub_witness):
         ledger_dir, key_path, cids = self._plugin_shaped_ledger(tmp_path, stub_witness)
-        state = es.EvidenceServerState(ledger_path=ledger_dir / "capsules.jsonl", signing_key_path=key_path)
+        state = es.EvidenceServerState(ledger_dir=ledger_dir, ledger_path=ledger_dir / "capsules.jsonl", signing_key_path=key_path)
         server = _RunningServer(state)
         try:
             status, body = server.post("/evidence-request", {"subject": {"kind": "record", "capsule_id": cids[0]}, "coverage": {}})
@@ -293,7 +301,7 @@ class TestPluginLedgerBridge:
         before_capsules = (ledger_dir / "capsules.jsonl").read_bytes()
         before_entries = sorted(p.name for p in ledger_dir.iterdir())
 
-        state = es.EvidenceServerState(ledger_path=ledger_dir / "capsules.jsonl", signing_key_path=key_path)
+        state = es.EvidenceServerState(ledger_dir=ledger_dir, ledger_path=ledger_dir / "capsules.jsonl", signing_key_path=key_path)
         server = _RunningServer(state)
         try:
             server.post("/evidence-request", {"subject": {"kind": "record", "capsule_id": cids[0]}, "coverage": {}})
@@ -314,7 +322,7 @@ class TestPluginLedgerBridge:
         key_path = keys_dir / NODE_KEY_FILENAME
         cap = seal(None, action="act-0", operator="acme", anchor=False, ledger=ledger_dir / "capsules.jsonl", signing_key_path=key_path).capsule
 
-        state = es.EvidenceServerState(ledger_path=ledger_dir / "capsules.jsonl", signing_key_path=key_path)
+        state = es.EvidenceServerState(ledger_dir=ledger_dir, ledger_path=ledger_dir / "capsules.jsonl", signing_key_path=key_path)
         server = _RunningServer(state)
         try:
             status, body = server.post("/evidence-request", {"subject": {"kind": "record", "capsule_id": cap["capsule_id"]}, "coverage": {}})

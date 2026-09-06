@@ -225,12 +225,12 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def _cmd_join(args: argparse.Namespace) -> int:
     native_entries = _read_jsonl(Path(args.native_log))
-    try:
-        from capsule_emit.ledger import read_ledger
+    # [mesh-ledger-store-migration] args.ledger names this node's ledger dir
+    # -- store-aware (manifest.json present) with a labeled, read-only
+    # flat-file fallback for a not-yet-migrated dir.
+    from ledger_store_backend import read_all_capsules
 
-        capsule_records = read_ledger(args.ledger)
-    except Exception:
-        capsule_records = _read_jsonl(Path(args.ledger))
+    capsule_records, _archived_segments = read_all_capsules(Path(args.ledger))
     lifecycle_events = _read_jsonl(Path(args.lifecycle)) if args.lifecycle else []
 
     report = coverage_report(native_entries, capsule_records, lifecycle_events)

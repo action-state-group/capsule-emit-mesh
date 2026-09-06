@@ -20,6 +20,7 @@ from __future__ import annotations
 import http.server
 import json
 import sys
+import tempfile
 import threading
 import types
 
@@ -64,40 +65,46 @@ def node_state(tmp_path, stub_witness):
     manifest_path.write_text(
         json.dumps({"model_id": "m/1", "source_model": {"sha256": "e" * 64, "canonical_ref": "m/1"}, "skippy_abi_version": "1"})
     )
+    checkpoint_config_path = tmp_path / "checkpoint.toml"
+    checkpoint_config_path.write_text('[checkpoint]\nlog_id = "test-node"\ncadence_entries = 1\n')
     return cs.default_state(
         ledger_dir=tmp_path / "ledger",
         manifest_path=manifest_path,
         keys_dir=tmp_path / "keys",
         runtime_label="test-runtime",
         runtime_digest="deadbeef" * 8,
+        checkpoint_config_path=checkpoint_config_path,
     )
 
 
-def _resolve_signer(state):
-    from capsule_emit.signing import resolve_signer
-
-    return resolve_signer(str(state.ledger_path), key_path=state.signing_key_path)
-
-
 def _seal_and_checkpoint(state, n: int) -> list[str]:
-    caps = [
-        seal(
+    """Mint N well-formed capsules via capsule_emit's own ``seal()``, land
+    them in the sidecar's REAL cll.ledger.store.LedgerStore -- ``state.
+    log_source`` -- and force a real checkpoint through the sidecar's OWN
+    (out-of-band) checkpointing -- see [mesh-ledger-store-migration]'s
+    test_evidence_responder.py for the same pattern."""
+    caps = []
+    for i in range(n):
+        scratch_ledger = tempfile.mktemp(suffix="-capsule-emit-seal-scratch.jsonl")
+        capsule = seal(
             None,
             action=f"act-{i}",
             operator="acme",
             anchor=False,
-            ledger=state.ledger_path,
+            ledger=scratch_ledger,
             signing_key_path=state.signing_key_path,
         ).capsule
-        for i in range(n)
-    ]
-    witness.push(str(state.ledger_path), signer=_resolve_signer(state))
+        state.log_source.append(capsule)
+        caps.append(capsule)
+    assert state.checkpoint.reconnect() is not None
     return [c["capsule_id"] for c in caps]
 
 
 @pytest.fixture
 def peer(node_state):
-    state = es.EvidenceServerState(ledger_path=node_state.ledger_path, signing_key_path=node_state.signing_key_path)
+    state = es.EvidenceServerState(
+        ledger_dir=node_state.ledger_dir, ledger_path=node_state.ledger_path, signing_key_path=node_state.signing_key_path
+    )
     server = es.run_evidence_server(host="127.0.0.1", port=0, state=state)
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -216,7 +223,9 @@ class TestMeshCarrier:
 
     @pytest.fixture
     def mesh_host(self, node_state):
-        state = es.EvidenceServerState(ledger_path=node_state.ledger_path, signing_key_path=node_state.signing_key_path)
+        state = es.EvidenceServerState(
+            ledger_dir=node_state.ledger_dir, ledger_path=node_state.ledger_path, signing_key_path=node_state.signing_key_path
+        )
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _MeshToolCallHandler)
         server.plugin_name = "admission-policy"
         server.state = state

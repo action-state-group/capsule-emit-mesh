@@ -54,6 +54,15 @@ scitt-cose>=0.2.2
 cbor2
 mcp<2
 
+# [mesh-ledger-store-migration]: ledger_store_backend.py imports cll.ledger.store /
+# cll.ledger.segments directly (LedgerStore, segment rotation/archival, SegmentManifest) --
+# capsule-emit[mcp] only pulls checkpointed-local-log transitively for its own
+# cll.checkpoint core, so a direct pin is needed for the ledger submodule this repo now
+# depends on itself. Segment rotation/archival (LedgerStore.rotate_at_checkpoint,
+# list_segments/mount_segment/unmount_segment) shipped in 0.2.0; pinned <0.3 per the
+# manager's ruling (pin a released version, never a branch).
+checkpointed-local-log>=0.2.0,<0.3
+
 # tomllib is stdlib from Python 3.11; checkpointing.py's load_checkpoint_config
 # falls back to the tomli backport so [checkpoint] TOML configs (checkpoint.example.toml)
 # still parse on Python 3.10. Marker keeps this a no-op install on 3.11+.

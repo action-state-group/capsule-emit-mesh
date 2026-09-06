@@ -75,6 +75,7 @@ import scitt_cose
 from advertisement import Advertisement, compute_meter, reconcile_advertised_vs_served
 from checkpointing import CheckpointState, Ed25519Signer, JsonlLogSource, load_checkpoint_config
 from join_card import ModelRef, build_card, latest_card, seal_card
+from ledger_store_backend import import_flat_ledger_once, open_ledger_store, read_all_capsules
 from mac_hardware_inventory import capture_mac_hardware_inventory
 from model_identity import load_manifest, model_package_digest
 from node_ownership import (
@@ -705,7 +706,42 @@ class NodeState:
         if self.owner_node_endpoint_id is None and self.node_ownership is not None:
             self.owner_node_endpoint_id = self.node_ownership.claim.node_endpoint_id
 
-        self.log_source = JsonlLogSource(self.ledger_path)
+        # [mesh-ledger-store-migration] cll.ledger.store.LedgerStore is this
+        # sidecar's own capsule backend now -- it already satisfies the same
+        # LogSource shape (append/scan/fetch/find_gaps/verify,
+        # record.seq/record.capsule_id) checkpointing.CheckpointState needs,
+        # so nothing below this construction changes. A pre-existing flat
+        # capsules.jsonl (an older node) is imported exactly once, in order,
+        # preserving every capsule_id untouched -- see ledger_store_backend's
+        # module docstring for why that makes every historical checkpoint
+        # root recomputed from the store byte-identical to what is already
+        # in checkpoints.jsonl.
+        self.log_source = open_ledger_store(self.ledger_dir, log_id=self.node_id)
+        import_flat_ledger_once(self.ledger_dir, self.log_source)
+
+        # Segment-boundary rotation (rotate_at_checkpoint=True) needs a
+        # Checkpointer attached before the first append that could cross the
+        # byte threshold -- opportunistically attached here, independent of
+        # whether Layer 1-2 witnessed checkpointing (below) is configured,
+        # since a node's own signing key always exists. This is a SEPARATE
+        # MMR/checkpoint from the witnessed one below (its own local
+        # checkpoint purely for segment close/archival bookkeeping, never
+        # registered with a witness) -- both compute identical roots at any
+        # given size (the leaf hash is deterministic from seq + capsule_id),
+        # they just run on different triggers (byte threshold vs cadence).
+        from cll.ledger.segments import MmrCheckpointer
+
+        from capsule_emit.checkpoint import MmrLedger as _MmrLedgerForRotation
+
+        rotation_signer = Ed25519Signer(self.signing_key_path)
+        self.log_source.set_checkpointer(
+            MmrCheckpointer(
+                mmr=_MmrLedgerForRotation(self.log_source),
+                signer=rotation_signer,
+                log_id=self.node_id,
+            )
+        )
+
         self.checkpoint: CheckpointState | None = None
         if self.checkpoint_config_path is not None:
             loaded = load_checkpoint_config(self.checkpoint_config_path)
@@ -1365,11 +1401,7 @@ def seal_join_card(state: NodeState) -> str:
     Always seals and returns a `capsule_id` -- a missing/empty ledger is a
     normal first-ever start, not an error (`supersedes=None` in that case).
     """
-    prior_lines: list[dict[str, Any]] = []
-    if state.ledger_path.exists():
-        for raw_line in state.ledger_path.read_text(encoding="utf-8").splitlines():
-            if raw_line.strip():
-                prior_lines.append(json.loads(raw_line))
+    prior_lines, _archived_segments = read_all_capsules(state.ledger_dir)
     _prior_card, prior_card_digest, prior_card_capsule_id = latest_card(prior_lines)
 
     hardware = capture_mac_hardware_inventory()

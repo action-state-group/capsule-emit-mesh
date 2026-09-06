@@ -10,6 +10,7 @@ Uses ``CAPSULE_WITNESS=stub`` (zero-network) so this runs hermetically.
 from __future__ import annotations
 
 import json
+import tempfile
 
 import pytest
 from capsule_emit import seal, witness
@@ -46,12 +47,15 @@ def node_state(tmp_path, stub_witness):
     manifest_path.write_text(
         json.dumps({"model_id": "m/1", "source_model": {"sha256": "e" * 64, "canonical_ref": "m/1"}, "skippy_abi_version": "1"})
     )
+    checkpoint_config_path = tmp_path / "checkpoint.toml"
+    checkpoint_config_path.write_text('[checkpoint]\nlog_id = "test-node"\ncadence_entries = 1\n')
     state = cs.default_state(
         ledger_dir=tmp_path / "ledger",
         manifest_path=manifest_path,
         keys_dir=tmp_path / "keys",
         runtime_label="test-runtime",
         runtime_digest="deadbeef" * 8,
+        checkpoint_config_path=checkpoint_config_path,
     )
     return state
 
@@ -63,23 +67,36 @@ def _record_request(capsule_id: str) -> bytes:
 def _resolve_signer(state):
     from capsule_emit.signing import resolve_signer
 
-    return resolve_signer(str(state.ledger_path), key_path=state.signing_key_path)
+    return resolve_signer(str(state.ledger_dir), key_path=state.signing_key_path)
+
+
+def _seal_into_sidecar_store(state, *, action: str) -> dict:
+    """Mint a well-formed capsule via capsule_emit's own ``seal()`` (a
+    convenient, already-verified builder), but land it in the sidecar's
+    REAL cll.ledger.store.LedgerStore -- ``state.log_source`` -- rather than
+    capsule_emit's own flat-file+in-band-checkpoint-stamp convention.
+    ``seal()`` still needs a ``ledger=`` to write its own copy to; a scratch
+    tempfile it owns exclusively (never read back) satisfies that without
+    colliding with the store this test actually asserts against."""
+    scratch_ledger = tempfile.mktemp(suffix="-capsule-emit-seal-scratch.jsonl")
+    capsule = seal(
+        None,
+        action=action,
+        operator="acme",
+        anchor=False,
+        ledger=scratch_ledger,
+        signing_key_path=state.signing_key_path,
+    ).capsule
+    state.log_source.append(capsule)
+    return capsule
 
 
 def test_handle_evidence_request_uses_the_sidecar_own_ledger_and_key(node_state):
-    caps = [
-        seal(
-            None,
-            action=f"act-{i}",
-            operator="acme",
-            anchor=False,
-            ledger=node_state.ledger_path,
-            signing_key_path=node_state.signing_key_path,
-        ).capsule
-        for i in range(2)
-    ]
-    cp = witness.push(str(node_state.ledger_path), signer=_resolve_signer(node_state))
-    assert cp is not None
+    caps = [_seal_into_sidecar_store(node_state, action=f"act-{i}") for i in range(2)]
+    # bundle() needs an in-band checkpoint to answer a `record` subject --
+    # materialize_flat_view synthesizes one from this sidecar's OWN (real,
+    # out-of-band) checkpoint, so it has to actually exist first.
+    assert node_state.checkpoint.reconnect() is not None
 
     result = handle_evidence_request(node_state, _record_request(caps[0]["capsule_id"]))
     assert isinstance(result, Artifact)
@@ -103,18 +120,8 @@ def test_handle_evidence_request_refusal_signed_with_node_key(node_state):
 
 
 def test_handle_evidence_request_caller_invariance(node_state):
-    caps = [
-        seal(
-            None,
-            action=f"act-{i}",
-            operator="acme",
-            anchor=False,
-            ledger=node_state.ledger_path,
-            signing_key_path=node_state.signing_key_path,
-        ).capsule
-        for i in range(2)
-    ]
-    witness.push(str(node_state.ledger_path), signer=_resolve_signer(node_state))
+    caps = [_seal_into_sidecar_store(node_state, action=f"act-{i}") for i in range(2)]
+    assert node_state.checkpoint.reconnect() is not None
     cid = caps[0]["capsule_id"]
 
     now = "2026-09-02T00:00:00Z"

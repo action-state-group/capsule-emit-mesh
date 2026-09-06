@@ -76,9 +76,9 @@ from capsule_sidecar import DEFAULT_DISCLOSURE_TTL_SECONDS, prune_disclosures
 from checkpointing import (
     CheckpointState,
     Ed25519Signer,
-    JsonlLogSource,
     load_checkpoint_config,
 )
+from ledger_store_backend import open_log_source_for_checkpointing
 
 #: The mesh-node default anchor interval. Upstream CheckpointConfig defaults
 #: cadence_seconds to 900 (its own "100 entries or 15 minutes" surface); a
@@ -138,7 +138,7 @@ def build_state(
         # the operator asked for exactly these).
         cfg.ts_urls = list(ts_urls)
 
-    log_source = JsonlLogSource(ledger_dir / "capsules.jsonl")
+    log_source = open_log_source_for_checkpointing(ledger_dir, log_id=log_id)
     signer = Ed25519Signer(keys_dir / "node-key.pem")
     return CheckpointState.load(
         ledger_dir=ledger_dir,

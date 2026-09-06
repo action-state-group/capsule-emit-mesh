@@ -54,7 +54,7 @@ def _refuse_served_summary(request_bytes: bytes, reason: str, *, state: Any, iss
     from capsule_emit.evidence_request import Refusal
 
     request_digest = hashlib.sha256(request_bytes).hexdigest()
-    signer = _signing.resolve_signer(os.fspath(state.ledger_path), key_path=state.signing_key_path)
+    signer = _signing.resolve_signer(os.fspath(state.ledger_dir), key_path=state.signing_key_path)
     stub = Refusal(request_digest=request_digest, reason=reason, issued_at=issued_at, key_id="", sig="")
     sig, key_id = signer.sign(stub.signing_body())
     return Refusal(request_digest=request_digest, reason=reason, issued_at=issued_at, key_id=key_id, sig=sig)
@@ -73,9 +73,11 @@ def _handle_served_summary_request(state: Any, request_bytes: bytes, req: Any, *
 
     from served_summary import COVERAGE_UNSATISFIABLE, REQUEST_MALFORMED, answer_served_summary_request
 
+    from ledger_store_backend import read_all_capsules
+
     issued_at = now or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-    capsule_records = _read_jsonl(state.ledger_path)
+    capsule_records, _archived_segments = read_all_capsules(state.ledger_dir)
     checkpoint_lines = _read_jsonl(state.ledger_dir / "checkpoints.jsonl")
     expected_pin = (req.coverage or {}).get("expected_pin", {}).get("root") if req.coverage else None
 
@@ -110,6 +112,8 @@ def handle_evidence_request(state: Any, request_bytes: bytes, *, now: str | None
     """
     from capsule_emit.evidence_request import RequestMalformedError, answer, parse_request
 
+    from ledger_store_backend import materialize_flat_view
+
     try:
         req = parse_request(request_bytes)
     except RequestMalformedError:
@@ -118,9 +122,14 @@ def handle_evidence_request(state: Any, request_bytes: bytes, *, now: str | None
     if req is not None and req.derivation == SERVED_SUMMARY_DERIVATION_TOKEN:
         return _handle_served_summary_request(state, request_bytes, req, now=now)
 
+    # [mesh-ledger-store-migration] answer() only understands a flat JSONL
+    # file -- materialize_flat_view is a no-op passthrough for a still-flat
+    # ledger dir, and a fresh scratch re-derivation (never cached) for a
+    # cll.ledger.store.LedgerStore-backed one, so this call's contract is
+    # unchanged either way.
     return answer(
         request_bytes,
-        ledger=state.ledger_path,
+        ledger=materialize_flat_view(state.ledger_dir),
         signing_key_path=state.signing_key_path,
         now=now,
     )

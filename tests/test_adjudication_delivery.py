@@ -81,7 +81,7 @@ def _make_served_half(text: str, *, owner_id: str) -> tuple[dict, dict]:
 
 
 def _state(ledger_path, signing_key_path) -> "es.EvidenceServerState":
-    return es.EvidenceServerState(ledger_path=ledger_path, signing_key_path=signing_key_path)
+    return es.EvidenceServerState(ledger_dir=ledger_path.parent, ledger_path=ledger_path, signing_key_path=signing_key_path)
 
 
 def _seed_ledger(ledger_path, capsule: dict) -> None:

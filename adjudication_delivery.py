@@ -69,10 +69,9 @@ from typing import Any
 from agent_action_capsule.emit import emit
 from agent_action_capsule.verify import verify as verify_capsule
 from capsule_emit.evidence_request import Refusal
-from capsule_emit.ledger import read_ledger
 from capsule_emit.signing import resolve_signer
 
-from checkpointing import JsonlLogSource
+from ledger_store_backend import append_capsule, read_all_capsules
 
 __all__ = [
     "EVIDENCE_DELIVER_PATH",
@@ -120,7 +119,7 @@ def _owner_id(capsule: dict[str, Any]) -> str | None:
 
 
 def _refuse(request_digest: str, reason: str, *, state: Any, issued_at: str) -> Refusal:
-    signer = resolve_signer(str(state.ledger_path), key_path=state.signing_key_path)
+    signer = resolve_signer(str(state.ledger_dir), key_path=state.signing_key_path)
     stub = Refusal(request_digest=request_digest, reason=reason, issued_at=issued_at, key_id="", sig="")
     sig, key_id = signer.sign(stub.signing_body())
     return Refusal(request_digest=request_digest, reason=reason, issued_at=issued_at, key_id=key_id, sig=sig)
@@ -155,7 +154,8 @@ def handle_delivery(state: Any, body: bytes, *, now: str | None = None) -> dict[
     if not cited:
         return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at).to_dict()
 
-    own_entries = {e["capsule_id"]: e for e in read_ledger(state.ledger_path)}
+    own_records, _archived_segments = read_all_capsules(state.ledger_dir)
+    own_entries = {e["capsule_id"]: e for e in own_records}
     own_half = next((own_entries[cid] for cid in cited if cid in own_entries), None)
     if own_half is None:
         # Own half not among the citations -- never received() a verdict
@@ -167,7 +167,7 @@ def handle_delivery(state: Any, body: bytes, *, now: str | None = None) -> dict[
     if own_owner_id and verdict == f"contradicted:{own_owner_id}":
         return _refuse(request_digest, REASON_POLICY_DECLINE, state=state, issued_at=issued_at).to_dict()
 
-    JsonlLogSource(state.ledger_path).append(capsule)
+    append_capsule(state.ledger_dir, capsule)
     return {"status": "received"}
 
 

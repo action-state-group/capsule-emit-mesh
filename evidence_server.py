@@ -108,7 +108,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import tempfile
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -127,62 +126,35 @@ __all__ = [
 
 @dataclass(frozen=True)
 class EvidenceServerState:
-    """The two paths ``handle_evidence_request`` actually reads off a
-    node's state -- ``ledger_path`` (the JSONL file, not its directory) and
-    ``signing_key_path`` (the node's own persisted Ed25519 key). Duck-type
-    compatible with ``capsule_sidecar.NodeState`` (same two attribute
-    names) without requiring everything else that dataclass needs to
-    construct (a model manifest, a runtime label/digest, ...)."""
+    """What ``handle_evidence_request``/``handle_delivery`` actually read
+    off a node's state -- ``ledger_dir`` (the ledger DIRECTORY -- a
+    ``cll.ledger.store.LedgerStore`` if migrated, else the legacy flat
+    ``capsules.jsonl`` layout; see ``ledger_store_backend``), ``ledger_path``
+    (kept for backward-compatible display/logging only -- never read for
+    content, computed the same way ``capsule_sidecar.NodeState`` computes
+    it) and ``signing_key_path`` (the node's own persisted Ed25519 key).
+    Duck-type compatible with ``capsule_sidecar.NodeState`` (same three
+    attribute names) without requiring everything else that dataclass needs
+    to construct (a model manifest, a runtime label/digest, ...)."""
 
+    ledger_dir: Path
     ledger_path: Path
     signing_key_path: Path
 
 
-def _merged_evidence_view(ledger_path: Path) -> Path:
+def _merged_evidence_view(ledger_dir: Path) -> Path:
     """Return the path ``answer()``/``bundle()`` should actually read for
-    ``ledger_path`` -- itself unchanged, UNLESS a sibling
-    ``checkpoints.jsonl`` exists (the plugin-ledger read-only-checkpointed
-    shape; see module docstring), in which case a fresh scratch file
-    carrying ``ledger_path``'s own lines plus one synthesized
-    ``checkpoint_stamp`` entry per persisted checkpoint is written and
-    returned instead. Never mutates ``ledger_path`` or its directory.
+    ``ledger_dir`` -- delegates entirely to ``ledger_store_backend.
+    materialize_flat_view``, which is store-aware (this sidecar's own
+    ledger may now be a ``cll.ledger.store.LedgerStore``) and folds in the
+    same synthesized in-band ``checkpoint_stamp`` entries this function used
+    to build by hand for the plugin-ledger read-only-checkpointed shape (see
+    module docstring) -- one bridging implementation for both cases now.
+    Never mutates ``ledger_dir``.
     """
-    checkpoints_path = ledger_path.parent / "checkpoints.jsonl"
-    if not checkpoints_path.exists():
-        return ledger_path
+    from ledger_store_backend import materialize_flat_view
 
-    from capsule_emit.checkpoint import CheckpointRecord
-    from capsule_emit.ledger import CHECKPOINT_STAMP_KIND
-
-    stamp_lines: list[str] = []
-    for raw in checkpoints_path.read_text(encoding="utf-8").splitlines():
-        raw = raw.strip()
-        if not raw:
-            continue
-        cp_line = json.loads(raw)
-        checkpoint_cose_hex = cp_line.pop("checkpoint_cose", None)
-        cp = CheckpointRecord.from_dict(cp_line)
-        stamp_entry: dict[str, Any] = {
-            "kind": CHECKPOINT_STAMP_KIND,
-            "v": 1,
-            "capsule_id": cp.entry_digest(),
-            "checkpoint": cp.to_dict(),
-        }
-        if checkpoint_cose_hex is not None:
-            stamp_entry["checkpoint_cose"] = checkpoint_cose_hex
-        stamp_lines.append(json.dumps(stamp_entry, sort_keys=True))
-
-    if not stamp_lines:
-        return ledger_path
-
-    base = ledger_path.read_text(encoding="utf-8") if ledger_path.exists() else ""
-    merged = base + ("" if base.endswith("\n") or not base else "\n") + "\n".join(stamp_lines) + "\n"
-
-    fd, tmp_name = tempfile.mkstemp(prefix="evidence-view-", suffix=".jsonl")
-    tmp_path = Path(tmp_name)
-    with open(fd, "w", encoding="utf-8") as fh:
-        fh.write(merged)
-    return tmp_path
+    return materialize_flat_view(ledger_dir)
 
 
 def make_evidence_handler(state: EvidenceServerState):
@@ -205,11 +177,11 @@ def make_evidence_handler(state: EvidenceServerState):
             request_bytes = self.rfile.read(length) if length else b""
 
             if path == "evidence-request":
-                effective_path = _merged_evidence_view(state.ledger_path)
-                effective_state = EvidenceServerState(
-                    ledger_path=effective_path, signing_key_path=state.signing_key_path
-                )
-                result = handle_evidence_request(effective_state, request_bytes)
+                # [mesh-ledger-store-migration] handle_evidence_request's
+                # own generic path now does this bridging itself (see
+                # evidence_responder.py), so this door hands it state
+                # unchanged rather than pre-building a merged view.
+                result = handle_evidence_request(state, request_bytes)
                 self._write_json(200, result.to_dict())
                 return
 
@@ -250,9 +222,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--ledger-dir",
         required=True,
-        help="directory containing capsules.jsonl -- e.g. this sidecar's own ledger_dir, or the "
-        "Rust plugin's <data_dir>/ledger for the live serving path (auto-bridged if a sibling "
-        "checkpoints.jsonl is present)",
+        help="this node's ledger directory -- a cll.ledger.store.LedgerStore if migrated "
+        "([mesh-ledger-store-migration]), else a legacy flat capsules.jsonl -- e.g. this "
+        "sidecar's own ledger_dir, or the Rust plugin's <data_dir>/ledger for the live serving "
+        "path (auto-bridged if a sibling checkpoints.jsonl is present)",
     )
     parser.add_argument(
         "--node-key",
@@ -265,13 +238,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     state = EvidenceServerState(
+        ledger_dir=Path(args.ledger_dir),
         ledger_path=Path(args.ledger_dir) / "capsules.jsonl",
         signing_key_path=Path(args.node_key),
     )
     server = run_evidence_server(host=args.listen_host, port=args.listen_port, state=state)
     print(
         f"capsule evidence server listening on http://{args.listen_host}:{args.listen_port} "
-        f"ledger={state.ledger_path}"
+        f"ledger={state.ledger_dir}"
     )
     server.serve_forever()
     return 0
