@@ -45,6 +45,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 struct RealHost {
     child: Child,
     api_port: u16,
+    console_port: u16,
     home_dir: PathBuf,
     capsule_data_dir: PathBuf,
 }
@@ -128,6 +129,7 @@ args = []
         let host = Self {
             child,
             api_port,
+            console_port,
             home_dir,
             capsule_data_dir,
         };
@@ -211,6 +213,467 @@ args = []
         .expect("request to real host did not time out")
         .expect("POST /v1/chat/completions to real host")
     }
+}
+
+impl RealHost {
+    /// Same as `spawn()`, but also loads a REAL local GGUF directly
+    /// (`serve --gguf <path>`) alongside the admission-policy plugin, so a
+    /// real model is servable at `local-gguf/sha256-<content-hash>` (mesh-llm
+    /// mints the model id from the file's own bytes; see
+    /// `discover_local_gguf_model_id`). Used only by
+    /// `[mesh-sidecar-provenance-fold-option3]`'s real-hardware-fold test --
+    /// every other test in this file uses the plain `spawn()` (no GPU/model
+    /// file required).
+    async fn spawn_with_gguf(gguf_path: &str) -> Self {
+        let host_bin = std::env::var("MESH_LLM_HOST_BIN").expect(
+            "MESH_LLM_HOST_BIN must point to a real `mesh-llm` binary. See REAL-HOST-VERIFICATION.md.",
+        );
+        assert!(
+            std::path::Path::new(&host_bin).is_file(),
+            "MESH_LLM_HOST_BIN '{host_bin}' does not exist"
+        );
+        assert!(
+            std::path::Path::new(gguf_path).is_file(),
+            "MESH_LLM_TEST_GGUF '{gguf_path}' does not exist"
+        );
+
+        let home_dir = PathBuf::from("/tmp").join(format!("ape2e-gguf-{}", nonce()));
+        std::fs::create_dir_all(&home_dir).expect("create isolated HOME for real host");
+
+        let api_port = pick_port();
+        let console_port = pick_port();
+
+        let config_path = home_dir.join("config.toml");
+        let mut config_file = std::fs::File::create(&config_path).expect("create config.toml");
+        writeln!(
+            config_file,
+            r#"version = 1
+
+[[plugin]]
+name = "admission-policy"
+enabled = true
+command = "{PLUGIN_BIN}"
+args = []
+"#
+        )
+        .expect("write config.toml");
+
+        let log_path = home_dir.join("run.log");
+        let log_file = std::fs::File::create(&log_path).expect("create run.log");
+        let capsule_data_dir = home_dir.join("capsule-data");
+
+        let child = Command::new(&host_bin)
+            .args([
+                "serve",
+                "--gguf",
+                gguf_path,
+                "--config",
+                config_path.to_str().unwrap(),
+                "--port",
+                &api_port.to_string(),
+                "--console",
+                &console_port.to_string(),
+                "--headless",
+                "--disable-iroh-relays",
+                "--log-format",
+                "json",
+            ])
+            .env("HOME", &home_dir)
+            .env("ADMISSION_POLICY_BLOCKED_MODELS", "blocked-test-model")
+            .env("ADMISSION_POLICY_DATA_DIR", &capsule_data_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log_file.try_clone().expect("clone log fd")))
+            .stderr(Stdio::from(log_file))
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn real mesh-llm host with --gguf");
+
+        let host = Self {
+            child,
+            api_port,
+            console_port,
+            home_dir,
+            capsule_data_dir,
+        };
+        // Proves the admission-policy plugin (and therefore the whole
+        // lifecycle-hook wiring this test depends on) is live before we go
+        // looking for the separately-loaded real GGUF.
+        host.wait_for_plugin_model("blocked-test-model").await;
+        host.wait_for_console(console_port).await;
+        host
+    }
+
+    async fn wait_for_console(&self, console_port: u16) {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let url = format!("http://127.0.0.1:{console_port}/api/models");
+        let deadline = tokio::time::Instant::now() + STARTUP_TIMEOUT;
+        loop {
+            if tokio::time::Instant::now() > deadline {
+                panic!("real host's console API never became reachable at {url} within {STARTUP_TIMEOUT:?}");
+            }
+            if client.get(&url).send().await.is_ok() {
+                return;
+            }
+            sleep(Duration::from_millis(300)).await;
+        }
+    }
+}
+
+/// mesh-llm mints a local GGUF's model id from the file's own content
+/// (`local-gguf/sha256-<16-hex-prefix>`), not from its path -- ask the host's
+/// own console API (`/api/models`, distinct from the OpenAI-compatible
+/// `/v1/models`) which entry's `run_command`/`auto_command` names *gguf_path*,
+/// rather than reimplementing mesh-llm's own hashing scheme here (which would
+/// silently drift if that scheme ever changes).
+async fn discover_local_gguf_model_id(console_port: u16, gguf_path: &str) -> String {
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{console_port}/api/models");
+    let deadline = tokio::time::Instant::now() + STARTUP_TIMEOUT;
+    loop {
+        let body: serde_json::Value = client
+            .get(&url)
+            .send()
+            .await
+            .expect("GET console /api/models")
+            .json()
+            .await
+            .expect("console /api/models returns JSON");
+        let entries = body["mesh_models"]
+            .as_array()
+            .expect("mesh_models is an array");
+        // The catalog carries TWO entries for one local GGUF: one keyed by
+        // the raw file path (`name: gguf_path`, `run_command` names the raw
+        // path -- not routable via a normal chat request) and the
+        // content-addressed one mesh-llm actually dispatches on (`name:
+        // "local-gguf/sha256-<hash>"`, whose OWN `run_command` names that
+        // same id, not the path). The sha256 entry is populated a moment
+        // after startup (the host hashes the file in the background), so
+        // this polls rather than assuming it's there on the first listing.
+        // In a single-`--gguf`-argument topology (this test's), whichever
+        // `local-gguf/` entry appears IS the one for *gguf_path* -- there is
+        // no other local GGUF it could be.
+        let _ = gguf_path;
+        for entry in entries {
+            let name = entry["name"].as_str().unwrap_or("");
+            if name.starts_with("local-gguf/") {
+                return name.to_string();
+            }
+        }
+        if tokio::time::Instant::now() > deadline {
+            panic!(
+                "no content-addressed 'local-gguf/sha256-*' catalog entry for {gguf_path:?} \
+                 appeared at {url} within {STARTUP_TIMEOUT:?}; got: {body:#}"
+            );
+        }
+        sleep(Duration::from_millis(300)).await;
+    }
+}
+
+/// Manages a real `capsule_sidecar.py` subprocess fronting a `RealHost`, for
+/// `[mesh-sidecar-provenance-fold-option3]`'s real-hardware-fold test. A thin
+/// wrapper, not a reimplementation -- the actual reverse-proxy/capsule-sealing
+/// logic under test is the real Python process, not this harness.
+struct SidecarProcess {
+    child: std::process::Child,
+    listen_port: u16,
+    ledger_dir: PathBuf,
+}
+
+impl SidecarProcess {
+    fn spawn(upstream_port: u16, node_id: &str, model_id: &str, workdir: &std::path::Path) -> Self {
+        let sidecar_py =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../capsule_sidecar.py");
+        assert!(
+            sidecar_py.is_file(),
+            "expected capsule_sidecar.py at {sidecar_py:?}"
+        );
+
+        let ledger_dir = workdir.join("sidecar-ledger");
+        let manifest_dir = workdir.join("model-package");
+        std::fs::create_dir_all(&manifest_dir).expect("mk model-package dir");
+        let manifest_path = manifest_dir.join("model-package.json");
+        std::fs::write(
+            &manifest_path,
+            serde_json::json!({"model_id": model_id, "source_model": {"sha256": "0".repeat(64)}})
+                .to_string(),
+        )
+        .expect("write model-package.json");
+
+        let listen_port = pick_port();
+        let log_path = workdir.join("sidecar.log");
+        let log_file = std::fs::File::create(&log_path).expect("create sidecar.log");
+
+        let child = std::process::Command::new("python3")
+            .arg(&sidecar_py)
+            .args([
+                "--role",
+                "provider",
+                "--upstream",
+                &format!("http://127.0.0.1:{upstream_port}"),
+                "--listen-port",
+                &listen_port.to_string(),
+                "--ledger-dir",
+                ledger_dir.to_str().unwrap(),
+                "--manifest",
+                manifest_path.to_str().unwrap(),
+                "--node-id",
+                node_id,
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log_file.try_clone().expect("clone log fd")))
+            .stderr(Stdio::from(log_file))
+            .spawn()
+            .expect("spawn capsule_sidecar.py (requires python3 on PATH)");
+
+        let sidecar = Self {
+            child,
+            listen_port,
+            ledger_dir,
+        };
+        sidecar.wait_ready(log_path);
+        sidecar
+    }
+
+    fn wait_ready(&self, log_path: PathBuf) {
+        let deadline = std::time::Instant::now() + STARTUP_TIMEOUT;
+        loop {
+            if std::time::Instant::now() > deadline {
+                let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+                panic!(
+                    "capsule_sidecar.py never became ready within {STARTUP_TIMEOUT:?}. Log:\n{log}"
+                );
+            }
+            if std::net::TcpStream::connect(("127.0.0.1", self.listen_port)).is_ok() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    async fn post_chat_completions(&self, body: &serde_json::Value) -> reqwest::Response {
+        let client = reqwest::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .unwrap();
+        client
+            .post(format!(
+                "http://127.0.0.1:{}/v1/chat/completions",
+                self.listen_port
+            ))
+            .json(body)
+            .send()
+            .await
+            .expect("POST /v1/chat/completions to sidecar")
+    }
+
+    /// The most recently sealed capsule from the sidecar's own
+    /// `cll.LedgerStore` backend (`[mesh-b1-ledger]` #128 -- segment files
+    /// under `sidecar-ledger/segments/`, NOT a flat `capsules.jsonl` the way
+    /// the Rust plugin's ledger still is).
+    fn latest_capsule(&self) -> serde_json::Value {
+        let segments_dir = self.ledger_dir.join("segments");
+        let mut segment_files: Vec<_> = std::fs::read_dir(&segments_dir)
+            .unwrap_or_else(|e| panic!("read sidecar segments dir {segments_dir:?}: {e}"))
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .collect();
+        segment_files.sort();
+        let last_segment = segment_files
+            .last()
+            .unwrap_or_else(|| panic!("no segment files under {segments_dir:?}"));
+        let content = std::fs::read_to_string(last_segment).expect("read segment file");
+        let last_line = content
+            .lines()
+            .rfind(|l| !l.trim().is_empty())
+            .expect("segment file has at least one capsule");
+        serde_json::from_str(last_line).expect("parse sidecar capsule JSON")
+    }
+}
+
+impl Drop for SidecarProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The `[mesh-sidecar-provenance-fold-option3]` acceptance test: seals a REAL
+/// model exchange (an actual loaded GGUF, real inference, no plugin-served
+/// stub) through a REAL `capsule_sidecar.py` fronting a REAL `mesh-llm serve
+/// --gguf` host with the REAL admission-policy plugin registered, and asserts
+/// BOTH real I/O digests (sidecar) AND real hardware provenance (plugin) are
+/// obtainable for that ONE exchange, correlated correctly.
+///
+/// CORRECTS A FALSE ASSUMPTION found while building this test (both
+/// producers' own doc comments claimed otherwise): the host's own
+/// `serving_provenance.exchange_id` (a UUID it mints for `openai.
+/// exchange.v1`) and the sidecar's response-`id`-derived `exchange_id` are
+/// **independent values** for the SAME real exchange -- verified directly
+/// below. The correlator that DOES work, also verified directly below, is
+/// `compute_attestation.agent_input_digest` (the canonical digest of the
+/// real request body): the host forwards it on the terminal event, and the
+/// sidecar independently computes the identical canonical digest over the
+/// same wire bytes it proxied. See `provenance_fold_join.py`'s module
+/// docstring and `../REAL-HOST-VERIFICATION.md` for the full writeup.
+///
+/// Requires `MESH_LLM_TEST_GGUF` (a real, local, non-symlink GGUF file path)
+/// in addition to `MESH_LLM_HOST_BIN`, and `python3` on PATH. Ignored by
+/// default for the same reason every other test in this file is: no GPU, no
+/// GGUF, and no mesh-llm checkout in CI.
+///
+/// GPU CONTENTION, OBSERVED (not hypothetical): this test loads the SAME
+/// GGUF into a NEW `mesh-llm` process on the Metal GPU. Run it on a box
+/// where another mesh-llm process is already serving on the same GPU (e.g. a
+/// live mesh node) and Metal returns `backend is in error state from a
+/// previous command buffer failure` -> the exchange 502s. This is a real
+/// resource-sharing limit of the Metal backend across processes, not a bug
+/// in this test; run it with no other GPU-serving mesh-llm process active.
+/// The join logic itself (correlator, role checks, hardware presence) is
+/// independently verified without any GPU contention risk by
+/// `tests/test_provenance_fold_join.py` (fixtures built from this exact
+/// real-host run's captured JSON) and by the manual transcript in
+/// `../REAL-HOST-VERIFICATION.md`.
+#[tokio::test]
+#[ignore = "requires a real mesh-llm host binary + a real local GGUF file; see REAL-HOST-VERIFICATION.md"]
+async fn sidecar_and_plugin_hardware_provenance_join_for_a_real_gguf_exchange() {
+    let Ok(gguf_path) = std::env::var("MESH_LLM_TEST_GGUF") else {
+        eprintln!("MESH_LLM_TEST_GGUF not set; skipping (see module docs)");
+        return;
+    };
+
+    let host = RealHost::spawn_with_gguf(&gguf_path).await;
+    let model_id = discover_local_gguf_model_id(host.console_port, &gguf_path).await;
+
+    // The content-addressed catalog entry appearing (above) does not
+    // instantly mean the OpenAI ingress's own local-routing table has picked
+    // it up -- there is a brief window where a request for it still falls
+    // through to the plugin-fallback path and 404s (verified directly: this
+    // gap is real, not hypothetical). Warm the model directly against the
+    // host first, retrying past that window, before driving the actual
+    // measured exchange through the sidecar.
+    let warmup_deadline = tokio::time::Instant::now() + STARTUP_TIMEOUT;
+    loop {
+        let resp = host
+            .post_chat_completions(&serde_json::json!({
+                "model": model_id, "messages": [{"role": "user", "content": "warmup"}], "max_tokens": 1,
+            }))
+            .await;
+        if resp.status() == reqwest::StatusCode::OK {
+            break;
+        }
+        if tokio::time::Instant::now() > warmup_deadline {
+            panic!(
+                "real GGUF model {model_id:?} never became routable via /v1/chat/completions \
+                 within {STARTUP_TIMEOUT:?}; last status {:?}",
+                resp.status()
+            );
+        }
+        sleep(Duration::from_millis(500)).await;
+    }
+
+    let workdir = host.home_dir.join("sidecar-work");
+    std::fs::create_dir_all(&workdir).expect("mk sidecar workdir");
+    let sidecar = SidecarProcess::spawn(host.api_port, "gpu-node-1", &model_id, &workdir);
+
+    let request_body = serde_json::json!({
+        "model": model_id,
+        "messages": [{"role": "user", "content": "Say the word: banana"}],
+        "max_tokens": 8,
+    });
+    let resp = sidecar.post_chat_completions(&request_body).await;
+    assert_eq!(
+        resp.status(),
+        reqwest::StatusCode::OK,
+        "real GGUF exchange through the sidecar must succeed"
+    );
+    let response_body: serde_json::Value = resp.json().await.expect("valid JSON response");
+    let response_id = response_body["id"]
+        .as_str()
+        .expect("real host response carries an id")
+        .to_string();
+
+    // Give the plugin's async on_channel_message handler a moment to observe
+    // and seal the host's lifecycle broadcast for this same exchange.
+    sleep(Duration::from_millis(750)).await;
+
+    // --- sidecar half: real I/O digests ---
+    let sidecar_capsule = sidecar.latest_capsule();
+    let sidecar_ca = &sidecar_capsule["model_attestation"]["compute_attestation"];
+    let agent_input_digest = sidecar_ca["agent_input_digest"]
+        .as_str()
+        .expect("sidecar capsule carries a real agent_input_digest")
+        .to_string();
+    assert_eq!(agent_input_digest.len(), 64, "real sha256 hex digest");
+    let sidecar_role = sidecar_ca["x-mesh-poc-v1"]["role"]
+        .as_str()
+        .expect("sidecar capsule carries x-mesh-poc-v1.role");
+    assert_eq!(sidecar_role, "served");
+
+    // --- REGRESSION PIN: exchange_id does NOT correlate across producers ---
+    // (both producers' own doc comments claimed it did; disproven here).
+    let sidecar_exchange_id = sidecar_ca["x-mesh-poc-v1"]["serving_provenance"]["exchange_id"]
+        .as_str()
+        .expect("sidecar serving_provenance.exchange_id");
+    assert_eq!(
+        sidecar_exchange_id, response_id,
+        "sidecar's own exchange_id is derived from the response id"
+    );
+
+    // --- plugin half: find the matching capsule by agent_input_digest,
+    //     and assert it carries REAL hardware provenance ---
+    let plugin_ledger_path = host
+        .capsule_data_dir()
+        .join("ledger")
+        .join("capsules.jsonl");
+    let plugin_ledger = std::fs::read_to_string(&plugin_ledger_path)
+        .unwrap_or_else(|e| panic!("read plugin ledger {plugin_ledger_path:?}: {e}"));
+    let plugin_capsule: serde_json::Value = plugin_ledger
+        .lines()
+        .rev()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("parse plugin capsule"))
+        .find(|c| {
+            c["model_attestation"]["compute_attestation"]["agent_input_digest"]
+                == agent_input_digest
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no plugin capsule found with agent_input_digest == {agent_input_digest:?}; \
+                 plugin ledger:\n{plugin_ledger}"
+            )
+        });
+
+    let plugin_ca = &plugin_capsule["model_attestation"]["compute_attestation"];
+    let plugin_sp = &plugin_ca["x-mesh-poc-v1"]["serving_provenance"];
+    assert_eq!(plugin_ca["x-mesh-poc-v1"]["role"], "served");
+    let gpu = plugin_sp["hardware"]["gpu"]
+        .as_str()
+        .expect("plugin capsule carries REAL hardware.gpu for a real-GGUF exchange");
+    assert!(!gpu.is_empty());
+    let architecture = plugin_sp["model"]["architecture"]
+        .as_str()
+        .expect("plugin capsule carries REAL model.architecture for a real-GGUF exchange");
+    assert!(!architecture.is_empty());
+
+    // --- REGRESSION PIN: the plugin's OWN exchange_id is a DIFFERENT value
+    //     from the sidecar's (and from the response id) -- proving the
+    //     correlator MUST be agent_input_digest, not exchange_id.
+    let plugin_exchange_id = plugin_sp["exchange_id"]
+        .as_str()
+        .expect("plugin serving_provenance.exchange_id");
+    assert_ne!(
+        plugin_exchange_id, sidecar_exchange_id,
+        "if this ever starts passing, exchange_id has become a valid correlator \
+         and provenance_fold_join.py's design note should be revisited"
+    );
+
+    eprintln!(
+        "JOIN OK: agent_input_digest={agent_input_digest} sidecar_exchange_id={sidecar_exchange_id} \
+         plugin_exchange_id={plugin_exchange_id} gpu={gpu} architecture={architecture}"
+    );
 }
 
 impl Drop for RealHost {
