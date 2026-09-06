@@ -63,30 +63,87 @@ paging never sets ``next_page_token``, so this loop runs exactly once
 against it, unchanged. ``--max-pages`` (default 1000) bounds the loop so a
 misbehaving door handing back an ever-repeating token cannot hang this
 client forever.
+
+``--subject references`` -- ``[mesh-ask-the-references]``, discovery
+mechanism 1: how a STRANGER finds a verdict about node ``X`` that ``X``
+itself won't hold (a pruned/declined record never reaches ``X``'s own
+chain -- see ``adjudication_delivery.seal_adjudication_ack_refused``), with
+no new trusted party. ``peer`` is ``X``'s own evidence door; ``--x-node-id``
+is ``X``'s stable identity (the ``value`` a ``correlation`` ask names, and
+the seed for deterministic sampling); ``--x-selector`` names which of
+``X``'s own records to pull (digest tier, a plain ``range`` ask -- there is
+no evidence-door subject for "give me everything", so the caller supplies
+the region of interest, same as any other ``range`` ask); ``--peer-map``
+is a local JSON ``{node_id: base_url}`` address book for reaching each
+sampled counterparty's own door (plumbing, not a trust party -- nobody's
+verdict is taken on the address book's say-so).
+
+The flow: (1) pull ``X``'s own ``range`` at ``x_selector`` and read every
+counterparty node id ``X``'s own records name (``requesting_party`` /
+``served_by_node_id`` / ``counterparty_ref``, wherever a producer nested
+them); (2) deterministically sample ``--k`` (default 3) of them, keyed on
+``x_node_id`` alone (see :func:`sample_reference_candidates`) so two
+independent strangers running this against the same ``X`` converge on the
+same sample without coordinating; (3) ask each sampled counterparty's own
+door ``correlation{by: counterparty, value: x_node_id}``; (4) verify every
+returned bundle OFFLINE (:func:`verify_bundle`, the same full check
+``render_artifact`` runs) before trusting anything in it -- an unverified
+bundle contributes to nothing; (5) fold verified adjudication/ack-refusal
+content into tallies, and separately check ``X``'s OWN pulled records for
+per-counterparty sequence continuity (:func:`sequence_counter
+.verify_pair_continuity`) -- a mid-sequence gap surfaces even if ``X``
+never admits what filled it. Refusals are counted as answers, never
+inferred from; nothing here is ever folded into a score.
 """
 from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 import json
 import sys
 import urllib.error
 import urllib.request
+from dataclasses import dataclass, field
 from typing import Any
 
 from capsule_emit.bundle import Bundle, verify_bundle
 from capsule_emit.evidence_request import Refusal, verify_refusal_offline
 
-from history_card import build_history_card
+from history_card import build_history_card, with_references
+from sequence_counter import verify_pair_continuity
 
 __all__ = [
+    "DEFAULT_REFERENCE_K",
+    "ReferencesResult",
+    "discover_counterparties",
     "fetch_all_pages",
     "main",
     "post_evidence_request",
     "post_mesh_evidence_request",
     "render_artifact",
+    "render_references_result",
     "render_refusal",
+    "run_references",
+    "sample_reference_candidates",
 ]
+
+#: Verdict vocabulary, mirrored from `twin_adjudicator`'s public constants --
+#: named locally rather than importing that module (whose comparison/margin
+#: machinery this CLI never needs) just to reach three strings, same
+#: precedent `adjudication_delivery.py`'s own reason constants cite.
+_VERDICT_CORROBORATED = "corroborated"
+_VERDICT_INCONCLUSIVE = "inconclusive"
+_VERDICT_CONTRADICTED_PREFIX = "contradicted:"
+
+#: Fields a mesh capsule may name a counterparty node under -- free-form
+#: `compute_attestation` extension data, not a fixed schema position (same
+#: reason `capsule_emit.evidence_request`'s own `_CORRELATION_KEY_ALIASES`
+#: walks generically rather than assuming one path).
+_COUNTERPARTY_NAMING_KEYS = frozenset({"requesting_party", "served_by_node_id", "counterparty_ref"})
+
+#: Default sample size for `references` -- k=3, per [mesh-ask-the-references].
+DEFAULT_REFERENCE_K = 3
 
 
 def _build_request_map(
@@ -98,9 +155,13 @@ def _build_request_map(
     expected_pin_mmr_size: int | None,
     nonce: str | None,
     page_token: str | None = None,
+    correlation_by: str | None = None,
+    correlation_value: str | None = None,
 ) -> dict[str, Any]:
     if subject_kind == "record":
         subject: dict[str, Any] = {"kind": "record", "capsule_id": capsule_id}
+    elif subject_kind == "correlation":
+        subject = {"kind": "correlation", "by": correlation_by, "value": correlation_value}
     else:
         subject = {"kind": "range", "selector": selector}
     coverage: dict[str, Any] = {}
@@ -183,6 +244,277 @@ def post_mesh_evidence_request(
         return json.loads(resp.read())
 
 
+def _iter_values_by_key(obj: Any, keys: frozenset[str]) -> list[str]:
+    """Recursively walk *obj* (a JSON-decoded capsule receipt) and collect
+    every string value found under a key in *keys*, at any depth --
+    duplicated from (never reached into)
+    ``capsule_emit.evidence_request``'s private helper of the same shape,
+    same precedent ``evidence_responder.py``'s ``_refuse_served_summary``
+    cites for not reaching into a sibling package's private function."""
+    found: list[str] = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in keys and isinstance(v, str):
+                found.append(v)
+            found.extend(_iter_values_by_key(v, keys))
+    elif isinstance(obj, list):
+        for item in obj:
+            found.extend(_iter_values_by_key(item, keys))
+    return found
+
+
+def _iter_dicts_by_key(obj: Any, key: str) -> list[dict[str, Any]]:
+    """Like :func:`_iter_values_by_key`, but collects dict VALUES found
+    under *key* at any depth."""
+    found: list[dict[str, Any]] = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == key and isinstance(v, dict):
+                found.append(v)
+            found.extend(_iter_dicts_by_key(v, key))
+    elif isinstance(obj, list):
+        for item in obj:
+            found.extend(_iter_dicts_by_key(item, key))
+    return found
+
+
+def discover_counterparties(bundles: list[Bundle], *, exclude_node_id: str) -> list[str]:
+    """From ``X``'s own already-verified digest-tier bundles (each
+    ``Bundle.receipt`` is the raw ledger entry -- structural attestation
+    fields only, never a disclosed payload), collect every distinct node
+    identity ``X``'s OWN records name as a counterparty. Excludes ``X``
+    itself and the honest ``"unknown"`` marker -- never a fabricated
+    candidate. Sorted, so the result is a pure function of the bundle set.
+    """
+    found: set[str] = set()
+    for b in bundles:
+        for v in _iter_values_by_key(b.receipt, _COUNTERPARTY_NAMING_KEYS):
+            if v and v not in (exclude_node_id, "unknown"):
+                found.add(v)
+    return sorted(found)
+
+
+def sample_reference_candidates(
+    candidates: list[str], *, subject_node_id: str, k: int = DEFAULT_REFERENCE_K
+) -> list[str]:
+    """Deterministic sample of ``min(k, len(candidates))``, seeded ONLY by
+    ``subject_node_id`` (``X``'s own identity) -- a pure function of ``(X,
+    the candidate set)``, never of who is asking or of any randomness. Two
+    independent strangers who discover the same candidate set for the same
+    ``X`` always pick the same sample without coordinating, exactly the
+    property ``[mesh-ask-the-references]`` calls for."""
+    uniq = sorted(set(candidates))
+    ranked = sorted(uniq, key=lambda c: hashlib.sha256(f"{subject_node_id}:{c}".encode()).hexdigest())
+    return ranked[:k]
+
+
+def _classify_receipt_for_x(receipt: dict[str, Any], x_node_id: str, tally: dict[str, int]) -> None:
+    """Fold one verified reference receipt's adjudication content into
+    *tally* (mutated in place: ``corroborated``/``contradicted``/
+    ``inconclusive``/``ack_refusals``). Only a verdict that actually NAMES
+    ``x_node_id`` (the ``contradicted:<owner_id>`` shape) is ever attributed
+    to it -- ``corroborated``/``inconclusive`` verdicts name no owner at all
+    (``twin_adjudicator``'s own trust-model choice: disagreement is a
+    trigger, not evidence of who is right) and so can never legitimately
+    land in these per-``X`` buckets; the counters exist so a shape that DOES
+    start naming an owner on those verdicts is picked up automatically, with
+    no code change here.
+    """
+    for adjudication in _iter_dicts_by_key(receipt, "adjudication"):
+        verdict = adjudication.get("verdict")
+        if verdict == f"{_VERDICT_CONTRADICTED_PREFIX}{x_node_id}":
+            tally["contradicted"] += 1
+        elif verdict == _VERDICT_CORROBORATED:
+            tally["corroborated"] += 1
+        elif verdict == _VERDICT_INCONCLUSIVE:
+            tally["inconclusive"] += 1
+    for ack_refused in _iter_dicts_by_key(receipt, "adjudication_ack_refused"):
+        if ack_refused.get("verdict") == f"{_VERDICT_CONTRADICTED_PREFIX}{x_node_id}":
+            tally["ack_refusals"] += 1
+
+
+@dataclass
+class ReferencesResult:
+    """Total outcome of :func:`run_references` -- an ACCOUNT of what was
+    asked and found, never a score. ``continuity`` carries one
+    ``{"continuity", "gaps_detected", "records_checked"}`` dict (see
+    ``sequence_counter.PairContinuity``) per ``(x_node_id, *)`` pair found
+    in ``X``'s own pulled records. ``gaps_detected`` is reported
+    SEPARATELY from ``continuity`` -- a dropped-prefix gap does not by
+    itself flip ``continuity`` to ``"broken"`` (``PairContinuity``'s own
+    discipline: a gap and a regression are different findings), so a
+    caller that only reads ``continuity`` would miss exactly the
+    ``[mesh-ask-the-references]`` prune mutant this field exists to catch.
+    """
+
+    x_node_id: str
+    candidates_discovered: int
+    references_asked: int
+    references_answered: int
+    adjudications_about_x: dict[str, int]
+    ack_refusals_about_x: int
+    continuity: dict[str, dict[str, Any]] = field(default_factory=dict)
+    unreachable_references: list[str] = field(default_factory=list)
+    #: X's own history card (folded from X's pulled checkpoint fields, per
+    #: ``history_card.build_history_card``), with this result's counts
+    #: folded in via ``history_card.with_references``. ``None`` when X's
+    #: pulled range carried no bundles to fold a checkpoint from.
+    history_card: Any = None
+
+
+def run_references(
+    x_peer: str,
+    *,
+    x_node_id: str,
+    x_selector: str,
+    peer_map: dict[str, str],
+    k: int = DEFAULT_REFERENCE_K,
+    via: str = "http",
+    local_host_api: str = "http://127.0.0.1:8080",
+    local_plugin_name: str = "admission-policy",
+    max_pages: int = 1000,
+) -> ReferencesResult:
+    """Discovery mechanism 1, end to end -- see the module docstring's
+    ``--subject references`` section for the full flow. Raises
+    ``RuntimeError`` only if ``X``'s own door refuses the initial pull
+    (there is nothing to sample counterparties from); every OTHER failure
+    (an unreachable or refusing reference) degrades into
+    ``unreachable_references`` / a non-answer, never an exception -- a
+    reference that won't talk is itself an honest, countable outcome.
+    """
+    if via == "mesh":
+        x_post = functools.partial(post_mesh_evidence_request, local_host_api, local_plugin_name, x_peer)
+    else:
+        x_post = functools.partial(post_evidence_request, x_peer)
+
+    x_request = _build_request_map(
+        subject_kind="range",
+        capsule_id=None,
+        selector=x_selector,
+        expected_pin_root=None,
+        expected_pin_mmr_size=None,
+        nonce=None,
+    )
+    x_payload = fetch_all_pages(x_post, x_request, max_pages=max_pages)
+    if "reason" in x_payload:
+        raise RuntimeError(f"could not pull {x_node_id}'s own records at selector={x_selector!r}: {x_payload['reason']}")
+
+    x_bundles = [Bundle.from_dict(bd) for bd in x_payload["bundles"]]
+    verified_x_receipts = []
+    for b in x_bundles:
+        ok, _errors = verify_bundle(b)
+        if ok:
+            verified_x_receipts.append(b.receipt)
+
+    candidates = discover_counterparties(x_bundles, exclude_node_id=x_node_id)
+    sampled = sample_reference_candidates(candidates, subject_node_id=x_node_id, k=k)
+
+    tally = {"corroborated": 0, "contradicted": 0, "inconclusive": 0, "ack_refusals": 0}
+    answered = 0
+    unreachable: list[str] = []
+
+    for node_id in sampled:
+        base_url = peer_map.get(node_id)
+        if not base_url:
+            unreachable.append(node_id)
+            continue
+        reference_request = _build_request_map(
+            subject_kind="correlation",
+            capsule_id=None,
+            selector=None,
+            expected_pin_root=None,
+            expected_pin_mmr_size=None,
+            nonce=None,
+            correlation_by="counterparty",
+            correlation_value=x_node_id,
+        )
+        try:
+            payload = fetch_all_pages(
+                functools.partial(post_evidence_request, base_url), reference_request, max_pages=max_pages
+            )
+        except urllib.error.URLError:
+            unreachable.append(node_id)
+            continue
+
+        answered += 1
+        if "reason" in payload:
+            # A signed refusal (incl. no_such_record) IS an answer -- counted
+            # above, never treated as a non-response, and never inferred as
+            # evidence either way.
+            continue
+
+        for bd in payload["bundles"]:
+            bundle = Bundle.from_dict(bd)
+            ok, _errors = verify_bundle(bundle)
+            if not ok:
+                # Never trust an unverified bundle's content -- contributes
+                # to nothing.
+                continue
+            _classify_receipt_for_x(bundle.receipt, x_node_id, tally)
+
+    continuity_by_pair = verify_pair_continuity(verified_x_receipts)
+    continuity = {
+        pair: {
+            "continuity": pc.continuity,
+            "gaps_detected": pc.gaps_detected,
+            "records_checked": pc.records_checked,
+        }
+        for pair, pc in continuity_by_pair.items()
+        if pair.startswith(f"{x_node_id}::")
+    }
+    adjudications_about_x = {
+        "corroborated": tally["corroborated"],
+        "contradicted": tally["contradicted"],
+        "inconclusive": tally["inconclusive"],
+    }
+
+    card = _build_history_card_from_bundles(x_bundles, node_id=x_node_id)
+    if card is not None:
+        card = with_references(
+            card,
+            references_asked=len(sampled),
+            references_answered=answered,
+            adjudications_about_x=adjudications_about_x,
+            ack_refusals_about_x=tally["ack_refusals"],
+        )
+
+    return ReferencesResult(
+        x_node_id=x_node_id,
+        candidates_discovered=len(candidates),
+        references_asked=len(sampled),
+        references_answered=answered,
+        adjudications_about_x=adjudications_about_x,
+        ack_refusals_about_x=tally["ack_refusals"],
+        continuity=continuity,
+        unreachable_references=unreachable,
+        history_card=card,
+    )
+
+
+def render_references_result(result: ReferencesResult) -> str:
+    lines = [
+        (
+            f"REFERENCES x={result.x_node_id} candidates_discovered={result.candidates_discovered} "
+            f"asked={result.references_asked} answered={result.references_answered}"
+        ),
+        f"  adjudications_about_x={result.adjudications_about_x} ack_refusals_about_x={result.ack_refusals_about_x}",
+    ]
+    if result.unreachable_references:
+        lines.append(f"  unreachable references: {', '.join(result.unreachable_references)}")
+    if result.continuity:
+        lines.append("  X's own chain, per counterparty pair:")
+        lines.extend(f"    {pair}: {continuity}" for pair, continuity in sorted(result.continuity.items()))
+    else:
+        lines.append("  X's own chain: no counterparty-pair-sequenced records in the pulled range")
+    if result.history_card is not None:
+        props = result.history_card.properties
+        lines.append(
+            f"  X's history card: continuity={props.continuity!r} history_depth={props.history_depth} "
+            f"unforked={props.unforked} references={result.history_card.to_value()['references']}"
+        )
+    return "\n".join(lines)
+
+
 def render_refusal(payload: dict[str, Any]) -> str:
     refusal = Refusal(
         request_digest=payload["request_digest"],
@@ -200,9 +532,14 @@ def render_refusal(payload: dict[str, Any]) -> str:
     )
 
 
-def _history_card_lines(bundles: list[Bundle], *, node_id: str) -> list[str]:
+def _build_history_card_from_bundles(bundles: list[Bundle], *, node_id: str) -> Any:
+    """Fold a response's own ``checkpoint``/``prior_checkpoint``/
+    ``checkpoint_cose`` fields (the first bundle alone already carries the
+    covering, at-most-two-checkpoint segment -- see the module docstring)
+    into a :class:`history_card.HistoryCard`. Returns ``None`` when
+    ``bundles`` is empty -- no checkpoint fields to fold."""
     if not bundles:
-        return []
+        return None
     b = bundles[0]
     checkpoint_lines: list[dict[str, Any]] = []
     since_size = 0
@@ -214,12 +551,18 @@ def _history_card_lines(bundles: list[Bundle], *, node_id: str) -> list[str]:
         current["checkpoint_cose"] = b.checkpoint_cose.hex()
     checkpoint_lines.append(current)
 
-    card = build_history_card(
+    return build_history_card(
         node_id=node_id,
         log_id=b.checkpoint.log_id,
         checkpoint_lines=checkpoint_lines,
         since_size=since_size,
     )
+
+
+def _history_card_lines(bundles: list[Bundle], *, node_id: str) -> list[str]:
+    card = _build_history_card_from_bundles(bundles, node_id=node_id)
+    if card is None:
+        return []
     props = card.properties
     return [
         "history card (folded from this response's own checkpoint fields):",
@@ -261,9 +604,31 @@ def main(argv: list[str] | None = None) -> int:
         "peer",
         help="peer's evidence_server.py base URL (default) or, with --via mesh, the peer's hex mesh peer id",
     )
-    parser.add_argument("--subject", choices=["record", "range"], default="range")
+    parser.add_argument("--subject", choices=["record", "range", "references"], default="range")
     parser.add_argument("--capsule-id", default=None, help="required for --subject record")
     parser.add_argument("--selector", default=None, help="required for --subject range, e.g. id1..id2")
+    parser.add_argument(
+        "--x-node-id",
+        default=None,
+        help="required for --subject references: X's stable identity (peer is X's own evidence door)",
+    )
+    parser.add_argument(
+        "--x-selector",
+        default=None,
+        help="required for --subject references: which of X's own records to pull, e.g. id1..id2",
+    )
+    parser.add_argument(
+        "--peer-map",
+        default=None,
+        help="required for --subject references: JSON file {node_id: base_url} for reaching each "
+        "sampled counterparty's own evidence door",
+    )
+    parser.add_argument(
+        "--k",
+        type=int,
+        default=DEFAULT_REFERENCE_K,
+        help="--subject references only: how many of X's counterparties to sample (default 3)",
+    )
     parser.add_argument("--expected-pin-root", default=None)
     parser.add_argument("--expected-pin-mmr-size", type=int, default=None)
     parser.add_argument("--nonce", default=None)
@@ -300,6 +665,29 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--subject record requires --capsule-id")
     if args.subject == "range" and not args.selector:
         parser.error("--subject range requires --selector")
+    if args.subject == "references" and not (args.x_node_id and args.x_selector and args.peer_map):
+        parser.error("--subject references requires --x-node-id, --x-selector, and --peer-map")
+
+    if args.subject == "references":
+        with open(args.peer_map, encoding="utf-8") as fh:
+            peer_map = json.load(fh)
+        try:
+            result = run_references(
+                args.peer,
+                x_node_id=args.x_node_id,
+                x_selector=args.x_selector,
+                peer_map=peer_map,
+                k=args.k,
+                via=args.via,
+                local_host_api=args.local_host_api,
+                local_plugin_name=args.local_plugin_name,
+                max_pages=args.max_pages,
+            )
+        except (RuntimeError, urllib.error.URLError) as exc:
+            print(f"references {args.x_node_id!r} via {args.peer} (via {args.via}) failed: {exc}", file=sys.stderr)
+            return 1
+        print(render_references_result(result))
+        return 0
 
     request_map = _build_request_map(
         subject_kind=args.subject,
