@@ -45,6 +45,10 @@ def _served_capsule(i: int, *, confirmed: bool = True) -> dict:
             "response_digest": f"resp{i:059x}",
             "status": "confirmed" if confirmed else "rejected",
         },
+        # The sidecar's own authoritative role label (x-mesh-poc-v1.role) --
+        # what capsule_mesh_view.label_role() actually reads, and what
+        # account_capsule._role_of() now delegates to.
+        "model_attestation": {"compute_attestation": {"x-mesh-poc-v1": {"role": "served"}}},
     }
 
 
@@ -54,6 +58,40 @@ def _requested_capsule(i: int) -> dict:
         "action_type": "decide",
         "provenance": {"role": "requester"},
         "effect": {"type": "request", "request_digest": f"req{i:060x}"},
+        "model_attestation": {"compute_attestation": {"x-mesh-poc-v1": {"role": "requested"}}},
+    }
+
+
+def _conflict_role_capsule(i: int) -> dict:
+    """A record the admission-policy plugin flagged `conflict` -- but whose
+    `effect` block LOOKS served (type `inference_completion` + a
+    `response_digest`), the exact shape #127's ruling review found the old
+    local heuristic would misclassify as `served`."""
+    return {
+        "capsule_id": f"{i:064x}",
+        "action_type": "decide",
+        "effect": {
+            "type": "inference_completion",
+            "response_digest": f"resp{i:059x}",
+            "status": "confirmed",
+        },
+        "model_attestation": {"compute_attestation": {"x-mesh-poc-v1": {"role": "conflict"}}},
+    }
+
+
+def _unknown_role_capsule(i: int) -> dict:
+    """A record whose explicit `x-mesh-poc-v1.role` is `unknown` (an
+    unrecognized dispatch_path) -- again with a served-shaped `effect` block,
+    to prove the explicit label wins over the effect-shape heuristic."""
+    return {
+        "capsule_id": f"{i:064x}",
+        "action_type": "decide",
+        "effect": {
+            "type": "inference_completion",
+            "response_digest": f"resp{i:059x}",
+            "status": "confirmed",
+        },
+        "model_attestation": {"compute_attestation": {"x-mesh-poc-v1": {"role": "unknown"}}},
     }
 
 
@@ -162,6 +200,50 @@ def test_covered_clamped_to_entries_on_disk(tmp_path, fake_witness):
     account = ac.build_account_capsule(node_id="n", capsules=on_disk[:1], latest_checkpoint=cp)
     assert account.covered_entries == 1
     assert account.fold.n_total == 1
+
+
+# --------------------------------------------------------------------------- #
+# [mesh-account-role-conflict-blindness] -- a role-conflicted or unknown-role  #
+# exchange must never fold into a clean served/requested tally.               #
+# --------------------------------------------------------------------------- #
+def test_role_of_reads_explicit_poc_role_not_the_old_effect_heuristic():
+    """Regression for the pr65-review-flagged blindness: `_role_of` must
+    delegate to `capsule_mesh_view.label_role` (reading the sidecar's
+    authoritative `x-mesh-poc-v1.role`), not re-derive from `effect` shape. A
+    capsule whose `effect` block LOOKS served (type `inference_completion` +
+    `response_digest`) but is explicitly labeled `conflict` must return
+    `"conflict"`, never `"served"` -- the old local heuristic checked `effect`
+    FIRST and would have returned `"served"` here."""
+    capsule = _conflict_role_capsule(1)
+    assert ac._role_of(capsule) == "conflict"
+    unknown = _unknown_role_capsule(2)
+    assert ac._role_of(unknown) == "unknown"
+
+
+def test_conflict_role_gets_own_bucket_never_folds_into_served_or_requested(tmp_path, fake_witness):
+    """#127's ruling: a role-conflicted exchange is a genuine disagreement
+    between the admission-policy plugin's expectation and its own
+    served_by_node_id-vs-self check -- it must show up in its own labeled
+    bucket, never silently folded into a clean served/requested count."""
+    caps = [_served_capsule(1), _conflict_role_capsule(2), _requested_capsule(3)]
+    on_disk, cp = _build_witnessed_ledger(tmp_path, caps)
+    account = ac.build_account_capsule(node_id="n", capsules=on_disk, latest_checkpoint=cp)
+    assert account.fold.n_total == 3
+    assert account.fold.n_served == 1
+    assert account.fold.n_requested == 1
+    assert account.fold.n_conflict_role == 1
+    assert account.fold.n_unknown_role == 0
+    # and it is NEVER silently dropped from the serialized account.
+    assert account.to_value()["derivation"]["fold"]["n_conflict_role"] == 1
+
+
+def test_unknown_role_gets_own_bucket_never_folds_into_served(tmp_path, fake_witness):
+    caps = [_served_capsule(1), _unknown_role_capsule(2)]
+    on_disk, cp = _build_witnessed_ledger(tmp_path, caps)
+    account = ac.build_account_capsule(node_id="n", capsules=on_disk, latest_checkpoint=cp)
+    assert account.fold.n_served == 1
+    assert account.fold.n_unknown_role == 1
+    assert account.fold.n_conflict_role == 0
 
 
 # --------------------------------------------------------------------------- #

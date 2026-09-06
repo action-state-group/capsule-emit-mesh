@@ -22,10 +22,12 @@ actually seen?" in three fields:
     the witness exists to prevent.
   * **derivation** — a served/success **fold** over the selected range. This is
     a plain, documented fold (counts, not a weighted opinion): total exchanges,
-    how many the node SERVED (was the provider) vs. requested, and how many of
-    the served ones carried a confirmed effect. It reuses the same served-vs-
-    requested role vocabulary as `trust_summary.compute_gradient` and the same
-    "confirmed effect" signal the sidecar already writes
+    how many the node SERVED (was the provider) vs. requested, how many were
+    role-CONFLICTED or unknown (their own labeled buckets, never folded into
+    served/requested), and how many of the served ones carried a confirmed
+    effect. The served/requested/conflict/unknown label is `capsule_mesh_view
+    .label_role`'s per-record signal — reused, not re-derived — and the
+    "confirmed effect" signal is the same one the sidecar already writes
     (`effect.status == "confirmed"`); it does not invent a new trust metric.
   * **coverage** — the latest witnessed checkpoint's `root` (+ `mmr_size`,
     `log_id`, and the witness URLs that co-signed it). This is the cross-check
@@ -102,6 +104,11 @@ from capsule_emit.account import Account as CoreAccount
 from capsule_emit.checkpoint import CheckpointRecord
 from capsule_emit.checkpoint import leaf_count as _leaf_count_at_size
 
+# The sidecar's authoritative per-record role label -- reused, not re-derived,
+# the same pattern served_summary.py's `_is_served` already follows. See
+# `_role_of` below for why this module used to hand-roll its own classifier.
+from capsule_mesh_view import label_role
+
 __all__ = [
     "ACCOUNT_CAPSULE_SCHEMA",
     "ACCOUNT_SUBJECT_KEY",
@@ -159,19 +166,19 @@ SYBIL_RESIDUAL_TEXT = (
 #                                                                              #
 # ``reads`` names the capsule fields ``_role_of`` / ``_effect_confirmed`` read #
 # — the served/requested role signal and the confirmed-effect signal — so the #
-# definition honestly declares its inputs.                                     #
+# definition honestly declares its inputs. ``_role_of`` now delegates to      #
+# ``capsule_mesh_view.label_role`` (2026-09-05, closing the conflict-blindness #
+# gap #127's ruling flagged) rather than re-deriving from effect/provenance    #
+# shape, so ``reads`` narrows to the field that signal actually is: the       #
+# sidecar's own ``role`` label — same abbreviated name served_summary.py's    #
+# definition already uses for the same delegated signal.                      #
 # --------------------------------------------------------------------------- #
 MESH_ACCOUNT_DEFINITION = AccountDefinition(
     name="mesh.served_success_fold/1",
     selection_kind="range",
     reads=(
-        "effect.type",
-        "effect.response_digest",
         "effect.status",
-        "provenance.role",
-        "provenance.served_by_node_id",
         "role",
-        "served_by_node_id",
     ),
     derivation_class="deterministic",
 )
@@ -183,25 +190,26 @@ MESH_ACCOUNT_DEFINITION = AccountDefinition(
 MESH_ACCOUNT_DEFINITION_DIGEST = MESH_ACCOUNT_DEFINITION.definition_digest()
 
 
-def _role_of(capsule: dict[str, Any]) -> str:
-    """served | requested | unknown — the same role vocabulary trust_summary
-    uses. A mesh node is the PROVIDER for a served exchange (it produced the
-    inference completion) and the REQUESTER otherwise. We read the served
-    signal off the effect block the sidecar writes (`type ==
-    "inference_completion"` with a `response_digest`), falling back to an
-    explicit `served_by_node_id`/`role` when present."""
-    effect = capsule.get("effect") or {}
-    if effect.get("type") == "inference_completion" and effect.get("response_digest"):
-        return "served"
-    prov = capsule.get("provenance") or {}
-    if prov.get("served_by_node_id") or capsule.get("served_by_node_id"):
-        return "served"
-    role = (prov.get("role") or capsule.get("role") or "").lower()
-    if role in ("served", "provider"):
-        return "served"
-    if role in ("requested", "requester", "sent"):
-        return "requested"
-    return "unknown"
+def _role_of(capsule: dict[str, Any], source_log: str = "sidecar") -> str:
+    """served | requested | conflict | unknown — reused, not re-derived, from
+    ``capsule_mesh_view.label_role`` (the same delegation ``served_summary.py``'s
+    `_is_served` already makes).
+
+    This module used to hand-roll its own classifier here (checking
+    `effect.type`/`effect.response_digest`, then `provenance.served_by_node_id`,
+    then a top-level `role` string) — a SEPARATE, older code path that never
+    read the sidecar's own authoritative `x-mesh-poc-v1.role` field at all. Once
+    #127's ruling widened that field to also carry `conflict` (the
+    admission-policy plugin's dispatch_path expectation disagreeing with its
+    served_by_node_id-vs-self check) and `unknown` (an unrecognized
+    dispatch_path), the local heuristic went blind to both: a role-conflicted
+    exchange that also happened to carry a served-shaped `effect` block (type
+    `inference_completion` + a `response_digest`) would still classify as a
+    clean `"served"`, silently erasing the fact that the node's own
+    admission-policy plugin disagreed about who served it. Delegating to
+    `label_role` means `conflict`/`unknown` propagate here exactly as they do
+    in `served_summary.py`, instead of being re-guessed back into `served`."""
+    return label_role(capsule, source_log)
 
 
 def _effect_confirmed(capsule: dict[str, Any]) -> bool:
@@ -230,6 +238,13 @@ class AccountFold:
     n_served: int = 0
     n_requested: int = 0
     n_unknown_role: int = 0
+    #: A role-CONFLICTED exchange (#127's ruling: the admission-policy plugin's
+    #: dispatch_path-derived expectation disagreed with its
+    #: served_by_node_id-vs-self check) — its own labeled bucket, NEVER folded
+    #: into `n_served`/`n_requested`/`n_unknown_role`. Properties, never
+    #: silently dropped: a relying party sees the disagreement count directly
+    #: rather than having it vanish into a clean served tally.
+    n_conflict_role: int = 0
     n_served_confirmed: int = 0
 
     def to_value(self) -> dict[str, Any]:
@@ -238,20 +253,23 @@ class AccountFold:
             "n_served": self.n_served,
             "n_requested": self.n_requested,
             "n_unknown_role": self.n_unknown_role,
+            "n_conflict_role": self.n_conflict_role,
             "n_served_confirmed": self.n_served_confirmed,
         }
 
 
-def _fold_range(capsules: list[dict[str, Any]]) -> AccountFold:
-    n_served = n_requested = n_unknown = n_confirmed = 0
+def _fold_range(capsules: list[dict[str, Any]], source_log: str = "sidecar") -> AccountFold:
+    n_served = n_requested = n_unknown = n_conflict = n_confirmed = 0
     for c in capsules:
-        role = _role_of(c)
+        role = _role_of(c, source_log)
         if role == "served":
             n_served += 1
             if _effect_confirmed(c):
                 n_confirmed += 1
         elif role == "requested":
             n_requested += 1
+        elif role == "conflict":
+            n_conflict += 1
         else:
             n_unknown += 1
     return AccountFold(
@@ -259,6 +277,7 @@ def _fold_range(capsules: list[dict[str, Any]]) -> AccountFold:
         n_served=n_served,
         n_requested=n_requested,
         n_unknown_role=n_unknown,
+        n_conflict_role=n_conflict,
         n_served_confirmed=n_confirmed,
     )
 
@@ -425,12 +444,16 @@ def build_account_capsule(
     node_id: str,
     capsules: list[dict[str, Any]],
     latest_checkpoint: CheckpointRecord | None,
+    source_log: str = "sidecar",
 ) -> AccountCapsule:
     """Build a node's account capsule from its own ledger + latest checkpoint.
 
     `capsules` is the node's full `capsules.jsonl`, 1-indexed by line (the same
     ordering `checkpointing.JsonlLogSource` folds into the MMR). `latest_checkpoint`
     is the most recent `CheckpointRecord` from `checkpoints.jsonl` (or `None`).
+    `source_log` is `label_role`'s per-source-log default ("sidecar" or
+    "plugin", same convention `served_summary.py` threads through) — consulted
+    only when a record carries no explicit `x-mesh-poc-v1.role`.
 
     **Selection is witness-bounded.** We fold ONLY `capsules[:covered_entries]`
     where `covered_entries = leaf_count(latest_checkpoint.mmr_size)`. If there is
@@ -451,7 +474,7 @@ def build_account_capsule(
             selection_from_entry=0,
             selection_to_entry=0,
             covered_entries=0,
-            fold=_fold_range(selected),
+            fold=_fold_range(selected, source_log),
             coverage_root="",
             coverage_mmr_size=0,
             coverage_log_id="",
@@ -471,7 +494,7 @@ def build_account_capsule(
         selection_from_entry=1 if covered else 0,
         selection_to_entry=covered,
         covered_entries=covered,
-        fold=_fold_range(selected),
+        fold=_fold_range(selected, source_log),
         coverage_root=latest_checkpoint.root,
         coverage_mmr_size=latest_checkpoint.mmr_size,
         coverage_log_id=latest_checkpoint.log_id,
