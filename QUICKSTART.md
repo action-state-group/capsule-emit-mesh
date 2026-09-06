@@ -1,12 +1,14 @@
 # QUICKSTART — you have Mesh-LLM, now what?
 
-Three independent things you can test today, in order of effort:
+Four independent things you can test today, in order of effort:
 
 1. **Ask -> verify** — a coordinator asks a stage node "what did you do?" and checks the
    answer *offline*, without trusting it. Fully runnable right now, no Mesh-LLM needed.
 2. **Get real capsules out of your running Mesh-LLM node** — two paths, one works today.
 3. **Ask a peer node for evidence, over the wire** — `POST /evidence-request` + an offline
    verifier, cross-node, no Mesh-LLM upstream dependency.
+4. **See your own node's Accountability panes** — three HTML views over the ledger step 2
+   produced: your own card, your peers, and any one exchange.
 
 This is a walkthrough, not a spec. For what each piece actually proves (and doesn't), see
 [docs/TRUST-MODEL.md](docs/TRUST-MODEL.md); for the mechanism this quickstart exercises, see
@@ -152,3 +154,24 @@ signature/consistency) but never a Rust-producer capsule's own detached signed s
 labels that gap rather than rounding a log-integrity pass up to a full verify. This is the
 **Record** layer only: it makes a claim signed and checkable, it does not attest to how the
 answering process was run (that's Attest/Detect, elsewhere in this repo's ladder).
+
+## 4. See your own node's Accountability panes
+
+Three self-contained HTML views over the ledger you already have from step 2 — "what would a
+stranger see if they asked about me" (Pane A), "who I've exchanged with" (Pane B), and "was this
+specific exchange what both sides say it was" (Pane C):
+
+```
+python3 capsule_accountability_tab.py --ledger ./ledger/capsules.jsonl --out accountability.html \
+  --node-id <your-node-id> --log-id <your-log-id>
+
+python3 peer_accountability_tab.py build --node-id <your-node-id> --log-id <your-log-id> \
+  --ledger ./ledger/capsules.jsonl --html --out peers.html
+
+python3 capsule_exchange_tab.py list --ledger ./ledger/capsules.jsonl --out exchanges.html
+```
+
+Open each `.html` in a browser — no server needed. `--node-id`/`--log-id` gate Pane A's v2 card
+face (the promise line + the three labeled source blocks); omit either and you get the older
+per-exchange table only. Peer/exchange details, the promise-line vocabulary, and which cells are
+wired vs. honestly `pending <task-id>` today: [docs/ACCOUNTABILITY-PANES.md](docs/ACCOUNTABILITY-PANES.md).

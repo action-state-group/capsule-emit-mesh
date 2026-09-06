@@ -868,12 +868,35 @@ The `cross_party_rung` is **derived from the record's own bytes** using
 > `docs/TRUST-MODEL.md` §4.1a). Do not cite this demo's output as conformant
 > evidence of bilateral attestation.
 
+## Accountability tab: three panes (Pane A/B/C)
+
+Three self-contained HTML/JSON views over one node's own ledger, answering three questions
+mesh-llm's own Logs/Chat UI cannot: **Pane A** ("my node") — what would a stranger see if they
+asked about me; **Pane B** ("peers") — of the nodes I've exchanged with, is there anything I
+should know; **Pane C** ("this exchange") — was this specific exchange what both sides say it
+was. Every card and every peer row leads with a **promise line** (`kept` / `broken` /
+`nothing_promised` / `changed_without_saying` — did this node do what its own sealed join card
+said it would), and every fact is labeled with which of three sources produced it
+(`self_derived` / `sampled` / `counterparty_held`) — never merged into one number, never a score.
+
+```
+python3 capsule_accountability_tab.py --ledger ./ledger/capsules.jsonl --out accountability.html \
+  --node-id <your-node-id> --log-id <your-log-id>
+python3 peer_accountability_tab.py build --node-id <your-node-id> --log-id <your-log-id> \
+  --ledger ./ledger/capsules.jsonl --html --out peers.html
+python3 capsule_exchange_tab.py list --ledger ./ledger/capsules.jsonl --out exchanges.html
+```
+
+Full per-pane field reference, the wiring status of every cell (wired vs. honestly `pending
+<task-id>`), and real terminal output: [docs/ACCOUNTABILITY-PANES.md](docs/ACCOUNTABILITY-PANES.md).
+
 ## Files
 
 ```
 README.md                       this file
 docs/TRUST-MODEL.md             the step-1 threat model + assurance classes (source of the neutrality discipline)
 docs/SUPPORTED-PORT-RERUN.md    the supported-port re-run findings (vs. the debugging endpoint)
+docs/ACCOUNTABILITY-PANES.md    the Accountability tab's three panes: promise line, source labels, per-cell wiring status
 
 # Path 1 — native Rust plugin (primary)
 plugins/admission-policy/       mesh-llm-plugin: Envelope-wire admission + lifecycle-hook capsule emission
@@ -896,6 +919,11 @@ run_checkpoint_demo.py          synthetic checkpoint demo (exchanges -> MMR -> c
 run_real_deployment_checkpoint_demo.sh   real mesh-llm + checkpointing, end to end (no goose leg)
 verify_real_deployment_checkpoint.py     offline verify + rollback-mutant proof
 history_card.py                 history_card() verb: checkpoints + receipts + consistency proofs since size S (properties, never a score)
+join_card.py                     sealed node-identity "join card" + promise_line() (kept/broken/nothing_promised/changed_without_saying)
+self_accountability.py           Pane A row-builders: sealing/history/rung/shared/adjudications summaries, composed by capsule_accountability_tab.py
+capsule_accountability_tab.py    Pane A "My node" -- card face (promise line + 3 labeled source blocks + footer) over one node's own ledger
+peer_accountability_tab.py       Pane B "Peers" -- one row per node exchanged with, 7 columns, every cell honestly wired-or-pending
+capsule_exchange_tab.py          Pane C "This exchange" -- list regrouped by exchange_id, mine/theirs as two columns, plus the single-exchange drill-down
 
 # split / coordinator (record shapes; see the split-honesty note above)
 mesh_record_emitter.py          exchange_id-correlated per-hop record emitter (+ requester_commitment)
