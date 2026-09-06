@@ -103,17 +103,18 @@ def _poc_block(record: dict[str, Any]) -> dict[str, Any]:
 
 
 #: Every value an explicit `x-mesh-poc-v1.role` field may carry. Widened
-#: 2026-09-06 (role ruling, upstream-clean half) from `{"requested",
-#: "served"}` to also accept `"unknown"` (an unrecognized dispatch_path) --
-#: MUST be trusted as-is, same as "requested"/"served", never fall through
-#: to the observation_point/source-log heuristic below. That fallthrough was
-#: the actual bug this ruling closes: a role field that only recognized two
-#: of its own legal values would silently re-guess "served" for the others
-#: via `_SERVED_OBSERVATION_POINTS`/`_DEFAULT_ROLE_BY_SOURCE` -- turning an
-#: honest "I don't know" back into a fabricated claim. (A `"conflict"` value
-#: -- the served_by_node_id-vs-self consistency check, fork-only enrichment
-#: -- lands as a separate, later commit.)
-_EXPLICIT_POC_ROLES = frozenset({"requested", "served", "unknown"})
+#: 2026-09-06 (role ruling) from `{"requested", "served"}` to also accept
+#: `"unknown"` (an unrecognized dispatch_path) and `"conflict"` (the
+#: admission-policy plugin's dispatch_path-derived expectation and its
+#: served_by_node_id-vs-self consistency check disagreed) -- both MUST be
+#: trusted as-is, same as "requested"/"served", never fall through to the
+#: observation_point/source-log heuristic below. That fallthrough was the
+#: actual bug this ruling closes: a role field that only recognized two of
+#: its own four legal values would silently re-guess "served" for the other
+#: two via `_SERVED_OBSERVATION_POINTS`/`_DEFAULT_ROLE_BY_SOURCE` -- turning
+#: an honest "I don't know" or "these two signals disagree" back into a
+#: fabricated claim.
+_EXPLICIT_POC_ROLES = frozenset({"requested", "served", "conflict", "unknown"})
 
 
 def label_role(record: dict[str, Any], source_log: str) -> str:

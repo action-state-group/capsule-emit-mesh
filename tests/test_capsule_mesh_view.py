@@ -123,6 +123,22 @@ def test_role_field_unknown_is_trusted_as_is_never_reguessed_served():
     assert label_role(rec, SOURCE_PLUGIN) == "unknown"
 
 
+def test_role_field_conflict_is_trusted_as_is_never_reguessed_served():
+    """[2026-09-06 role ruling, fork-only consistency-check half]: the
+    admission-policy plugin now seals `role: "conflict"` when its
+    dispatch_path-derived expectation and its served_by_node_id-vs-self
+    consistency check disagree -- an explicit, authoritative value trusted
+    the same way as "requested"/"served"/"unknown", never re-guessed via the
+    observation_point heuristic (this record's
+    `observation_point="client_egress"` is IN `_SERVED_OBSERVATION_POINTS`,
+    so a regression to a narrower accepted-values check flips this test red
+    by returning "served" instead)."""
+    rec = _capsule(
+        "a" * 64, "2026-08-28T00:00:00Z", role="conflict", observation_point="client_egress"
+    )
+    assert label_role(rec, SOURCE_PLUGIN) == "conflict"
+
+
 # ---------------------------------------------------------------------------
 # label_counterparty
 # ---------------------------------------------------------------------------
