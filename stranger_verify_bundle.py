@@ -46,8 +46,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from advertisement import Advertisement, reconcile_advertised_vs_served
 from agent_action_capsule.verify import verify_store
 from bilateral_demo import ClientAck, get_cross_party, verify_client_ack
-from capsule_emit.ledger import read_ledger
 from capsule_sidecar import derive_cross_party_rung, identity_limitation_for_rung
+from ledger_store_backend import is_store_ledger, read_all_capsules
 
 
 def _poc_block(capsule: dict) -> dict:
@@ -196,13 +196,18 @@ def verify_bundle(
     producer envelope inline)."""
     lines: list[str] = []
     any_unverified = False
-    capsules_path = ledger_dir / "capsules.jsonl"
-    if not capsules_path.exists():
-        return False, False, [f"NO capsules.jsonl at {ledger_dir} -- nothing to verify"]
-
-    records = read_ledger(capsules_path)
+    # [mesh-ledger-store-migration] ledger_dir is a disclosed COPY of
+    # whatever backend the provider actually uses -- store-aware, with a
+    # labeled, read-only fallback for a still-flat bundle (older nodes).
+    records, archived = read_all_capsules(ledger_dir)
     if not records:
-        return False, False, ["capsules.jsonl is empty -- no exchange recorded"]
+        if archived:
+            return False, False, [
+                f"every segment at {ledger_dir} is archived -- mount to view, nothing readable to verify"
+            ]
+        if is_store_ledger(ledger_dir):
+            return False, False, [f"ledger store at {ledger_dir} is empty -- no exchange recorded"]
+        return False, False, [f"NO capsules.jsonl at {ledger_dir} -- nothing to verify"]
 
     issuer_key = _issuer_key_for(ledger_dir, issuer_key)
     results = verify_store(records)
@@ -296,6 +301,36 @@ def run_checkpoint_verify(ledger_dir: Path) -> tuple[bool, str]:
     return proc.returncode == 0, proc.stdout + proc.stderr
 
 
+def _flip_first_record_capsule_id_in_store(ledger_dir: Path, flipped_id: str) -> None:
+    """Rewrite the store's first record's ``capsule_id`` in place, directly
+    in whichever segment file holds it, then reindex from the mutated bytes
+    -- see :func:`tamper_check`. Scoped to a small, unrotated scratch demo
+    ledger (the first segment is the active one); a store with an archived
+    first segment is out of scope for this probe."""
+    from ledger_store_backend import open_ledger_store
+
+    store = open_ledger_store(ledger_dir)
+    try:
+        segments = store.list_segments()
+        first_segment_name = segments[0].name
+    finally:
+        store.close()
+
+    segment_path = ledger_dir / "segments" / first_segment_name
+    lines = segment_path.read_text(encoding="utf-8").splitlines()
+    first = json.loads(lines[0])
+    first["capsule_id"] = flipped_id
+    lines[0] = json.dumps(first, separators=(",", ":"))
+    segment_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    store = open_ledger_store(ledger_dir)
+    try:
+        store.reindex()
+        store.rebuild_lookup_index()
+    finally:
+        store.close()
+
+
 def tamper_check(ledger_dir: Path, issuer_key: Path | None) -> bool:
     """Two independent tamper probes, each on its own fresh SCRATCH COPY --
     never touches the real, disclosed ledger_dir:
@@ -317,16 +352,26 @@ def tamper_check(ledger_dir: Path, issuer_key: Path | None) -> bool:
     with tempfile.TemporaryDirectory() as tmp:
         scratch = Path(tmp) / "tampered-capsule-id"
         shutil.copytree(ledger_dir, scratch)
-        capsules_path = scratch / "capsules.jsonl"
-        lines = capsules_path.read_text().splitlines()
-        if not lines:
+        original_records, _archived = read_all_capsules(scratch)
+        if not original_records:
             return False
-        first = json.loads(lines[0])
-        original_id = first["capsule_id"]
+        original_id = original_records[0]["capsule_id"]
         flipped = format(int(original_id[0], 16) ^ 0xF, "x") + original_id[1:]
-        first["capsule_id"] = flipped
-        lines[0] = json.dumps(first, sort_keys=True)
-        capsules_path.write_text("\n".join(lines) + "\n")
+
+        if is_store_ledger(scratch):
+            # [mesh-ledger-store-migration] the first record lives in the
+            # store's first segment file -- flip it in place there, then
+            # reindex (SQLite index + lookup index) from the mutated bytes
+            # so every byte_offset they cache is recomputed fresh rather
+            # than assuming the tamper preserved the original line length.
+            _flip_first_record_capsule_id_in_store(scratch, flipped)
+        else:
+            capsules_path = scratch / "capsules.jsonl"
+            lines = capsules_path.read_text().splitlines()
+            first = json.loads(lines[0])
+            first["capsule_id"] = flipped
+            lines[0] = json.dumps(first, sort_keys=True)
+            capsules_path.write_text("\n".join(lines) + "\n")
 
         tampered_ok, _tampered_unverified, report = verify_bundle(scratch, {}, issuer_key=issuer_key)
         capsule_detected = not tampered_ok

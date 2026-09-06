@@ -88,9 +88,9 @@ class TestVerifyResultsForDetachedStatement:
             "detached-statement path this test targets"
         )
 
-        from capsule_emit.ledger import read_ledger
+        from ledger_store_backend import read_all_capsules
 
-        records = read_ledger(state.ledger_path)
+        records, _archived = read_all_capsules(state.ledger_dir)
         results = cmv.verify_results_for(records, ledger_dir=state.ledger_dir)
 
         assert results is not None
@@ -101,9 +101,9 @@ class TestVerifyResultsForDetachedStatement:
         statement_path = state.statements_dir / f"{capsule['capsule_id']}.cose"
         statement_path.unlink()
 
-        from capsule_emit.ledger import read_ledger
+        from ledger_store_backend import read_all_capsules
 
-        records = read_ledger(state.ledger_path)
+        records, _archived = read_all_capsules(state.ledger_dir)
         results = cmv.verify_results_for(records, ledger_dir=state.ledger_dir)
 
         assert results[0].ok is False
@@ -119,9 +119,9 @@ class TestVerifyResultsForDetachedStatement:
         raw[-1] ^= 0xFF
         statement_path.write_bytes(bytes(raw))
 
-        from capsule_emit.ledger import read_ledger
+        from ledger_store_backend import read_all_capsules
 
-        records = read_ledger(state.ledger_path)
+        records, _archived = read_all_capsules(state.ledger_dir)
         results = cmv.verify_results_for(records, ledger_dir=state.ledger_dir)
 
         assert results[0].ok is False
@@ -133,9 +133,9 @@ class TestVerifyResultsForDetachedStatement:
         # treat "didn't look" as "passed".
         state, _capsule = _build_recorded_capsule(tmp_path)
 
-        from capsule_emit.ledger import read_ledger
+        from ledger_store_backend import read_all_capsules
 
-        records = read_ledger(state.ledger_path)
+        records, _archived = read_all_capsules(state.ledger_dir)
         results = cmv.verify_results_for(records)
 
         assert results[0].ok is False
@@ -146,9 +146,9 @@ class TestVerifyResultsForDetachedStatement:
         # wrong content.
         state, capsule = _build_recorded_capsule(tmp_path)
 
-        from capsule_emit.ledger import read_ledger
+        from ledger_store_backend import read_all_capsules
 
-        records = read_ledger(state.ledger_path)
+        records, _archived = read_all_capsules(state.ledger_dir)
         records[0]["capsule_id"] = "0" * 64  # no longer matches its own content
 
         results = cmv.verify_results_for(records, ledger_dir=state.ledger_dir)
@@ -160,9 +160,9 @@ class TestMachineViewRendersGreenForDetachedlySignedCapsules:
     def test_build_machine_view_row_is_witness_verified_true(self, tmp_path: Path) -> None:
         state, capsule = _build_recorded_capsule(tmp_path)
 
-        from capsule_emit.ledger import read_ledger
+        from ledger_store_backend import read_all_capsules
 
-        records = read_ledger(state.ledger_path)
+        records, _archived = read_all_capsules(state.ledger_dir)
         verify_results = cmv.verify_results_for(records, ledger_dir=state.ledger_dir)
         rows = cmv.build_machine_view([(cmv.SOURCE_SIDECAR, records, verify_results)])
 

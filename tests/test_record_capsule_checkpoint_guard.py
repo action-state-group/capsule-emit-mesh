@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 import capsule_sidecar as cs
+from ledger_store_backend import read_all_capsules
 
 _POLLUTABLE_MODULES = [
     "agent_action_capsule.canonical",
@@ -93,7 +94,8 @@ def test_checkpoint_registration_failure_never_fails_the_serving_request(tmp_pat
 
     # The capsule this call was actually responsible for is still recorded,
     # unaffected by the checkpoint call's failure.
-    assert state.ledger_path.exists()
+    records, _archived = read_all_capsules(state.ledger_dir)
+    assert len(records) == 1
     assert state.last_capsule_id == capsule["capsule_id"]
     assert capsule in state.emitted
     assert "checkpoint record_appended failed" in capsys.readouterr().out

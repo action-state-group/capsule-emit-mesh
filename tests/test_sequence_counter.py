@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 import capsule_sidecar as cs
+from ledger_store_backend import read_all_capsules
 from sequence_counter import (
     UNKNOWN_COUNTERPARTY,
     SequenceCounterStore,
@@ -437,7 +438,7 @@ def test_two_exchanges_for_one_pair_seal_seq_1_then_2_into_the_ledger(tmp_path: 
         statement = cs_mod.sign_capsule(state, capsule)
         cs_mod.record_capsule(state, capsule, statement)
 
-    ledger_capsules = [json.loads(line) for line in state.ledger_path.read_text().splitlines() if line.strip()]
+    ledger_capsules, _archived = read_all_capsules(state.ledger_dir)
     assert len(ledger_capsules) == 2
     seqs = [_serving_provenance(c)["seq"] for c in ledger_capsules]
     assert seqs == [1, 2]
@@ -469,7 +470,7 @@ def test_resetting_the_counter_cache_file_is_flagged_broken_not_a_fresh_start(tm
     state.sequence_counters._state.clear()
     seal_and_record()
 
-    ledger_capsules = [json.loads(line) for line in state.ledger_path.read_text().splitlines() if line.strip()]
+    ledger_capsules, _archived = read_all_capsules(state.ledger_dir)
     seqs = [_serving_provenance(c)["seq"] for c in ledger_capsules]
     assert seqs == [1, 2, 1], "confirms the reset cache really does reissue seq=1"
 

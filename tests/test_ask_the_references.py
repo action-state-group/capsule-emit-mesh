@@ -54,7 +54,6 @@ import ask_history as ah
 import capsule_sidecar as cs
 import evidence_server as es
 from adjudication_delivery import seal_adjudication_ack_refused
-from checkpointing import JsonlLogSource
 from twin_adjudicator import (
     AdjudicationHalf,
     adjudicate,
@@ -131,31 +130,35 @@ def _node_state(tmp_path, name: str):
     manifest_path.write_text(
         json.dumps({"model_id": "m/1", "source_model": {"sha256": "e" * 64, "canonical_ref": "m/1"}, "skippy_abi_version": "1"})
     )
+    checkpoint_config_path = tmp_path / f"{name}-checkpoint.toml"
+    checkpoint_config_path.write_text(f'[checkpoint]\nlog_id = "{name}"\ncadence_entries = 1\n')
     return cs.default_state(
         ledger_dir=tmp_path / f"{name}-ledger",
         manifest_path=manifest_path,
         keys_dir=tmp_path / f"{name}-keys",
         runtime_label="test-runtime",
         runtime_digest="deadbeef" * 8,
+        checkpoint_config_path=checkpoint_config_path,
     )
-
-
-def _resolve_signer(state):
-    from capsule_emit.signing import resolve_signer
-
-    return resolve_signer(str(state.ledger_path), key_path=state.signing_key_path)
 
 
 def _seal_exchange(state, *, requesting_party: str, served_by_node_id: str, seq: int, prev_seq: int | None) -> str:
     """Seal one of GCP's own exchange records naming its counterparty --
     the honest, own-chain record ``discover_counterparties`` reads and
-    ``verify_pair_continuity`` walks."""
+    ``verify_pair_continuity`` walks. Minted via capsule_emit's own
+    ``seal()`` (a convenient, already-verified builder) into a scratch
+    ledger it owns exclusively, then landed in the sidecar's REAL
+    cll.ledger.store.LedgerStore -- ``state.log_source`` -- same pattern as
+    [mesh-ledger-store-migration]'s test_evidence_responder.py."""
+    import tempfile
+
+    scratch_ledger = tempfile.mktemp(suffix="-capsule-emit-seal-scratch.jsonl")
     capsule = seal(
         None,
         action="served_half",
         operator="acme",
         anchor=False,
-        ledger=state.ledger_path,
+        ledger=scratch_ledger,
         signing_key_path=state.signing_key_path,
         extra_compute={
             "x-mesh-poc-v1": {
@@ -170,6 +173,7 @@ def _seal_exchange(state, *, requesting_party: str, served_by_node_id: str, seq:
             }
         },
     ).capsule
+    state.log_source.append(capsule)
     return capsule["capsule_id"]
 
 
@@ -193,9 +197,10 @@ def _make_served_half(text: str, *, owner_id: str) -> tuple[dict, dict]:
     return capsule, disclosed
 
 
-def _seed(ledger_path, capsule: dict) -> None:
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-    JsonlLogSource(ledger_path).append(capsule)
+def _seed(state, capsule: dict) -> None:
+    """Land an already-built capsule dict in ``state``'s REAL
+    cll.ledger.store.LedgerStore -- ``state.log_source``."""
+    state.log_source.append(capsule)
 
 
 def _build_gcp_caught_by_m4(tmp_path, *, prune_seq_1: bool = False):
@@ -210,7 +215,7 @@ def _build_gcp_caught_by_m4(tmp_path, *, prune_seq_1: bool = False):
     m4_state = _node_state(tmp_path, "m4")
 
     cap_b, _disc_b = _make_served_half("goodbye world", owner_id="gcp")
-    _seed(gcp_state.ledger_path, cap_b)
+    _seed(gcp_state, cap_b)
 
     gcp_cids = [cap_b["capsule_id"]]
     if not prune_seq_1:
@@ -223,7 +228,7 @@ def _build_gcp_caught_by_m4(tmp_path, *, prune_seq_1: bool = False):
     gcp_cids.append(
         _seal_exchange(gcp_state, requesting_party="m4", served_by_node_id="gcp", seq=2, prev_seq=1)
     )
-    assert witness.push(str(gcp_state.ledger_path), signer=_resolve_signer(gcp_state)) is not None
+    assert gcp_state.checkpoint.reconnect() is not None
 
     cap_a, _disc_a = _make_served_half("hello world", owner_id="m4")
     half_a = AdjudicationHalf.from_capsule_and_disclosure(cap_a, _disc_a)
@@ -232,7 +237,9 @@ def _build_gcp_caught_by_m4(tmp_path, *, prune_seq_1: bool = False):
     forced = outcome.__class__(**{**outcome.__dict__, "verdict": contradicted("gcp")})
     adjudication = seal_adjudication_capsule(forced, operator="test-org", developer="referee@v1")
 
-    gcp_door_state = es.EvidenceServerState(ledger_path=gcp_state.ledger_path, signing_key_path=gcp_state.signing_key_path)
+    gcp_door_state = es.EvidenceServerState(
+        ledger_dir=gcp_state.ledger_dir, ledger_path=gcp_state.ledger_path, signing_key_path=gcp_state.signing_key_path
+    )
     from adjudication_delivery import handle_delivery
 
     refusal_dict = handle_delivery(gcp_door_state, json.dumps(adjudication).encode("utf-8"))
@@ -240,15 +247,17 @@ def _build_gcp_caught_by_m4(tmp_path, *, prune_seq_1: bool = False):
 
     ack_refused = seal_adjudication_ack_refused(adjudication, refusal_dict, operator="test-org", developer="referee@v1")
 
-    _seed(m4_state.ledger_path, adjudication)
-    _seed(m4_state.ledger_path, ack_refused)
-    assert witness.push(str(m4_state.ledger_path), signer=_resolve_signer(m4_state)) is not None
+    _seed(m4_state, adjudication)
+    _seed(m4_state, ack_refused)
+    assert m4_state.checkpoint.reconnect() is not None
 
     return gcp_state, m4_state, gcp_cids
 
 
 def _run_server(state) -> tuple:
-    server_state = es.EvidenceServerState(ledger_path=state.ledger_path, signing_key_path=state.signing_key_path)
+    server_state = es.EvidenceServerState(
+        ledger_dir=state.ledger_dir, ledger_path=state.ledger_path, signing_key_path=state.signing_key_path
+    )
     server = es.run_evidence_server(host="127.0.0.1", port=0, state=server_state)
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -369,10 +378,10 @@ class TestReferencesEndToEnd:
         the contradicted verdict or the ack-refused record -- only M4's
         does. If this ever stopped being true the `references` ask would
         be finding nothing new."""
-        from capsule_emit.ledger import read_ledger
+        from ledger_store_backend import read_all_capsules
 
         gcp_state, _m4_state, _cids = _build_gcp_caught_by_m4(tmp_path)
-        gcp_entries = read_ledger(gcp_state.ledger_path)
+        gcp_entries, _archived = read_all_capsules(gcp_state.ledger_dir)
         for entry in gcp_entries:
             block = (entry.get("model_attestation") or {}).get("compute_attestation") or {}
             assert "adjudication" not in block
@@ -401,7 +410,9 @@ class TestReferencesEndToEnd:
     def test_x_refuses_its_own_pull_raises(self, tmp_path, stub_witness):
         gcp_state = _node_state(tmp_path, "gcp")
         # Never sealed/checkpointed -- the door has nothing to answer with.
-        gcp_server_state = es.EvidenceServerState(ledger_path=gcp_state.ledger_path, signing_key_path=gcp_state.signing_key_path)
+        gcp_server_state = es.EvidenceServerState(
+            ledger_dir=gcp_state.ledger_dir, ledger_path=gcp_state.ledger_path, signing_key_path=gcp_state.signing_key_path
+        )
         server = es.run_evidence_server(host="127.0.0.1", port=0, state=gcp_server_state)
         port = server.server_address[1]
         thread = threading.Thread(target=server.serve_forever, daemon=True)

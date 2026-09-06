@@ -450,8 +450,16 @@ def _cmd_view(args: argparse.Namespace) -> int:
             (SOURCE_PLUGIN, args.plugin_log, records, verify_results_for(records, ledger_dir=ledger_dir, issuer_key=issuer_key))
         )
     if args.sidecar_log:
-        records = read_ledger(args.sidecar_log)
+        # [mesh-ledger-store-migration] the sidecar's own ledger may now be a
+        # cll.ledger.store.LedgerStore (manifest.json present) rather than a
+        # flat capsules.jsonl -- read_all_capsules detects which, with a
+        # labeled, read-only fallback for a still-flat dir. The Rust
+        # plugin's log (above) is foreign-owned and never migrates, so it
+        # stays on capsule_emit.ledger.read_ledger unchanged.
+        from ledger_store_backend import read_all_capsules
+
         ledger_dir = Path(args.sidecar_log).parent
+        records, _archived_segments = read_all_capsules(ledger_dir)
         sources.append(
             (SOURCE_SIDECAR, args.sidecar_log, records, verify_results_for(records, ledger_dir=ledger_dir, issuer_key=issuer_key))
         )

@@ -54,6 +54,7 @@ from capsule_sidecar import (
 )
 
 from agent_action_capsule.verify import verify as verify_capsule
+from ledger_store_backend import read_all_capsules
 
 ROOT = Path(__file__).parent
 MANIFEST_PATH = ROOT / "model-package" / "model-package.json"
@@ -605,21 +606,23 @@ def main() -> None:
     out("the verifier has in hand, not what the producer claimed.")
     out("")
     all_ok = True
-    ledger_path = BILATERAL_LEDGER_DIR / "capsules.jsonl"
-    with ledger_path.open() as fh:
-        for line_num, line in enumerate(fh, start=1):
-            cap = json.loads(line.strip())
-            result = verify_capsule(cap)
-            all_ok = all_ok and result.ok
-            cp = get_cross_party(cap)
-            # Capsule-only rung (no external ack):
-            rung_capsule_only = derive_cross_party_rung(cp)
-            out(
-                f"  capsule {line_num} (capsule alone): verify.ok={result.ok} "
-                f"cross_party_present={cp is not None} "
-                f"derived_rung={rung_capsule_only!r} "
-                f"capsule_id={cap['capsule_id']}"
-            )
+    # [mesh-ledger-store-migration] BILATERAL_LEDGER_DIR is sealed through the
+    # real sidecar (default_state/record_capsule above), so it may now be a
+    # cll.ledger.store.LedgerStore rather than a flat capsules.jsonl --
+    # read_all_capsules reads either, store-aware.
+    ledger_records, _archived = read_all_capsules(BILATERAL_LEDGER_DIR)
+    for line_num, cap in enumerate(ledger_records, start=1):
+        result = verify_capsule(cap)
+        all_ok = all_ok and result.ok
+        cp = get_cross_party(cap)
+        # Capsule-only rung (no external ack):
+        rung_capsule_only = derive_cross_party_rung(cp)
+        out(
+            f"  capsule {line_num} (capsule alone): verify.ok={result.ok} "
+            f"cross_party_present={cp is not None} "
+            f"derived_rung={rung_capsule_only!r} "
+            f"capsule_id={cap['capsule_id']}"
+        )
 
     # Now load the stored ack and re-derive for capsule 1.
     ack_path = BILATERAL_LEDGER_DIR / "client-ack.json"
@@ -634,8 +637,7 @@ def main() -> None:
             public_key_pem=base64.urlsafe_b64decode(ack_rec["public_key_pem_b64"] + "=="),
         )
         # Re-check capsule 1 with the stored ack.
-        with ledger_path.open() as fh2:
-            cap1 = json.loads(next(fh2).strip())
+        cap1 = ledger_records[0]
         cp1 = get_cross_party(cap1)
         correlator1 = cp1.get("correlator") if cp1 else None
         ack_ok_1, ack_reason_1 = verify_client_ack(stored_ack, cap1["capsule_id"], correlator1)

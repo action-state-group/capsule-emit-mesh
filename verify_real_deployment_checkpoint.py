@@ -16,17 +16,56 @@ the "anchor registration" section below for why this run stops short of it.
 from __future__ import annotations
 
 import json
-import shutil
 import sys
-import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from agent_action_capsule.verify import verify as verify_capsule
-from capsule_emit.checkpoint import DEFAULT_TS_URL, CheckpointRecord, MmrLedger, WitnessRecord, verify_receipt_offline
-from checkpointing import JsonlLogSource
+from capsule_emit.checkpoint import (
+    DEFAULT_TS_URL,
+    CheckpointRecord,
+    MmrLedger,
+    WitnessRecord,
+    verify_receipt_offline,
+)
 from scitt_cose import cll
+
+from ledger_store_backend import open_log_source_for_checkpointing, read_all_capsules
+
+
+@dataclass(frozen=True)
+class _ListRecord:
+    seq: int
+    capsule_id: str
+
+
+class _ListLogSource:
+    """A throwaway, in-memory ``LogSource`` (append/scan/fetch/find_gaps/
+    verify; records exposing ``.seq``/``.capsule_id``) over an already-
+    materialized, possibly-mutated list of capsule dicts -- used only for
+    the rollback-mutant probe below, which needs to compute what an MMR
+    root WOULD be over an edited record list. Independent of storage
+    backend (store or flat) by construction: it never touches disk itself."""
+
+    def __init__(self, records: list[dict]) -> None:
+        self._records = [_ListRecord(seq=i + 1, capsule_id=r["capsule_id"]) for i, r in enumerate(records)]
+
+    def append(self, capsule, *, consequential=True):
+        raise NotImplementedError("read-only: this probe never appends")
+
+    def scan(self, query=None):
+        return iter(self._records)
+
+    def fetch(self, capsule_id):
+        return next((r for r in self._records if r.capsule_id == capsule_id), None)
+
+    def verify(self, capsule_id):
+        return None
+
+    def find_gaps(self):
+        return []
 
 
 def cll_checkpoint_from_record(cp: CheckpointRecord) -> cll.Checkpoint:
@@ -42,7 +81,6 @@ def cll_checkpoint_from_record(cp: CheckpointRecord) -> cll.Checkpoint:
 
 def main() -> None:
     ledger_dir = Path(sys.argv[1])
-    capsules_path = ledger_dir / "capsules.jsonl"
     checkpoints_path = ledger_dir / "checkpoints.jsonl"
 
     transcript: list[str] = []
@@ -59,7 +97,9 @@ def main() -> None:
     log("")
 
     log("--- capsule verification ---")
-    capsules = [json.loads(line) for line in capsules_path.read_text().splitlines() if line.strip()]
+    # [mesh-ledger-store-migration] store-aware, with a labeled, read-only
+    # fallback for a still-flat ledger dir -- see ledger_store_backend.
+    capsules, _archived_segments = read_all_capsules(ledger_dir)
     if not capsules:
         raise SystemExit("NO CAPSULES RECORDED -- real inference exchange did not happen")
     all_ok = True
@@ -90,7 +130,7 @@ def main() -> None:
     log("")
 
     log("--- offline inclusion verify (scitt_cose.cll, ledger files only) ---")
-    fresh_log = JsonlLogSource(capsules_path)
+    fresh_log = open_log_source_for_checkpointing(ledger_dir)
     fresh_mmr = MmrLedger(fresh_log)
     fresh_mmr.sync()
 
@@ -139,18 +179,14 @@ def main() -> None:
     log("--- rollback mutant (fork/rewrite a COPY of the real log at the SAME size, must go RED) ---")
     baseline_match = fresh_mmr.root_at(last_cp.mmr_size).hex() == last_cp.root
     log(f"baseline (unmutated real log): recomputed root at mmr_size={last_cp.mmr_size} == signed root: {baseline_match}")
-    with tempfile.TemporaryDirectory() as tmp:
-        mutated_path = Path(tmp) / "capsules-mutated.jsonl"
-        shutil.copy(capsules_path, mutated_path)
-        lines = mutated_path.read_text().splitlines()
-        mutated_line = json.loads(lines[0])
-        mutated_line["capsule_id"] = "0" * 64  # same position, same count, different content -- the classic fork/rollback shape
-        lines[0] = json.dumps(mutated_line, sort_keys=True)
-        mutated_path.write_text("\n".join(lines) + "\n")
-
-        mutated_mmr = MmrLedger(JsonlLogSource(mutated_path))
-        mutated_mmr.sync()
-        mutated_root = mutated_mmr.root_at(last_cp.mmr_size)
+    # A pure in-memory mutation -- same position, same count, different
+    # content (the classic fork/rollback shape) -- independent of whether
+    # the real ledger is store- or flat-backed (see _ListLogSource above).
+    mutated_capsules = [dict(c) for c in capsules]
+    mutated_capsules[0]["capsule_id"] = "0" * 64
+    mutated_mmr = MmrLedger(_ListLogSource(mutated_capsules))
+    mutated_mmr.sync()
+    mutated_root = mutated_mmr.root_at(last_cp.mmr_size)
     rollback_detected = mutated_root.hex() != last_cp.root
     log(f"mutated (rewritten entry 1, same mmr_size={last_cp.mmr_size}): recomputed root {mutated_root.hex()}")
     log(f"signed checkpoint root:                                          {last_cp.root}")
@@ -167,9 +203,10 @@ def main() -> None:
     log("  python3 - <<'PY'")
     log("  from pathlib import Path")
     log("  from capsule_emit.checkpoint import CheckpointConfig, DEFAULT_TS_URL")
-    log("  from checkpointing import CheckpointState, Ed25519Signer, JsonlLogSource")
+    log("  from checkpointing import CheckpointState, Ed25519Signer")
+    log("  from ledger_store_backend import open_log_source_for_checkpointing")
     log(f"  ledger_dir = Path({str(ledger_dir)!r})")
-    log("  log_source = JsonlLogSource(ledger_dir / 'capsules.jsonl')")
+    log("  log_source = open_log_source_for_checkpointing(ledger_dir)")
     log("  signer = Ed25519Signer(ledger_dir.parent / 'keys' / 'node-key.pem')  # or the node's own keys_dir")
     log("  cfg = CheckpointConfig(ts_urls=[DEFAULT_TS_URL])")
     log("  state = CheckpointState.load(ledger_dir=ledger_dir, log_source=log_source, cfg=cfg, signer=signer, log_id='<this node's log_id>')")

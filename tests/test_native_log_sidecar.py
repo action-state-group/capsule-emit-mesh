@@ -149,9 +149,10 @@ def _wait_for_native_log_entries(state: cs.NodeState, count: int, *, timeout: fl
 
 
 def _capsules(state: cs.NodeState) -> list[dict]:
-    if not state.ledger_path.exists():
-        return []
-    return [json.loads(line) for line in state.ledger_path.read_text().splitlines() if line.strip()]
+    from ledger_store_backend import read_all_capsules
+
+    records, _archived = read_all_capsules(state.ledger_dir)
+    return records
 
 
 # ── SUCCESS path: native_log row joins to a sealed capsule ────────────────
