@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 
+import assurance_map
 from capsule_accountability_tab import STATE_ABSENT, STATE_FAILED, STATE_PRESENT_UNVERIFIED, STATE_VERIFIED
 from capsule_exchange_tab import (
     EXCHANGE_ROLE_ASKED,
@@ -22,6 +23,7 @@ from capsule_exchange_tab import (
     FILTER_ISSUES,
     FILTER_SERVED,
     PENDING,
+    build_assurance_map,
     build_exchange_list_payload,
     build_exchange_row,
     build_exchange_view,
@@ -550,3 +552,236 @@ def test_render_exchange_list_html_empty_never_crashes():
     payload = build_exchange_list_payload([])
     html = render_exchange_list_html(payload)
     assert "0 exchange(s)" in html
+
+
+def test_render_exchange_list_html_row_carries_chip_strip_and_data_issue():
+    """[mesh-panes-map-chips] item 1: the row no longer renders the bare
+    header_state pill (which could leak literal "present-unverified") --
+    it carries a chip strip plus a machine-readable data-issue attribute."""
+    requester, provider = _pair(exchange_id="ex-1")
+    payload = build_exchange_list_payload([requester, provider])
+    html = render_exchange_list_html(payload)
+    assert "chip-strip" in html
+    assert 'data-issue="' in html
+    assert "data-state=" not in html
+
+
+def test_render_exchange_list_html_issues_filter_reads_data_issue():
+    payload = build_exchange_list_payload([])
+    html = render_exchange_list_html(payload)
+    assert 'row.dataset.issue === "true"' in html
+    assert "row.dataset.state" not in html
+
+
+# ---------------------------------------------------------------------------
+# build_assurance_map -- the nine-property map ([mesh-panes-map-chips])
+# ---------------------------------------------------------------------------
+
+
+class _FakeFinding:
+    def __init__(self, code):
+        self.code = code
+
+
+class _FakeVerifyResult:
+    def __init__(self, codes):
+        self.findings = [_FakeFinding(c) for c in codes]
+
+
+def _assert_all_three_recompute_states(*, verify_result, verify_ran, expected_state):
+    record = _capsule(capsule_id="r" * 64, role="requested")
+    properties = build_assurance_map(
+        record, verify_result=verify_result, verify_ran=verify_ran, has_witness_checkpoint=False
+    )
+    for key in (
+        assurance_map.PROPERTY_CONTENT_BINDING,
+        assurance_map.PROPERTY_PRODUCER_SIGNATURE,
+        assurance_map.PROPERTY_CONTINUITY,
+    ):
+        assert properties[key]["state"] == expected_state
+
+
+def test_build_assurance_map_verify_did_not_run_recompute_properties_not_checked():
+    _assert_all_three_recompute_states(
+        verify_result=None, verify_ran=False, expected_state=assurance_map.STATE_NOT_CHECKED
+    )
+
+
+def test_build_assurance_map_verify_ran_clean_recompute_properties_pass():
+    _assert_all_three_recompute_states(
+        verify_result=_FakeVerifyResult([]), verify_ran=True, expected_state=assurance_map.STATE_PASS
+    )
+
+
+def test_build_assurance_map_content_binding_fails_on_capsule_id_mismatch():
+    record = _capsule(capsule_id="r" * 64, role="requested")
+    properties = build_assurance_map(
+        record,
+        verify_result=_FakeVerifyResult(["capsule_id_mismatch"]),
+        verify_ran=True,
+        has_witness_checkpoint=False,
+    )
+    assert properties[assurance_map.PROPERTY_CONTENT_BINDING]["state"] == assurance_map.STATE_FAIL
+    assert properties[assurance_map.PROPERTY_PRODUCER_SIGNATURE]["state"] == assurance_map.STATE_PASS
+    assert properties[assurance_map.PROPERTY_CONTINUITY]["state"] == assurance_map.STATE_PASS
+
+
+def test_build_assurance_map_producer_signature_fails_on_invalid_signature():
+    record = _capsule(capsule_id="r" * 64, role="requested")
+    properties = build_assurance_map(
+        record,
+        verify_result=_FakeVerifyResult(["producer_signature_invalid"]),
+        verify_ran=True,
+        has_witness_checkpoint=False,
+    )
+    assert properties[assurance_map.PROPERTY_PRODUCER_SIGNATURE]["state"] == assurance_map.STATE_FAIL
+    assert properties[assurance_map.PROPERTY_CONTENT_BINDING]["state"] == assurance_map.STATE_PASS
+
+
+def test_build_assurance_map_continuity_fails_on_broken_chain_parent():
+    record = _capsule(capsule_id="r" * 64, role="requested")
+    properties = build_assurance_map(
+        record,
+        verify_result=_FakeVerifyResult(["chain_parent_missing"]),
+        verify_ran=True,
+        has_witness_checkpoint=False,
+    )
+    assert properties[assurance_map.PROPERTY_CONTINUITY]["state"] == assurance_map.STATE_FAIL
+    assert properties[assurance_map.PROPERTY_CONTENT_BINDING]["state"] == assurance_map.STATE_PASS
+
+
+def test_build_assurance_map_checkpoint_properties_not_present_without_a_checkpoint():
+    record = _capsule(capsule_id="r" * 64, role="requested")
+    properties = build_assurance_map(
+        record, verify_result=None, verify_ran=False, has_witness_checkpoint=False
+    )
+    for key in (
+        assurance_map.PROPERTY_LOCAL_INCLUSION,
+        assurance_map.PROPERTY_CHECKPOINT_SIGNATURE,
+        assurance_map.PROPERTY_EXTERNAL_REGISTRATION,
+    ):
+        assert properties[key]["state"] == assurance_map.STATE_NOT_PRESENT
+
+
+def test_build_assurance_map_checkpoint_properties_not_checked_with_a_checkpoint():
+    """A checkpoint was supplied to this view, but per-record inclusion/
+    re-verify is not wired here yet -- NOT_CHECKED (a view limitation),
+    never NOT_PRESENT (which would claim no checkpoint exists at all)."""
+    record = _capsule(capsule_id="r" * 64, role="requested")
+    properties = build_assurance_map(
+        record, verify_result=None, verify_ran=False, has_witness_checkpoint=True
+    )
+    for key in (
+        assurance_map.PROPERTY_LOCAL_INCLUSION,
+        assurance_map.PROPERTY_CHECKPOINT_SIGNATURE,
+        assurance_map.PROPERTY_EXTERNAL_REGISTRATION,
+    ):
+        assert properties[key]["state"] == assurance_map.STATE_NOT_CHECKED
+
+
+def test_build_assurance_map_identity_authority_not_present_with_no_owner_cert():
+    record = _capsule(capsule_id="r" * 64, role="requested")
+    properties = build_assurance_map(
+        record, verify_result=None, verify_ran=False, has_witness_checkpoint=False
+    )
+    assert properties[assurance_map.PROPERTY_IDENTITY_AUTHORITY]["state"] == assurance_map.STATE_NOT_PRESENT
+
+
+def test_build_assurance_map_identity_authority_pass_when_owner_cert_bound():
+    record = _capsule(capsule_id="r" * 64, role="requested", owner={"owner_status": "bound"})
+    properties = build_assurance_map(
+        record, verify_result=None, verify_ran=False, has_witness_checkpoint=False
+    )
+    assert properties[assurance_map.PROPERTY_IDENTITY_AUTHORITY]["state"] == assurance_map.STATE_PASS
+
+
+def test_build_assurance_map_identity_authority_fails_when_owner_cert_invalid():
+    record = _capsule(capsule_id="r" * 64, role="requested", owner={"owner_status": "invalid"})
+    properties = build_assurance_map(
+        record, verify_result=None, verify_ran=False, has_witness_checkpoint=False
+    )
+    assert properties[assurance_map.PROPERTY_IDENTITY_AUTHORITY]["state"] == assurance_map.STATE_FAIL
+
+
+def test_build_assurance_map_capture_coverage_pass_when_both_digests_present():
+    record = _capsule(capsule_id="r" * 64, role="requested")
+    properties = build_assurance_map(
+        record, verify_result=None, verify_ran=False, has_witness_checkpoint=False
+    )
+    assert properties[assurance_map.PROPERTY_CAPTURE_COVERAGE]["state"] == assurance_map.STATE_PASS
+
+
+def test_build_assurance_map_capture_coverage_not_present_when_a_digest_is_missing():
+    record = _capsule(capsule_id="r" * 64, role="requested")
+    del record["effect"]["response_digest"]
+    properties = build_assurance_map(
+        record, verify_result=None, verify_ran=False, has_witness_checkpoint=False
+    )
+    assert properties[assurance_map.PROPERTY_CAPTURE_COVERAGE]["state"] == assurance_map.STATE_NOT_PRESENT
+
+
+def test_build_assurance_map_outcome_corroboration_always_not_present():
+    """Twin/adjudication comparison is genuinely not wired -- this is the
+    task's own explicit rule, not NOT_CHECKED."""
+    record = _capsule(capsule_id="r" * 64, role="requested")
+    properties = build_assurance_map(
+        record, verify_result=None, verify_ran=False, has_witness_checkpoint=False
+    )
+    assert properties[assurance_map.PROPERTY_OUTCOME_CORROBORATION]["state"] == assurance_map.STATE_NOT_PRESENT
+
+
+def test_build_assurance_map_result_is_always_a_complete_map():
+    record = _capsule(capsule_id="r" * 64, role="requested")
+    properties = build_assurance_map(
+        record,
+        verify_result=_FakeVerifyResult(["capsule_id_mismatch", "producer_signature_invalid"]),
+        verify_ran=True,
+        has_witness_checkpoint=True,
+    )
+    assurance_map.assert_map_complete(properties)  # raises on any gap -- must not raise
+
+
+# ---------------------------------------------------------------------------
+# grep-gate: rendered HTML must never leak the old vocabulary
+# ---------------------------------------------------------------------------
+
+
+def test_rendered_html_never_leaks_the_old_four_state_vocabulary():
+    """[mesh-panes-map-chips]'s whole point: a ladder-shaped vocabulary
+    rounding an honest "not checked yet" up to a rendered "present-unverified"
+    (or "pending") is the regression this module exists to prevent. Render
+    both the list and the card for a small fixture and grep the HTML."""
+    requester, provider = _pair(exchange_id="ex-1")
+    payload = build_exchange_list_payload([requester, provider])
+    list_html = render_exchange_list_html(payload)
+
+    view = build_exchange_view(requester, all_records=[requester, provider], source_log="sidecar", has_witness_checkpoint=True)
+    card_html = render_exchange_subtab_html(view)
+
+    for html in (list_html, card_html):
+        assert "pending" not in html
+        assert "present-unverified" not in html
+        assert "trust_level" not in html
+        # "continuity-witnessed" is a legitimate compound descriptor (see
+        # external_registration's NOT_PRESENT text) -- strip it before
+        # checking for a residual BARE "witnessed" (the old vocabulary word).
+        assert "witnessed" not in html.replace("continuity-witnessed", "")
+
+
+def test_rendered_card_never_leaks_build_verdicts_not_yet_proven_line():
+    """[mesh-panes-map-chips] step 5: `_pair()` has no `cross_party` block, so
+    `label_counterparty` returns "unknown" and `build_verdict`'s line 3 takes
+    its warn branch -- the literal "Not yet proven: who asked ..." free-text
+    the live Pane C card was leaking. That line must never render verbatim;
+    the card renders the assurance map's own `identity_authority` property
+    (chip + text) in its place. MUTANT check (QUEUE_PROTOCOL §7): reverting
+    the `render_exchange_subtab_html` slice back to `view["verdict"]` (all
+    three lines, unsliced) must flip this test to failing -- confirmed by
+    hand before landing."""
+    requester, provider = _pair(exchange_id="ex-1")
+    view = build_exchange_view(requester, all_records=[requester, provider], source_log="sidecar")
+    assert view["properties"][assurance_map.PROPERTY_IDENTITY_AUTHORITY] is not None
+    html = render_exchange_subtab_html(view)
+    assert "Not yet proven" not in html
+    assert "who asked" not in html
+    assert "identity/authority" in html

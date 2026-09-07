@@ -56,6 +56,7 @@ from typing import Any
 
 from agent_manifest._tdx_verify import TdxVerificationError, verify_tdx_quote
 
+import assurance_map
 from bilateral_demo import ClientAck, verify_client_ack
 from capsule_mesh_view import _poc_block, _verify_ok_map, verify_results_for
 from capsule_mesh_viewer import _load_verify_js, friendly_model_name, serving_provenance
@@ -636,6 +637,7 @@ def render_accountability_tab_html(payload: dict[str, Any]) -> str:
     """
     verify_js = _load_verify_js()
     shell = _HTML_SHELL.replace("@@VERIFY_JS@@", verify_js)
+    shell = shell.replace("@@CHIP_TONE@@", assurance_map.tone_js_object())
     if "@@PAYLOAD@@" not in shell or shell.count("@@PAYLOAD@@") != 1:
         raise RuntimeError(
             "embed invariant broken: exactly one @@PAYLOAD@@ placeholder must "
@@ -800,13 +802,7 @@ _HTML_SHELL = r"""<!DOCTYPE html>
     return { state: "present-unverified", text: "present — not independently verified" };
   }
 
-  var TONE = {
-    absent: "neutral", unilateral_fallback: "neutral", unattested: "neutral",
-    "present-unverified": "warn", acknowledged_receipt: "warn",
-    self_measured: "warn", os_measured: "warn", "platform-attested": "warn",
-    verified: "good", full_bilateral: "good", tee_measured: "good", attested: "good",
-    failed: "bad"
-  };
+  var TONE = @@CHIP_TONE@@;
 
   function pill(state, text) {
     var tone = TONE[state] || "neutral";
@@ -909,7 +905,7 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   // amber = a real limitation of the record, red = a check failed, green =
   // checked. "pending" is grey, never amber -- a not-yet-wired block is not
   // a limitation OF THIS RECORD, it is a limitation of this view.
-  var BLOCK_TONE = { verified: "good", "present-unverified": "warn", failed: "bad", absent: "neutral", pending: "neutral" };
+  var BLOCK_TONE = @@CHIP_TONE@@;
 
   function renderCardFace(card) {
     if (!card) { return; }
