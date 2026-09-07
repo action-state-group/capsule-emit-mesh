@@ -4,10 +4,28 @@ build_pane_b_json/build_pane_c_json, the JSON builders behind the sidecar's
 GET /accountability/pane-a|b|c. Exercises them directly (no HTTP server) over
 a real capsule_sidecar.NodeState + its real cll.ledger.store.LedgerStore --
 the same node_state fixture shape tests/test_evidence_responder.py uses.
+
+Alphabetically ahead of ``test_ask_history.py`` (and therefore also ahead of
+``test_bilateral_demo.py``/``test_forwarded_copy_and_keys.py``/
+``test_replay_spot_check.py``, the three files that stub ``model_identity``
+at collection time and whose OWN tests depend on that stub staying in place
+-- see ``tests/conftest.py``'s note). Since THIS file collects first and
+imports ``capsule_sidecar`` for real, it must install the SAME stub itself
+before doing so -- otherwise it would import the real ``model_identity``
+first and permanently deny those three files their stub for the rest of the
+process (same idiom as ``test_ask_history.py``'s top matter).
 """
 from __future__ import annotations
 
 import json
+import sys
+import types
+
+_stubbed_model_identity = "model_identity" not in sys.modules
+if _stubbed_model_identity:
+    sys.modules["model_identity"] = types.ModuleType("model_identity")
+    sys.modules["model_identity"].load_manifest = lambda p: {}
+    sys.modules["model_identity"].model_package_digest = lambda m: ""
 
 import pytest
 

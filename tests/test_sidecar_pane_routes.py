@@ -62,6 +62,12 @@ class _StubUpstream(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def do_OPTIONS(self):
+        # Same trivial handler as do_GET -- exercises the sidecar's OPTIONS
+        # passthrough for a non-pane path, which needs an upstream that can
+        # actually answer OPTIONS instead of 501'ing.
+        self.do_GET()
+
     def log_message(self, *args):
         pass
 
@@ -287,3 +293,43 @@ def test_pane_dashboard_origin_none_disables_cors_header_entirely(cs, stub_upstr
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+def test_main_cli_wires_pane_dashboard_origin_through_to_run_sidecar(cs, tmp_path, monkeypatch):
+    """[mesh-live-tab-pane-proxy] every other pane-route test drives
+    ``run_sidecar()`` directly; nothing exercised the CLI entry point itself
+    -- ``args.pane_dashboard_origin`` -> ``main()`` -> ``run_sidecar(...,
+    pane_dashboard_origin=...)``. ``run_sidecar``/``serve_until_shutdown`` are
+    stubbed so this stays a wiring smoke test, not another live server."""
+    monkeypatch.chdir(tmp_path)
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({"model_id": "m/1", "source_model": {"sha256": "e" * 64, "canonical_ref": "m/1"}, "skippy_abi_version": "1"})
+    )
+
+    captured = {}
+
+    def _fake_run_sidecar(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(cs, "run_sidecar", _fake_run_sidecar)
+    monkeypatch.setattr(cs, "serve_until_shutdown", lambda server, state: None)
+
+    base_argv = [
+        "--upstream", "http://127.0.0.1:1",
+        "--listen-port", "0",
+        "--manifest", str(manifest_path),
+        "--ledger-dir", str(tmp_path / "ledger"),
+    ]
+
+    assert cs.main(base_argv + ["--pane-dashboard-origin", "https://dashboard.example"]) == 0
+    assert captured["pane_dashboard_origin"] == "https://dashboard.example"
+
+    captured.clear()
+    assert cs.main(base_argv) == 0  # flag omitted -- argparse default applies
+    assert captured["pane_dashboard_origin"] == cs.DEFAULT_PANE_DASHBOARD_ORIGIN
+
+    captured.clear()
+    assert cs.main(base_argv + ["--pane-dashboard-origin", ""]) == 0  # empty string disables CORS entirely
+    assert captured["pane_dashboard_origin"] is None
