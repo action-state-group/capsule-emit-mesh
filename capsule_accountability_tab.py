@@ -130,15 +130,26 @@ def freshness_grade(client_nonce_source: str | None) -> dict[str, Any]:
     ``client_supplied`` is the only state this tool calls verified: a fresh,
     client-contributed nonce the node did not mint itself. A DETECTED replay
     (``client_supplied_replayed``) is an honest FAILURE, never folded into
-    "present-unverified" -- the node saying "I saw a replay" is worse than
-    the node saying nothing about freshness at all, and must render that way.
+    a weaker state -- the node saying "I saw a replay" is worse than the
+    node saying nothing about freshness at all, and must render that way.
+
+    [mesh-live-tab-pane-proxy] L2 (§7 ruling, "pending/present-unverified in
+    the freshness-rung ... now in scope"): a node-generated nonce source
+    (``sidecar_generated_fallback``/``local_ingress``) carries no
+    client-supplied freshness claim to independently verify in the first
+    place -- that is exactly ``assurance_map.STATE_NOT_CHECKED``'s
+    definition, not the old ladder's ``present-unverified`` word (which read
+    as "unverified evidence" when there was no freshness claim to check).
+    ``client_supplied``/``client_supplied_replayed``/no-source-at-all stay on
+    this rung's own verified/failed/absent vocabulary -- those are real
+    graded outcomes, not a migrated stub.
     """
     if client_nonce_source == "client_supplied":
         state = STATE_VERIFIED
     elif client_nonce_source == "client_supplied_replayed":
         state = STATE_FAILED
     elif client_nonce_source in ("sidecar_generated_fallback", "local_ingress"):
-        state = STATE_PRESENT_UNVERIFIED
+        state = assurance_map.STATE_NOT_CHECKED
     else:
         state = STATE_ABSENT
     return {"state": state, "client_nonce_source": client_nonce_source}

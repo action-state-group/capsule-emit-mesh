@@ -147,8 +147,12 @@ def test_freshness_grade_replay_is_an_explicit_failure_not_amber():
 
 
 @pytest.mark.parametrize("source", ["sidecar_generated_fallback", "local_ingress"])
-def test_freshness_grade_node_side_sources_are_present_unverified(source):
-    assert freshness_grade(source)["state"] == STATE_PRESENT_UNVERIFIED
+def test_freshness_grade_node_side_sources_are_not_checked(source):
+    """[mesh-live-tab-pane-proxy] L2: a node-minted nonce source carries no
+    client-supplied freshness claim to verify -- assurance_map.STATE_NOT_CHECKED,
+    not the retired ``present-unverified`` ladder word (§7 ruling)."""
+    assert freshness_grade(source)["state"] == assurance_map.STATE_NOT_CHECKED
+    assert freshness_grade(source)["state"] != STATE_PRESENT_UNVERIFIED
 
 
 def test_freshness_grade_absent_when_no_nonce_source_at_all():

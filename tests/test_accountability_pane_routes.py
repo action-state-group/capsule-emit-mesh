@@ -140,14 +140,32 @@ def test_pane_a_json_never_carries_the_retired_pending_stub_state(node_state):
     all populated, not just the empty-ledger defaults) and asserts the
     retired literal never appears as a *state value* -- prose explaining
     the gap (e.g. ``REFERENCES_PENDING_REASON``'s text) is a separate,
-    allowed surface, and ``"present-unverified"`` is untouched, in-scope-
-    elsewhere vocabulary for the mature ladder-graded rungs
-    (freshness/cross-party/measurement-class), not a retired stub state."""
+    allowed surface. ``"present-unverified"`` is still legitimate,
+    in-scope-elsewhere vocabulary for the mature ladder-graded rungs the §7
+    ruling did NOT name (cross-party/measurement-class/log-integrity); the
+    freshness rung's own node-side-source case WAS named and is migrated
+    (see ``test_capsule_accountability_tab.
+    test_freshness_grade_node_side_sources_are_not_checked``)."""
     _seed(node_state, 2)
     payload = routes.build_pane_a_json(node_state)
     states = []
     _find_state_values(payload, states)
     assert "pending" not in states
+
+
+def test_pane_a_json_freshness_fallback_nonce_is_not_checked_not_present_unverified(node_state):
+    """[mesh-live-tab-pane-proxy] L2: seed a record whose freshness rung took
+    the node-generated fallback path and confirm the row's rendered
+    freshness state is the five-state ``NOT_CHECKED``, never the retired
+    ``present-unverified`` ladder word, end to end through the real sidecar
+    JSON builder (not just the unit-level ``freshness_grade`` call)."""
+    cap = _mesh_capsule(capsule_id="0" * 64, exchange_id="exch-000", timestamp="2026-09-01T00:00:00Z")
+    cap["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["client_nonce_source"] = "sidecar_generated_fallback"
+    node_state.log_source.append(cap)
+    payload = routes.build_pane_a_json(node_state)
+    freshness_states = [row["rungs"]["freshness"]["state"] for row in payload["rows"]]
+    assert freshness_states == ["NOT_CHECKED"]
+    assert "present-unverified" not in freshness_states
 
 
 # ---------------------------------------------------------------------------
