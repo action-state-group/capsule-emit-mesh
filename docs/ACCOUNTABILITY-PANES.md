@@ -1,12 +1,15 @@
-# The Accountability tab: three panes (v2.1)
+# The Accountability tab: three panes (v2.2)
 
-**Public-safe. 2026-09-05.** Documents what actually shipped in
+**Public-safe. 2026-09-07.** Documents what actually shipped in
 `capsule_accountability_tab.py` (Pane A), `peer_accountability_tab.py` (Pane B),
 `capsule_exchange_tab.py` (Pane C), and `join_card.py`'s `promise_line()`, as of the
-`feat(accountability): wire panes v2` commit on `main`. Design rationale and the parts not yet
-built live in `mesh-accountability-panes-v2-2026-09-05.md` (not this repo — cited, not
-duplicated); this document is the as-shipped reference, and every cell below is checked against
-running code, not the design intent. Where the two disagree, this document and `main` win.
+`feat(accountability): wire panes v2` commit on `main`, updated for the
+`[mesh-panes-map-chips]` chip-map rewrite (the shared `assurance_map.py` module — see §3). Design
+rationale and the parts not yet built live in `mesh-accountability-panes-v2-2026-09-05.md` (not
+this repo — cited, not duplicated) and the vocabulary source is
+`_work/consistency-realignment-2026-09-06.md` §1 (cited by name only, private working doc); this
+document is the as-shipped reference, and every cell below is checked against running code, not
+the design intent. Where the two disagree, this document and `main` win.
 
 The three panes answer three different questions Logs and Chat (mesh-llm's own UI) cannot:
 
@@ -63,18 +66,48 @@ The full vocabulary discussion (including how existing labels map onto it) lives
 [ASSURANCE-VOCABULARY.md](ASSURANCE-VOCABULARY.md), §9 ("The Accountability panes' source labels +
 the promise line").
 
-## 3. Chip / color states
+## 3. Chip / color states — the assurance map (v2.2)
 
-The face and row rendering use four fixed colors (`capsule_accountability_tab.py`'s client-side
-`BLOCK_TONE` map, mirrored across all three panes):
+As of `[mesh-panes-map-chips]`, all three panes share one chip vocabulary and one renderer:
+`assurance_map.py`. It replaces the old four-state ladder (`verified`/`present-unverified`/
+`failed`/`absent`, plus the ad hoc `pending`) with **five orthogonal states**, because a ladder
+implies one axis and rounds up — the bug this replaced was a per-exchange row whose only real gap
+was "this view hasn't verified yet" reading identically to a row with a genuine failure, so the
+Issues filter returned the whole set.
 
 | State | Color | Meaning |
 |---|---|---|
-| `verified` | green | Checked, and it checked out. |
-| `present-unverified` | amber | A real limitation of the record — present, but this view has not independently verified it. |
-| `failed` | red | A check ran and failed. |
-| `absent` | grey | No claim was made; honestly nothing here. |
-| `pending` | grey | Not a limitation of the record — a limitation of this view: the wiring doesn't exist yet. Never rendered amber; "not yet built" and "a real gap in this record" are different facts and must read as different colors. |
+| `PASS` | green | Checked, and it checked out. |
+| `FAIL` | red | A check ran and failed. **The only state that counts as an Issue.** |
+| `NOT_PRESENT` | grey | No claim was made; honestly nothing here. |
+| `NOT_CHECKED` | grey | Not a limitation of the record — a limitation of this view: the wiring doesn't exist yet. Never rendered amber; "not yet built" and "a real gap in this record" are different facts and must read as the same neutral color, distinct from a genuine failure. |
+| `INCONCLUSIVE` | amber | The check ran but could not reach a clean PASS/FAIL. Not currently reachable by any wired property (flagged as a possible future refinement — see below). |
+
+`NOT_PRESENT` and `NOT_CHECKED` are never conflated: the first means the record made no claim,
+the second means this view's own wiring doesn't check it (yet) — two different facts that must
+never round up to a manufactured failure or a manufactured pass.
+
+Each record is scored on **nine independent properties** (`assurance_map.PROPERTY_ORDER`), never
+merged into one score or ladder:
+
+| Property | What it proves |
+|---|---|
+| `content_binding` | The record's bytes have not been altered — the `capsule_id` recomputes over the record's own canonical bytes (verification chain Link 1). |
+| `producer_signature` | The record was produced by the holder of a specific node key, who cannot later deny it — the `COSE_Sign1` signed statement verifies (Link 3). |
+| `local_inclusion` | This capsule is included in the node's own append-only log at a given size (Link 5, the local Merkle Mountain Range). |
+| `checkpoint_signature` | The node committed, under its own signature, to the entire state of its log at a specific size and time (Link 6). |
+| `external_registration` | That checkpoint was recorded in a transparency log the node does not operate, so its history is tamper-evident and non-equivocable (Link 7, the witness receipt). |
+| `continuity` | The ordering of the node's own records, and that none was silently inserted or removed between chained entries (Link 4, the hash-chain). |
+| `identity_authority` | The signing key is bound to a vouched real-world identity or membership, not just self-attested continuity across exchanges. |
+| `capture_coverage` | The exchange's request and response were both captured — `effect.request_digest`/`response_digest` are present, not silently omitted. |
+| `outcome_corroboration` | An independent second party (a twin run or adjudicator) corroborated the outcome. Always `NOT_PRESENT` today — twin/adjudication comparison is not wired into this view; this is a deliberate honesty rule, not an oversight. |
+
+Row and card rendering never fabricate a property: `render_chip_strip` (the compact per-row
+strip, e.g. `binding ✓ · sig ✓ · registered ∅ · continuity ∅`) and `render_chip_table` (the card's
+full nine-row table) both skip a property outright rather than invent a state for it. The **Issues
+filter** (`assurance_map.has_issue`) is exactly: any property reading `FAIL`, or a promise line
+(§1) reading `broken`/`changed_without_saying` — an honest `NOT_PRESENT`/`NOT_CHECKED` is never an
+issue.
 
 ## 4. Pane A — "My node"
 
@@ -242,10 +275,11 @@ columns inside the row, never two rows. A `received()` foreign capsule (passed i
 `--counterparty-ledger`, since no live receive-into-ledger mechanism is wired yet) fills the
 `theirs` column of its own exchange rather than getting a row of its own.
 
-`header_state` is the **worst line among that exchange's checks** (`worst_state()`) — a digest
-mismatch, a failed verdict line, or a failed rung forces `failed` regardless of what any other
-line says; the witness-reverify placeholder line is excluded from that fold while it stays
-`pending` (a view limitation, not a check that failed).
+`header_state` (`worst_state()`) is kept internally for back-compat — the worst line among that
+exchange's old four-state checks — but as of v2.2 it is never rendered as a bare string and never
+drives the Issues filter (see below); each row instead carries a `properties` map (§3's nine
+properties, real-computed via `build_verify_map`/`build_assurance_map`, the same offline recompute
+the live tab runs) and a `has_issue` bool, rendered as a chip strip plus an `ISSUE` badge.
 
 Real output for one row (a served, unilateral exchange — no `theirs` half in this view):
 
@@ -269,9 +303,9 @@ and its `view.verdict` lines (the drill-down detail):
 ]
 ```
 
-Filter chips: `all` · `served` · `asked` · `issues` (`issues` = any row whose `header_state` is
-not `verified` — an honest `absent`/`pending` row is not an issue, only a real `present-unverified`
-or `failed` is). Default sort: most recent first.
+Filter chips: `all` · `served` · `asked` · `issues` (`issues` = `assurance_map.has_issue`: any of
+the row's nine properties reads `FAIL`, or the promise line reads `broken`/`changed_without_saying`
+— an honest `NOT_PRESENT`/`NOT_CHECKED` is never an issue). Default sort: most recent first.
 
 **Two pending-reason corrections carried in this same wiring pass** (both citing merged PRs that
 the pre-v2 text still called unmerged): twin/adjudication comparison
