@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from agent_manifest._tdx_verify import parse_tdx_quote
 
+import assurance_map
 from bilateral_demo import ClientKey, make_client_ack
 from capsule_accountability_tab import (
     BLOCK_PENDING,
@@ -599,6 +600,11 @@ def test_build_counterparty_held_block_counts_adjudications_naming_my_capsule_id
     assert held["tally"]["contradicted"] == 1
     assert held["source"] == "self_held"
     assert block["references"]["state"] == BLOCK_PENDING
+    # [mesh-live-tab-pane-proxy] L2: BLOCK_PENDING is the five-state map's
+    # NOT_CHECKED now, not the ad hoc "pending" string this block used to
+    # carry -- pin the actual value, not just the alias, so a future revert
+    # of BLOCK_PENDING's definition back to a bare "pending" flips this.
+    assert block["references"]["state"] == assurance_map.STATE_NOT_CHECKED
     assert "mesh-ask-the-references" in block["references"]["text"]
 
 
@@ -630,6 +636,11 @@ def test_build_footer_block_pending_without_native_log_never_a_fabricated_zero()
     assert footer["native_log_join"]["state"] == BLOCK_PENDING
     assert footer["refusals_issued"]["state"] == BLOCK_PENDING
     assert footer["absences_recorded_against_me"]["state"] == BLOCK_PENDING
+    # [mesh-live-tab-pane-proxy] L2: same pin as the counterparty-held block
+    # above -- these three are the five-state map's NOT_CHECKED now.
+    assert footer["native_log_join"]["state"] == assurance_map.STATE_NOT_CHECKED
+    assert footer["refusals_issued"]["state"] == assurance_map.STATE_NOT_CHECKED
+    assert footer["absences_recorded_against_me"]["state"] == assurance_map.STATE_NOT_CHECKED
 
 
 def test_build_footer_block_real_coverage_when_native_log_supplied():
