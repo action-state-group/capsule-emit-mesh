@@ -766,3 +766,22 @@ def test_rendered_html_never_leaks_the_old_four_state_vocabulary():
         # external_registration's NOT_PRESENT text) -- strip it before
         # checking for a residual BARE "witnessed" (the old vocabulary word).
         assert "witnessed" not in html.replace("continuity-witnessed", "")
+
+
+def test_rendered_card_never_leaks_build_verdicts_not_yet_proven_line():
+    """[mesh-panes-map-chips] step 5: `_pair()` has no `cross_party` block, so
+    `label_counterparty` returns "unknown" and `build_verdict`'s line 3 takes
+    its warn branch -- the literal "Not yet proven: who asked ..." free-text
+    the live Pane C card was leaking. That line must never render verbatim;
+    the card renders the assurance map's own `identity_authority` property
+    (chip + text) in its place. MUTANT check (QUEUE_PROTOCOL §7): reverting
+    the `render_exchange_subtab_html` slice back to `view["verdict"]` (all
+    three lines, unsliced) must flip this test to failing -- confirmed by
+    hand before landing."""
+    requester, provider = _pair(exchange_id="ex-1")
+    view = build_exchange_view(requester, all_records=[requester, provider], source_log="sidecar")
+    assert view["properties"][assurance_map.PROPERTY_IDENTITY_AUTHORITY] is not None
+    html = render_exchange_subtab_html(view)
+    assert "Not yet proven" not in html
+    assert "who asked" not in html
+    assert "identity/authority" in html

@@ -8,10 +8,16 @@ half of one exchange, side by side.
 
 Composes verbs that already exist; re-derives none of their evidence:
 
-  - the two orange/green verdict lines ("signed + anchored", "who asked")
-    are ``capsule_mesh_viewer.build_verdict`` -- called here exactly as the
-    existing leaf already calls it, per record, so nothing about how they
-    render changes; this module adds no second implementation.
+  - the first two ``capsule_mesh_viewer.build_verdict`` lines ("what ran",
+    "signed + anchored") are called here exactly as the existing leaf
+    already calls it, per record, and render verbatim; this module adds no
+    second implementation for them. ``build_verdict``'s third line ("who
+    asked") is NOT rendered verbatim here -- [mesh-panes-map-chips] its fact
+    is the assurance map's own ``identity_authority`` property (computed in
+    ``build_assurance_map``), so the card renders that property's chip/text
+    instead of the old free-text "Not yet proven: who asked ..." line
+    (``view["verdict"]`` itself is unchanged; ``worst_state`` still folds
+    all three marks).
   - the rung grades (freshness / cross-party / runtime-binding) are
     ``capsule_accountability_tab``'s own ``freshness_grade`` /
     ``cross_party_grade`` / ``measurement_class_grade``, reused byte-for-
@@ -810,9 +816,25 @@ def render_exchange_subtab_html(view: dict[str, Any]) -> str:
     """Render one Pane C "This exchange" card as a self-contained HTML
     fragment (no fetch, no external state) -- meant to be embedded as the
     subtab/drill-down leaf under the Accountability tab."""
+    # [mesh-panes-map-chips]: build_verdict's line 3 ("who asked") predates the
+    # nine-property map and still speaks the old free-text vocabulary ("Not yet
+    # proven: who asked ..."). Its fact is now owned by the assurance map's own
+    # identity/authority property (computed in build_assurance_map, already the
+    # source of truth for this record's requester/provider identity binding),
+    # so line 3 is dropped from the rendered card and replaced by that property
+    # row -- the two lines that are NOT yet covered by a named map property
+    # ("what ran" / "signed + anchored") still render verbatim. `view["verdict"]`
+    # itself is untouched (worst_state's fold still reads all three marks).
     verdict_lines = "".join(
-        f'<div class="verdict-line verdict-{line["mark"]}">{_esc(line["text"])}</div>' for line in view["verdict"]
+        f'<div class="verdict-line verdict-{line["mark"]}">{_esc(line["text"])}</div>' for line in view["verdict"][:2]
     )
+    identity_prop = view["properties"].get(assurance_map.PROPERTY_IDENTITY_AUTHORITY)
+    if identity_prop is not None:
+        detail = identity_prop.get("text") or identity_prop["state"]
+        verdict_lines += (
+            f'<div class="verdict-line">{_esc(assurance_map.PROPERTY_LABEL[assurance_map.PROPERTY_IDENTITY_AUTHORITY])}: '
+            f'{assurance_map.render_pill(identity_prop["state"])} <span class="verdict-detail">{_esc(detail)}</span></div>'
+        )
 
     digest = view["pair"]["digest_match"]
     # [mesh-panes-map-chips] build item 4: a lone half never gets a fabricated
