@@ -41,6 +41,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import assurance_map
 from capsule_accountability_tab import (
     cross_party_grade,
     freshness_grade,
@@ -242,13 +243,32 @@ def rung_summary(latest_record: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def shared_summary() -> dict[str, Any]:
-    """Shared row: cards/bundles served, refusals issued -- honestly absent
-    until [mesh-e14-evidence-responder] can be wired (see module docstring).
+    """Shared row: cards/bundles served, refusals issued -- [mesh-live-tab-
+    pane-proxy] L2: this is a specific unwired property on an otherwise-
+    computed view (the responder itself is merged; nothing persists a count
+    for this card to tally, see ``SHARED_ABSENT_REASON``), which is exactly
+    ``assurance_map.STATE_NOT_CHECKED``'s definition -- not the ad hoc
+    "absent" this row used before the five-state map existed.
     """
     return {
-        "cards_served": {"state": "absent", "source": None, "capture_method": None, "reason": SHARED_ABSENT_REASON},
-        "bundles_served": {"state": "absent", "source": None, "capture_method": None, "reason": SHARED_ABSENT_REASON},
-        "refusals_issued": {"state": "absent", "source": None, "capture_method": None, "reason": SHARED_ABSENT_REASON},
+        "cards_served": {
+            "state": assurance_map.STATE_NOT_CHECKED,
+            "source": None,
+            "capture_method": None,
+            "reason": SHARED_ABSENT_REASON,
+        },
+        "bundles_served": {
+            "state": assurance_map.STATE_NOT_CHECKED,
+            "source": None,
+            "capture_method": None,
+            "reason": SHARED_ABSENT_REASON,
+        },
+        "refusals_issued": {
+            "state": assurance_map.STATE_NOT_CHECKED,
+            "source": None,
+            "capture_method": None,
+            "reason": SHARED_ABSENT_REASON,
+        },
     }
 
 
