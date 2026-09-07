@@ -45,7 +45,7 @@ Two pieces are genuinely new here:
     -- in particular, it does NOT detect an omitted or reordered record.
 
 Two pieces are honest STUBS, pending upstream branches that are neither
-merged nor re-implemented here (labelled ``pending``, never fabricated):
+merged nor re-implemented here (never fabricated as a pass):
 
   - ``twin_adjudication_placeholder`` -- [mesh-e17a-offline-adjudicator]
     (capsule-emit-mesh PR #84, HELD).
@@ -53,15 +53,30 @@ merged nor re-implemented here (labelled ``pending``, never fabricated):
     (capsule-emit-mesh PR #87, HELD) upgrades the existing presence-only
     witness line (``build_verdict``'s line 2, unchanged and still real
     here) to an actually re-verified tristate. Until that lands, this
-    module surfaces the upgrade itself as pending.
+    module surfaces the upgrade itself as not yet checked.
+
+[mesh-panes-map-chips]: the card's per-property evidence is now the shared
+nine-property ``assurance_map`` (content binding, producer signature, local
+inclusion, checkpoint signature, external registration, continuity,
+identity/authority, capture coverage, outcome corroboration), each an
+independent PASS/FAIL/NOT_PRESENT/NOT_CHECKED/INCONCLUSIVE -- never the old
+ladder-shaped ``present-unverified``/``pending`` pair, which let a real
+failure and a merely-unwired view read the same and made the Issues filter
+return the whole set (``build_assurance_map``). Content binding and producer
+signature are RECOMPUTED at render time via
+``capsule_mesh_view.verify_results_for`` -- the same offline check the live
+tab runs (the JS ``mesh_verify.js`` recompute's Python-equivalent
+implementation) -- never asserted from a passed-through field.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
+import assurance_map
 from capsule_accountability_tab import (
     STATE_ABSENT,
     STATE_FAILED,
@@ -71,7 +86,7 @@ from capsule_accountability_tab import (
     freshness_grade,
     measurement_class_grade,
 )
-from capsule_mesh_view import _poc_block, label_counterparty, label_role
+from capsule_mesh_view import _poc_block, label_counterparty, label_role, verify_results_for
 from capsule_mesh_viewer import build_verdict, friendly_model_name, serving_provenance
 
 try:  # same reader the sibling viewers use for their CLIs
@@ -91,9 +106,11 @@ __all__ = [
     "SEQUENCE_SOURCE",
     "TWIN_ADJUDICATION_PENDING_REASON",
     "WITNESS_REVERIFY_PENDING_REASON",
+    "build_assurance_map",
     "build_exchange_list_payload",
     "build_exchange_row",
     "build_exchange_view",
+    "build_verify_map",
     "digest_match_grade",
     "exchange_id_for",
     "exchange_key_for",
@@ -281,6 +298,142 @@ def witness_receipt_reverify_placeholder() -> dict[str, Any]:
     return {"state": PENDING, "source": None, "capture_method": None, "reason": WITNESS_REVERIFY_PENDING_REASON}
 
 
+#: finding codes verify_store()/verify_results_for() attach to specific
+#: failures (agent_action_capsule.verify §6 checks 2/6; capsule_mesh_view's
+#: own producer_signature_invalid) -- see docs/VERIFICATION-CHAIN.md Links
+#: 1/3/4. `chain_check_store_level` is deliberately excluded: it is an
+#: informational finding ("no store given"), never a chain failure.
+_CONTENT_BINDING_FAIL_CODES = frozenset({"capsule_id_mismatch", "capsule_id_uncomputable"})
+_CONTINUITY_FAIL_CODES = frozenset({"chain_parent_malformed", "chain_parent_missing"})
+_PRODUCER_SIGNATURE_FAIL_CODE = "producer_signature_invalid"
+
+
+def build_verify_map(records: list[dict[str, Any]], *, ledger_dir: Any = None) -> dict[str, Any]:
+    """capsule_id -> VerificationResult, ONE ``verify_results_for`` pass over
+    *records* -- the same best-effort offline recompute
+    (content-hash/chain/producer-signature) the live tab runs, reused here
+    rather than a second implementation. ``None``/missing entries mean
+    "verify did not run for this record", never a fabricated pass."""
+    try:
+        results = verify_results_for(records, ledger_dir=ledger_dir)
+    except TypeError:  # pragma: no cover - older capsule_mesh_view signature
+        results = verify_results_for(records)
+    except Exception:
+        results = None
+    out: dict[str, Any] = {}
+    if results:
+        for record, result in zip(records, results):
+            cid = record.get("capsule_id") if isinstance(record, dict) else None
+            if cid:
+                out[cid] = result
+    return out
+
+
+def _finding_codes(result: Any) -> set[str]:
+    if result is None:
+        return set()
+    return {finding.code for finding in getattr(result, "findings", [])}
+
+
+def build_assurance_map(
+    record: dict[str, Any],
+    *,
+    verify_result: Any | None,
+    verify_ran: bool,
+    has_witness_checkpoint: bool,
+) -> dict[str, dict[str, Any]]:
+    """The nine-property assurance map for one half ([mesh-panes-map-chips]
+    build item 2). Every property is independently
+    PASS/FAIL/NOT_PRESENT/NOT_CHECKED -- never a fabricated pass, and never
+    the old ladder's ``present-unverified``/``pending`` pair. Twin
+    (outcome_corroboration) is NOT_PRESENT -- this view has no twin data at
+    all, not merely an unchecked one. Checkpoint-derived properties
+    (local_inclusion/checkpoint_signature/external_registration) are
+    NOT_PRESENT when no checkpoint was supplied to this view, NOT_CHECKED
+    when one was (the mechanism exists but this view doesn't call it yet --
+    ``witness_receipt_reverify_placeholder``'s honest gap)."""
+    codes = _finding_codes(verify_result)
+
+    if not verify_ran:
+        content_binding = assurance_map.chip(assurance_map.STATE_NOT_CHECKED, "verify did not run for this record")
+        producer_signature = assurance_map.chip(assurance_map.STATE_NOT_CHECKED, "verify did not run for this record")
+        continuity = assurance_map.chip(assurance_map.STATE_NOT_CHECKED, "verify did not run for this record")
+    else:
+        content_binding = (
+            assurance_map.chip(assurance_map.STATE_FAIL, "capsule_id does not recompute from this record")
+            if codes & _CONTENT_BINDING_FAIL_CODES
+            else assurance_map.chip(assurance_map.STATE_PASS, "capsule_id recomputes from this record")
+        )
+        producer_signature = (
+            assurance_map.chip(assurance_map.STATE_FAIL, "no verifiable producer signature (inline or detached)")
+            if _PRODUCER_SIGNATURE_FAIL_CODE in codes
+            else assurance_map.chip(assurance_map.STATE_PASS, "self-attested signature verifies offline")
+        )
+        continuity = (
+            assurance_map.chip(assurance_map.STATE_FAIL, "hash-chain parent missing or malformed")
+            if codes & _CONTINUITY_FAIL_CODES
+            else assurance_map.chip(assurance_map.STATE_PASS, "hash-chain parent intact")
+        )
+
+    if has_witness_checkpoint:
+        local_inclusion = assurance_map.chip(
+            assurance_map.STATE_NOT_CHECKED,
+            "a checkpoint was supplied to this view, but per-record inclusion is not verified here yet",
+        )
+        checkpoint_signature = assurance_map.chip(assurance_map.STATE_NOT_CHECKED, WITNESS_REVERIFY_PENDING_REASON)
+        external_registration = assurance_map.chip(assurance_map.STATE_NOT_CHECKED, WITNESS_REVERIFY_PENDING_REASON)
+    else:
+        local_inclusion = assurance_map.chip(assurance_map.STATE_NOT_PRESENT, "no checkpoint supplied to this view")
+        checkpoint_signature = assurance_map.chip(assurance_map.STATE_NOT_PRESENT, "no checkpoint supplied to this view")
+        external_registration = assurance_map.chip(
+            assurance_map.STATE_NOT_PRESENT,
+            "no checkpoint supplied to this view; registered (+ continuity-witnessed once a checkpoint-aware "
+            "witness signs) is not reachable until [capsule-anchor-checkpoint-aware-witness] deploys",
+        )
+
+    owner_status = identity_chain_for(record).get("owner_status")
+    identity_authority = {
+        "bound": assurance_map.chip(assurance_map.STATE_PASS, "owner cert present and re-checks"),
+        "invalid": assurance_map.chip(assurance_map.STATE_FAIL, "owner cert present but fails re-check"),
+    }.get(owner_status, assurance_map.chip(assurance_map.STATE_NOT_PRESENT, "no owner cert offered"))
+
+    effect = _effect_block(record)
+    capture_coverage = (
+        assurance_map.chip(assurance_map.STATE_PASS, "request/response digests captured for this half")
+        if effect.get("request_digest") and effect.get("response_digest")
+        else assurance_map.chip(assurance_map.STATE_NOT_PRESENT, "this half did not capture both request/response digests")
+    )
+
+    outcome_corroboration = assurance_map.chip(assurance_map.STATE_NOT_PRESENT, TWIN_ADJUDICATION_PENDING_REASON)
+
+    properties = {
+        assurance_map.PROPERTY_CONTENT_BINDING: content_binding,
+        assurance_map.PROPERTY_PRODUCER_SIGNATURE: producer_signature,
+        assurance_map.PROPERTY_LOCAL_INCLUSION: local_inclusion,
+        assurance_map.PROPERTY_CHECKPOINT_SIGNATURE: checkpoint_signature,
+        assurance_map.PROPERTY_EXTERNAL_REGISTRATION: external_registration,
+        assurance_map.PROPERTY_CONTINUITY: continuity,
+        assurance_map.PROPERTY_IDENTITY_AUTHORITY: identity_authority,
+        assurance_map.PROPERTY_CAPTURE_COVERAGE: capture_coverage,
+        assurance_map.PROPERTY_OUTCOME_CORROBORATION: outcome_corroboration,
+    }
+    assurance_map.assert_map_complete(properties)
+    return properties
+
+
+#: digest_match_grade's own four-state vocabulary (kept verbatim -- see its
+#: docstring/tests), translated into the map's five states ONLY for Issues
+#: detection. Not one of the nine named properties (the pair's digest
+#: reconciliation is a Pane-C-specific check with no other consumer), so it
+#: is never rendered in the strip/table -- only folded into `has_issue`.
+_DIGEST_MATCH_TO_MAP_STATE = {
+    STATE_VERIFIED: assurance_map.STATE_PASS,
+    STATE_FAILED: assurance_map.STATE_FAIL,
+    STATE_ABSENT: assurance_map.STATE_NOT_PRESENT,
+    STATE_PRESENT_UNVERIFIED: assurance_map.STATE_NOT_CHECKED,
+}
+
+
 def build_exchange_view(
     record: dict[str, Any],
     *,
@@ -288,12 +441,27 @@ def build_exchange_view(
     source_log: str,
     verify_ok: bool | None = None,
     has_witness_checkpoint: bool = False,
+    verify_map: dict[str, Any] | None = None,
+    ledger_dir: Any = None,
 ) -> dict[str, Any]:
     """Assemble the whole Pane C card for *record* ("this half"), including
     its pair. ``all_records`` is the record pool this view was built from --
     the counterparty half, when sealed, is found by grouping on
     ``exchange_id`` within it (never fetched over the network; this stays
-    offline like every other viewer here)."""
+    offline like every other viewer here).
+
+    ``verify_map`` (capsule_id -> VerificationResult, from ``build_verify_map``)
+    is computed ONCE per list/page and passed down when available; a caller
+    that supplies neither ``verify_map`` nor an explicit ``verify_ok`` gets
+    it computed here as a fallback so a single-record caller still gets a
+    real recompute, never a silent ``None`` [mesh-panes-map-chips]."""
+    if verify_map is None:
+        verify_map = build_verify_map(all_records, ledger_dir=ledger_dir)
+    verify_result = verify_map.get(record.get("capsule_id"))
+    verify_ran = record.get("capsule_id") in verify_map
+    if verify_ok is None and verify_ran:
+        verify_ok = bool(verify_result.ok)
+
     exchange_id = exchange_id_for(record)
     group = records_for_exchange(all_records, exchange_id)
     if not any(r.get("capsule_id") == record.get("capsule_id") for r in group):
@@ -319,6 +487,16 @@ def build_exchange_view(
         counterparty=label_counterparty(record),
     )
 
+    digest = digest_match_grade(half_a, half_b)
+    properties = build_assurance_map(
+        record,
+        verify_result=verify_result,
+        verify_ran=verify_ran,
+        has_witness_checkpoint=has_witness_checkpoint,
+    )
+    issue_signal = dict(properties)
+    issue_signal["_pair_reconciliation"] = assurance_map.chip(_DIGEST_MATCH_TO_MAP_STATE[digest["state"]])
+
     return {
         "capsule_id": record.get("capsule_id"),
         "exchange_id": exchange_id,
@@ -329,7 +507,7 @@ def build_exchange_view(
         "pair": {
             "requester_half_capsule_id": (requested[0].get("capsule_id") if requested else None),
             "provider_half_capsule_id": (served[0].get("capsule_id") if served else None),
-            "digest_match": digest_match_grade(half_a, half_b),
+            "digest_match": digest,
         },
         "identity_chain": {
             "this_half": identity_chain_for(record),
@@ -342,6 +520,13 @@ def build_exchange_view(
             "cross_party": cross_party_grade(poc, capsule_id=record.get("capsule_id")),
             "runtime_binding": measurement_class_grade(poc),
         },
+        # [mesh-panes-map-chips]: the nine-property assurance map + the
+        # Issues-filter signal it drives (any FAIL, or -- once Pane C grows a
+        # promise line -- a broken/changed_without_saying promise; Pane C has
+        # no promise line today, so only property FAILs and the pair's own
+        # digest reconciliation feed it).
+        "properties": properties,
+        "has_issue": assurance_map.has_issue(issue_signal),
     }
 
 
@@ -446,6 +631,9 @@ def build_exchange_row(
     theirs_records: list[dict[str, Any]],
     group: list[dict[str, Any]],
     source_log: str,
+    *,
+    verify_map: dict[str, Any] | None = None,
+    ledger_dir: Any = None,
 ) -> dict[str, Any]:
     """One list row: role tag, `mine`/`theirs` as two columns, header state =
     the worst line among the checks. A row with only one half says so in the
@@ -453,7 +641,11 @@ def build_exchange_row(
     mine = mine_records[0] if mine_records else None
     theirs = theirs_records[0] if theirs_records else None
     anchor = mine or theirs
-    view = build_exchange_view(anchor, all_records=group, source_log=source_log) if anchor is not None else None
+    view = (
+        build_exchange_view(anchor, all_records=group, source_log=source_log, verify_map=verify_map, ledger_dir=ledger_dir)
+        if anchor is not None
+        else None
+    )
 
     if mine is not None:
         # `mine`'s role field already reflects THIS node's own perspective.
@@ -476,6 +668,10 @@ def build_exchange_row(
         "exchange_key": exchange_key,
         "role_tag": role_tag,
         "header_state": worst_state(view) if view is not None else STATE_ABSENT,
+        # [mesh-panes-map-chips]: the row's real signal. A row with no view
+        # (neither half resolvable) has nothing to check yet -- not an issue.
+        "properties": view["properties"] if view is not None else None,
+        "has_issue": view["has_issue"] if view is not None else False,
         "mine": _side(mine, side="mine"),
         "theirs": _side(theirs, side="theirs"),
         "unilateral": mine is None or theirs is None,
@@ -489,14 +685,23 @@ def group_exchanges(
     *,
     counterparty_records: list[dict[str, Any]] | None = None,
     source_log: str = "sidecar",
+    ledger_dir: Any = None,
+    counterparty_ledger_dir: Any = None,
 ) -> list[dict[str, Any]]:
     """Group every record sharing an exchange key into one row each --
     `my_records` (this node's own ledger) anchors a row's role tag;
     `counterparty_records` (a received foreign half, when this view has one)
-    fills the `theirs` column of the SAME row, never a row of its own."""
+    fills the `theirs` column of the SAME row, never a row of its own.
+
+    Verify runs ONCE per source over the whole record set (mirrors the live
+    tab's own `_verify_ok_map` pattern) rather than once per row -- `mine`
+    and `theirs` can carry detached signed-statements next to two DIFFERENT
+    ledgers, so each source is verified against its own `ledger_dir`."""
     counterparty_records = counterparty_records or []
     my_ids = {r.get("capsule_id") for r in my_records if r.get("capsule_id")}
     all_records = my_records + counterparty_records
+    verify_map = build_verify_map(my_records, ledger_dir=ledger_dir)
+    verify_map.update(build_verify_map(counterparty_records, ledger_dir=counterparty_ledger_dir))
 
     keys: list[str] = []
     seen: set[str] = set()
@@ -511,7 +716,7 @@ def group_exchanges(
         group = [r for r in all_records if exchange_key_for(r) == key]
         mine_records = [r for r in group if r.get("capsule_id") in my_ids]
         theirs_records = [r for r in group if r.get("capsule_id") not in my_ids]
-        rows.append(build_exchange_row(key, mine_records, theirs_records, group, source_log))
+        rows.append(build_exchange_row(key, mine_records, theirs_records, group, source_log, verify_map=verify_map))
 
     rows.sort(key=lambda r: r["timestamp"] or "", reverse=True)
     return rows
@@ -519,8 +724,13 @@ def group_exchanges(
 
 def filter_exchange_rows(rows: list[dict[str, Any]], filter_name: str) -> list[dict[str, Any]]:
     """The four filter chips: All · Served · Asked · Issues. `Issues` is any
-    row whose header is NOT `STATE_VERIFIED` -- an honest `absent`/`pending`
-    row (nothing to check yet) is not an issue, only a real warn/failed is."""
+    row whose assurance map has a real FAIL (or, once Pane C carries a
+    promise line, one that reads broken/changed_without_saying) -- an honest
+    NOT_PRESENT/NOT_CHECKED row (nothing to check yet, or not wired into this
+    view yet) is never an issue on its own [mesh-panes-map-chips]. This
+    replaced the old `header_state in (FAILED, PRESENT_UNVERIFIED)` rule,
+    which treated "not independently verified" the same as a real failure and
+    made Issues return the whole set."""
     if filter_name == FILTER_ALL:
         return rows
     if filter_name == FILTER_SERVED:
@@ -528,7 +738,7 @@ def filter_exchange_rows(rows: list[dict[str, Any]], filter_name: str) -> list[d
     if filter_name == FILTER_ASKED:
         return [r for r in rows if r["role_tag"] == EXCHANGE_ROLE_ASKED]
     if filter_name == FILTER_ISSUES:
-        return [r for r in rows if r["header_state"] in (STATE_FAILED, STATE_PRESENT_UNVERIFIED)]
+        return [r for r in rows if r.get("has_issue")]
     raise ValueError(f"unknown filter {filter_name!r}")
 
 
@@ -537,10 +747,18 @@ def build_exchange_list_payload(
     *,
     counterparty_records: list[dict[str, Any]] | None = None,
     source_log: str = "sidecar",
+    ledger_dir: Any = None,
+    counterparty_ledger_dir: Any = None,
 ) -> dict[str, Any]:
     """Assemble the whole Pane C list payload: rows grouped by exchange,
     default-sorted most recent first."""
-    rows = group_exchanges(my_records, counterparty_records=counterparty_records, source_log=source_log)
+    rows = group_exchanges(
+        my_records,
+        counterparty_records=counterparty_records,
+        source_log=source_log,
+        ledger_dir=ledger_dir,
+        counterparty_ledger_dir=counterparty_ledger_dir,
+    )
     return {"row_count": len(rows), "default_sort": "timestamp", "filters": [FILTER_ALL, FILTER_SERVED, FILTER_ASKED, FILTER_ISSUES], "rows": rows}
 
 
@@ -576,6 +794,18 @@ def _pill(state: str, text: str | None = None) -> str:
     return f'<span class="pill pill-{tone}">{_esc(text or state)}</span>'
 
 
+#: digest_match_grade's overall state, worded so the pair header never
+#: prints the bare state string (which for STATE_PRESENT_UNVERIFIED would
+#: literally read "present-unverified" -- exactly the words rule this task
+#: exists to enforce).
+_DIGEST_HEADER_TEXT = {
+    STATE_VERIFIED: "matches",
+    STATE_FAILED: "mismatch",
+    STATE_PRESENT_UNVERIFIED: "partially captured",
+    STATE_ABSENT: "no counterparty half",
+}
+
+
 def render_exchange_subtab_html(view: dict[str, Any]) -> str:
     """Render one Pane C "This exchange" card as a self-contained HTML
     fragment (no fetch, no external state) -- meant to be embedded as the
@@ -585,15 +815,35 @@ def render_exchange_subtab_html(view: dict[str, Any]) -> str:
     )
 
     digest = view["pair"]["digest_match"]
-    digest_rows = "".join(
-        f"<tr><td>{_esc(field)}</td><td class='mono'>{_esc(info.get('a'))}</td>"
-        f"<td class='mono'>{_esc(info.get('b'))}</td><td>{_pill(info['state'])}</td></tr>"
-        for field, info in digest["fields"].items()
-    )
-    if not digest_rows:
-        digest_rows = f"<tr><td colspan='4'>{_esc(digest.get('reason', digest['state']))}</td></tr>"
+    # [mesh-panes-map-chips] build item 4: a lone half never gets a fabricated
+    # pair table -- one honest line, and the table only renders when both
+    # halves are actually present.
+    if digest["state"] == STATE_ABSENT and not digest["fields"]:
+        pair_section = """<section class="pair">
+    <h3>Requester ↔ provider half</h3>
+    <p class="unilateral-note">unilateral — no counterparty half; pair view unavailable</p>
+  </section>"""
+    else:
+        digest_rows = "".join(
+            f"<tr><td>{_esc(field)}</td><td class='mono'>{_esc(info.get('a'))}</td>"
+            f"<td class='mono'>{_esc(info.get('b'))}</td><td>{_pill(info['state'])}</td></tr>"
+            for field, info in digest["fields"].items()
+        )
+        pair_section = f"""<section class="pair">
+    <h3>Requester ↔ provider half {_pill(digest['state'], _DIGEST_HEADER_TEXT.get(digest['state'], digest['state']))}</h3>
+    <table>
+      <thead><tr><th>field</th><th>requester half</th><th>provider half</th><th>match</th></tr></thead>
+      <tbody>{digest_rows}</tbody>
+    </table>
+  </section>"""
 
     seq = view["sequence"]
+    # Shrunk per build item 4: the headline never carries the full
+    # omission-detection caveat inline -- it rides behind a disclosure toggle.
+    seq_line = (
+        f"<p>sequence: {seq['position']} of {seq['of']} (this view's order, not cross-signed) "
+        f"<details class=\"caveat-toggle\"><summary>omission-detection caveat</summary>{_esc(seq['caveat'])}</details></p>"
+    )
     identity_this = view["identity_chain"]["this_half"]
     identity_other = view["identity_chain"]["counterpart"]
 
@@ -612,16 +862,10 @@ def render_exchange_subtab_html(view: dict[str, Any]) -> str:
   <header>
     <h2>This exchange — {_esc(view['model_claimed'])}</h2>
     <p class="mono">exchange_id: {_esc(view['exchange_id'])} · this half: {_esc(view['role'])} · capsule_id: {_esc(view['capsule_id'])}</p>
-    <p>sequence: {seq['position']} of {seq['of']} <span class="caveat">({_esc(seq['caveat'])})</span></p>
+    {seq_line}
   </header>
   <div class="verdict">{verdict_lines}</div>
-  <section class="pair">
-    <h3>Requester ↔ provider half {_pill(digest['state'])}</h3>
-    <table>
-      <thead><tr><th>field</th><th>requester half</th><th>provider half</th><th>match</th></tr></thead>
-      <tbody>{digest_rows}</tbody>
-    </table>
-  </section>
+  {pair_section}
   <section class="identity-chain">
     <h3>Identity chain</h3>
     <div class="identity-row">
@@ -629,11 +873,9 @@ def render_exchange_subtab_html(view: dict[str, Any]) -> str:
       {identity_block("Counterpart", identity_other)}
     </div>
   </section>
-  <section class="pending">
-    <h3>Twin &amp; adjudication {_pill(view['twin_adjudication']['state'])}</h3>
-    <p>{_esc(view['twin_adjudication']['reason'])}</p>
-    <h3>Witness receipt re-verify {_pill(view['witness_receipt_reverify']['state'])}</h3>
-    <p>{_esc(view['witness_receipt_reverify']['reason'])}</p>
+  <section class="assurance">
+    <h3>Assurance map</h3>
+    {assurance_map.render_chip_table(view["properties"])}
   </section>
 </section>"""
 
