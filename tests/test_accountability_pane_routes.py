@@ -116,6 +116,40 @@ def test_pane_a_json_passes_no_rating_fields(node_state, monkeypatch):
         routes.build_pane_a_json(node_state)
 
 
+def _find_state_values(value, out):
+    if isinstance(value, dict):
+        state = value.get("state")
+        if isinstance(state, str):
+            out.append(state)
+        for sub in value.values():
+            _find_state_values(sub, out)
+    elif isinstance(value, list):
+        for item in value:
+            _find_state_values(item, out)
+
+
+def test_pane_a_json_never_carries_the_retired_pending_stub_state(node_state):
+    """[mesh-live-tab-pane-proxy] L2: Pane A's ``references``/``absences_
+    recorded_against_me``/``refusals_issued``/``native_log_join`` blocks
+    used to carry the ad hoc ``"pending"`` string for a mechanism that does
+    not exist in this repo yet -- ``capsule_accountability_tab.
+    BLOCK_PENDING`` now aliases ``assurance_map.STATE_NOT_CHECKED``, same
+    migration ``peer_accountability_tab.CELL_PENDING`` already did. This
+    walks every ``state`` key in a real ``build_pane_a_json`` payload
+    (seeded, so the adjudications-received/served-summary/footer blocks are
+    all populated, not just the empty-ledger defaults) and asserts the
+    retired literal never appears as a *state value* -- prose explaining
+    the gap (e.g. ``REFERENCES_PENDING_REASON``'s text) is a separate,
+    allowed surface, and ``"present-unverified"`` is untouched, in-scope-
+    elsewhere vocabulary for the mature ladder-graded rungs
+    (freshness/cross-party/measurement-class), not a retired stub state."""
+    _seed(node_state, 2)
+    payload = routes.build_pane_a_json(node_state)
+    states = []
+    _find_state_values(payload, states)
+    assert "pending" not in states
+
+
 # ---------------------------------------------------------------------------
 # Pane B
 # ---------------------------------------------------------------------------

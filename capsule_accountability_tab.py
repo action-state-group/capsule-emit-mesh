@@ -100,7 +100,14 @@ __all__ = [
 #: view / not yet asked -- never amber for "not shown here". A block that is
 #: honestly not wired yet uses this state, distinct from the four-state
 #: capsule_id/rung discipline above.
-BLOCK_PENDING = "pending"
+#: [mesh-live-tab-pane-proxy] L2: references / absences-against-me / the
+#: refusals-issued and native-log fallbacks are each a mechanism that does
+#: not exist in this repo yet -- exactly ``assurance_map.STATE_NOT_CHECKED``'s
+#: definition, not the ad hoc ``"pending"`` string these blocks carried
+#: before the five-state map existed (same migration
+#: ``peer_accountability_tab.CELL_PENDING`` already did). Kept as its own
+#: name because "pending" reads better at the call sites below.
+BLOCK_PENDING = assurance_map.STATE_NOT_CHECKED
 
 REFERENCES_PENDING_REASON = (
     "what my counterparties report when asked about me is not available on this view yet: "
