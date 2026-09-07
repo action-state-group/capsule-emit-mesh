@@ -83,6 +83,7 @@ from pathlib import Path
 from typing import Any
 
 import assurance_map
+import ledger_store_backend
 from capsule_accountability_tab import (
     STATE_ABSENT,
     STATE_FAILED,
@@ -94,11 +95,6 @@ from capsule_accountability_tab import (
 )
 from capsule_mesh_view import _poc_block, label_counterparty, label_role, verify_results_for
 from capsule_mesh_viewer import build_verdict, friendly_model_name, serving_provenance
-
-try:  # same reader the sibling viewers use for their CLIs
-    from capsule_emit.ledger import read_ledger
-except Exception:  # pragma: no cover - only when capsule-emit isn't installed
-    read_ledger = None  # type: ignore[assignment]
 
 __all__ = [
     "EXCHANGE_ROLE_ASKED",
@@ -1015,21 +1011,6 @@ def render_exchange_list_html(payload: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _read_records(path: str) -> list[dict[str, Any]]:
-    if read_ledger is not None:
-        try:
-            return read_ledger(path)
-        except Exception:
-            pass
-    out: list[dict[str, Any]] = []
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if line:
-                out.append(json.loads(line))
-    return out
-
-
 def _read_first_json(path: str) -> dict[str, Any]:
     with open(path, encoding="utf-8") as fh:
         text = fh.read().strip()
@@ -1037,10 +1018,25 @@ def _read_first_json(path: str) -> dict[str, Any]:
     return json.loads(first)
 
 
+def _read_ledger_records(path: str) -> tuple[list[dict[str, Any]], Path]:
+    """Resolve *path* (the CLI's ``--ledger``/``--counterparty-ledger``
+    convention: either a ledger DIRECTORY or the legacy ``.../capsules.jsonl``
+    file path) to its ledger dir and read every record via
+    ``ledger_store_backend.read_all_capsules`` -- store-aware, so this
+    reads a segmented live ledger (``ledger/segments/seg-NNNNNN.jsonl``)
+    correctly instead of missing it by only ever looking at a flat
+    ``capsules.jsonl`` that a migrated store no longer keeps at that path.
+    """
+    ledger_dir = ledger_store_backend.as_ledger_dir(Path(path).resolve())
+    records, _archived_segments = ledger_store_backend.read_all_capsules(ledger_dir)
+    return records, ledger_dir
+
+
 def _cmd_html(args: argparse.Namespace) -> int:
-    records = _read_records(args.ledger)
+    records, ledger_dir = _read_ledger_records(args.ledger)
     if args.counterparty_ledger:
-        records = records + _read_records(args.counterparty_ledger)
+        counterparty_records, _counterparty_ledger_dir = _read_ledger_records(args.counterparty_ledger)
+        records = records + counterparty_records
     record = next((r for r in records if r.get("capsule_id") == args.capsule_id), None)
     if record is None:
         print(f"capsule-exchange-tab: capsule_id {args.capsule_id!r} not found in supplied ledger(s)", file=sys.stderr)
@@ -1051,7 +1047,7 @@ def _cmd_html(args: argparse.Namespace) -> int:
         all_records=records,
         source_log=args.source_log,
         has_witness_checkpoint=witness is not None,
-        ledger_dir=Path(args.ledger).resolve().parent,
+        ledger_dir=ledger_dir,
     )
     html = render_exchange_subtab_html(view)
     with open(args.out, "w", encoding="utf-8") as fh:
@@ -1061,10 +1057,11 @@ def _cmd_html(args: argparse.Namespace) -> int:
 
 
 def _cmd_list(args: argparse.Namespace) -> int:
-    my_records = _read_records(args.ledger)
-    counterparty_records = _read_records(args.counterparty_ledger) if args.counterparty_ledger else None
-    ledger_dir = Path(args.ledger).resolve().parent
-    counterparty_ledger_dir = Path(args.counterparty_ledger).resolve().parent if args.counterparty_ledger else None
+    my_records, ledger_dir = _read_ledger_records(args.ledger)
+    counterparty_records: list[dict[str, Any]] | None = None
+    counterparty_ledger_dir: Path | None = None
+    if args.counterparty_ledger:
+        counterparty_records, counterparty_ledger_dir = _read_ledger_records(args.counterparty_ledger)
     payload = build_exchange_list_payload(
         my_records,
         counterparty_records=counterparty_records,

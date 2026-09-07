@@ -66,12 +66,14 @@ __all__ = [
     "CORRELATION_FIELDS",
     "MANIFEST_FILENAME",
     "append_capsule",
+    "as_ledger_dir",
     "import_flat_ledger_once",
     "is_store_ledger",
     "materialize_flat_view",
     "open_ledger_store",
     "open_log_source_for_checkpointing",
     "read_all_capsules",
+    "read_capsules_page",
 ]
 
 _LOG = logging.getLogger(__name__)
@@ -101,7 +103,7 @@ ARCHIVED_SEGMENT_KIND = "archived_segment"
 _LEGACY_FLAT_FILENAME = "capsules.jsonl"
 
 
-def _as_ledger_dir(path: Path) -> Path:
+def as_ledger_dir(path: Path) -> Path:
     """Normalize the two conventions this repo's CLIs use interchangeably
     for "where is the ledger": a ledger DIRECTORY (this module's own
     convention), or a path to the legacy flat file itself (``.../
@@ -118,7 +120,7 @@ def is_store_ledger(ledger_dir: Path) -> bool:
     """Whether ``ledger_dir`` has already been migrated to a
     :class:`~cll.ledger.store.LedgerStore` -- the store/flat discriminator
     every function in this module keys on."""
-    return (_as_ledger_dir(ledger_dir) / MANIFEST_FILENAME).exists()
+    return (as_ledger_dir(ledger_dir) / MANIFEST_FILENAME).exists()
 
 
 def open_ledger_store(ledger_dir: Path, *, log_id: str = "") -> LedgerStore:
@@ -132,7 +134,7 @@ def open_ledger_store(ledger_dir: Path, *, log_id: str = "") -> LedgerStore:
     see ``capsule_sidecar.NodeState`` for where the live sidecar attaches
     one.
     """
-    ledger_dir = _as_ledger_dir(ledger_dir)
+    ledger_dir = as_ledger_dir(ledger_dir)
     return LedgerStore(root=ledger_dir, rotate_at_checkpoint=True, correlation_fields=CORRELATION_FIELDS, log_id=log_id)
 
 
@@ -152,7 +154,7 @@ def import_flat_ledger_once(ledger_dir: Path, store: LedgerStore, *, flat_filena
     once the store already holds records, or when there was never a flat
     file to import in the first place (a brand-new node).
     """
-    ledger_dir = _as_ledger_dir(ledger_dir)
+    ledger_dir = as_ledger_dir(ledger_dir)
     flat_path = ledger_dir / flat_filename
     if not flat_path.exists():
         return 0
@@ -182,7 +184,7 @@ def open_log_source_for_checkpointing(ledger_dir: Path, *, log_id: str = "") -> 
     :func:`import_flat_ledger_once`, since it alone owns and is about to
     become the sole writer of its ledger dir.
     """
-    ledger_dir = _as_ledger_dir(ledger_dir)
+    ledger_dir = as_ledger_dir(ledger_dir)
     if is_store_ledger(ledger_dir):
         return open_ledger_store(ledger_dir, log_id=log_id)
     from checkpointing import JsonlLogSource
@@ -194,44 +196,99 @@ def open_log_source_for_checkpointing(ledger_dir: Path, *, log_id: str = "") -> 
     return JsonlLogSource(ledger_dir / _LEGACY_FLAT_FILENAME)
 
 
-def _read_flat_capsules(ledger_dir: Path, *, flat_filename: str = _LEGACY_FLAT_FILENAME) -> list[dict[str, Any]]:
+def _read_flat_capsules_page(
+    ledger_dir: Path, *, limit: int | None, after_seq: int, flat_filename: str = _LEGACY_FLAT_FILENAME
+) -> tuple[list[dict[str, Any]], int | None]:
+    """:func:`read_capsules_page`'s flat-file branch. A flat ledger has no
+    persisted ``seq`` column, so this assigns the same synthetic 1-based
+    line-order ``seq`` :func:`_read_store_page` gets from the store, and
+    stops reading lines the instant it has collected one more than
+    ``limit`` -- a real I/O cap on a large legacy ledger, not just a
+    post-hoc slice of an already-fully-read list.
+    """
     path = ledger_dir / flat_filename
     if not path.exists():
-        return []
+        return [], None
     _LOG.warning(
         "%s has no %s -- reading %s as a legacy flat ledger (read-only fallback)",
         ledger_dir, MANIFEST_FILENAME, flat_filename,
     )
-    records: list[dict[str, Any]] = []
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if line:
-            records.append(json.loads(line))
-    return records
+    fetch_cap = None if limit is None else limit + 1
+    pairs: list[tuple[int, dict[str, Any]]] = []
+    seq = 0
+    with path.open(encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line:
+                continue
+            seq += 1
+            if seq <= after_seq:
+                continue
+            pairs.append((seq, json.loads(line)))
+            if fetch_cap is not None and len(pairs) >= fetch_cap:
+                break
+    return _trim_page(pairs, limit)
 
 
-def _read_store_capsules(ledger_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Every capsule in the store at ``ledger_dir``, in append order, never
-    touching :meth:`~cll.ledger.store.LedgerStore.scan` (which raises
+def _trim_page(
+    pairs: list[tuple[int, dict[str, Any]]], limit: int | None
+) -> tuple[list[dict[str, Any]], int | None]:
+    """Shared cursor trim: *pairs* was collected with one extra record past
+    *limit* when a next page might exist (the ``fetch_cap = limit + 1``
+    sentinel both branches use) -- this drops that sentinel and turns its
+    presence into the ``next_after_seq`` cursor, so ``None`` unambiguously
+    means "no more records" rather than "happened to stop exactly at the
+    cap"."""
+    next_after_seq = None
+    if limit is not None and len(pairs) > limit:
+        pairs = pairs[:limit]
+        next_after_seq = pairs[-1][0]
+    return [capsule for _seq, capsule in pairs], next_after_seq
+
+
+def _read_store_page(
+    ledger_dir: Path, *, limit: int | None, after_seq: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int | None]:
+    """:func:`read_capsules_page`'s store branch -- the segment-walk
+    :func:`read_all_capsules` used to do inline, extended with an
+    ``after_seq`` cursor and a ``limit`` cap. Never touches
+    :meth:`~cll.ledger.store.LedgerStore.scan` (which raises
     :class:`~cll.ledger.segments.SegmentUnmounted` for the WHOLE call the
     instant ANY segment anywhere in the log is archived) -- instead walks
     :meth:`~cll.ledger.store.LedgerStore.list_segments` in append order and
     resolves each MOUNTED segment's own ``[first_seq, last_seq]`` range via
     :meth:`~cll.ledger.store.LedgerStore.by_seq_range` (a bounded SQL lookup
-    that only ever touches rows inside that one segment), so one archived
-    segment never blocks reading the records before or after it.
+    that only ever touches rows inside that one segment, and -- with a cap
+    in play -- only the rows this page still needs), so one archived
+    segment never blocks reading the records before or after it, and a
+    capped page never opens more of the store than it has to.
+
+    With ``limit=None`` and ``after_seq=0`` this reproduces the pre-paging
+    ``_read_store_capsules`` behavior exactly: same segment walk, same
+    archived-segment detection, same order -- :func:`read_all_capsules`
+    calls it that way rather than keeping a second copy of this walk.
     """
     store = open_ledger_store(ledger_dir)
     try:
-        records: list[dict[str, Any]] = []
+        fetch_cap = None if limit is None else limit + 1
+        pairs: list[tuple[int, dict[str, Any]]] = []
         archived: list[dict[str, Any]] = []
         next_seq = 1
         for seg in store.list_segments():
+            if fetch_cap is not None and len(pairs) >= fetch_cap:
+                break
             if seg.manifest is not None:
                 manifest = SegmentManifest.from_dict(json.loads((ledger_dir / seg.manifest).read_text()))
+                next_seq = manifest.last_seq + 1
+                if manifest.last_seq <= after_seq:
+                    continue  # entirely before the requested window -- not a gap, just not asked for
+                lo = max(manifest.first_seq, after_seq + 1)
                 if seg.mounted:
-                    hits = store.by_seq_range(manifest.first_seq, manifest.last_seq)
-                    records.extend(r.capsule for r in hits)
+                    hi = manifest.last_seq
+                    if fetch_cap is not None:
+                        hi = min(hi, lo + (fetch_cap - len(pairs)) - 1)
+                    hits = store.by_seq_range(lo, hi)
+                    pairs.extend((r.seq, r.capsule) for r in hits)
                 else:
                     archived.append(
                         {
@@ -253,19 +310,54 @@ def _read_store_capsules(ledger_dir: Path) -> tuple[list[dict[str, Any]], list[d
                             "note": "archived -- mount to view",
                         }
                     )
-                next_seq = manifest.last_seq + 1
             else:
                 # The active, still-open segment -- always last in append
                 # order, always mounted (an unmounted segment is by
                 # definition closed). Its own upper bound isn't known without
                 # a manifest, so ask for everything from where the previous
-                # segment left off; by_seq_range is a bounded SQL query, so
-                # this never touches an earlier, possibly-archived segment.
-                hits = store.by_seq_range(next_seq, next_seq + 10**9)
-                records.extend(r.capsule for r in hits)
-        return records, archived
+                # segment left off (bounded by the cap); by_seq_range is a
+                # bounded SQL query, so this never touches an earlier,
+                # possibly-archived segment.
+                lo = max(next_seq, after_seq + 1)
+                hi = lo + 10**9
+                if fetch_cap is not None:
+                    hi = min(hi, lo + (fetch_cap - len(pairs)) - 1)
+                if hi >= lo:
+                    hits = store.by_seq_range(lo, hi)
+                    pairs.extend((r.seq, r.capsule) for r in hits)
+        records, next_after_seq = _trim_page(pairs, limit)
+        return records, archived, next_after_seq
     finally:
         store.close()
+
+
+def read_capsules_page(
+    ledger_dir: Path, *, limit: int | None = None, after_seq: int = 0
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int | None]:
+    """Capped, paginated :func:`read_all_capsules`: at most *limit* capsule
+    records with ``seq > after_seq``, in append order -- store-aware (keys
+    on :func:`is_store_ledger`) with the same labeled, read-only flat-file
+    fallback as :func:`read_all_capsules`.
+
+    Returns ``(records, archived_segments, next_after_seq)``. ``next_after_seq``
+    is the ``after_seq`` to pass for the following page, or ``None`` when
+    this page reached the end of the log (never ``None`` merely because the
+    page happened to land exactly on the cap -- a one-record lookahead
+    disambiguates the two). ``archived_segments`` carries the same
+    ``{kind, segment, first_seq, ...}`` gap descriptors as
+    :func:`read_all_capsules`, scoped to segments whose range overlaps the
+    requested window -- never raises
+    :class:`~cll.ledger.segments.SegmentUnmounted`.
+
+    ``limit=None`` (the default) returns everything from ``after_seq``
+    onward in one page, same as calling :func:`read_all_capsules` with
+    ``after_seq=0``.
+    """
+    ledger_dir = as_ledger_dir(ledger_dir)
+    if is_store_ledger(ledger_dir):
+        return _read_store_page(ledger_dir, limit=limit, after_seq=after_seq)
+    records, next_after_seq = _read_flat_capsules_page(ledger_dir, limit=limit, after_seq=after_seq)
+    return records, [], next_after_seq
 
 
 def read_all_capsules(ledger_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -282,11 +374,12 @@ def read_all_capsules(ledger_dir: Path) -> tuple[list[dict[str, Any]], list[dict
     never silently drops an archived segment's existence even though its
     content isn't available (the rotation-demo acceptance line: "unmount
     one -> readers report archived -- mount to view, never a 500").
+
+    Thin, uncapped call to :func:`read_capsules_page` -- one segment-walk
+    implementation shared by both entry points, never two that can drift.
     """
-    ledger_dir = _as_ledger_dir(ledger_dir)
-    if is_store_ledger(ledger_dir):
-        return _read_store_capsules(ledger_dir)
-    return _read_flat_capsules(ledger_dir), []
+    records, archived, _next_after_seq = read_capsules_page(ledger_dir)
+    return records, archived
 
 
 def synthesize_checkpoint_stamp_lines(ledger_dir: Path) -> list[str]:
@@ -359,7 +452,7 @@ def materialize_flat_view(ledger_dir: Path) -> Path:
     actually mounted); a caller that needs to know about the gap should
     call :func:`read_all_capsules` directly instead.
     """
-    ledger_dir = _as_ledger_dir(ledger_dir)
+    ledger_dir = as_ledger_dir(ledger_dir)
     stamp_lines = synthesize_checkpoint_stamp_lines(ledger_dir)
     if not is_store_ledger(ledger_dir) and not stamp_lines:
         return ledger_dir / _LEGACY_FLAT_FILENAME
@@ -396,7 +489,7 @@ def append_capsule(ledger_dir: Path, capsule: dict[str, Any]) -> None:
     goes through its own long-lived, checkpointer-attached store instead --
     see ``NodeState.__post_init__``.
     """
-    ledger_dir = _as_ledger_dir(ledger_dir)
+    ledger_dir = as_ledger_dir(ledger_dir)
     if is_store_ledger(ledger_dir):
         store = open_ledger_store(ledger_dir)
         try:

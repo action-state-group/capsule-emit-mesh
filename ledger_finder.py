@@ -20,7 +20,7 @@ exists to offer:
   ANY hit lands on an unmounted segment, ``_resolve_lookup_hit`` raises
   ``SegmentUnmounted`` for the WHOLE call and every already-resolved record
   in that batch is lost with it (see that method's own docstring). That is
-  exactly the failure mode ``read_all_capsules``/``_read_store_capsules``
+  exactly the failure mode ``read_all_capsules``/``_read_store_page``
   ([mesh-ledger-store-migration]) was already written to avoid -- "one
   archived segment never blocks reading the records before or after it".
   Filtering ``read_all_capsules``'s already-segment-safe output in Python
