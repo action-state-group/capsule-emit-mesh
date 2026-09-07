@@ -908,7 +908,12 @@ _LIST_STYLE = """
   .pill-bad { color: var(--bad); background: color-mix(in oklab, var(--bad) 14%, transparent); }
   .pill-neutral { color: var(--fg-dim); background: color-mix(in oklab, var(--fg-dim) 10%, transparent); }
   .drawer { border-top: 1px solid var(--border-soft); margin-top: 8px; padding-top: 8px; }
-"""
+  .unilateral-note { color: var(--fg-dim); font-size: 12.5px; margin: 6px 0; }
+  .caveat-toggle { color: var(--fg-faint); font-size: 12px; margin: 4px 0; }
+  .caveat-toggle summary { cursor: pointer; }
+  .issue-badge { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; padding: 1px 8px; border-radius: 5px;
+    color: var(--bad); background: color-mix(in oklab, var(--bad) 14%, transparent); }
+""" + assurance_map.CHIP_CSS
 
 
 def render_exchange_list_html(payload: dict[str, Any]) -> str:
@@ -925,12 +930,19 @@ def render_exchange_list_html(payload: dict[str, Any]) -> str:
         mine, theirs = row["mine"], row["theirs"]
         mine_text = f"capsule_id: {_esc(mine['capsule_id'])}" if mine.get("capsule_id") else _esc(mine.get("text"))
         theirs_text = f"capsule_id: {_esc(theirs['capsule_id'])}" if theirs.get("capsule_id") else _esc(theirs.get("text"))
+        chip_strip = (
+            assurance_map.render_chip_strip(row["properties"])
+            if row["properties"] is not None
+            else '<span class="chip-strip chip-neutral">no view available</span>'
+        )
+        issue_badge = '<span class="issue-badge">ISSUE</span>' if row.get("has_issue") else ""
         rows_html.append(
-            f"""<details class="exchange-row" data-role="{_esc(row['role_tag'])}" data-state="{_esc(row['header_state'])}">
+            f"""<details class="exchange-row" data-role="{_esc(row['role_tag'])}" data-issue="{str(bool(row.get('has_issue'))).lower()}">
   <summary>
     <span class="role-tag">{_esc(row['role_tag'])}</span>
     <span class="mono">{_esc(row['exchange_key'])} · {_esc(row['timestamp'])}</span>
-    {_pill(row['header_state'])}
+    {chip_strip}
+    {issue_badge}
   </summary>
   <div class="halves">
     <div>mine: {mine_text}</div>
@@ -964,7 +976,7 @@ def render_exchange_list_html(payload: dict[str, Any]) -> str:
     chips.forEach(function (c) {{ c.classList.toggle("active", c.dataset.filter === filterName); }});
     rows.forEach(function (row) {{
       var show = filterName === "all"
-        || (filterName === "issues" ? row.dataset.state !== "verified" : row.dataset.role.toLowerCase() === filterName);
+        || (filterName === "issues" ? row.dataset.issue === "true" : row.dataset.role.toLowerCase() === filterName);
       row.style.display = show ? "" : "none";
     }});
   }}
@@ -1017,6 +1029,7 @@ def _cmd_html(args: argparse.Namespace) -> int:
         all_records=records,
         source_log=args.source_log,
         has_witness_checkpoint=witness is not None,
+        ledger_dir=Path(args.ledger).resolve().parent,
     )
     html = render_exchange_subtab_html(view)
     with open(args.out, "w", encoding="utf-8") as fh:
@@ -1028,7 +1041,15 @@ def _cmd_html(args: argparse.Namespace) -> int:
 def _cmd_list(args: argparse.Namespace) -> int:
     my_records = _read_records(args.ledger)
     counterparty_records = _read_records(args.counterparty_ledger) if args.counterparty_ledger else None
-    payload = build_exchange_list_payload(my_records, counterparty_records=counterparty_records, source_log=args.source_log)
+    ledger_dir = Path(args.ledger).resolve().parent
+    counterparty_ledger_dir = Path(args.counterparty_ledger).resolve().parent if args.counterparty_ledger else None
+    payload = build_exchange_list_payload(
+        my_records,
+        counterparty_records=counterparty_records,
+        source_log=args.source_log,
+        ledger_dir=ledger_dir,
+        counterparty_ledger_dir=counterparty_ledger_dir,
+    )
     html = render_exchange_list_html(payload)
     with open(args.out, "w", encoding="utf-8") as fh:
         fh.write(html)
