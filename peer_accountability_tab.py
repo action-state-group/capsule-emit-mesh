@@ -128,7 +128,15 @@ CELL_VERIFIED = "verified"
 CELL_FAILED = "failed"
 CELL_UNILATERAL = "unilateral"
 CELL_CONTRADICTED = "contradicted"
-CELL_PENDING = "pending"
+#: [mesh-live-tab-pane-proxy] L2: history (theirs) / served (theirs) / the
+#: "held by others" half of verdicts are each a peer-fetch mechanism that
+#: does not exist in this repo yet -- exactly ``assurance_map.STATE_NOT_
+#: CHECKED``'s definition ("this view's own wiring doesn't check it yet"),
+#: not the ad hoc ``"pending"`` these cells carried before the five-state
+#: map existed. Kept as its own name (rather than every call site spelling
+#: ``assurance_map.STATE_NOT_CHECKED``) because "pending" reads better at
+#: the call sites below documenting a peer-fetch gap specifically.
+CELL_PENDING = assurance_map.STATE_NOT_CHECKED
 
 #: The peer key for exchanges with no attributable counterparty evidence.
 #: Grouped together because there is nowhere else honest to put them, but
