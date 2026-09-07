@@ -71,6 +71,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import assurance_map
 from capsule_accountability_tab import STATE_FAILED, STATE_VERIFIED, cross_party_grade
 from capsule_exchange_tab import digest_match_grade, exchange_id_for, half_by_role, records_for_exchange
 from capsule_mesh_view import _poc_block, label_counterparty, label_role
@@ -705,7 +706,8 @@ def render_peers_tab_html(payload: dict[str, Any]) -> str:
             f"exist in the shell, found {_HTML_SHELL.count('@@PAYLOAD@@')}"
         )
     payload_json = json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c")
-    return _HTML_SHELL.replace("@@PAYLOAD@@", payload_json)
+    shell = _HTML_SHELL.replace("@@CHIP_TONE@@", assurance_map.tone_js_object())
+    return shell.replace("@@PAYLOAD@@", payload_json)
 
 
 _HTML_SHELL = r"""<!DOCTYPE html>
@@ -765,8 +767,7 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   var COLUMNS = ["node","role","history","served","pair","verdicts","asked"];
   var LABELS = {node:"Node",role:"Role · exchanges",history:"History (theirs)",served:"Served (theirs)",
     pair:"Pair (me↔them)",verdicts:"Verdicts",asked:"Asked"};
-  var TONE = {absent:"neutral", present:"good", verified:"good", unilateral:"warn", pending:"neutral",
-    failed:"bad", refused:"bad", contradicted:"bad"};
+  var TONE = @@CHIP_TONE@@;
 
   function cellText(cell) { return (cell && cell.text) ? cell.text : "no evidence recorded"; }
 

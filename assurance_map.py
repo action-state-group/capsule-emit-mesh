@@ -114,11 +114,15 @@ _LEGACY_TONE = {
     "self_measured": "warn",
     "os_measured": "warn",
     "platform-attested": "warn",
+    "unilateral": "warn",
     "verified": "good",
     "full_bilateral": "good",
     "tee_measured": "good",
     "attested": "good",
+    "present": "good",
     "failed": "bad",
+    "refused": "bad",
+    "contradicted": "bad",
 }
 
 
