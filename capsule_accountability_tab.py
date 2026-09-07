@@ -57,6 +57,7 @@ from typing import Any
 from agent_manifest._tdx_verify import TdxVerificationError, verify_tdx_quote
 
 import assurance_map
+import ledger_store_backend
 from bilateral_demo import ClientAck, verify_client_ack
 from capsule_mesh_view import _poc_block, _verify_ok_map, verify_results_for
 from capsule_mesh_viewer import _load_verify_js, friendly_model_name, serving_provenance
@@ -1014,14 +1015,15 @@ def _read_first_json(path: str) -> dict[str, Any]:
 
 
 def _cmd_html(args: argparse.Namespace) -> int:
-    records = _read_records(args.ledger)
+    ledger_dir = ledger_store_backend.as_ledger_dir(Path(args.ledger).resolve())
+    records, _archived_segments = ledger_store_backend.read_all_capsules(ledger_dir)
     if not records:
         print(f"capsule-accountability-tab: no records in {args.ledger}", file=sys.stderr)
         return 1
     witness = _read_first_json(args.witness) if args.witness else None
     payload = build_tab_payload(
         records,
-        ledger_dir=Path(args.ledger).resolve().parent,
+        ledger_dir=ledger_dir,
         witness_checkpoint=witness,
         operator=args.operator,
         node_id=args.node_id,
