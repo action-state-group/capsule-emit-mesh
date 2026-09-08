@@ -10,8 +10,11 @@ mutant. Each acceptance mutant from the inbox item gets its own test:
     relay/distinct-owner candidate
   - the tie-break is a RANDOM draw within the top band, never the single
     nearest and never uniform over the whole pool
-  - select_referee rejects a candidate sharing an owner with either twin,
-    and requires both twins to already share one weights_digest
+  - select_referee HARD-excludes a candidate sharing an owner with either
+    twin (not merely scored down), and requires both twins to already
+    share one weights_digest
+  - select_referee falls back to "distinct node key" (owner_diversity_limited)
+    when the hard owner-exclusion would otherwise leave zero candidates
   - an injected history_check that fails drops the candidate and the next
     band is drawn from what remains; all candidates failing -> a distinct,
     labeled reason
@@ -22,6 +25,7 @@ import random
 
 from twin_selection import (
     DEFAULT_POLICY,
+    NOTE_OWNER_DIVERSITY_LIMITED,
     REASON_NO_CANDIDATE_PASSED_HISTORY_CHECK,
     REASON_NO_COMPARABLE_TWIN,
     HistorySanityResult,
@@ -140,7 +144,12 @@ def test_select_referee_requires_matching_weights_digest_on_both_twins():
     assert result.reason == REASON_NO_COMPARABLE_TWIN
 
 
-def test_select_referee_rejects_candidate_sharing_owner_with_either_twin():
+def test_select_referee_hard_excludes_candidate_sharing_owner_with_either_twin():
+    """[mesh-referee-live-e17c] Owner independence is a HARD gate for
+    select_referee, not just a scoring penalty: a same-owner candidate is
+    excluded from the pool entirely -- it must not even appear in
+    `breakdown`, and the pick must be the independent candidate with
+    `owner_diversity_limited=False`."""
     twin_a = _peer("twin-a", owner_id="owner-a", owner_verified=True)
     twin_b = _peer("twin-b", owner_id="owner-b", owner_verified=True)
     same_as_a = _peer("same-as-a", owner_id="owner-a", owner_verified=True, latency_source="relay")
@@ -148,9 +157,45 @@ def test_select_referee_rejects_candidate_sharing_owner_with_either_twin():
 
     result = select_referee(twin_a, twin_b, [same_as_a, independent], rng=random.Random(1))
 
-    assert result.breakdown["same-as-a"].owner_diversity == 0.0
-    assert "same_owner_as:twin-a" in result.breakdown["same-as-a"].notes
+    assert "same-as-a" not in result.breakdown
     assert result.chosen_peer_id == "independent"
+    assert result.owner_diversity_limited is False
+
+
+def test_select_referee_falls_back_to_distinct_node_key_when_no_owner_independent_candidate():
+    """[mesh-referee-live-e17c] When the hard owner-exclusion would leave
+    zero candidates -- every same-model peer shares an owner with a twin --
+    select_referee falls back to the full comparable pool ("distinct node
+    key" instead of distinct owner) rather than refusing outright, and
+    records the narrowing via `owner_diversity_limited=True` so it is
+    never silent."""
+    twin_a = _peer("twin-a", owner_id="owner-a", owner_verified=True)
+    twin_b = _peer("twin-b", owner_id="owner-b", owner_verified=True)
+    only_candidate = _peer("only-candidate", owner_id="owner-a", owner_verified=True, latency_source="relay")
+
+    result = select_referee(twin_a, twin_b, [only_candidate], rng=random.Random(1))
+
+    assert result.chosen_peer_id == "only-candidate"
+    assert result.owner_diversity_limited is True
+    assert "only-candidate" in result.breakdown
+    block = selection_rationale_block(result)
+    assert block["owner_diversity_limited"] is True
+    assert block["owner_diversity_limited_note"] == NOTE_OWNER_DIVERSITY_LIMITED
+
+
+def test_select_referee_unknown_owner_candidate_is_never_hard_excluded():
+    """An unknown `owner_id` on a candidate is never treated as a match --
+    that would fabricate independence from absence in the wrong direction
+    (excluding on a guess). It stays in the pool, scored by the existing
+    soft owner_diversity component."""
+    twin_a = _peer("twin-a", owner_id="owner-a", owner_verified=True)
+    twin_b = _peer("twin-b", owner_id="owner-b", owner_verified=True)
+    unknown_owner = _peer("unknown-owner", owner_id=None, latency_source="relay")
+
+    result = select_referee(twin_a, twin_b, [unknown_owner], rng=random.Random(1))
+
+    assert result.chosen_peer_id == "unknown-owner"
+    assert result.owner_diversity_limited is False
 
 
 def test_select_referee_excludes_the_twins_themselves_from_the_pool():
