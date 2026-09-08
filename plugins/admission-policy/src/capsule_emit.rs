@@ -733,6 +733,16 @@ pub struct ObservedHostExchange<'a> {
     /// AUTHORITATIVE signal `role_and_observation_point` derives `role` from
     /// (2026-09-06 role ruling). See `lifecycle_channel::DispatchPath`.
     pub dispatch_path: DispatchPath,
+    /// The client-forwarded nonce off the terminal event, when the host
+    /// reported one (`[mesh-requester-side-seal-on-proxy]`, 2026-09-07) --
+    /// this is the JOIN KEY between a proxied exchange's two sealed halves
+    /// (this node's requester-role capsule and the peer's served-role
+    /// capsule): both sides forward the SAME client nonce, while
+    /// `exchange_id` is minted per-node and cannot be relied on to match.
+    /// `None` when the host did not forward one -- the capsule then falls
+    /// back to the pre-existing honest "no nonce observed" default, never a
+    /// fabricated value.
+    pub nonce: Option<&'a str>,
 }
 
 impl CapsuleState {
@@ -773,8 +783,9 @@ impl CapsuleState {
             usage,
             host_provenance,
             dispatch_path,
+            nonce,
         } = observed;
-        let (model, exchange_id, request_digest, response_digest, tool_calls_digest, reasoning_digest, usage) = (
+        let (model, exchange_id, request_digest, response_digest, tool_calls_digest, reasoning_digest, usage, nonce) = (
             *model,
             *exchange_id,
             *request_digest,
@@ -782,6 +793,7 @@ impl CapsuleState {
             *tool_calls_digest,
             *reasoning_digest,
             usage.clone(),
+            *nonce,
         );
         let host = host_provenance.clone();
 
@@ -914,10 +926,22 @@ impl CapsuleState {
             // placeholder only on graceful degradation.
             runtime: observer_runtime_field(&binary_attestation),
             mesh_poc: MeshPocV1 {
-                // A host-served exchange carries no client nonce to this plugin
-                // (it never reached this plugin's handler) -- honest default.
-                client_nonce: "host-served-no-nonce".to_string(),
-                client_nonce_source: "host_served_observed".to_string(),
+                // The host-forwarded terminal-event nonce, when present
+                // (`[mesh-requester-side-seal-on-proxy]`, 2026-09-07) -- THE JOIN
+                // KEY between a proxied exchange's two sealed halves (see
+                // `ObservedHostExchange::nonce`). A host that did not forward one
+                // (predates the forwarding, or a locally-served exchange whose
+                // client request never carried this plugin's own handler) keeps
+                // the pre-existing honest default -- never a fabricated nonce.
+                client_nonce: nonce
+                    .map(str::to_string)
+                    .unwrap_or_else(|| "host-served-no-nonce".to_string()),
+                client_nonce_source: if nonce.is_some() {
+                    "host_forwarded_nonce"
+                } else {
+                    "host_served_observed"
+                }
+                .to_string(),
                 model_name_digest: hex_sha256(model.as_bytes()),
                 serving_provenance: ServingProvenance {
                     // Fall back to this node's LEARNED mesh identity ONLY
@@ -1216,6 +1240,7 @@ mod tests {
             usage: None,
             host_provenance: HostProvenance::default(),
             dispatch_path: DispatchPath::RawProxy,
+            nonce: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1252,6 +1277,7 @@ mod tests {
             usage: None,
             host_provenance: HostProvenance::default(),
             dispatch_path: DispatchPath::RawProxy,
+            nonce: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1296,6 +1322,7 @@ mod tests {
             usage: None,
             host_provenance: HostProvenance::default(),
             dispatch_path: DispatchPath::RawProxy,
+            nonce: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1382,6 +1409,7 @@ mod tests {
                 ..Default::default()
             },
             dispatch_path: DispatchPath::RawProxy,
+            nonce: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1442,6 +1470,7 @@ mod tests {
                 ..Default::default()
             },
             dispatch_path: DispatchPath::RawProxy,
+            nonce: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1722,6 +1751,7 @@ mod tests {
             usage: None,
             host_provenance: HostProvenance::default(),
             dispatch_path: DispatchPath::RawProxy,
+            nonce: None,
         };
         let first = state
             .emit_for_observed_host_exchange(&observed)
@@ -1794,6 +1824,7 @@ mod tests {
                 ..Default::default()
             },
             dispatch_path,
+            nonce: None,
         }
     }
 
@@ -2112,6 +2143,201 @@ mod tests {
             ))
             .expect("seal after restart");
         assert_eq!(poc_block(&emitted.capsule)["role"], "conflict");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `[mesh-requester-side-seal-on-proxy]` (2026-09-07): the host-forwarded
+    /// terminal-event nonce becomes `client_nonce`/`client_nonce_source` on a
+    /// `RemoteMesh` (requester-side) observed capsule -- THE JOIN KEY a
+    /// proxied exchange's two halves share. Absent nonce keeps the
+    /// pre-existing honest default, never a fabricated value.
+    #[test]
+    fn requester_side_capsule_carries_the_forwarded_nonce_as_join_key() {
+        let dir = std::env::temp_dir().join(format!("cap-req-nonce-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "router-node").expect("open state");
+
+        let mut observed = observed_with(DispatchPath::RemoteMesh, Some("peer-node"));
+        observed.nonce = Some("shared-nonce-42");
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal");
+        let poc = poc_block(&emitted.capsule);
+        assert_eq!(poc["client_nonce"], "shared-nonce-42");
+        assert_eq!(poc["client_nonce_source"], "host_forwarded_nonce");
+
+        let no_nonce = observed_with(DispatchPath::RemoteMesh, Some("peer-node"));
+        let emitted = state
+            .emit_for_observed_host_exchange(&no_nonce)
+            .expect("seal");
+        let poc = poc_block(&emitted.capsule);
+        assert_eq!(poc["client_nonce"], "host-served-no-nonce");
+        assert_eq!(poc["client_nonce_source"], "host_served_observed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// THE ACCEPTANCE TEST for `[mesh-requester-side-seal-on-proxy]`: a
+    /// proxied exchange (peer serves it, router routes it) seals TWO
+    /// independently offline-verifiable capsules -- `served` on the peer,
+    /// `requested` on the router -- joined by the SHARED nonce, never by
+    /// `exchange_id` (minted per-node, deliberately different on each side
+    /// here to prove the join does not depend on it).
+    #[test]
+    fn proxied_exchange_seals_two_joinable_verified_capsules_by_nonce() {
+        let peer_dir =
+            std::env::temp_dir().join(format!("cap-join-peer-{}", std::process::id()));
+        let router_dir =
+            std::env::temp_dir().join(format!("cap-join-router-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&peer_dir);
+        let _ = std::fs::remove_dir_all(&router_dir);
+
+        let shared_nonce = "shared-nonce-join-key";
+
+        // The PEER served the exchange directly through its own `/v1` handler
+        // -- the pre-existing, unchanged "served" path.
+        let peer_state = CapsuleState::open(&peer_dir, "peer-node").expect("open peer state");
+        let peer_emitted = peer_state
+            .emit_for_exchange(&ExchangeRecord {
+                model: "m",
+                client_nonce: Some(shared_nonce),
+                request_bytes: br#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#,
+                response_bytes: br#"{"id":"x","choices":[{"message":{"role":"assistant","content":"hello"}}]}"#,
+                latency_ms: 5.0,
+                exchange_id: Some("peer-minted-exchange-id"),
+                requesting_party: Some("router-node"),
+                host_provenance: None,
+            })
+            .expect("peer seals its served half");
+        let peer_poc = poc_block(&peer_emitted.capsule);
+        assert_eq!(peer_poc["role"], "served");
+        assert_eq!(peer_poc["client_nonce"], shared_nonce);
+
+        // The ROUTER observed its own `RemoteMesh` terminal event for the
+        // SAME exchange -- a DIFFERENT, per-node `exchange_id`, but the SAME
+        // client-forwarded nonce -- and seals its own requester-role half.
+        let router_state =
+            CapsuleState::open(&router_dir, "router-node").expect("open router state");
+        let router_observed = ObservedHostExchange {
+            model: "m",
+            exchange_id: Some("router-minted-exchange-id"),
+            request_digest: None,
+            response_digest: None,
+            tool_calls_digest: None,
+            reasoning_digest: None,
+            usage: None,
+            host_provenance: HostProvenance {
+                served_by_node_id: Some("peer-node".to_string()),
+                ..Default::default()
+            },
+            dispatch_path: DispatchPath::RemoteMesh,
+            nonce: Some(shared_nonce),
+        };
+        let router_emitted = router_state
+            .emit_for_observed_host_exchange(&router_observed)
+            .expect("router seals its requester half");
+        let router_poc = poc_block(&router_emitted.capsule);
+        assert_eq!(router_poc["role"], "requested");
+        assert_eq!(router_poc["client_nonce"], shared_nonce);
+        assert_eq!(
+            router_poc["serving_provenance"]["served_by_node_id"],
+            "peer-node"
+        );
+
+        // THE JOIN: both halves carry the identical nonce...
+        assert_eq!(peer_poc["client_nonce"], router_poc["client_nonce"]);
+        // ...while their exchange_ids deliberately differ (per-node minted) --
+        // proving the join does not, and must not, depend on exchange_id.
+        assert_ne!(
+            peer_poc["serving_provenance"]["exchange_id"],
+            router_poc["serving_provenance"]["exchange_id"]
+        );
+
+        // BOTH halves independently verify offline -- `verify().ok()`.
+        let peer_vk = peer_state.keys.verifying_key();
+        let (peer_ledger, _) =
+            Ledger::open(&peer_dir.join("ledger")).expect("reopen peer ledger");
+        let peer_entry = peer_ledger
+            .lookup(&peer_emitted.capsule_id)
+            .expect("lookup ok")
+            .expect("peer capsule in ledger");
+        let peer_report = capsule_producer::verify::verify_offline(
+            &peer_entry.capsule,
+            &peer_entry.signed_statement,
+            &peer_vk,
+            None,
+        );
+        assert!(
+            peer_report.ok(),
+            "peer served-role capsule must verify offline: {:?}",
+            peer_report.findings
+        );
+
+        let router_vk = router_state.keys.verifying_key();
+        let (router_ledger, _) =
+            Ledger::open(&router_dir.join("ledger")).expect("reopen router ledger");
+        let router_entry = router_ledger
+            .lookup(&router_emitted.capsule_id)
+            .expect("lookup ok")
+            .expect("router capsule in ledger");
+        let router_report = capsule_producer::verify::verify_offline(
+            &router_entry.capsule,
+            &router_entry.signed_statement,
+            &router_vk,
+            None,
+        );
+        assert!(
+            router_report.ok(),
+            "router requester-role capsule must verify offline: {:?}",
+            router_report.findings
+        );
+
+        let _ = std::fs::remove_dir_all(&peer_dir);
+        let _ = std::fs::remove_dir_all(&router_dir);
+    }
+
+    /// REGRESSION GUARD: a local-served (non-proxy) exchange still seals
+    /// exactly ONE capsule -- the requester-side predicate must never also
+    /// fire for a `TypedFrontend`/`RawProxy` dispatch path, and the plugin's
+    /// own `/v1` handler (`emit_for_exchange`) is the only thing that seals
+    /// it. This mirrors `is_sealable_requester_side`'s own mutual-exclusion
+    /// unit test in `lifecycle_channel.rs`, at the level that matters here:
+    /// the actual capsule count for one exchange.
+    #[test]
+    fn local_served_exchange_still_seals_exactly_one_capsule() {
+        let dir = std::env::temp_dir().join(format!("cap-local-one-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+
+        // The plugin's own handler seals the one capsule for a locally-served
+        // exchange.
+        state
+            .emit_for_exchange(&sample_exchange("party-1"))
+            .expect("seal the one served capsule");
+
+        // The corresponding `TypedFrontend`/`RawProxy` terminal event observed
+        // on the mesh channel must NOT also be sealable as the requester's
+        // half (that predicate requires `RemoteMesh`) -- so a caller wiring
+        // both checks together (as `main.rs` does) never double-seals.
+        for dispatch_path in [DispatchPath::TypedFrontend, DispatchPath::RawProxy] {
+            let wire = format!(
+                r#"{{"dispatch_path":"{}","phase":"terminal","model":"m","status":200}}"#,
+                crate::lifecycle_channel::dispatch_path_wire_value(&dispatch_path)
+            );
+            let envelope: crate::lifecycle_channel::OpenAiExchangeEnvelope =
+                serde_json::from_str(&wire).expect("parse");
+            assert!(
+                !crate::lifecycle_channel::ObservedLifecycleEvents::is_sealable_requester_side(
+                    &envelope
+                ),
+                "a locally-served dispatch path must never also seal a requester-role capsule"
+            );
+        }
+
+        let (_ledger, report) = Ledger::open(&dir.join("ledger")).expect("reopen ledger");
+        assert_eq!(
+            report.valid_entries, 1,
+            "a local-served exchange must seal exactly one capsule, never two"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

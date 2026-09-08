@@ -264,12 +264,23 @@ impl ObservedLifecycleEvents {
     /// model-identity fact only a real served model has -- not a heuristic.
     ///
     /// Requires: a `Terminal` phase, a 2xx status (a served success), a
-    /// serving-provenance block, and real model identity in it.
+    /// serving-provenance block, real model identity in it, and
+    /// (`[mesh-requester-side-seal-on-proxy]`, 2026-09-07) a NON-`RemoteMesh`
+    /// dispatch path -- a `RemoteMesh` terminal event is this node's
+    /// REQUESTER-side half (see `is_sealable_requester_side`), never the
+    /// served half, no matter what a forwarded serving-provenance block might
+    /// otherwise look like. Mutually exclusive with `is_sealable_requester_side`
+    /// by construction (one requires `dispatch_path != RemoteMesh`, the other
+    /// requires `== RemoteMesh`), so a single terminal event is never
+    /// double-sealed under two roles.
     pub fn is_sealable_host_served(envelope: &OpenAiExchangeEnvelope) -> bool {
         if envelope.phase != Phase::Terminal {
             return false;
         }
         if !matches!(envelope.status, Some(200..=299)) {
+            return false;
+        }
+        if matches!(envelope.dispatch_path, DispatchPath::RemoteMesh) {
             return false;
         }
         match envelope.serving_provenance.as_ref() {
@@ -278,6 +289,30 @@ impl ObservedLifecycleEvents {
             }
             None => false,
         }
+    }
+
+    /// Whether this observed envelope is the REQUESTER'S half of a proxied
+    /// exchange this plugin should seal a capsule for
+    /// (`[mesh-requester-side-seal-on-proxy]`, 2026-09-07 -- the accountability
+    /// gap the 2026-09-07 live twin run surfaced: when this node proxies a chat
+    /// completion to a peer via the `RemoteMesh` dispatch path, the peer seals a
+    /// `served`-role capsule for its half, but the routing/requesting node
+    /// sealed NOTHING for its own half, directly against the manifesto's
+    /// "build the requester's half first").
+    ///
+    /// Unlike `is_sealable_host_served`, this does NOT require a populated
+    /// `serving_provenance` model-identity block: the router legitimately may
+    /// not know the peer's hardware/model fidelity. `role_and_observation_point`
+    /// (`capsule_emit.rs`) already derives `role: "requested"` from
+    /// `dispatch_path` alone, honestly defaulting every unreported enrichment
+    /// field to "unknown" rather than fabricating one.
+    ///
+    /// Requires: a `Terminal` phase, a 2xx status (the peer answered
+    /// successfully), and `dispatch_path == RemoteMesh`.
+    pub fn is_sealable_requester_side(envelope: &OpenAiExchangeEnvelope) -> bool {
+        envelope.phase == Phase::Terminal
+            && matches!(envelope.status, Some(200..=299))
+            && matches!(envelope.dispatch_path, DispatchPath::RemoteMesh)
     }
 
     pub fn record(&self, envelope: OpenAiExchangeEnvelope) {
@@ -528,6 +563,59 @@ mod tests {
         let wire = r#"{"dispatch_path":"remote_mesh","phase":"terminal","model":"m","status":200}"#;
         let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse remote_mesh");
         assert_eq!(env.dispatch_path, DispatchPath::RemoteMesh);
+    }
+
+    /// THE GAP `[mesh-requester-side-seal-on-proxy]` CLOSES: a `RemoteMesh`
+    /// terminal event (this node routed the exchange to a peer) is sealable as
+    /// the REQUESTER'S half, even with no `serving_provenance` at all (the
+    /// router legitimately may not know the peer's hardware) -- and it is
+    /// mutually exclusive with `is_sealable_host_served`, even when a
+    /// `RemoteMesh` event DOES carry a full served-model provenance block
+    /// (e.g. forwarded from the peer), so a single terminal event is never
+    /// double-sealed under two roles.
+    #[test]
+    fn remote_mesh_terminal_is_sealable_requester_side_never_host_served() {
+        let bare = r#"{"dispatch_path":"remote_mesh","phase":"terminal","model":"m","status":200}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(bare).expect("parse");
+        assert!(ObservedLifecycleEvents::is_sealable_requester_side(&env));
+        assert!(!ObservedLifecycleEvents::is_sealable_host_served(&env));
+
+        let enriched = r#"{"dispatch_path":"remote_mesh","phase":"terminal","model":"m","status":200,"serving_provenance":{"architecture":"llama","model_identity_hash":"abc"}}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(enriched).expect("parse");
+        assert!(ObservedLifecycleEvents::is_sealable_requester_side(&env));
+        assert!(
+            !ObservedLifecycleEvents::is_sealable_host_served(&env),
+            "a RemoteMesh event must never be sealed as host-served, even with a \
+             served-model provenance block forwarded onto it"
+        );
+    }
+
+    /// A non-terminal or non-2xx `RemoteMesh` event is not sealable as the
+    /// requester's half -- same discipline as `is_sealable_host_served`.
+    #[test]
+    fn remote_mesh_requester_side_requires_terminal_and_2xx() {
+        let effective = r#"{"dispatch_path":"remote_mesh","phase":"effective_request","model":"m","status":null}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(effective).expect("parse");
+        assert!(!ObservedLifecycleEvents::is_sealable_requester_side(&env));
+
+        let error = r#"{"dispatch_path":"remote_mesh","phase":"terminal","model":"m","status":502}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(error).expect("parse");
+        assert!(!ObservedLifecycleEvents::is_sealable_requester_side(&env));
+    }
+
+    /// A locally-served (`typed_frontend`/`raw_proxy`) terminal event is never
+    /// sealable as the requester's half -- regression guard so a local-served
+    /// exchange keeps sealing exactly one capsule (via `is_sealable_host_served`
+    /// or the plugin's own handler), never two.
+    #[test]
+    fn locally_served_dispatch_paths_are_never_requester_side_sealable() {
+        for wire in [
+            r#"{"dispatch_path":"typed_frontend","phase":"terminal","model":"m","status":200}"#,
+            r#"{"dispatch_path":"raw_proxy","phase":"terminal","model":"m","status":200}"#,
+        ] {
+            let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
+            assert!(!ObservedLifecycleEvents::is_sealable_requester_side(&env));
+        }
     }
 
     #[test]

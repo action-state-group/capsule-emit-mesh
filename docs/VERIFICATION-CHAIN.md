@@ -10,6 +10,12 @@ The chain runs from a single served exchange up to a receipt from a log the serv
 node does not control. Every link is **offline-verifiable** — a verifier needs the
 artifacts, not access to any live service.
 
+On the mesh's proxied path (`dispatch_path: RemoteMesh`), the routing node now runs this
+same chain for its own requester-role half — joined to the peer's served-role chain by
+the shared client nonce, never `exchange_id` (minted independently per node) — so a
+proxied exchange yields two independently offline-verifiable capsules, not just the
+peer's (`[mesh-requester-side-seal-on-proxy]`, 2026-09-07).
+
 Standards this builds on: **RFC 8785** (JCS canonical JSON), **RFC 9052/9053** (COSE /
 `COSE_Sign1`), **RFC 9162** (the SHA-256 Merkle verifiable data structure), **RFC
 9942** (COSE Receipts / SCITT receipts), **RFC 9943** (SCITT architecture), plus the
