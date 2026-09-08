@@ -131,6 +131,9 @@ __all__ = [
     "NO_VERDICT_REFEREE_NOT_INDEPENDENT",
     "NO_VERDICT_SAME_OWNER_TWIN",
     "NO_VERDICT_WEIGHTS_MISMATCH",
+    "REFEREE_RECORD_CITATION_UNVERIFIED",
+    "REFEREE_RECORD_RESOLVED",
+    "REFEREE_RECORD_UNRESOLVED",
     "RELATION_ADJUDICATES",
     "SOURCE_TWIN_COMPARISON",
     "VERDICT_CONTRADICTED_PREFIX",
@@ -180,6 +183,21 @@ NO_VERDICT_NO_REQUESTER_TRANSCRIPT = "no_requester_transcript"
 #: either half's `owner_id` -- refused BEFORE the referee is ever called;
 #: see the module docstring's independence-refusal paragraph.
 NO_VERDICT_REFEREE_NOT_INDEPENDENT = "referee_not_independent"
+
+#: [mesh-referee-capsule-citation] `RefereeResult.referee_record_status` /
+#: an `AdjudicationOutcome.references[]` entry's own `status` -- three
+#: states, never a silent fourth. `RESOLVED`: the referee node's own
+#: sealed half was found via `correlation{by: "nonce", ...}` against its
+#: evidence door, verified offline, and its OWN declared response digest
+#: matched what the referee call actually received -- `capsule_id` is
+#: trustworthy. `CITATION_UNVERIFIED`: the door answered with a record for
+#: the nonce, but it either failed offline verification or its digest did
+#: NOT match -- never cited as the referee's capsule. `UNRESOLVED`: no
+#: evidence-door transport was configured, or the door was unreachable /
+#: refused / had nothing for the nonce -- cited by nonce alone.
+REFEREE_RECORD_RESOLVED = "resolved"
+REFEREE_RECORD_CITATION_UNVERIFIED = "citation_unverified"
+REFEREE_RECORD_UNRESOLVED = "unresolved"
 
 #: Only a fully-matching comparison (margin == 1.0) clears the default
 #: threshold. Two temperature-0, fixed-seed, same-weights runs are expected
@@ -410,12 +428,24 @@ class RefereeResult:
     alongside `half_a_capsule_id`/`half_b_capsule_id`. Never constructed by
     this module -- callers supply a `Referee` that returns one (see
     `live_referee.py` for the live third-node implementation).
+
+    [mesh-referee-capsule-citation] `capsule_id` is set ONLY when
+    `referee_record_status == REFEREE_RECORD_RESOLVED` -- i.e. resolved via
+    `correlation{by: "nonce", ...}` against the referee node's own evidence
+    door and verified offline (see `live_referee.resolve_referee_record`),
+    never trusted from an unverifiable transport-level hint alone.
+    `referee_record_nonce` is set whenever the referee call itself carried
+    a nonce, REGARDLESS of resolution outcome -- so a caller can always
+    cite by nonce even when `referee_record_status` is
+    `REFEREE_RECORD_UNRESOLVED` (never a silent omission).
     """
 
     verdict: str
     margin: float = 0.0
     logprobs_absent: bool = False
     capsule_id: str | None = None
+    referee_record_status: str = REFEREE_RECORD_UNRESOLVED
+    referee_record_nonce: str | None = None
 
 
 #: A referee call: given both halves and the `ComparisonResult` that
@@ -458,8 +488,19 @@ class AdjudicationOutcome:
     #: the fourth citation alongside `half_a_capsule_id`/`half_b_capsule_id`
     #: (`adjudication_delivery._cited_capsule_ids` picks up any
     #: `*_capsule_id`-suffixed key automatically). `None` when no referee
-    #: was called.
+    #: was called, OR when one was but its record never resolved/verified
+    #: (see `references` below -- the nonce citation still survives even
+    #: then).
     referee_capsule_id: str | None = None
+    #: [mesh-referee-capsule-citation] One entry per cited external record
+    #: this outcome could not fold into a plain `*_capsule_id` field --
+    #: today, at most one: the referee's own nonce-correlation resolution,
+    #: `{"kind": "referee_capsule", "nonce", "status", "capsule_id"}`.
+    #: Populated whenever `referee_called` and the referee call carried a
+    #: nonce, REGARDLESS of `status` -- an unresolved/unverified door still
+    #: gets an entry (nonce cited, `capsule_id: None`), never a silent
+    #: omission. Empty tuple when no referee was called.
+    references: tuple[dict[str, Any], ...] = ()
 
     def has_verdict(self) -> bool:
         return self.verdict is not None
@@ -653,6 +694,20 @@ def adjudicate(
         ):
             verdict = VERDICT_INCONCLUSIVE
 
+        # [mesh-referee-capsule-citation] Cite the referee's nonce
+        # regardless of resolution outcome -- an unresolved/unverified
+        # door still gets an entry naming the nonce, never a silent drop.
+        references: tuple[dict[str, Any], ...] = ()
+        if referee_result.referee_record_nonce is not None:
+            references = (
+                {
+                    "kind": "referee_capsule",
+                    "nonce": referee_result.referee_record_nonce,
+                    "status": referee_result.referee_record_status,
+                    "capsule_id": referee_result.capsule_id,
+                },
+            )
+
         return AdjudicationOutcome(
             verdict=verdict,
             no_verdict_reason=None,
@@ -668,6 +723,7 @@ def adjudicate(
             referee_logprobs_absent=referee_result.logprobs_absent,
             referee_called=True,
             referee_capsule_id=referee_result.capsule_id,
+            references=references,
         )
 
     verdict = VERDICT_CORROBORATED if comparison.margin >= margin_tau else VERDICT_INCONCLUSIVE
@@ -731,6 +787,12 @@ def seal_adjudication_capsule(
     # disputants') actually ran.
     if outcome.referee_called:
         adjudication["referee_capsule_id"] = outcome.referee_capsule_id
+        # [mesh-referee-capsule-citation] The nonce-correlation citation --
+        # present even when `referee_capsule_id` above is `None` (an
+        # unresolved/unverified door still names the nonce it was asked
+        # with; see `AdjudicationOutcome.references`'s own docstring).
+        if outcome.references:
+            adjudication["references"] = list(outcome.references)
         if outcome.tau is not None:
             adjudication["tau"] = float_to_str(outcome.tau, field="adjudication.tau")
             adjudication["referee_logprobs_absent"] = outcome.referee_logprobs_absent

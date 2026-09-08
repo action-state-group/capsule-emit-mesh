@@ -4,17 +4,33 @@
 Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its
 mutant.
 
-  - the outbound request carries `x-mesh-target: <target_peer_id>` and a
-    prefix built from the twins' agreed-upon tokens
+  - the outbound request carries `x-mesh-target: <target_peer_id>`, the
+    nonce on `X-Capsule-Client-Nonce`, and a prefix built from the twins'
+    agreed-upon tokens
   - referee token matches twin A only -> contradicted(<twin B's owner>)
   - referee token matches twin B only -> contradicted(<twin A's owner>)
   - referee token matches neither -> inconclusive
-  - the response's `X-Capsule-Id` header is read back as
-    `RefereeResult.capsule_id`
   - a non-2xx / network failure raises `RefereeCallError`, never silently
     resolves to a verdict
   - `peer_info_from_status` never reads `weights_digest` off the live
     status JSON's `models`/`hosted_models` fields (E5 gap)
+
+[mesh-referee-capsule-citation] `RefereeResult.capsule_id` is no longer
+read from an (unverifiable, and in practice absent) `X-Capsule-Id`
+response header -- it is resolved via `resolve_referee_record`:
+`correlation{by: "nonce", value: <the nonce this call sent>}` against the
+referee node's own evidence door, verified offline, and refused unless the
+resolved record's own declared response digest matches what THIS module
+actually received. Covered here:
+  - no evidence-door transport configured -> `REFEREE_RECORD_UNRESOLVED`,
+    cited by nonce alone, never a raise and never silently dropped
+  - the door unreachable / refuses -> `REFEREE_RECORD_UNRESOLVED`
+  - a genuinely matching, offline-verified bundle -> `REFEREE_RECORD_RESOLVED`,
+    `capsule_id` set
+  - mutant: the door hands back a DIFFERENT capsule for the same nonce
+    (digest mismatch) -> `REFEREE_RECORD_CITATION_UNVERIFIED`, never cited
+  - a bundle that fails offline verification -> `REFEREE_RECORD_CITATION_UNVERIFIED`
+  - `live_referee()` wired end to end against a real fake evidence door
 """
 from __future__ import annotations
 
@@ -28,9 +44,24 @@ import pytest
 from agent_action_capsule.contracts import Disposition, EffectRecord
 from agent_action_capsule.emit import emit
 
+import live_referee as lr
 from capsule_sidecar import digest_json
-from live_referee import RefereeCallError, build_live_referee, live_referee, peer_info_from_status
-from twin_adjudicator import AdjudicationHalf, VERDICT_INCONCLUSIVE, adjudicate, compare_transcripts
+from live_referee import (
+    RefereeCallError,
+    build_live_referee,
+    live_referee,
+    peer_info_from_status,
+    resolve_referee_record,
+)
+from twin_adjudicator import (
+    REFEREE_RECORD_CITATION_UNVERIFIED,
+    REFEREE_RECORD_RESOLVED,
+    REFEREE_RECORD_UNRESOLVED,
+    VERDICT_INCONCLUSIVE,
+    AdjudicationHalf,
+    adjudicate,
+    compare_transcripts,
+)
 
 REQUEST_DIGEST = "a" * 64
 
@@ -78,12 +109,10 @@ class _FakeRefereeNode:
     evidence door.
     """
 
-    def __init__(self, *, response_text: str, capsule_id: str | None = "referee-capsule-1", status: int = 200,
-                 logprobs: dict | None = None):
+    def __init__(self, *, response_text: str, status: int = 200, logprobs: dict | None = None):
         self.last_headers: dict = {}
         self.last_body: dict = {}
         response_text_ = response_text
-        capsule_id_ = capsule_id
         status_ = status
         logprobs_ = logprobs
         outer = self
@@ -106,8 +135,6 @@ class _FakeRefereeNode:
 
                 self.send_response(status_)
                 self.send_header("Content-Type", "application/json")
-                if capsule_id_ is not None:
-                    self.send_header("X-Capsule-Id", capsule_id_)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -123,6 +150,65 @@ class _FakeRefereeNode:
         self._thread.join(timeout=5)
 
 
+class _FakeEvidenceDoor:
+    """A local HTTP server standing in for the referee node's E15
+    `/evidence-request` door -- captures the request map it received and
+    answers with a canned `{"bundles": [...]}` or `{"reason": ...}`
+    payload."""
+
+    def __init__(self, *, payload: dict):
+        self.last_request_map: dict = {}
+        payload_ = payload
+        outer = self
+
+        class _Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                raw = self.rfile.read(length)
+                outer.last_request_map = json.loads(raw) if raw else {}
+                body = json.dumps(payload_).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self.port = self.server.server_address[1]
+        self.base_url = f"http://127.0.0.1:{self.port}"
+        self._thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self._thread.start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self._thread.join(timeout=5)
+
+
+class _FakeBundle:
+    """Stand-in for `capsule_emit.bundle.Bundle` -- carries only the
+    `.receipt` attribute `resolve_referee_record` actually reads. Used
+    with monkeypatched `live_referee.Bundle`/`live_referee.verify_bundle`
+    so these tests never need to fabricate a genuinely MMR/checkpoint/
+    witness-verifiable bundle (a real one needs a live Transparency
+    Service stub -- see `tests/test_ask_the_references.py` -- disproportionate
+    for what this module's own resolution logic needs to prove)."""
+
+    def __init__(self, receipt: dict):
+        self.receipt = receipt
+
+    @classmethod
+    def from_dict(cls, d: dict) -> _FakeBundle:
+        return cls(d["receipt"])
+
+
+def _patch_bundle_verification(monkeypatch: pytest.MonkeyPatch, *, verify_ok: bool = True) -> None:
+    monkeypatch.setattr(lr, "Bundle", _FakeBundle)
+    monkeypatch.setattr(lr, "verify_bundle", lambda b: (verify_ok, [] if verify_ok else ["mutated"]))
+
+
 def test_live_referee_sends_mesh_target_header_and_agreed_prefix():
     half_a = _half("the quick brown fox jumps", owner_id="owner-a", request_messages=[{"role": "user", "content": "describe the fox"}])
     half_b = _half("the quick brown wolf jumps", owner_id="owner-b")
@@ -134,11 +220,13 @@ def test_live_referee_sends_mesh_target_header_and_agreed_prefix():
         result = live_referee(
             half_a, half_b, comparison,
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=42,
+            nonce="nonce-agreed-prefix",
         )
     finally:
         node.close()
 
     assert node.last_headers.get("X-Mesh-Target") == "deadbeef" * 8
+    assert node.last_headers.get("X-Capsule-Client-Nonce") == "nonce-agreed-prefix"
     sent_messages = node.last_body["messages"]
     assert sent_messages[0] == {"role": "user", "content": "describe the fox"}
     assert sent_messages[-1] == {"role": "assistant", "content": "the quick brown"}
@@ -150,7 +238,11 @@ def test_live_referee_sends_mesh_target_header_and_agreed_prefix():
     assert "logprobs" not in node.last_body
     assert "top_logprobs" not in node.last_body
     assert result.verdict == "contradicted:owner-b"
-    assert result.capsule_id == "referee-capsule-1"
+    # No evidence-door transport configured -- unresolved, not a raise, not
+    # a silently-dropped citation: the nonce still names the referee call.
+    assert result.capsule_id is None
+    assert result.referee_record_status == REFEREE_RECORD_UNRESOLVED
+    assert result.referee_record_nonce == "nonce-agreed-prefix"
 
 
 def test_live_referee_matches_twin_b_contradicts_twin_a():
@@ -163,6 +255,7 @@ def test_live_referee_matches_twin_b_contradicts_twin_a():
         result = live_referee(
             half_a, half_b, comparison,
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
+            nonce="nonce-b",
         )
     finally:
         node.close()
@@ -180,6 +273,7 @@ def test_live_referee_matches_neither_is_inconclusive():
         result = live_referee(
             half_a, half_b, comparison,
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
+            nonce="nonce-c",
         )
     finally:
         node.close()
@@ -197,6 +291,7 @@ def test_live_referee_logprobs_absent_when_runtime_omits_them():
         result = live_referee(
             half_a, half_b, comparison,
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
+            nonce="nonce-d",
         )
     finally:
         node.close()
@@ -219,6 +314,7 @@ def test_live_referee_reads_logprob_margin_when_present():
         result = live_referee(
             half_a, half_b, comparison,
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
+            nonce="nonce-e",
         )
     finally:
         node.close()
@@ -238,6 +334,7 @@ def test_live_referee_raises_on_http_error_never_a_silent_verdict():
             live_referee(
                 half_a, half_b, comparison,
                 local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
+                nonce="nonce-f",
             )
     finally:
         node.close()
@@ -253,13 +350,15 @@ def test_live_referee_requires_a_real_divergence():
         live_referee(
             half_a, half_b, comparison,
             local_api_base_url="http://127.0.0.1:1", target_peer_id="deadbeef" * 8, model="test-model", seed=1,
+            nonce="nonce-g",
         )
 
 
 def test_build_live_referee_wires_end_to_end_through_adjudicate():
     """The whole live E17c wiring from the caller's side: adjudicate()
     calls the bound `Referee`, which makes the real HTTP call and folds the
-    result back into an AdjudicationOutcome."""
+    result back into an AdjudicationOutcome -- including the nonce
+    citation in `references[]` when the evidence door is unresolved."""
     half_a = _verifiable_half("the quick brown fox jumps", owner_id="owner-a")
     half_b = _verifiable_half("the quick brown wolf jumps", owner_id="owner-b")
 
@@ -267,6 +366,7 @@ def test_build_live_referee_wires_end_to_end_through_adjudicate():
     try:
         referee = build_live_referee(
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=7,
+            nonce="nonce-h",
         )
         outcome = adjudicate(half_a, half_b, referee=referee, referee_owner_id="owner-c")
     finally:
@@ -274,7 +374,135 @@ def test_build_live_referee_wires_end_to_end_through_adjudicate():
 
     assert outcome.referee_called is True
     assert outcome.verdict == "contradicted:owner-b"
-    assert outcome.referee_capsule_id == "referee-capsule-1"
+    assert outcome.referee_capsule_id is None
+    assert outcome.references == (
+        {"kind": "referee_capsule", "nonce": "nonce-h", "status": REFEREE_RECORD_UNRESOLVED, "capsule_id": None},
+    )
+
+
+def test_live_referee_resolves_capsule_id_via_nonce_correlation(monkeypatch):
+    """End-to-end against a real fake evidence door: the referee call
+    carries the nonce, the door is asked `correlation{by: "nonce", ...}`
+    for it, and a matching, offline-verified record resolves
+    `RefereeResult.capsule_id`."""
+    _patch_bundle_verification(monkeypatch, verify_ok=True)
+    half_a = _half("the quick brown fox jumps", owner_id="owner-a")
+    half_b = _half("the quick brown wolf jumps", owner_id="owner-b")
+    comparison = compare_transcripts(half_a.response_text, half_b.response_text)
+
+    expected_digest = digest_json({"choices": [{"message": {"role": "assistant", "content": "fox"}}]})
+    node = _FakeRefereeNode(response_text="fox")
+    door = _FakeEvidenceDoor(
+        payload={"bundles": [{"receipt": {"capsule_id": "referee-cap-live", "effect": {"response_digest": expected_digest}}}]}
+    )
+    try:
+        result = live_referee(
+            half_a, half_b, comparison,
+            local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
+            nonce="live-nonce-1", evidence_door_base_url=door.base_url,
+        )
+    finally:
+        node.close()
+        door.close()
+
+    assert door.last_request_map["subject"] == {"kind": "correlation", "by": "nonce", "value": "live-nonce-1"}
+    assert result.referee_record_status == REFEREE_RECORD_RESOLVED
+    assert result.capsule_id == "referee-cap-live"
+    assert result.referee_record_nonce == "live-nonce-1"
+
+
+def test_live_referee_mutant_door_returns_different_capsule_is_citation_unverified(monkeypatch):
+    """[mesh-referee-capsule-citation] mutant, at the `live_referee()`
+    level: the evidence door answers the SAME nonce with a record for an
+    unrelated response -- must never be cited as the referee's own
+    capsule."""
+    _patch_bundle_verification(monkeypatch, verify_ok=True)
+    half_a = _half("the quick brown fox jumps", owner_id="owner-a")
+    half_b = _half("the quick brown wolf jumps", owner_id="owner-b")
+    comparison = compare_transcripts(half_a.response_text, half_b.response_text)
+
+    node = _FakeRefereeNode(response_text="fox")
+    door = _FakeEvidenceDoor(
+        payload={
+            "bundles": [
+                {"receipt": {"capsule_id": "someone-elses-capsule", "effect": {"response_digest": "digest-of-a-different-response"}}}
+            ]
+        }
+    )
+    try:
+        result = live_referee(
+            half_a, half_b, comparison,
+            local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
+            nonce="live-nonce-2", evidence_door_base_url=door.base_url,
+        )
+    finally:
+        node.close()
+        door.close()
+
+    assert result.referee_record_status == REFEREE_RECORD_CITATION_UNVERIFIED
+    assert result.capsule_id is None
+    assert result.referee_record_nonce == "live-nonce-2"
+
+
+def test_resolve_referee_record_no_transport_is_unresolved():
+    result = resolve_referee_record("nonce-1", expected_response_digest="digest-a", post=None)
+    assert result.status == REFEREE_RECORD_UNRESOLVED
+    assert result.nonce == "nonce-1"
+    assert result.capsule_id is None
+
+
+def test_resolve_referee_record_door_unreachable_is_unresolved():
+    def _post(_request_map):
+        raise urllib.error.URLError("connection refused")
+
+    result = resolve_referee_record("nonce-2", expected_response_digest="digest-a", post=_post)
+    assert result.status == REFEREE_RECORD_UNRESOLVED
+
+
+def test_resolve_referee_record_door_refusal_is_unresolved():
+    def _post(request_map):
+        assert request_map == {"subject": {"kind": "correlation", "by": "nonce", "value": "nonce-3"}, "coverage": {}}
+        return {"reason": "no_such_record", "request_digest": "x" * 64, "issued_at": "t", "key_id": "k", "sig": "s"}
+
+    result = resolve_referee_record("nonce-3", expected_response_digest="digest-a", post=_post)
+    assert result.status == REFEREE_RECORD_UNRESOLVED
+
+
+def test_resolve_referee_record_resolves_and_verifies_matching_bundle(monkeypatch):
+    _patch_bundle_verification(monkeypatch, verify_ok=True)
+
+    def _post(request_map):
+        assert request_map["subject"]["value"] == "nonce-4"
+        return {"bundles": [{"receipt": {"capsule_id": "referee-cap-1", "effect": {"response_digest": "digest-match"}}}]}
+
+    result = resolve_referee_record("nonce-4", expected_response_digest="digest-match", post=_post)
+    assert result.status == REFEREE_RECORD_RESOLVED
+    assert result.capsule_id == "referee-cap-1"
+
+
+def test_resolve_referee_record_mutant_different_capsule_is_citation_unverified(monkeypatch):
+    """[mesh-referee-capsule-citation] mutant: the door hands back a
+    record for the right nonce, but it's someone else's capsule (a
+    different declared response digest) -- never cited as verified."""
+    _patch_bundle_verification(monkeypatch, verify_ok=True)
+
+    def _post(_request_map):
+        return {"bundles": [{"receipt": {"capsule_id": "some-other-capsule", "effect": {"response_digest": "digest-of-a-different-response"}}}]}
+
+    result = resolve_referee_record("nonce-5", expected_response_digest="digest-actually-received", post=_post)
+    assert result.status == REFEREE_RECORD_CITATION_UNVERIFIED
+    assert result.capsule_id is None
+
+
+def test_resolve_referee_record_failed_offline_verify_is_citation_unverified(monkeypatch):
+    _patch_bundle_verification(monkeypatch, verify_ok=False)
+
+    def _post(_request_map):
+        return {"bundles": [{"receipt": {"capsule_id": "referee-cap-2", "effect": {"response_digest": "digest-match"}}}]}
+
+    result = resolve_referee_record("nonce-6", expected_response_digest="digest-match", post=_post)
+    assert result.status == REFEREE_RECORD_CITATION_UNVERIFIED
+    assert result.capsule_id is None
 
 
 def test_peer_info_from_status_never_reads_weights_digest_from_status_json():
