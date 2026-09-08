@@ -799,6 +799,14 @@ result: this is an account of facts, not a trust rating; anyone using it compara
 their own Sybil resistance. **Evidence is presented; policy decides; and nobody is the authority for
 the computation.**
 
+One instance of "bring your own Sybil resistance" is built: `twin_selection.py`'s `select_twin`/
+`select_referee` bias *who a requester asks* for corroboration/adjudication toward observable
+independence (network distance, operator diversity, fleet diversity, tenure), so two co-located
+machines corroborating each other don't pass as independent agreement by default. It is a
+requester-side heuristic, not a computed rating attached to any peer — see
+[`docs/TWIN-REFEREE-SELECTION.md`](TWIN-REFEREE-SELECTION.md) for exactly what it does and does not
+prove.
+
 ---
 
 ## 8. Registration, receipts, and witnessing

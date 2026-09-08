@@ -112,6 +112,9 @@ jobs:
       - name: Smoke — twin_adjudicator (E17a offline twin-comparison adjudicator)
         run: python -c "import twin_adjudicator; print('ok')"
 
+      - name: Smoke — twin_selection (independence-first select_twin/select_referee)
+        run: python -c "import twin_selection; print('ok')"
+
       - name: Smoke — self_accountability (Pane A "This node" card -- composes native_log_join + history_card + twin_adjudicator + capsule_accountability_tab)
         run: python -c "import self_accountability; print('ok')"
 
