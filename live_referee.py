@@ -21,7 +21,7 @@ modules' docstrings): given a text divergence between two twins,
      module never assumes a caller wired that check correctly upstream).
 
 Wire shape (verify-don't-build -- see the 2026-09-08 ruling's item 3):
-  `POST {local_api_base_url}/v1/chat/completions`, header
+  `POST {local_api_base_url}/v1/chat/completions`, headers
   `x-mesh-target: <target peer's FULL EndpointId hex>` (mesh-llm's
   `parse_mesh_target_header` requires the full 64-hex-char id -- the
   truncated ~10-char id `/api/status` `peers[]` shows for humans is NOT
@@ -47,6 +47,12 @@ Wire shape (verify-don't-build -- see the 2026-09-08 ruling's item 3):
   logprobs_absent` is expected to be `True` in practice until a runtime
   actually supports the feature; this is the "inert" case the module
   docstring and 2026-09-08 ruling name explicitly.
+  [mesh-referee-capsule-citation] `capsule_sidecar.CLIENT_NONCE_HEADER`
+  (`X-Capsule-Client-Nonce`) carries `nonce` -- the referee node's own
+  sidecar reads it exactly like any other served request's client nonce
+  (`capsule_sidecar._resolve_client_nonce`) and seals it as `client_nonce`
+  on its OWN capsule, which is what makes it findable afterwards via
+  `correlation{by: "nonce", value: nonce}` at that node's evidence door.
 
 What this is not
 -----------------
@@ -54,16 +60,27 @@ What this is not
     job entirely; this module takes `target_peer_id` as given.
   - NOT a sealer. The referee node's OWN sidecar seals an ordinary capsule
     for every request it serves, the same as any other served request in
-    this repo. This module ATTEMPTS to read an `X-Capsule-Id` response
-    header back so the caller can cite it, but LIVE-CONFIRMED 2026-09-08:
-    the current live plugin binary does not return that header at all
-    (only `x-mesh-served-by`) -- `RefereeResult.capsule_id` is `None` in
-    practice against today's runtime, a real, open gap (see
-    `ADJUDICATION-AND-BUNDLE-TEST.md` Task 3), not something this module
-    can work around client-side: the capsule id is only ever visible in the
-    SERVING node's own local ledger, which the requester has no wire
-    access to today. This module never seals or re-signs anything of its
-    own regardless.
+    this repo. LIVE-CONFIRMED 2026-09-08: the current live plugin binary
+    never returns an `X-Capsule-Id` response header (only
+    `x-mesh-served-by`) -- the capsule id is only ever visible in the
+    SERVING node's own local ledger, which the requester has no direct
+    wire access to. [mesh-referee-capsule-citation] So this module instead
+    sends the referee call with its own request nonce
+    (`capsule_sidecar.CLIENT_NONCE_HEADER`) and, after the call, resolves
+    the referee's sealed half via that node's OWN evidence door --
+    `correlation{by: "nonce", value: <the nonce this module sent}` (E15
+    HTTP `POST /evidence-request`, or the plugin mesh stream for a peer
+    with no reachable HTTP door -- see `resolve_referee_record`) -- and
+    verifies whatever comes back OFFLINE, never trusting the door's say-so
+    alone: the resolved record's own declared response digest must match
+    what this module actually received from the referee HTTP call before
+    `RefereeResult.capsule_id` is ever populated. `REFEREE_RECORD_RESOLVED`
+    / `REFEREE_RECORD_CITATION_UNVERIFIED` / `REFEREE_RECORD_UNRESOLVED`
+    (`twin_adjudicator`'s three states) name which of those happened; an
+    unreachable/unconfigured door is cited BY NONCE ONLY
+    (`referee_record_status=REFEREE_RECORD_UNRESOLVED`), never silently
+    dropped. This module never seals or re-signs anything of its own
+    regardless.
   - NOT a source of the referee's owner identity. `adjudicate()`'s
     independence refusal needs `referee_owner_id` supplied BEFORE this
     module is even called (from the `PeerInfo` `select_referee` already
@@ -72,12 +89,22 @@ What this is not
 """
 from __future__ import annotations
 
+import functools
 import json
 import urllib.error
 import urllib.request
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
+from capsule_emit.bundle import Bundle, verify_bundle
+
+from ask_history import post_evidence_request, post_mesh_evidence_request
+from capsule_sidecar import CLIENT_NONCE_HEADER, digest_json
 from twin_adjudicator import (
+    REFEREE_RECORD_CITATION_UNVERIFIED,
+    REFEREE_RECORD_RESOLVED,
+    REFEREE_RECORD_UNRESOLVED,
     VERDICT_INCONCLUSIVE,
     AdjudicationHalf,
     ComparisonResult,
@@ -92,9 +119,11 @@ from twin_selection import PeerInfo
 __all__ = [
     "MESH_TARGET_HEADER",
     "RefereeCallError",
+    "RefereeRecordResolution",
     "build_live_referee",
     "live_referee",
     "peer_info_from_status",
+    "resolve_referee_record",
 ]
 
 #: mesh-llm's routing header (`ingress.rs::parse_mesh_target_header`) -- one
@@ -107,6 +136,103 @@ class RefereeCallError(RuntimeError):
     network error, non-2xx, or an unparseable response body. Distinct from
     a referee DISAGREEING (a normal `RefereeResult`, never an exception) --
     this is the call never producing an answer at all."""
+
+
+@dataclass(frozen=True)
+class RefereeRecordResolution:
+    """What `resolve_referee_record` found when it went looking for the
+    referee's own sealed half. `status` is always one of
+    `twin_adjudicator`'s three closed states (`REFEREE_RECORD_RESOLVED` /
+    `REFEREE_RECORD_CITATION_UNVERIFIED` / `REFEREE_RECORD_UNRESOLVED`) --
+    `capsule_id` is set ONLY on `REFEREE_RECORD_RESOLVED`, never on the
+    other two (an unverified or unresolved record is never cited as if it
+    were trustworthy)."""
+
+    status: str
+    nonce: str
+    capsule_id: str | None = None
+
+
+def _referee_nonce_correlation_request(nonce: str) -> dict[str, Any]:
+    """The E15 request map for `correlation{by: "nonce", value: nonce}` --
+    same shape `ask_history.py`'s own (private) `_build_request_map` emits
+    for a correlation subject; built directly here rather than reaching
+    into that module's private helper (same precedent `ask_history.py`
+    itself cites for not reaching into `capsule_emit.evidence_request`'s
+    own private `_iter_values_by_key`)."""
+    return {"subject": {"kind": "correlation", "by": "nonce", "value": nonce}, "coverage": {}}
+
+
+def resolve_referee_record(
+    nonce: str,
+    *,
+    expected_response_digest: str,
+    post: Callable[[dict[str, Any]], dict[str, Any]] | None,
+) -> RefereeRecordResolution:
+    """Resolve the referee node's OWN sealed half for *nonce* via its
+    evidence door and verify it OFFLINE before ever trusting it.
+
+    *post* is an already-bound transport -- `functools.partial(
+    post_evidence_request, evidence_door_base_url)` for E15 HTTP, or
+    `functools.partial(post_mesh_evidence_request, local_host_api,
+    local_plugin_name, referee_peer_id)` for the plugin mesh stream (same
+    injectable-callable shape `ask_history.fetch_all_pages(post, ...)`
+    already uses) -- or `None` when no evidence-door transport is
+    configured at all.
+
+    *expected_response_digest* is the digest THIS module itself computed
+    from the referee HTTP call's own response body (`digest_json`, the
+    same digest domain `capsule_sidecar` seals into `effect.response_digest`
+    -- see `capsule_sidecar.py`'s `response_digest = digest_json(response_json)`).
+    A resolved record's declared digest must match it exactly, or the
+    record is refused as unverified -- this is what stops a door that
+    (bug, or an adversary) hands back an unrelated capsule for a reused or
+    guessed nonce from ever being cited as the referee's own.
+
+    Three states, never a silent fourth (`RefereeRecordResolution.status`):
+      - `REFEREE_RECORD_RESOLVED` -- a bundle verified offline
+        (`capsule_emit.bundle.verify_bundle`) AND its own declared
+        `effect.response_digest` matched. `capsule_id` is that bundle's
+        own capsule id (content-addressed -- "the capsule digest").
+      - `REFEREE_RECORD_CITATION_UNVERIFIED` -- the door answered with at
+        least one bundle for this nonce, but none both verified AND
+        matched. Never cited.
+      - `REFEREE_RECORD_UNRESOLVED` -- `post is None`, the door was
+        unreachable, or it refused / had nothing for this nonce. Cited by
+        nonce alone by the caller -- never silently dropped.
+
+    Never raises: a transport failure degrades to `REFEREE_RECORD_UNRESOLVED`,
+    the same "a reference that won't talk is itself an honest, countable
+    outcome" discipline `ask_history.run_references` uses.
+    """
+    if post is None:
+        return RefereeRecordResolution(status=REFEREE_RECORD_UNRESOLVED, nonce=nonce)
+
+    try:
+        payload = post(_referee_nonce_correlation_request(nonce))
+    except urllib.error.URLError:
+        return RefereeRecordResolution(status=REFEREE_RECORD_UNRESOLVED, nonce=nonce)
+
+    if "reason" in payload:
+        return RefereeRecordResolution(status=REFEREE_RECORD_UNRESOLVED, nonce=nonce)
+
+    bundles = payload.get("bundles") or []
+    for bd in bundles:
+        bundle = Bundle.from_dict(bd)
+        ok, _errors = verify_bundle(bundle)
+        if not ok:
+            continue
+        declared = (bundle.receipt.get("effect") or {}).get("response_digest")
+        if declared == expected_response_digest:
+            return RefereeRecordResolution(
+                status=REFEREE_RECORD_RESOLVED, nonce=nonce, capsule_id=bundle.receipt.get("capsule_id")
+            )
+
+    if bundles:
+        # The door answered for this nonce, but nothing both verified and
+        # matched -- refuse to cite, distinct from never having answered.
+        return RefereeRecordResolution(status=REFEREE_RECORD_CITATION_UNVERIFIED, nonce=nonce)
+    return RefereeRecordResolution(status=REFEREE_RECORD_UNRESOLVED, nonce=nonce)
 
 
 def peer_info_from_status(peer_json: dict[str, Any], *, weights_digest: str | None = None) -> PeerInfo:
@@ -181,13 +307,30 @@ def live_referee(
     target_peer_id: str,
     model: str,
     seed: int,
+    nonce: str,
     timeout: float = 30.0,
+    evidence_door_base_url: str | None = None,
+    evidence_via: str = "http",
+    local_host_api: str = "http://127.0.0.1:8080",
+    local_plugin_name: str = "admission-policy",
 ) -> RefereeResult:
     """The live E17c third-node recompute -- see module docstring for the
     wire shape and the verdict rule. Raises `RefereeCallError` on a network
     or transport failure; never raises for a referee that simply answers
     with a token matching neither twin (that is `inconclusive`, a normal
     result).
+
+    [mesh-referee-capsule-citation] *nonce* rides `capsule_sidecar.
+    CLIENT_NONCE_HEADER` on the outbound call, then, after the referee
+    answers, is used to resolve and verify the referee's own sealed half
+    via `resolve_referee_record` -- `evidence_door_base_url` (E15 HTTP) or
+    `evidence_via="mesh"` (the plugin mesh stream, reached through
+    `local_host_api`/`local_plugin_name`, same transport shape
+    `ask_history.py --via mesh` uses) name where to ask. Neither given ->
+    `resolve_referee_record` is called with `post=None`, which resolves to
+    `REFEREE_RECORD_UNRESOLVED` honestly rather than skipping the citation
+    -- `RefereeResult.referee_record_nonce` is always set to *nonce* so the
+    caller can still cite it even then.
     """
     if comparison.divergence_index is None:
         raise ValueError("live_referee() requires an actual divergence -- comparison.divergence_index is None")
@@ -197,12 +340,15 @@ def live_referee(
         url=f"{local_api_base_url.rstrip('/')}/v1/chat/completions",
         data=body,
         method="POST",
-        headers={"Content-Type": "application/json", MESH_TARGET_HEADER: target_peer_id},
+        headers={
+            "Content-Type": "application/json",
+            MESH_TARGET_HEADER: target_peer_id,
+            CLIENT_NONCE_HEADER: nonce,
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             response_bytes = resp.read()
-            capsule_id = resp.headers.get("X-Capsule-Id")
     except urllib.error.HTTPError as exc:
         detail = exc.read()[:500]
         raise RefereeCallError(f"referee call to {target_peer_id!r} failed: HTTP {exc.code}: {detail!r}") from exc
@@ -235,11 +381,21 @@ def live_referee(
 
     margin = top2_logprob_margin(response_body, 0)
 
+    if evidence_via == "mesh":
+        post = functools.partial(post_mesh_evidence_request, local_host_api, local_plugin_name, target_peer_id)
+    elif evidence_door_base_url:
+        post = functools.partial(post_evidence_request, evidence_door_base_url)
+    else:
+        post = None
+    record = resolve_referee_record(nonce, expected_response_digest=digest_json(response_body), post=post)
+
     return RefereeResult(
         verdict=verdict,
         margin=margin if margin is not None else 0.0,
         logprobs_absent=margin is None,
-        capsule_id=capsule_id,
+        capsule_id=record.capsule_id,
+        referee_record_status=record.status,
+        referee_record_nonce=nonce,
     )
 
 
@@ -249,7 +405,12 @@ def build_live_referee(
     target_peer_id: str,
     model: str,
     seed: int,
+    nonce: str,
     timeout: float = 30.0,
+    evidence_door_base_url: str | None = None,
+    evidence_via: str = "http",
+    local_host_api: str = "http://127.0.0.1:8080",
+    local_plugin_name: str = "admission-policy",
 ) -> Referee:
     """Bind the live-call parameters into a `twin_adjudicator.Referee`
     callable -- `adjudicate(half_a, half_b, referee=build_live_referee(...))`
@@ -264,7 +425,12 @@ def build_live_referee(
             target_peer_id=target_peer_id,
             model=model,
             seed=seed,
+            nonce=nonce,
             timeout=timeout,
+            evidence_door_base_url=evidence_door_base_url,
+            evidence_via=evidence_via,
+            local_host_api=local_host_api,
+            local_plugin_name=local_plugin_name,
         )
 
     return _referee
