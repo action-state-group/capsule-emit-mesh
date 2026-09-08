@@ -1828,6 +1828,19 @@ DEFAULT_PANE_DASHBOARD_ORIGIN = "http://localhost:3131"
 #: dispatcher and forgotten in the other.
 _PANE_ROUTE_PATHS = ("/accountability/pane-a", "/accountability/pane-b", "/accountability/pane-c")
 
+#: The combined accountability dashboard paths. Populated lazily on first
+#: do_GET call to avoid any import-cycle risk (same discipline as
+#: ``_handle_finder`` / ``_handle_pane_route`` lazy imports).
+_DASHBOARD_PATHS: tuple[str, ...] | None = None
+
+
+def _get_dashboard_paths() -> tuple[str, ...]:
+    global _DASHBOARD_PATHS
+    if _DASHBOARD_PATHS is None:
+        from accountability_dashboard import DASHBOARD_PATHS
+        _DASHBOARD_PATHS = DASHBOARD_PATHS
+    return _DASHBOARD_PATHS
+
 
 def make_handler(state: NodeState, upstream_base: str, *, pane_dashboard_origin: str | None = DEFAULT_PANE_DASHBOARD_ORIGIN):
     class Handler(BaseHTTPRequestHandler):
@@ -2031,6 +2044,9 @@ def make_handler(state: NodeState, upstream_base: str, *, pane_dashboard_origin:
             if parsed.path in _PANE_ROUTE_PATHS:
                 self._handle_pane_route(parsed)
                 return
+            if parsed.path in _get_dashboard_paths():
+                self._handle_dashboard(parsed)
+                return
             self._proxy_passthrough("GET", b"")
 
         def do_OPTIONS(self):  # noqa: N802
@@ -2154,6 +2170,37 @@ def make_handler(state: NodeState, upstream_base: str, *, pane_dashboard_origin:
             )
             body = render_finder_page_html(result, source_log="sidecar").encode("utf-8")
             self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _handle_dashboard(self, parsed: urllib.parse.ParseResult) -> None:  # noqa: ARG002
+            """[mesh-acct-dashboard] GET /accountability/ (and /accountability/
+            dashboard alias) -- the combined evidence dashboard HTML page.
+
+            Lazily imports ``accountability_dashboard`` for the same
+            cycle-avoidance reason ``_handle_finder`` and
+            ``_handle_pane_route`` use lazy imports: this module is still
+            mid-way through its own top-level imports the first time Python
+            would resolve a module-level import of the dashboard module.
+
+            ``listen_port`` is read from the server's own socket address --
+            the same source ``run_sidecar`` uses; no extra closure argument
+            needed."""
+            from accountability_dashboard import render_dashboard_html
+
+            try:
+                listen_port = self.server.server_address[1]
+                body = render_dashboard_html(
+                    node_id=state.node_id,
+                    listen_port=listen_port,
+                ).encode("utf-8")
+                status = 200
+            except Exception as exc:
+                body = f"<html><body>Dashboard error: {exc}</body></html>".encode("utf-8")
+                status = 500
+            self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
