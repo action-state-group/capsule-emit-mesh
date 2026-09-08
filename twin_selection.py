@@ -38,10 +38,15 @@ WHAT THIS IS NOT -- read before extending
     holds. The one place a network round trip could enter -- Step 4's
     optional history sanity-check -- is an INJECTED callable
     (`HistoryCheck`), never something this module dials itself.
-  - `select_referee` exists and is tested but is not wired to any live
-    coordinator path -- the third-node recompute it would feed is E17b/E17c,
-    upstream-gated (see `twin_adjudicator.py`'s module docstring for the
-    same gate). Held, not blocked: nothing here depends on the gate lifting.
+  - `select_referee`'s owner-independence gate is HARD, not just a scoring
+    penalty (added [mesh-referee-live-e17c], 2026-09-08): a candidate
+    sharing an `owner_id` with either twin is excluded from the candidate
+    pool entirely, not merely scored `0.0` on the owner-diversity
+    component. When that hard exclusion would leave zero candidates --
+    every same-model peer shares an owner with a twin -- it falls back to
+    the full (twin-excluded-only) comparable pool, "distinct node key"
+    instead of distinct owner, and `SelectionResult.owner_diversity_limited`
+    is set so this narrowing is never silent.
 
 The selection algorithm
 ------------------------
@@ -77,6 +82,7 @@ from capsule_emit.numbers import float_to_str
 __all__ = [
     "DEFAULT_POLICY",
     "INDEPENDENCE_CAVEAT",
+    "NOTE_OWNER_DIVERSITY_LIMITED",
     "REASON_NO_CANDIDATE_PASSED_HISTORY_CHECK",
     "REASON_NO_COMPARABLE_TWIN",
     "TWIN_SELECTION_SCHEMA",
@@ -229,6 +235,16 @@ class IndependenceBreakdown:
         }
 
 
+#: [mesh-referee-live-e17c] Recorded on `SelectionResult` (and echoed into
+#: `selection_rationale_block`) whenever `select_referee`'s hard
+#: owner-exclusion left zero candidates and it fell back to the full
+#: (twin-excluded-only) comparable pool -- "distinct node key" instead of
+#: distinct owner. Never silent: a verifier must be able to see the
+#: independence guarantee was narrowed, not just infer it from a low
+#: `owner_diversity` score buried in the breakdown.
+NOTE_OWNER_DIVERSITY_LIMITED = "owner_diversity_limited_single_owner_pool"
+
+
 @dataclass(frozen=True)
 class SelectionResult:
     """Outcome of `select_twin`/`select_referee` -- either a chosen peer id
@@ -241,6 +257,11 @@ class SelectionResult:
     breakdown: dict[str, IndependenceBreakdown]
     tie_band_peer_ids: tuple[str, ...]
     policy: SelectionPolicy
+    #: True only for `select_referee`, and only when the hard
+    #: owner-exclusion candidate pool was empty and it fell back to
+    #: "distinct node key" (see `NOTE_OWNER_DIVERSITY_LIMITED`). Always
+    #: `False` for `select_twin`, which does not run this hard gate.
+    owner_diversity_limited: bool = False
 
     def has_selection(self) -> bool:
         return self.chosen_peer_id is not None
@@ -402,6 +423,26 @@ def _pick(
     return None, REASON_NO_CANDIDATE_PASSED_HISTORY_CHECK, (), breakdown
 
 
+def _owner_independent_candidates(
+    candidates: list[PeerInfo],
+    twin_a: PeerInfo,
+    twin_b: PeerInfo,
+) -> list[PeerInfo]:
+    """Hard owner-exclusion for `select_referee`: a candidate whose
+    `owner_id` is known and equals either twin's KNOWN `owner_id` is
+    excluded outright -- never merely penalized. An unknown owner_id on
+    either side is never treated as a match (that would be fabricating
+    independence from absence); it stays in the pool here and is still
+    scored by the existing soft `owner_diversity` component in `_pick`.
+    """
+    excluded_owner_ids = {
+        owner_id for owner_id in (twin_a.owner_id, twin_b.owner_id) if owner_id is not None
+    }
+    if not excluded_owner_ids:
+        return list(candidates)
+    return [c for c in candidates if c.owner_id is None or c.owner_id not in excluded_owner_ids]
+
+
 def select_twin(
     target_weights_digest: str,
     requester_id: str,
@@ -454,11 +495,19 @@ def select_referee(
 ) -> SelectionResult:
     """Pick a referee independent of BOTH twins, same-model as both.
 
-    Held behind the E17c upstream gate (see module docstring) -- built and
-    tested, not wired to any live caller. `twin_a`/`twin_b` must already
-    share one `weights_digest` (the same comparability gate `twin_adjudicator
+    Wired to the live E17c third-node call (`live_referee.py`) as of
+    [mesh-referee-live-e17c]. `twin_a`/`twin_b` must already share one
+    `weights_digest` (the same comparability gate `twin_adjudicator
     .adjudicate()` runs); if they disagree, neither is trusted as the target
     and the candidate pool is empty (`REASON_NO_COMPARABLE_TWIN`).
+
+    Owner independence is a HARD gate here (unlike `select_twin`): a
+    candidate whose `owner_id` is known to equal either twin's is excluded
+    from the pool outright, not merely scored down. If that leaves zero
+    candidates -- every same-model peer shares an owner with a twin -- this
+    falls back to the full comparable pool ("distinct node key" instead of
+    distinct owner) and sets `owner_diversity_limited=True` so the
+    narrowing is recorded, never silent.
     """
     target_weights_digest = twin_a.weights_digest
     if target_weights_digest is None or target_weights_digest != twin_b.weights_digest:
@@ -476,8 +525,12 @@ def select_referee(
         target_weights_digest=target_weights_digest,
         exclude_peer_ids=frozenset({twin_a.peer_id, twin_b.peer_id}),
     )
+    independent_candidates = _owner_independent_candidates(candidates, twin_a, twin_b)
+    owner_diversity_limited = bool(candidates) and not independent_candidates
+    pick_pool = candidates if owner_diversity_limited else independent_candidates
+
     chosen, reason, tie_band, breakdown = _pick(
-        candidates, [twin_a, twin_b], policy, rng=rng or random.Random(), history_check=history_check
+        pick_pool, [twin_a, twin_b], policy, rng=rng or random.Random(), history_check=history_check
     )
     return SelectionResult(
         chosen_peer_id=chosen,
@@ -486,6 +539,7 @@ def select_referee(
         breakdown=breakdown,
         tie_band_peer_ids=tie_band,
         policy=policy,
+        owner_diversity_limited=owner_diversity_limited,
     )
 
 
@@ -504,6 +558,8 @@ def selection_rationale_block(result: SelectionResult) -> dict[str, Any]:
         "chosen_peer_id": result.chosen_peer_id,
         "reason": result.reason,
         "target_weights_digest": result.target_weights_digest,
+        "owner_diversity_limited": result.owner_diversity_limited,
+        "owner_diversity_limited_note": NOTE_OWNER_DIVERSITY_LIMITED if result.owner_diversity_limited else None,
         "tie_band_peer_ids": list(result.tie_band_peer_ids),
         "policy": {
             "weight_network_distance": float_to_str(result.policy.weight_network_distance, field="policy.weight_network_distance"),

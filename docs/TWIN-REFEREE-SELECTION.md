@@ -79,9 +79,18 @@ performs that network round trip itself — see "What this is not" below.
 
 `select_referee(twin_a, twin_b, peers, policy)` runs the same algorithm with
 `others = [twin_a, twin_b]`, so a referee is scored for independence from
-BOTH twins at once (sharing an owner with either one is the same `0.0`
-penalty), and additionally requires `twin_a`/`twin_b` to already share one
-`weights_digest`.
+BOTH twins at once, and additionally requires `twin_a`/`twin_b` to already
+share one `weights_digest`. Unlike `select_twin`, owner independence here is
+a **hard gate**: a candidate whose `owner_id` is known to equal either
+twin's is excluded from the candidate pool outright, not merely scored
+`0.0` on the owner-diversity component ([mesh-referee-live-e17c],
+2026-09-08 — a mesh where all comparable peers share one operator must
+never silently corroborate itself via a same-owner "referee"). If that
+hard exclusion leaves zero candidates, `select_referee` falls back to the
+full comparable pool — "distinct node key" instead of distinct owner — and
+sets `SelectionResult.owner_diversity_limited = True` so a verifier can see
+the independence guarantee was narrowed, never infer it silently from a low
+score.
 
 ## What this does not prove
 
@@ -106,10 +115,10 @@ penalty), and additionally requires `twin_a`/`twin_b` to already share one
   `select_referee` are pure functions over a `peers` sequence the caller
   already holds. The one place a round trip could enter — Step 4 — is an
   injected callable this module never dials itself.
-- **Not wired to a live coordinator path yet.** `select_referee` is built and
-  tested but held behind the same E17b/E17c upstream gate `twin_adjudicator.py`
-  names (the third-node recompute it would feed doesn't have a live routing
-  flag from mesh-llm yet).
+- **Wired to a live coordinator path.** `live_referee.py` calls
+  `select_referee` to pick the third node, then makes the actual live
+  `x-mesh-target` request (see that module) -- the recompute this module's
+  pick feeds is real, not held.
 
 ## Config
 

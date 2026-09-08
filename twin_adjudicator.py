@@ -19,8 +19,8 @@ of a would-be twin comparison — no network call is made or needed:
         `_work/mesh-issue-ladder-2026-09-05/tier3-09-twin-flag-v1.md`).
         `None` — logprobs absent — when that data isn't there.
 
-    adjudicate(half_a, half_b, margin_tau=..., logprob_tau=None, referee=None)
-            -> AdjudicationOutcome
+    adjudicate(half_a, half_b, margin_tau=..., logprob_tau=None, referee=None,
+               referee_owner_id=None) -> AdjudicationOutcome
         The full pipeline: verify each half's own self-consistency (a
         forged half fails `agent_action_capsule.verify()`), verify the
         disclosed preimage actually hashes to the half's declared
@@ -31,13 +31,26 @@ of a would-be twin comparison — no network call is made or needed:
         distinct, then runs `compare_transcripts` on the disclosed response
         text and applies the margin-vs-`margin_tau` verdict rule.
 
-        Opt-in (`logprob_tau` + a caller-supplied `referee` — see "WHAT THIS
-        IS NOT" below): on a divergence, gate on `top2_logprob_margin`
-        instead of resolving to `inconclusive` unconditionally — a thin
-        margin on both sides is still `inconclusive`, but anything else
-        (a wide margin, or logprobs missing) calls the referee and adopts
-        ITS verdict and margin. This is the only way `adjudicate()` can
-        return `contradicted:<owner_id>`.
+        [mesh-referee-live-e17c ruling, 2026-09-08] Escalation to a referee
+        is triggered by TEXT DIVERGENCE ALONE — never gated on the
+        disputants' own logprobs (`half_a`/`half_b` self-report them; a
+        liar can report a thin margin and dodge escalation entirely). Given
+        a `referee` callable, ANY divergence calls it — no `logprob_tau`
+        required. Before calling, if `referee_owner_id` is given and
+        matches either half's `owner_id`, the call is refused entirely
+        (`no_verdict_reason="referee_not_independent"`) — a referee that
+        shares an owner with a disputant proves nothing, so this module
+        never even asks it.
+
+        `logprob_tau`, now opt-in and orthogonal to whether the referee is
+        called, applies ONLY to the referee's OWN logprob margin (never the
+        disputants'): a thin margin on the referee's own answer overrides
+        its verdict to `inconclusive`. Absent referee logprobs (today's
+        live reality — no runtime returns them yet) is inert — the
+        referee's verdict is adopted unchanged — but is always labeled
+        `referee_logprobs_absent` so a verifier can see the gate never
+        actually ran. This is the only way `adjudicate()` can return
+        `contradicted:<owner_id>`.
 
     seal_adjudication_capsule(outcome, ...) -> capsule dict | None
         Mints the one new record this module adds: an ordinary capsule
@@ -50,12 +63,13 @@ of a would-be twin comparison — no network call is made or needed:
 
 WHAT THIS IS NOT — read before extending
 -----------------------------------------
-  - NOT a coordinator. There is no fan-out, no node selection, no live twin
-    send here — those are E17b (twin send) and E17c (third-node referee),
-    both upstream-gated and HELD. `adjudicate(..., referee=...)` accepts an
-    injected `Referee` callable so a caller CAN supply the E17c tiebreak,
-    but this module never implements the live third-node recompute itself
-    — no network call is made by anything in this file.
+  - NOT a coordinator. There is no fan-out, no node selection here — that
+    is `twin_selection.select_referee` (E17c). `adjudicate(...,
+    referee=...)` accepts an injected `Referee` callable so a caller
+    supplies the actual live third-node recompute (`live_referee.py`, the
+    E17c wiring) — this module still never dials the network itself; it
+    only decides WHEN to call the callable it was handed and how to fold
+    its result into a verdict.
   - NOT a scorer. `AdjudicationOutcome.margin` is the number the verdict
     rule compared against `margin_tau` (or, on the referee path, the
     referee's own margin) — never a confidence/trust-rating field, and no
@@ -65,25 +79,29 @@ WHAT THIS IS NOT — read before extending
   - Disagreement is a TRIGGER, not a verdict on its own. Two-halves-only,
     text-margin comparison can tell you the transcripts diverged; it cannot
     tell you WHICH twin is right — that needs the third-node referee
-    tiebreak (E17c). By default (`logprob_tau=None`) any divergence here
-    resolves to `inconclusive`, never `contradicted:<owner>`. A caller that
-    opts into the logprobs-margin gate (`logprob_tau` + `referee`) and hits
-    a wide margin gets the REFEREE's verdict instead — `contradicted:<owner>`
-    is then possible, but it is always the injected referee's call, never
-    something this module derives from tokens alone.
+    tiebreak. Without a `referee` callable, any divergence resolves to
+    `inconclusive`, never `contradicted:<owner>`. Given a `referee`, any
+    divergence calls it (subject to the independence refusal above) and
+    adopts ITS verdict — `contradicted:<owner>` is then possible, but it is
+    always the referee's call, never something this module derives from
+    tokens alone.
   - `inconclusive` is first-class, not a failure mode: it is the expected,
-    common result of a thin or absent margin, and callers must not treat it
-    as an error.
+    common result of a thin or absent margin (or a referee whose own
+    logprob margin was thin), and callers must not treat it as an error.
 
-Two ways to be told "there's nothing to adjudicate," both first-class and
+Three ways to be told "there's nothing to adjudicate," all first-class and
 distinct from an exception:
   - `AdjudicationOutcome.no_verdict_reason == "weights_mismatch"` — the two
     halves didn't hold the same weights; nothing to compare. (NOT
-    `coverage_unsatisfiable` — that is the referee-*request* refusal that
-    lives in E17b/E17c, a different carrier entirely.)
+    `coverage_unsatisfiable` — that is a referee-*request* refusal, a
+    different carrier entirely.)
   - `AdjudicationOutcome.no_verdict_reason == "same_owner_twin"` —
     `twin_owner_distinct` is `False`; comparing a node against itself proves
     nothing about independent agreement.
+  - `AdjudicationOutcome.no_verdict_reason == "referee_not_independent"` —
+    the caller-supplied `referee_owner_id` matches either half's
+    `owner_id`; a referee that shares an owner with a disputant is refused
+    BEFORE it is ever called, never adopted as a tiebreak.
 
 Two ways to be told the input itself can't be trusted, both raised, never
 silently downgraded to a verdict:
@@ -110,6 +128,7 @@ __all__ = [
     "CAPTURE_METHOD_DETERMINISTIC_REPLAY",
     "DEFAULT_MARGIN_TAU",
     "NO_VERDICT_NO_REQUESTER_TRANSCRIPT",
+    "NO_VERDICT_REFEREE_NOT_INDEPENDENT",
     "NO_VERDICT_SAME_OWNER_TWIN",
     "NO_VERDICT_WEIGHTS_MISMATCH",
     "RELATION_ADJUDICATES",
@@ -128,6 +147,7 @@ __all__ = [
     "compare_transcripts",
     "contradicted",
     "seal_adjudication_capsule",
+    "token_at",
     "top2_logprob_margin",
 ]
 
@@ -156,6 +176,10 @@ NO_VERDICT_SAME_OWNER_TWIN = "same_owner_twin"
 #: (`inconclusive: no_requester_transcript`) instead of letting
 #: _verify_preimage_or_raise crash on an always-empty disclosed dict.
 NO_VERDICT_NO_REQUESTER_TRANSCRIPT = "no_requester_transcript"
+#: [mesh-referee-live-e17c] The caller-supplied `referee_owner_id` matches
+#: either half's `owner_id` -- refused BEFORE the referee is ever called;
+#: see the module docstring's independence-refusal paragraph.
+NO_VERDICT_REFEREE_NOT_INDEPENDENT = "referee_not_independent"
 
 #: Only a fully-matching comparison (margin == 1.0) clears the default
 #: threshold. Two temperature-0, fixed-seed, same-weights runs are expected
@@ -218,6 +242,20 @@ class AdjudicationHalf:
     @property
     def response_text(self) -> str:
         return self.disclosed.get("response_text") or ""
+
+    @property
+    def request_body(self) -> dict[str, Any]:
+        """The disclosed REQUEST preimage (``capsule_sidecar.
+        persist_disclosure_preimage``'s ``request_body`` key) -- the
+        original prompt this half answered, needed by a live `Referee`
+        (`live_referee.py`) to reconstruct [prompt + agreed response
+        prefix] for the third-node recompute. `{}` when absent (older
+        disclosure records, or a caller that never persisted one)."""
+        return self.disclosed.get("request_body") or {}
+
+    @property
+    def request_text(self) -> str:
+        return self.disclosed.get("request_text") or ""
 
     @classmethod
     def from_capsule_and_disclosure(
@@ -283,6 +321,23 @@ def _tokenize(text: str) -> tuple[str, ...]:
     return tuple(text.split())
 
 
+def token_at(text: str, index: int) -> str | None:
+    """The token at `index` of `text`'s `_tokenize` split, `None` when
+    `index` is out of range (a sequence that ended before the divergence
+    point) or negative. Public so a `Referee` implementation (e.g.
+    `live_referee.py`'s live third-node call) can align its own single-token
+    response against a half's token at `comparison.divergence_index` using
+    the SAME whitespace-split stand-in this module's own comparison uses --
+    never a second, silently-different tokenizer.
+    """
+    if index is None or index < 0:
+        return None
+    tokens = _tokenize(text)
+    if index >= len(tokens):
+        return None
+    return tokens[index]
+
+
 @dataclass(frozen=True)
 class ComparisonResult:
     """Pure output of `compare_transcripts` -- no verdict, just the measurement."""
@@ -345,23 +400,28 @@ def compare_transcripts(text_a: str, text_b: str) -> ComparisonResult:
 
 @dataclass(frozen=True)
 class RefereeResult:
-    """What a referee tiebreak (E17b/E17c -- a third-owner one-token
-    recompute over the shared prefix, per the twin-flag design) reports
-    back: its own verdict (`corroborated` or `contradicted:<owner_id>`,
-    the same closed vocabulary `contradicted()` builds) and its own
-    margin. Never constructed by this module -- callers supply a `Referee`
-    that returns one.
+    """What a referee tiebreak (a third-owner one-token recompute over the
+    shared prefix, per the twin-flag design) reports back: its own verdict
+    (`corroborated`, `inconclusive`, or `contradicted:<owner_id>` -- the
+    same closed vocabulary `contradicted()` builds), its own top2-logprob
+    margin (0.0 and `logprobs_absent=True` when the runtime didn't return
+    any -- today's live reality), and the capsule id the referee node
+    sealed for its OWN served half, so the adjudication record can cite it
+    alongside `half_a_capsule_id`/`half_b_capsule_id`. Never constructed by
+    this module -- callers supply a `Referee` that returns one (see
+    `live_referee.py` for the live third-node implementation).
     """
 
     verdict: str
-    margin: float
+    margin: float = 0.0
+    logprobs_absent: bool = False
+    capsule_id: str | None = None
 
 
 #: A referee call: given both halves and the `ComparisonResult` that
 #: triggered it, returns the tiebreak. This module does not implement one
-#: -- the live third-node recompute is E17b/E17c, upstream-gated (see the
-#: module docstring) -- callers of `adjudicate(..., logprob_tau=..., referee=...)`
-#: supply their own.
+#: itself -- see `live_referee.py` for the live third-node recompute --
+#: callers of `adjudicate(..., referee=...)` supply their own.
 Referee = Callable[[AdjudicationHalf, AdjudicationHalf, ComparisonResult], RefereeResult]
 
 
@@ -383,17 +443,23 @@ class AdjudicationOutcome:
     source: str = SOURCE_TWIN_COMPARISON
     capture_method: str = CAPTURE_METHOD_DETERMINISTIC_REPLAY
     #: Set only when `adjudicate()` was called with `logprob_tau` -- the
-    #: top-2-logprob-margin gate is opt-in and leaves every field below
-    #: `None`/`False` for a caller that never asked for it (the original
-    #: E17a text-margin-only path is unchanged and untouched by these).
+    #: referee's-own-logprob-margin gate is opt-in and leaves this `None`
+    #: for a caller that never asked for it.
     tau: float | None = None
-    margin_a: float | None = None
-    margin_b: float | None = None
-    #: True when either side's logprobs couldn't be read at
-    #: `divergence_index` -- the mutant case: never resolved to a verdict
-    #: from tokens alone, always the referee's call instead.
-    logprobs_absent: bool = False
+    #: True when the referee's OWN logprobs couldn't be read (today's live
+    #: reality -- no runtime returns them yet). Inert, not a refusal: the
+    #: referee's verdict is still adopted, but labeled so a verifier can see
+    #: the `logprob_tau` gate never actually ran. Never about the
+    #: disputants' own (self-reported, unsound) logprobs -- see the module
+    #: docstring's 2026-09-08 ruling.
+    referee_logprobs_absent: bool = False
     referee_called: bool = False
+    #: The capsule id the referee node sealed for its own served half --
+    #: the fourth citation alongside `half_a_capsule_id`/`half_b_capsule_id`
+    #: (`adjudication_delivery._cited_capsule_ids` picks up any
+    #: `*_capsule_id`-suffixed key automatically). `None` when no referee
+    #: was called.
+    referee_capsule_id: str | None = None
 
     def has_verdict(self) -> bool:
         return self.verdict is not None
@@ -444,9 +510,10 @@ def adjudicate(
     margin_tau: float = DEFAULT_MARGIN_TAU,
     logprob_tau: float | None = None,
     referee: Referee | None = None,
+    referee_owner_id: str | None = None,
 ) -> AdjudicationOutcome:
     """Adjudicate two twin-comparison fixture halves, offline, no network
-    (unless the opt-in `logprob_tau`/`referee` gate below invokes one).
+    (unless a `referee` is given and a divergence actually calls it).
 
     Order of checks (each a distinct, independently-tested mutant):
 
@@ -470,21 +537,25 @@ def adjudicate(
        `no_verdict_reason="same_owner_twin"`.
     6. Otherwise, `compare_transcripts` the disclosed response text.
 
-       Default (`logprob_tau=None`, the original E17a path, unchanged): a
-       full match (`margin >= margin_tau`) is `corroborated`; anything else
-       is `inconclusive` -- disagreement is a trigger for the (separate)
-       referee tiebreak, never a verdict this function reaches alone.
+       No divergence (`margin >= margin_tau`): `corroborated`, referee
+       never called -- honest twins cost zero referee calls.
 
-       Opt-in (`logprob_tau` given -- requires `referee`; raises
-       `ValueError` without one): on a divergence, read `top2_logprob_margin`
-       for both halves at `divergence_index`. Either side missing logprobs
-       is `logprobs_absent` and -- like a margin that isn't thin on both
-       sides -- goes straight to `referee(half_a, half_b, comparison)`; a
-       thin margin on BOTH sides is `inconclusive` with `margin_a`/`margin_b`
-       recorded and the referee never called. The referee's own verdict and
-       margin (not the text-comparison margin) become the outcome's -- this
-       is the only path through which `adjudicate()` can return
-       `contradicted:<owner_id>`.
+       Divergence, no `referee` given: `inconclusive` -- disagreement is a
+       trigger, never a verdict this function reaches alone.
+
+       Divergence, `referee` given: independence is checked FIRST -- if
+       `referee_owner_id` is given and equals either half's `owner_id`,
+       refuses without calling the referee at all
+       (`no_verdict_reason="referee_not_independent"`). Otherwise
+       `referee(half_a, half_b, comparison)` is ALWAYS called (text
+       divergence is the only trigger -- see the module docstring's
+       2026-09-08 ruling; the disputants' own logprobs are never consulted
+       here). If `logprob_tau` is given and the referee's own logprobs
+       aren't `logprobs_absent` and its margin is below `logprob_tau`, the
+       verdict is overridden to `inconclusive`; otherwise the referee's own
+       verdict and margin (not the text-comparison margin) become the
+       outcome's -- this is the only path through which `adjudicate()` can
+       return `contradicted:<owner_id>`.
     """
     if logprob_tau is not None and referee is None:
         raise ValueError("adjudicate(logprob_tau=...) requires a referee callable")
@@ -551,16 +622,14 @@ def adjudicate(
 
     comparison = compare_transcripts(half_a.response_text, half_b.response_text)
 
-    if logprob_tau is not None and comparison.divergence_index is not None:
-        margin_a = top2_logprob_margin(half_a.response_body, comparison.divergence_index)
-        margin_b = top2_logprob_margin(half_b.response_body, comparison.divergence_index)
-        logprobs_absent = margin_a is None or margin_b is None
-        both_thin = not logprobs_absent and margin_a < logprob_tau and margin_b < logprob_tau
-
-        if both_thin:
+    if comparison.divergence_index is not None and referee is not None:
+        if referee_owner_id is not None and (
+            (half_a.owner_id is not None and referee_owner_id == half_a.owner_id)
+            or (half_b.owner_id is not None and referee_owner_id == half_b.owner_id)
+        ):
             return AdjudicationOutcome(
-                verdict=VERDICT_INCONCLUSIVE,
-                no_verdict_reason=None,
+                verdict=None,
+                no_verdict_reason=NO_VERDICT_REFEREE_NOT_INDEPENDENT,
                 divergence_index=comparison.divergence_index,
                 margin=comparison.margin,
                 margin_tau=margin_tau,
@@ -569,18 +638,23 @@ def adjudicate(
                 weights_digest=shared_weights_digest,
                 half_a_capsule_id=half_a_id,
                 half_b_capsule_id=half_b_id,
-                tau=logprob_tau,
-                margin_a=margin_a,
-                margin_b=margin_b,
-                logprobs_absent=False,
-                referee_called=False,
             )
 
-        # Wide margin on at least one side, or logprobs absent on either --
-        # never a verdict from tokens alone; the referee decides.
+        # Text divergence is the only escalation trigger -- the disputants'
+        # own logprobs are never read here (see the module docstring's
+        # 2026-09-08 ruling). Any divergence calls the referee.
         referee_result = referee(half_a, half_b, comparison)
+
+        verdict = referee_result.verdict
+        if (
+            logprob_tau is not None
+            and not referee_result.logprobs_absent
+            and referee_result.margin < logprob_tau
+        ):
+            verdict = VERDICT_INCONCLUSIVE
+
         return AdjudicationOutcome(
-            verdict=referee_result.verdict,
+            verdict=verdict,
             no_verdict_reason=None,
             divergence_index=comparison.divergence_index,
             margin=referee_result.margin,
@@ -591,10 +665,9 @@ def adjudicate(
             half_a_capsule_id=half_a_id,
             half_b_capsule_id=half_b_id,
             tau=logprob_tau,
-            margin_a=margin_a,
-            margin_b=margin_b,
-            logprobs_absent=logprobs_absent,
+            referee_logprobs_absent=referee_result.logprobs_absent,
             referee_called=True,
+            referee_capsule_id=referee_result.capsule_id,
         )
 
     verdict = VERDICT_CORROBORATED if comparison.margin >= margin_tau else VERDICT_INCONCLUSIVE
@@ -651,18 +724,16 @@ def seal_adjudication_capsule(
         "half_a_capsule_id": outcome.half_a_capsule_id,
         "half_b_capsule_id": outcome.half_b_capsule_id,
     }
-    # Only present when `adjudicate()` ran the opt-in logprobs-margin gate --
-    # the published `tau` a recomputer needs to redo the inconclusive/referee
-    # split themselves (module docstring, `top2_logprob_margin`).
-    if outcome.tau is not None:
-        adjudication["tau"] = float_to_str(outcome.tau, field="adjudication.tau")
-        adjudication["margin_a"] = (
-            float_to_str(outcome.margin_a, field="adjudication.margin_a") if outcome.margin_a is not None else None
-        )
-        adjudication["margin_b"] = (
-            float_to_str(outcome.margin_b, field="adjudication.margin_b") if outcome.margin_b is not None else None
-        )
-        adjudication["logprobs_absent"] = outcome.logprobs_absent
+    # Only present when a referee was actually called -- the fourth
+    # citation (`adjudication_delivery._cited_capsule_ids` picks up any
+    # `*_capsule_id`-suffixed key automatically) plus whether the opt-in
+    # `logprob_tau` gate (against the REFEREE's own logprobs -- never the
+    # disputants') actually ran.
+    if outcome.referee_called:
+        adjudication["referee_capsule_id"] = outcome.referee_capsule_id
+        if outcome.tau is not None:
+            adjudication["tau"] = float_to_str(outcome.tau, field="adjudication.tau")
+            adjudication["referee_logprobs_absent"] = outcome.referee_logprobs_absent
 
     compute_attestation = {"adjudication": adjudication}
     disposition = Disposition(
