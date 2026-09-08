@@ -135,6 +135,7 @@ fn seal_observed_host_exchange(capsules: &CapsuleState, envelope: &OpenAiExchang
         usage,
         host_provenance,
         dispatch_path: envelope.dispatch_path.clone(),
+        nonce: envelope.nonce.as_deref(),
     };
     match capsules.emit_for_observed_host_exchange(&observed) {
         Ok(emitted) => {
@@ -342,7 +343,18 @@ async fn main() -> anyhow::Result<()> {
                             // stub does not, so it is not double-sealed), seal a
                             // capsule from the observed serving provenance + real
                             // usage + host-forwarded request digest.
-                            if ObservedLifecycleEvents::is_sealable_host_served(&envelope) {
+                            //
+                            // Seal-on-observe, REQUESTER side
+                            // (`[mesh-requester-side-seal-on-proxy]`, 2026-09-07):
+                            // a `RemoteMesh` terminal event means THIS node
+                            // routed the exchange to a peer -- it is the
+                            // requester's own half, and until this closed, it
+                            // sealed nothing at all. Mutually exclusive with
+                            // the host-served branch above (see
+                            // `is_sealable_host_served`'s doc comment).
+                            if ObservedLifecycleEvents::is_sealable_host_served(&envelope)
+                                || ObservedLifecycleEvents::is_sealable_requester_side(&envelope)
+                            {
                                 seal_observed_host_exchange(&capsules, &envelope);
                             }
                             lifecycle_events.record(envelope);

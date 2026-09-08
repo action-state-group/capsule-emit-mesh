@@ -87,6 +87,17 @@ Steven Mih · 2026-08-16 · offered for discussion, revision, or re-homing.
 > and `draft-mih-agent-accountability-conformance-00`. Successor revisions (-03, -02, -01, -01) are
 > written and in review but not yet posted; where this document relies on text that appears only in
 > those, it says **[forthcoming revision]**. Nothing here asserts adoption by anyone.
+>
+> **Revision 2026-09-07 ([mesh-requester-side-seal-on-proxy]).** A 2026-09-07 live twin run found
+> that on the Rust admission-policy plugin's automatic mesh-routing path, when a node proxies a chat
+> completion to a peer (`dispatch_path: RemoteMesh`), only the peer sealed a capsule for its served
+> half — the routing/requesting node sealed nothing for its own. That gap is now closed: the routing
+> node seals a `role: "requested"` capsule from the same `openai.exchange.v1` terminal event it
+> already publishes, joined to the peer's `role: "served"` capsule by the shared client nonce (never
+> `exchange_id`, which is minted independently per node). This is narrower than it sounds: it covers
+> only the Rust plugin's automatic `RemoteMesh` detection, not the separate `capsule_sidecar.py`
+> `--role requester`/`--role provider` CLI mechanism this document's R3/R10/P1/P6 rows already
+> describe, which remains a distinct, operator-configured path.
 
 ---
 
