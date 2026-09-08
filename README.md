@@ -897,6 +897,7 @@ README.md                       this file
 docs/TRUST-MODEL.md             the step-1 threat model + assurance classes (source of the neutrality discipline)
 docs/SUPPORTED-PORT-RERUN.md    the supported-port re-run findings (vs. the debugging endpoint)
 docs/ACCOUNTABILITY-PANES.md    the Accountability tab's three panes: promise line, source labels, per-cell wiring status
+docs/TWIN-REFEREE-SELECTION.md  independence-first select_twin/select_referee: the algorithm, config, and what it does not prove
 
 # Path 1 — native Rust plugin (primary)
 plugins/admission-policy/       mesh-llm-plugin: Envelope-wire admission + lifecycle-hook capsule emission
@@ -920,6 +921,7 @@ run_real_deployment_checkpoint_demo.sh   real mesh-llm + checkpointing, end to e
 verify_real_deployment_checkpoint.py     offline verify + rollback-mutant proof
 history_card.py                 history_card() verb: checkpoints + receipts + consistency proofs since size S (properties, never a score)
 join_card.py                     sealed node-identity "join card" + promise_line() (kept/broken/nothing_promised/changed_without_saying)
+twin_selection.py                independence-first select_twin/select_referee over observable peer attrs, tie-break random within the top band
 self_accountability.py           Pane A row-builders: sealing/history/rung/shared/adjudications summaries, composed by capsule_accountability_tab.py
 capsule_accountability_tab.py    Pane A "My node" -- card face (promise line + 3 labeled source blocks + footer) over one node's own ledger
 peer_accountability_tab.py       Pane B "Peers" -- one row per node exchanged with, 7 columns, every cell honestly wired-or-pending
