@@ -168,13 +168,19 @@ def _signed_cert(
 
 def test_attack5_model_spoof_reconciles_clean_when_lie_is_consistent():
     """Advertise model X, serve (in the record) model X, but the REAL model was
-    Y. The advertisement and the record agree, so reconcile returns `match` —
-    the spoof is invisible to the advertised-vs-served reconciliation.
+    Y. The advertisement and the record agree, so reconcile returns `partial_match`
+    (no broken promises among the advertised fields; hardware was served but not
+    promised) — the spoof is invisible to the advertised-vs-served reconciliation.
 
     -> RESIDUAL (uncaught). The lie is self-consistent because one party wrote
     both sides. This is the honest-gap the advertisement module already names
     (`advertisement_self_signed`): reconciling two claims from ONE party cannot
     catch a party that lies on both.
+
+    Note: the overall is now `partial_match` rather than `match` because the
+    advertisement only promised model_id and quantization; hardware facts were
+    served but not promised (not_advertised).  `match` is now reserved for full
+    coverage -- [mesh-promise-reconciliation-grading] sub-defect 1.
     """
     lie = "meta/Llama-3.2-70B-Instruct"           # the node CLAIMS the big model
     ad = Advertisement(node_id=NODE_ID_HEX, model_id=lie, quantization="Q8_0")
@@ -186,7 +192,8 @@ def test_attack5_model_spoof_reconciles_clean_when_lie_is_consistent():
 
     result = reconcile_advertised_vs_served(ad, served)
     # No broken promise found — because the promise and the record are the SAME lie.
-    assert result["overall"] == "match", result
+    # partial_match: promised fields matched, but hardware was served and not promised.
+    assert result["overall"] == "partial_match", result
     assert result["fields"]["model_id"]["verdict"] == "match"
     assert result["mismatches"] == []
     # The honesty caveat is the ONLY thing standing between this and a false
@@ -239,11 +246,17 @@ def test_attack5_baseline_crosscheck_cannot_see_model_identity():
 def test_attack6_quant_swap_reconciles_clean_when_consistent():
     """Same self-report gap as the model spoof: advertise Q4, serve-record Q4,
     but REALLY the node promised Q8 elsewhere. Within the offline bundle the two
-    self-attested claims agree, so reconcile is `match`.
+    self-attested claims agree, so reconcile is `partial_match` (no broken
+    promises in what was advertised; hardware was served but not promised).
 
     -> RESIDUAL. The economic swap (promise Q8, deliver Q4) is only visible if
     the ORIGINAL Q8 promise is independently held; the node's own bundle only
     ever shows the Q4 it decided to admit.
+
+    Note: the overall is now `partial_match` rather than `match` because the
+    advertisement only promised model_id and quantization; hardware facts were
+    served but not promised (not_advertised).  `match` is now reserved for full
+    coverage -- [mesh-promise-reconciliation-grading] sub-defect 1.
     """
     ad = Advertisement(node_id=NODE_ID_HEX, model_id="meta/Llama-3.2-3B", quantization="Q4_K_M")
     served = _served_record(
@@ -251,7 +264,7 @@ def test_attack6_quant_swap_reconciles_clean_when_consistent():
         gpu="Apple M4 Max", vram_bytes=42 * 1024**3, is_soc=True,
     )
     result = reconcile_advertised_vs_served(ad, served)
-    assert result["overall"] == "match"
+    assert result["overall"] == "partial_match"
     assert result["fields"]["quantization"]["verdict"] == "match"
 
 

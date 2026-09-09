@@ -15,6 +15,8 @@ from advertisement import (
     VERDICT_MATCH,
     VERDICT_MISMATCH,
     VERDICT_NOT_ADVERTISED,
+    VERDICT_PARTIAL_MATCH,
+    VERDICT_SELF_REPORTED_ABSENT,
     Advertisement,
     compute_meter,
     reconcile_advertised_vs_served,
@@ -114,19 +116,21 @@ def test_served_fact_not_advertised_is_not_advertised_not_a_pass():
     result = reconcile_advertised_vs_served(ad, _served())
     assert result["fields"]["quantization"]["verdict"] == VERDICT_NOT_ADVERTISED
     assert result["fields"]["model_canonical_ref"]["verdict"] == VERDICT_MATCH
-    # not_advertised is not a mismatch, and the overall is still a match
-    # (nothing that was both claimed and served was broken).
-    assert result["overall"] == VERDICT_MATCH
+    # not_advertised is not a mismatch, but the overall is partial_match --
+    # keeping one promise while leaving quantization, hardware etc. un-promised
+    # does NOT earn a full VERDICT_MATCH (which requires coverage of all served facts).
+    assert result["overall"] == "partial_match"  # kept the one promise but left quant un-promised
 
 
 def test_unknown_sentinel_in_record_reconciles_as_absent_not_a_spurious_value():
     # The producer writes literal "unknown" for a fact the host never exposed;
-    # an advertised quant must reconcile to `absent`, never mismatch against
-    # the sentinel string.
+    # an advertised quant must reconcile to `self_reported_absent`, never mismatch
+    # against the sentinel string, and never as plain `absent` (which would be
+    # indistinguishable from the fact simply not being in the record).
     ad = _llama_q4_ad()
     served = _served(quantization="unknown")
     result = reconcile_advertised_vs_served(ad, served)
-    assert result["fields"]["quantization"]["verdict"] == VERDICT_ABSENT
+    assert result["fields"]["quantization"]["verdict"] == VERDICT_SELF_REPORTED_ABSENT
 
 
 def test_no_served_facts_at_all_is_not_a_pass():
@@ -207,3 +211,98 @@ def _all_keys(obj) -> set:
             keys.add(str(k).lower())
             keys |= _all_keys(v)
     return keys
+
+
+# ---- [mesh-promise-reconciliation-grading] adversarial tests ----
+
+def test_promising_nothing_does_not_outgrade_promising_something_and_missing_one():
+    """Node A promises 1 trivial field (model_id), Node B promises 6 fields
+    and misses quantization.  A must NOT get a higher overall grade than B;
+    specifically, promising nothing gets 'partial_match' or 'advertisement_absent',
+    never 'match'.  'match' is reserved for keeping ALL the served facts you
+    promised (with nothing left un-promised)."""
+    # Node A: advertises only model_id -- one tiny promise kept
+    ad_a = Advertisement(node_id="mesh-node-demo-1", model_id="Llama-3.2-3B")
+    result_a = reconcile_advertised_vs_served(ad_a, _served())
+    # Node B: advertises everything, misses quantization
+    ad_b = _llama_q4_ad()
+    served_b = _served(quantization="Q8_0")  # quant mismatch
+    result_b = reconcile_advertised_vs_served(ad_b, served_b)
+
+    # A kept its one tiny promise -- but that is NOT a full match; it left
+    # hardware, quant etc. un-promised.  Overall must be partial_match.
+    assert result_a["overall"] == "partial_match", (
+        f"A node promising only model_id must get 'partial_match', not {result_a['overall']!r}"
+    )
+    # B broke a promise -- still mismatch.
+    assert result_b["overall"] == VERDICT_MISMATCH
+    # Core invariant: partial_match must never be rendered as 'kept'
+    assert result_a["overall"] != VERDICT_MATCH
+
+
+def test_full_coverage_match_requires_no_not_advertised_fields():
+    """'match' overall is reserved for when every served fact that could be
+    reconciled WAS promised and matched -- no not_advertised fields left over."""
+    # Full coverage: all 5 served facts were advertised and matched
+    result = reconcile_advertised_vs_served(_llama_q4_ad(), _served())
+    assert result["overall"] == VERDICT_MATCH
+    # No not_advertised fields
+    not_adv = [k for k, v in result["fields"].items() if v["verdict"] == VERDICT_NOT_ADVERTISED]
+    assert not_adv == []
+
+
+def test_self_reported_unknown_is_self_reported_absent_not_honest_absent():
+    """The serving node writes 'unknown' in serving_provenance for fields it
+    doesn't want reconciled.  This self-selected absence must produce
+    VERDICT_SELF_REPORTED_ABSENT, not VERDICT_ABSENT -- byte-identical to
+    honest absence is the [mesh-promise-reconciliation-grading] defect 2."""
+    ad = _llama_q4_ad()
+    # The serving node self-reports quantization as "unknown"
+    served = _served(quantization="unknown")
+    result = reconcile_advertised_vs_served(ad, served)
+    assert result["fields"]["quantization"]["verdict"] == VERDICT_SELF_REPORTED_ABSENT, (
+        "self-reported 'unknown' must be VERDICT_SELF_REPORTED_ABSENT, "
+        f"got {result['fields']['quantization']['verdict']!r}"
+    )
+    # Self-reported-absent is NOT the same as honest absent
+    assert result["fields"]["quantization"]["verdict"] != VERDICT_ABSENT
+    # It IS still not a mismatch (nothing to break if the node didn't serve a real value)
+    assert "quantization" not in result["mismatches"]
+
+
+def test_advertisement_digest_is_bound_into_reconciliation_result():
+    """reconcile_advertised_vs_served() must include 'advertisement_digest' in
+    its output so a relying party can independently verify the advertisement
+    was prior to the exchange -- the [mesh-promise-reconciliation-grading] defect 3."""
+    ad = _llama_q4_ad()
+    result = reconcile_advertised_vs_served(ad, _served())
+    assert "advertisement_digest" in result, "advertisement_digest must be in reconciliation output"
+    assert result["advertisement_digest"] == ad.digest()
+
+
+def test_advertisement_issued_at_is_carried_through_reconciliation():
+    """An advertisement with an issued_at must surface it in the reconciliation
+    result so a relying party can check the advertisement predates the exchange."""
+    ad = _llama_q4_ad()
+    ad_with_time = Advertisement(
+        node_id=ad.node_id,
+        model_id=ad.model_id,
+        model_canonical_ref=ad.model_canonical_ref,
+        quantization=ad.quantization,
+        hardware_gpu=ad.hardware_gpu,
+        hardware_vram_bytes=ad.hardware_vram_bytes,
+        hardware_is_soc=ad.hardware_is_soc,
+        issued_at="2026-09-08T00:00:00Z",
+    )
+    result = reconcile_advertised_vs_served(ad_with_time, _served())
+    assert result["advertisement_issued_at"] == "2026-09-08T00:00:00Z"
+
+
+def test_advertisement_absent_result_includes_digest_and_issued_at_as_none():
+    """When no advertisement is supplied, advertisement_digest and
+    advertisement_issued_at must be present but None -- never omitted,
+    so a consumer doesn't have to handle a missing key."""
+    result = reconcile_advertised_vs_served(None, _served())
+    assert result["overall"] == "advertisement_absent"
+    assert result["advertisement_digest"] is None
+    assert result["advertisement_issued_at"] is None

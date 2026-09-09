@@ -60,6 +60,15 @@ VERDICT_MATCH = "match"
 VERDICT_MISMATCH = "mismatch"
 VERDICT_NOT_ADVERTISED = "not_advertised"
 VERDICT_ABSENT = "absent"
+#: The serving node wrote "unknown" for this field -- self-selected absence,
+#: distinct from a field that was simply not carried.  A node can write "unknown"
+#: for any fact it doesn't want reconciled; that self-selected absence must be
+#: distinguishable from honest absence so a relying party is not misled.
+VERDICT_SELF_REPORTED_ABSENT = "self_reported_absent"
+#: overall state when some served facts were not advertised but none mismatched.
+#: Reserved for when an advertisement made PARTIAL promises and kept them all --
+#: distinct from VERDICT_MATCH which requires coverage of all served facts.
+VERDICT_PARTIAL_MATCH = "partial_match"
 
 #: The honest self-signing caveat -- see this module's docstring "HONEST GAP".
 #: Attached to every reconciliation result so a reader is never solely
@@ -102,6 +111,11 @@ class Advertisement:
     #: Free-form, non-load-bearing extras (never reconciled) -- kept so a node
     #: can advertise context length etc. without those becoming silent passes.
     extra: dict[str, Any] = field(default_factory=dict)
+    #: ISO-8601 UTC timestamp when this advertisement was issued, or None when
+    #: the caller did not supply one.  Included in to_value() and therefore in
+    #: digest() so a relying party can verify the advertisement predated an
+    #: exchange.  Schema stays at v1; issued_at is additive.
+    issued_at: str | None = None
 
     def to_value(self) -> dict[str, Any]:
         """The canonical dict form (co-carried into the bundle / capsule)."""
@@ -117,6 +131,7 @@ class Advertisement:
                 "is_soc": self.hardware_is_soc,
             },
             "extra": self.extra,
+            "issued_at": self.issued_at,
         }
 
     @classmethod
@@ -131,6 +146,7 @@ class Advertisement:
             hardware_vram_bytes=hw.get("vram_bytes"),
             hardware_is_soc=hw.get("is_soc"),
             extra=value.get("extra") or {},
+            issued_at=value.get("issued_at"),
         )
 
     def digest(self) -> str:
@@ -144,16 +160,26 @@ class Advertisement:
         return hashlib.sha256(raw).hexdigest()
 
 
+#: Singleton sentinel returned by _served_facts() for fields where the serving
+#: node explicitly wrote "unknown" -- self-selected absence.  Distinguishable
+#: from None (genuinely absent / not carried), which lets _reconcile_field()
+#: return VERDICT_SELF_REPORTED_ABSENT instead of VERDICT_ABSENT.
+#: Never exposed in public output: reconcile_advertised_vs_served() normalises
+#: it back to None in the "served" value it emits.
+_SELF_REPORTED_ABSENT = object()
+
+
 def _served_facts(serving_provenance: dict[str, Any] | None) -> dict[str, Any]:
     """Flatten the served facts we reconcile from a ``serving_provenance`` block.
 
     Tolerant of BOTH real capsule shapes (same tolerance as
     ``capsule_mesh_viewer.serving_provenance``): the nested
     ``{model{...}, hardware{...}}`` block the Rust producer emits, and any older
-    flat form. A fact genuinely not carried stays ``None`` -> ``absent``; the
-    honest ``"unknown"`` sentinel the producer writes for a fact the host never
-    told it likewise reconciles as ``absent`` (nothing to keep or break),
-    never as a value that could spuriously match or mismatch.
+    flat form. A fact genuinely not carried stays ``None`` -> ``VERDICT_ABSENT``;
+    the literal ``"unknown"`` sentinel the producer writes for a fact it chose
+    not to expose returns ``_SELF_REPORTED_ABSENT`` -> ``VERDICT_SELF_REPORTED_ABSENT``
+    (distinguishable from honest absence -- the [mesh-promise-reconciliation-grading]
+    defect 2 fix).
     """
     sp = serving_provenance or {}
     model = sp.get("model") or {}
@@ -161,9 +187,10 @@ def _served_facts(serving_provenance: dict[str, Any] | None) -> dict[str, Any]:
 
     def clean(v: Any) -> Any:
         # The producer writes the literal "unknown" for a fact the host did not
-        # expose -- treat it as absent, not as a real served value.
+        # expose -- return the sentinel so _reconcile_field() can distinguish
+        # self-selected absence from a field simply not being in the record.
         if isinstance(v, str) and v.strip().lower() == "unknown":
-            return None
+            return _SELF_REPORTED_ABSENT
         return v
 
     return {
@@ -181,13 +208,18 @@ def _served_facts(serving_provenance: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _reconcile_field(advertised: Any, served: Any) -> str:
-    """One field's three-state verdict. NEVER a silent green.
+    """One field's verdict. NEVER a silent green.
 
+    - served is _SELF_REPORTED_ABSENT   -> ``self_reported_absent`` (node
+                                           chose not to expose this fact; NOT
+                                           the same as an honestly absent field).
     - served absent (None)              -> ``absent`` (cannot reconcile).
     - served present, not advertised    -> ``not_advertised`` (nothing claimed).
     - both present and equal            -> ``match``.
     - both present and unequal          -> ``mismatch``.
     """
+    if served is _SELF_REPORTED_ABSENT:
+        return VERDICT_SELF_REPORTED_ABSENT
     if served is None:
         return VERDICT_ABSENT
     if advertised is None:
@@ -227,9 +259,11 @@ def reconcile_advertised_vs_served(
     Returns a dict::
 
         {
-          "overall": "match" | "mismatch" | "advertisement_absent"
-                     | "no_served_facts",
+          "overall": "match" | "partial_match" | "mismatch"
+                     | "advertisement_absent" | "no_served_facts",
           "advertisement_present": bool,
+          "advertisement_digest": <str|None>,
+          "advertisement_issued_at": <str|None>,
           "advertised_node_id": <str|None>,
           "served_node_id": <str|None>,
           "node_id_consistent": <bool|None>,   # None when either side absent
@@ -251,16 +285,23 @@ def reconcile_advertised_vs_served(
       - ``no_served_facts`` when the record carries no serving-provenance facts
         to check against -- also not a pass;
       - ``mismatch`` when ANY reconcilable field mismatched (loud, first-class);
-      - ``match`` only when at least one field was reconcilable and NONE
-        mismatched. A ``match`` overall still carries the self-signed caveat and
-        may include ``not_advertised``/``absent`` fields -- it is "no broken
-        promise found in what was both claimed and served", never "everything
-        verified".
+      - ``partial_match`` when some served facts were not advertised (``not_advertised``
+        verdict) but none mismatched -- the advertisement made partial promises and
+        kept them, but left some served facts un-promised.  A node promising only one
+        trivial field gets ``partial_match``, never the same ``match`` as a node that
+        covered all served facts;
+      - ``match`` only when at least one field was reconcilable, NONE mismatched,
+        AND there are no ``not_advertised`` fields.  A ``match`` overall means the
+        advertisement covered ALL served facts and kept every promise, never just
+        "no broken promise in what was both claimed and served".
+        A ``match`` still carries the self-signed caveat.
     """
     if advertisement is None:
         return {
             "overall": "advertisement_absent",
             "advertisement_present": False,
+            "advertisement_digest": None,
+            "advertisement_issued_at": None,
             "advertised_node_id": None,
             "served_node_id": (serving_provenance or {}).get("served_by_node_id"),
             "node_id_consistent": None,
@@ -287,7 +328,10 @@ def reconcile_advertised_vs_served(
     any_reconcilable = False
     for name, advertised_value, served_value in field_specs:
         verdict = _reconcile_field(advertised_value, served_value)
-        fields[name] = {"advertised": advertised_value, "served": served_value, "verdict": verdict}
+        # Normalise _SELF_REPORTED_ABSENT back to None for public output --
+        # the verdict already carries the distinction; the sentinel must not leak.
+        public_served = None if served_value is _SELF_REPORTED_ABSENT else served_value
+        fields[name] = {"advertised": advertised_value, "served": public_served, "verdict": verdict}
         if verdict == VERDICT_MISMATCH:
             mismatches.append(name)
         if verdict in (VERDICT_MATCH, VERDICT_MISMATCH):
@@ -303,16 +347,27 @@ def reconcile_advertised_vs_served(
     if node_id_consistent is False:
         mismatches.append("node_id")
 
-    if not any_reconcilable and not mismatches:
+    has_not_advertised = any(
+        f["verdict"] == VERDICT_NOT_ADVERTISED for f in fields.values()
+    )
+    # any_served: True if the record carries at least one fact (a matched/mismatched
+    # field, or a fact that was served but not promised).  When entirely empty,
+    # reconciliation is impossible -- not a pass, not a graded outcome.
+    any_served = any_reconcilable or has_not_advertised
+    if not any_served:
         overall = "no_served_facts"
     elif mismatches:
         overall = VERDICT_MISMATCH
+    elif has_not_advertised:
+        overall = VERDICT_PARTIAL_MATCH  # kept promises but left some facts un-promised
     else:
         overall = VERDICT_MATCH
 
     return {
         "overall": overall,
         "advertisement_present": True,
+        "advertisement_digest": ad.digest(),
+        "advertisement_issued_at": ad.issued_at,
         "advertised_node_id": ad.node_id or None,
         "served_node_id": served_node_id,
         "node_id_consistent": node_id_consistent,
