@@ -353,13 +353,24 @@ def build_assurance_map(
     (local_inclusion/checkpoint_signature/external_registration) are
     NOT_PRESENT when no checkpoint was supplied to this view, NOT_CHECKED
     when one was (the mechanism exists but this view doesn't call it yet --
-    ``witness_receipt_reverify_placeholder``'s honest gap)."""
+    ``witness_receipt_reverify_placeholder``'s honest gap).
+
+    ``continuity`` is gated the same way ([mesh-ledger-earned-pass-and-native-panes]
+    Part A item 4): a broken hash-chain parent is a real defect regardless of
+    whether a checkpoint exists, so that still reports FAIL unconditionally.
+    But an *intact* chain reports PASS only once ``checkpoint_signature``
+    itself reads PASS -- with no checkpoint at all there is nothing for
+    continuity to bind, so it reads NOT_PRESENT, never PASS (the live defect
+    this task fixed: a green continuity chip next to
+    ``checkpoint_signature: NOT_PRESENT``). See ``assurance_map.
+    assert_dependency_gates``, asserted below as a backstop."""
     codes = _finding_codes(verify_result)
 
     if not verify_ran:
         content_binding = assurance_map.chip(assurance_map.STATE_NOT_CHECKED, "verify did not run for this record")
         producer_signature = assurance_map.chip(assurance_map.STATE_NOT_CHECKED, "verify did not run for this record")
-        continuity = assurance_map.chip(assurance_map.STATE_NOT_CHECKED, "verify did not run for this record")
+        chain_parent_checked = False
+        chain_parent_broken = False
     else:
         content_binding = (
             assurance_map.chip(assurance_map.STATE_FAIL, "capsule_id does not recompute from this record")
@@ -371,11 +382,8 @@ def build_assurance_map(
             if _PRODUCER_SIGNATURE_FAIL_CODE in codes
             else assurance_map.chip(assurance_map.STATE_PASS, "self-attested signature verifies offline")
         )
-        continuity = (
-            assurance_map.chip(assurance_map.STATE_FAIL, "hash-chain parent missing or malformed")
-            if codes & _CONTINUITY_FAIL_CODES
-            else assurance_map.chip(assurance_map.STATE_PASS, "hash-chain parent intact")
-        )
+        chain_parent_checked = True
+        chain_parent_broken = bool(codes & _CONTINUITY_FAIL_CODES)
 
     if has_witness_checkpoint:
         local_inclusion = assurance_map.chip(
@@ -393,15 +401,37 @@ def build_assurance_map(
             "witness signs) is not reachable until [capsule-anchor-checkpoint-aware-witness] deploys",
         )
 
+    if not chain_parent_checked:
+        continuity = assurance_map.chip(assurance_map.STATE_NOT_CHECKED, "verify did not run for this record")
+    elif chain_parent_broken:
+        continuity = assurance_map.chip(assurance_map.STATE_FAIL, "hash-chain parent missing or malformed")
+    elif checkpoint_signature["state"] == assurance_map.STATE_PASS:
+        continuity = assurance_map.chip(
+            assurance_map.STATE_PASS, "hash-chain parent intact and bound under a verified checkpoint"
+        )
+    elif not has_witness_checkpoint:
+        continuity = assurance_map.chip(
+            assurance_map.STATE_NOT_PRESENT, "no checkpoint supplied to this view; nothing for continuity to bind"
+        )
+    else:
+        continuity = assurance_map.chip(assurance_map.STATE_NOT_CHECKED, WITNESS_REVERIFY_PENDING_REASON)
+
     owner_status = identity_chain_for(record).get("owner_status")
     identity_authority = {
         "bound": assurance_map.chip(assurance_map.STATE_PASS, "owner cert present and re-checks"),
         "invalid": assurance_map.chip(assurance_map.STATE_FAIL, "owner cert present but fails re-check"),
     }.get(owner_status, assurance_map.chip(assurance_map.STATE_NOT_PRESENT, "no owner cert offered"))
 
+    # capture_coverage is not a pass/fail check -- it answers which boundary
+    # and recording rule produced this half, never "is this good" ([mesh-
+    # ledger-earned-pass-and-native-panes] Part A item 2: no STATE_PASS path
+    # for this property, ever).
     effect = _effect_block(record)
     capture_coverage = (
-        assurance_map.chip(assurance_map.STATE_PASS, "request/response digests captured for this half")
+        assurance_map.chip(
+            assurance_map.STATE_NOT_CHECKED,
+            "captured at the sidecar observe path (rule: every served exchange)",
+        )
         if effect.get("request_digest") and effect.get("response_digest")
         else assurance_map.chip(assurance_map.STATE_NOT_PRESENT, "this half did not capture both request/response digests")
     )
@@ -420,6 +450,7 @@ def build_assurance_map(
         assurance_map.PROPERTY_OUTCOME_CORROBORATION: outcome_corroboration,
     }
     assurance_map.assert_map_complete(properties)
+    assurance_map.assert_dependency_gates(properties)
     return properties
 
 
