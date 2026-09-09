@@ -108,7 +108,7 @@ def build_pane_a_json(state: "NodeState") -> dict[str, Any]:
     return payload
 
 
-def build_pane_b_json(state: "NodeState") -> dict[str, Any]:
+def build_pane_b_json(state: "NodeState", *, peer_fetch_config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Pane B ("Peers") -- ``peer_accountability_tab.build_peers_payload``
     over this node's own ledger, fresh every call."""
     records, _archived_segments = ledger_store_backend.read_all_capsules(state.ledger_dir)
@@ -119,6 +119,7 @@ def build_pane_b_json(state: "NodeState") -> dict[str, Any]:
         log_id=log_id,
         checkpoint_lines=_read_jsonl_if_present(state.ledger_dir / "checkpoints.jsonl"),
         source_log="sidecar",
+        peer_fetch_config=peer_fetch_config,
     )
     assert_no_rating_fields(payload)
     return payload

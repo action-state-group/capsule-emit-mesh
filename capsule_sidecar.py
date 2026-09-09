@@ -2096,7 +2096,16 @@ def make_handler(state: NodeState, upstream_base: str, *, pane_dashboard_origin:
                 if parsed.path == "/accountability/pane-a":
                     payload = build_pane_a_json(state)
                 elif parsed.path == "/accountability/pane-b":
-                    payload = build_pane_b_json(state)
+                    peer_fetch_raw = _one("peer_fetch")
+                    peer_timeout_raw = _one("peer_timeout")
+                    peer_fetch_cfg: dict[str, Any] | None = None
+                    if peer_fetch_raw == "1":
+                        peer_fetch_cfg = {
+                            "enabled": True,
+                            "peer_url_map": {},
+                            "timeout_seconds": int(peer_timeout_raw) if peer_timeout_raw else 10,
+                        }
+                    payload = build_pane_b_json(state, peer_fetch_config=peer_fetch_cfg)
                 else:
                     limit_raw = _one("limit")
                     after_seq_raw = _one("after_seq")

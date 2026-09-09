@@ -83,6 +83,12 @@ from capsule_exchange_tab import digest_match_grade, exchange_id_for, half_by_ro
 from capsule_mesh_view import _poc_block, label_counterparty, label_role
 from history_card import HistoryCard, build_history_card
 
+# Peer evidence client (optional -- guards against import cycle on first load)
+try:
+    from peer_evidence_client import PeerFetchResult
+except ImportError:
+    PeerFetchResult = None  # type: ignore[assignment,misc]
+
 __all__ = [
     "ASKED_ABSENT_REASON",
     "CELL_ABSENT",
@@ -427,7 +433,7 @@ def witnessed_cell(card: HistoryCard) -> dict[str, Any]:
     }
 
 
-def asked_cell(evidence_requests: list[dict[str, Any]] | None) -> dict[str, Any]:
+def asked_cell(evidence_requests: list[dict[str, Any]] | None = None, *, send_log_entries: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Asked column: evidence requests THIS node sent to this peer.
 
     ``evidence_requests``, when supplied, is a list of already-answered
@@ -437,6 +443,16 @@ def asked_cell(evidence_requests: list[dict[str, Any]] | None) -> dict[str, Any]
     reachable, state: see ``ASKED_ABSENT_REASON`` for why (not the stale
     pre-merge reason this cell used to cite).
     """
+    if send_log_entries:
+        answered = sum(1 for e in send_log_entries if e.get("status") == "verified")
+        refused = sum(1 for e in send_log_entries if e.get("status") == "refused")
+        no_answer = sum(1 for e in send_log_entries if e.get("status") == "no_answer")
+        total = len(send_log_entries)
+        return {
+            "state": CELL_PRESENT,
+            "text": f"sent {total} request(s): {answered} answered, {refused} refused, {no_answer} no-answer",
+            "send_log": send_log_entries,
+        }
     if not evidence_requests:
         return {"state": CELL_ABSENT, "text": ASKED_ABSENT_REASON, "count": 0}
 
@@ -471,13 +487,40 @@ def asked_cell(evidence_requests: list[dict[str, Any]] | None) -> dict[str, Any]
     }
 
 
-def peer_history_cell(card: HistoryCard, checkpoint_lines: list[dict[str, Any]]) -> dict[str, Any]:
+def peer_history_cell(card: HistoryCard, checkpoint_lines: list[dict[str, Any]], *, peer_fetch_result: dict[str, Any] | None = None) -> dict[str, Any]:
     """History (theirs) column -- v2. Honestly ``pending``: see
     ``THEIRS_HISTORY_PENDING_REASON``. This node's own chain state (the old
     shortcut's data) rides along as ``mine_for_reference``, computed via the
     unchanged, still-real ``history_cell``/``continuity_cell``/
     ``witnessed_cell`` graders -- never discarded, just no longer presented
     as though it were the peer's."""
+    if peer_fetch_result is not None:
+        status = peer_fetch_result.get("status")
+        if status == "verified":
+            hs = peer_fetch_result.get("history_summary", {})
+            nb = hs.get("verified_bundles", "?")
+            nc = hs.get("checkpoint_count", "?")
+            return {
+                "state": CELL_VERIFIED,
+                "text": f"{nb} bundle(s) verified, {nc} checkpoint(s) (their count)",
+                "fetch_source": "peer_evidence_client",
+                "history_summary": hs,
+                "mine_for_reference": card,
+            }
+        elif status == "refused":
+            return {
+                "state": CELL_REFUSED,
+                "text": f"peer refused: {peer_fetch_result.get('reason', 'no reason given')}",
+                "signed": peer_fetch_result.get("signed", False),
+                "mine_for_reference": card,
+            }
+        elif status == "failed":
+            return {
+                "state": CELL_FAILED,
+                "text": f"fetch verification failed: {peer_fetch_result.get('reason', 'unknown')}",
+                "mine_for_reference": card,
+            }
+        # no_answer or unknown: fall through to existing pending logic
     return {
         "state": CELL_PENDING,
         "text": THEIRS_HISTORY_PENDING_REASON,
@@ -506,12 +549,40 @@ def _own_served_summary_value(
     return summary.to_value()
 
 
-def served_cell(own_summary_value: dict[str, Any] | None = None) -> dict[str, Any]:
+def served_cell(own_summary_value: dict[str, Any] | None = None, *, peer_fetch_result: dict[str, Any] | None = None) -> dict[str, Any]:
     """Served (theirs) column. Honestly ``pending``: see
     ``SERVED_PENDING_REASON``. ``own_summary_value``, when supplied, is THIS
     node's own ``served_summary.ServedSummary.to_value()`` -- carried as
     ``mine_for_reference`` exactly like ``peer_history_cell`` carries this
     node's own chain, never presented as though it were the peer's."""
+    if peer_fetch_result is not None:
+        status = peer_fetch_result.get("status")
+        if status == "verified":
+            ss = peer_fetch_result.get("served_summary", {})
+            n_served = ss.get("n_served", "?")
+            n_completed = ss.get("n_completed", "?")
+            n_failed = ss.get("n_failed", "?")
+            return {
+                "state": CELL_VERIFIED,
+                "text": f"served {n_served} · completed {n_completed} · failed {n_failed} (their count)",
+                "fetch_source": "peer_evidence_client",
+                "served_summary": ss,
+                "mine_for_reference": own_summary_value,
+            }
+        elif status == "refused":
+            return {
+                "state": CELL_REFUSED,
+                "text": f"peer refused: {peer_fetch_result.get('reason', 'no reason given')}",
+                "signed": peer_fetch_result.get("signed", False),
+                "mine_for_reference": own_summary_value,
+            }
+        elif status == "failed":
+            return {
+                "state": CELL_FAILED,
+                "text": f"fetch verification failed: {peer_fetch_result.get('reason', 'unknown')}",
+                "mine_for_reference": own_summary_value,
+            }
+        # no_answer: fall through
     cell: dict[str, Any] = {"state": CELL_PENDING, "text": SERVED_PENDING_REASON, "source": "self_derived"}
     if own_summary_value is not None:
         cell["mine_for_reference"] = own_summary_value
@@ -601,7 +672,7 @@ def _adjudications_about(capsule_ids: set[str], all_records: list[dict[str, Any]
     return sealed, tally, contradicted_capsule_id
 
 
-def verdicts_cell(records: list[dict[str, Any]], all_records: list[dict[str, Any]]) -> dict[str, Any]:
+def verdicts_cell(records: list[dict[str, Any]], all_records: list[dict[str, Any]], *, peer_fetch_result: dict[str, Any] | None = None) -> dict[str, Any]:
     """Verdicts column -- real for the half this node itself sealed
     (adjudication capsules in this node's own ledger naming one of this
     peer's capsule ids); ``VERDICTS_REFERENCES_PENDING_REASON`` for the
@@ -620,6 +691,19 @@ def verdicts_cell(records: list[dict[str, Any]], all_records: list[dict[str, Any
     }
     if contradicted_capsule_id:
         cell["adjudication_capsule_id"] = contradicted_capsule_id
+    if peer_fetch_result is not None and peer_fetch_result.get("status") == "verified":
+        tally = peer_fetch_result.get("tally", {})
+        cell["references_tally"] = tally
+        cell["references_asked"] = peer_fetch_result.get("references_asked", 0)
+        cell["references_answered"] = peer_fetch_result.get("references_answered", 0)
+        cell["ack_refusals"] = peer_fetch_result.get("ack_refusals", 0)
+        # Update text to include tally
+        corroborated = tally.get("corroborated", 0)
+        contradicted = tally.get("contradicted", 0)
+        inconclusive = tally.get("inconclusive", 0)
+        references_suffix = f" · refs: +{corroborated}/-{contradicted}/~{inconclusive}"
+        if isinstance(cell.get("text"), str):
+            cell["text"] = cell["text"] + references_suffix
     return cell
 
 
@@ -638,6 +722,7 @@ def build_peer_row(
     source_log: str = "sidecar",
     evidence_requests: list[dict[str, Any]] | None = None,
     own_served_summary_value: dict[str, Any] | None = None,
+    peer_fetch_result: "PeerFetchResult | None" = None,
 ) -> dict[str, Any]:
     """One Pane B row for *peer_id* -- the 7 columns of
     mesh-accountability-panes-v2-2026-09-05.md §2, plus a row-expand pair
@@ -650,10 +735,10 @@ def build_peer_row(
         "node": node_cell(peer_id, records),
         "rung": rung_cell(records),
         "role": role_and_count_cell(records, source_log),
-        "history": peer_history_cell(history_card, checkpoint_lines),
-        "served": served_cell(own_served_summary_value),
+        "history": peer_history_cell(history_card, checkpoint_lines, peer_fetch_result=peer_fetch_result.history if peer_fetch_result else None),
+        "served": served_cell(own_served_summary_value, peer_fetch_result=peer_fetch_result.served if peer_fetch_result else None),
         "pair": pair,
-        "verdicts": verdicts_cell(records, all_records),
+        "verdicts": verdicts_cell(records, all_records, peer_fetch_result=peer_fetch_result.verdicts if peer_fetch_result else None),
         "asked": asked_cell(evidence_requests),
         "exchange_count": len(records),
         "first_seen": min(timestamps, default=None),
@@ -677,6 +762,7 @@ def build_peers_payload(
     since_size: int = 0,
     source_log: str = "sidecar",
     evidence_requests_by_peer: dict[str, list[dict[str, Any]]] | None = None,
+    peer_fetch_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble the whole Pane B payload: one row per peer this node has
     exchanged capsules with, default-sorted most-recent-first (never by
@@ -689,6 +775,25 @@ def build_peers_payload(
     card = build_history_card(node_id=node_id, log_id=log_id, checkpoint_lines=checkpoint_lines, since_size=since_size)
     own_served_summary_value = _own_served_summary_value(node_id, records, checkpoint_lines, source_log)
     groups = group_by_peer(records, own_node_id=node_id)
+    # Build peer_fetch_results_by_peer if peer_fetch_config is enabled
+    peer_fetch_results_by_peer: dict[str, "PeerFetchResult"] = {}
+    if peer_fetch_config and peer_fetch_config.get("enabled"):
+        try:
+            from peer_evidence_client import fetch_all_peer_cells
+            peer_url_map: dict[str, str] = peer_fetch_config.get("peer_url_map", {})
+            timeout: int = int(peer_fetch_config.get("timeout_seconds", 10))
+            for pid in groups:
+                peer_url = peer_url_map.get(pid)
+                if peer_url:
+                    peer_fetch_results_by_peer[pid] = fetch_all_peer_cells(
+                        pid,
+                        peer_url,
+                        enabled=True,
+                        timeout_seconds=timeout,
+                        peer_map=peer_url_map,
+                    )
+        except ImportError:
+            pass
     rows = [
         build_peer_row(
             peer_id,
@@ -699,11 +804,19 @@ def build_peers_payload(
             source_log=source_log,
             evidence_requests=(evidence_requests_by_peer or {}).get(peer_id),
             own_served_summary_value=own_served_summary_value,
+            peer_fetch_result=peer_fetch_results_by_peer.get(peer_id),
         )
         for peer_id, peer_records in groups.items()
     ]
     rows = sort_peer_rows(rows, "last_seen", reverse=True)
-    payload = {"node_id": node_id, "peer_count": len(rows), "default_sort": "last_seen", "rows": rows}
+    payload = {
+        "node_id": node_id,
+        "peer_count": len(rows),
+        "default_sort": "last_seen",
+        "rows": rows,
+        "peer_fetch_enabled": bool(peer_fetch_config and peer_fetch_config.get("enabled")),
+        "peer_fetch_count": len(peer_fetch_results_by_peer),
+    }
     assert_no_rating_fields(payload)
     return payload
 
@@ -769,7 +882,7 @@ _HTML_SHELL = r"""<!DOCTYPE html>
     color: var(--fg-faint); background: var(--panel-strong); padding: 9px 12px; border-bottom: 1px solid var(--border);
     cursor: pointer; user-select: none; }
   thead th:hover { color: var(--fg); }
-  tbody td { padding: 8px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+  tbody td { padding: 6px 10px; border-bottom: 1px solid var(--border-soft); vertical-align: middle; max-height: 80px; overflow: hidden; word-break: break-word; }
   .pill { display: inline-flex; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; white-space: nowrap; }
   .pill-good { color: var(--good); background: color-mix(in oklab, var(--good) 14%, transparent); }
   .pill-warn { color: var(--warn); background: color-mix(in oklab, var(--warn) 14%, transparent); }
@@ -780,7 +893,7 @@ _HTML_SHELL = r"""<!DOCTYPE html>
   .empty { padding: 30px; text-align: center; color: var(--fg-faint); }
   tbody tr.row { cursor: pointer; }
   tbody tr.row:hover { background: var(--panel-strong); }
-  tbody tr.detail-row { display: none; background: var(--bg); }
+  tbody tr.detail-row { display: none; visibility: collapse; background: var(--bg); }
   tbody tr.detail-row.open { display: table-row; }
   .expand-block { padding: 10px 4px; font-size: 12px; color: var(--fg-dim); }
 </style>
@@ -804,7 +917,13 @@ _HTML_SHELL = r"""<!DOCTYPE html>
     pair:"Pair (me↔them)",verdicts:"Verdicts",asked:"Asked"};
   var TONE = @@CHIP_TONE@@;
 
-  function cellText(cell) { return (cell && cell.text) ? cell.text : "no evidence recorded"; }
+  function cellText(cell) {
+    if (!cell) return "no evidence recorded";
+    var t = cell.text;
+    if (t === null || t === undefined) return "no evidence recorded";
+    if (typeof t === "object") return JSON.stringify(t);
+    return String(t) || "no evidence recorded";
+  }
 
   function pill(cell) {
     var tone = TONE[(cell && cell.state) || ""] || "neutral";
