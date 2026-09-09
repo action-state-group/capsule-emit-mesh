@@ -28,8 +28,12 @@ from agent_action_capsule.emit import emit
 from capsule_sidecar import digest_json
 from twin_adjudicator import (
     DEFAULT_MARGIN_TAU,
+    MARGIN_TAU_DENOMINATOR,
+    MARGIN_TAU_RATIONALE,
     NO_VERDICT_NO_REQUESTER_TRANSCRIPT,
+    NO_VERDICT_OWNER_ABSENT,
     NO_VERDICT_REFEREE_NOT_INDEPENDENT,
+    NO_VERDICT_REFEREE_UNREACHABLE,
     NO_VERDICT_SAME_OWNER_TWIN,
     NO_VERDICT_WEIGHTS_MISMATCH,
     RELATION_ADJUDICATES,
@@ -38,7 +42,9 @@ from twin_adjudicator import (
     AdjudicationHalf,
     ForgedHalfError,
     PreimageDigestMismatchError,
+    RefereeIdentity,
     RefereeResult,
+    UnattributableRefereeError,
     adjudicate,
     compare_transcripts,
     contradicted,
@@ -460,7 +466,7 @@ def test_divergence_always_calls_referee_disputant_logprobs_never_consulted():
 
     def _referee(a, b, comparison):
         calls.append((a, b, comparison))
-        return RefereeResult(verdict=contradicted("owner-b"), margin=4.9)
+        return RefereeResult(verdict=contradicted("owner-b"), margin=4.9, identity=RefereeIdentity(referee_id="test-referee-node"))
 
     outcome = adjudicate(half_a, half_b, referee=_referee)
 
@@ -495,7 +501,8 @@ def test_referee_own_thin_logprob_margin_overrides_to_inconclusive():
         half_b,
         logprob_tau=0.5,
         referee=lambda a, b, comparison: RefereeResult(
-            verdict=contradicted("owner-b"), margin=0.2, logprobs_absent=False
+            verdict=contradicted("owner-b"), margin=0.2, logprobs_absent=False,
+            identity=RefereeIdentity(referee_id="test-referee-node"),
         ),
     )
 
@@ -518,7 +525,8 @@ def test_referee_logprobs_absent_is_inert_but_labeled():
         half_b,
         logprob_tau=0.5,
         referee=lambda a, b, comparison: RefereeResult(
-            verdict=contradicted("owner-b"), margin=0.0, logprobs_absent=True
+            verdict=contradicted("owner-b"), margin=0.0, logprobs_absent=True,
+            identity=RefereeIdentity(referee_id="test-referee-node"),
         ),
     )
 
@@ -554,7 +562,7 @@ def test_referee_independent_of_both_disputants_is_called():
 
     def _referee(a, b, comparison):
         calls.append((a, b, comparison))
-        return RefereeResult(verdict=VERDICT_CORROBORATED, margin=6.0)
+        return RefereeResult(verdict=VERDICT_CORROBORATED, margin=6.0, identity=RefereeIdentity(referee_id="test-referee-node"))
 
     outcome = adjudicate(half_a, half_b, referee=_referee, referee_owner_id="owner-c")
 
@@ -571,7 +579,8 @@ def test_seal_adjudication_capsule_publishes_referee_capsule_id_and_tau():
         half_b,
         logprob_tau=0.5,
         referee=lambda a, b, comparison: RefereeResult(
-            verdict=contradicted("owner-b"), margin=4.9, capsule_id="referee-capsule-123"
+            verdict=contradicted("owner-b"), margin=4.9, capsule_id="referee-capsule-123",
+            identity=RefereeIdentity(referee_id="test-referee-node"),
         ),
     )
 
@@ -596,3 +605,196 @@ def test_seal_adjudication_capsule_omits_referee_fields_when_no_referee_called()
     assert "tau" not in adj
     assert "referee_capsule_id" not in adj
     assert "referee_logprobs_absent" not in adj
+
+
+# ---------------------------------------------------------------------------
+# [mesh-adjudicator-margin-tau] Fix 1: adversarial tests
+# ---------------------------------------------------------------------------
+
+
+def test_default_margin_tau_is_0_9():
+    """[mesh-adjudicator-margin-tau] DEFAULT_MARGIN_TAU must be 0.9 --
+    the adversarial-council lowering that prevents a single trailing token
+    from forcing inconclusive."""
+    assert DEFAULT_MARGIN_TAU == 0.9
+
+
+def test_trailing_token_does_not_force_inconclusive():
+    """[mesh-adjudicator-margin-tau] A single trailing token on one side
+    (out of 20 total in the longer sequence: margin = 19/20 = 0.95 >= 0.9)
+    must NOT force inconclusive -- that would let an accused node trivially
+    evade with one appended token."""
+    text_a = " ".join(["word"] * 19)
+    text_b = " ".join(["word"] * 19) + " extra"
+    # margin = 19/20 = 0.95 >= DEFAULT_MARGIN_TAU (0.9) -> corroborated
+    half_a = _make_half(text_a, owner_id="owner-a")
+    half_b = _make_half(text_b, owner_id="owner-b")
+
+    outcome = adjudicate(half_a, half_b)
+
+    assert outcome.verdict == VERDICT_CORROBORATED, (
+        f"single trailing token must not force inconclusive (margin={outcome.margin})"
+    )
+
+
+def test_many_trailing_tokens_still_inconclusive():
+    """[mesh-adjudicator-margin-tau] Systematic injection of many trailing
+    tokens (> 10% of the longer sequence) must still produce inconclusive --
+    the threshold is not a blank pass for large divergences.
+    8 matching tokens out of 11 total (margin = 8/11 ≈ 0.727) < 0.9."""
+    text_a = " ".join(["word"] * 8)
+    text_b = text_a + " extra1 extra2 extra3"  # 11 tokens total
+    half_a = _make_half(text_a, owner_id="owner-a")
+    half_b = _make_half(text_b, owner_id="owner-b")
+
+    outcome = adjudicate(half_a, half_b)
+
+    assert outcome.verdict == VERDICT_INCONCLUSIVE, (
+        f"systematic trailing-token injection (8/11 = {8/11:.3f}) must still be inconclusive"
+    )
+
+
+def test_margin_tau_denominator_and_rationale_exported():
+    """[mesh-adjudicator-margin-tau] MARGIN_TAU_DENOMINATOR and
+    MARGIN_TAU_RATIONALE must be non-empty strings exported from the module."""
+    assert isinstance(MARGIN_TAU_DENOMINATOR, str) and MARGIN_TAU_DENOMINATOR
+    assert isinstance(MARGIN_TAU_RATIONALE, str) and MARGIN_TAU_RATIONALE
+
+
+# ---------------------------------------------------------------------------
+# [mesh-referee-attribution] Fix 2: adversarial tests
+# ---------------------------------------------------------------------------
+
+
+def test_forged_referee_is_rejected_not_sealed():
+    """[mesh-referee-attribution] A referee callable that returns no identity
+    (identity=None) must raise UnattributableRefereeError -- an unattributed
+    verdict must never seal.  A lambda supplying only verdict+margin is the
+    paradigm forge."""
+    half_a = _make_half("text a", owner_id="owner-a")
+    half_b = _make_half("text b", owner_id="owner-b")
+
+    with pytest.raises(UnattributableRefereeError):
+        adjudicate(
+            half_a,
+            half_b,
+            referee=lambda a, b, c: RefereeResult(verdict=contradicted("owner-b"), margin=1.0),
+        )
+
+
+def test_attributed_referee_seals_with_referee_id():
+    """[mesh-referee-attribution] A referee that supplies a RefereeIdentity
+    produces a sealed capsule that names ``referee_id`` in the adjudication
+    block -- a verifier can trace the verdict to its origin."""
+    half_a = _make_half("text a", owner_id="owner-a")
+    half_b = _make_half("text b", owner_id="owner-b")
+
+    outcome = adjudicate(
+        half_a,
+        half_b,
+        referee=lambda a, b, c: RefereeResult(
+            verdict=contradicted("owner-b"),
+            margin=1.0,
+            identity=RefereeIdentity(referee_id="node-xyz"),
+        ),
+    )
+    capsule = seal_adjudication_capsule(outcome, operator="test-org", developer="test@v1")
+    adj = capsule["model_attestation"]["compute_attestation"]["adjudication"]
+    assert adj["referee_id"] == "node-xyz"
+
+
+def test_referee_unreachable_returns_no_verdict():
+    """[mesh-referee-attribution] A referee callable that raises any exception
+    must produce an AdjudicationOutcome with no_verdict_reason ==
+    NO_VERDICT_REFEREE_UNREACHABLE -- never propagate the exception to the
+    caller."""
+
+    def _raises(a, b, c):
+        raise RuntimeError("referee refused")
+
+    half_a = _make_half("text a", owner_id="owner-a")
+    half_b = _make_half("text b", owner_id="owner-b")
+
+    outcome = adjudicate(half_a, half_b, referee=_raises)
+
+    assert outcome.verdict is None
+    assert outcome.no_verdict_reason == NO_VERDICT_REFEREE_UNREACHABLE
+
+
+def test_seal_none_for_referee_unreachable():
+    """[mesh-referee-attribution] An outcome with no_verdict_reason ==
+    referee_unreachable returns None from seal_adjudication_capsule -- same
+    as other no-verdict cases; a crashed-referee outcome must never seal."""
+
+    def _raises(a, b, c):
+        raise RuntimeError("referee refused")
+
+    half_a = _make_half("text a", owner_id="owner-a")
+    half_b = _make_half("text b", owner_id="owner-b")
+    outcome = adjudicate(half_a, half_b, referee=_raises)
+
+    assert seal_adjudication_capsule(outcome, operator="test-org", developer="test@v1") is None
+
+
+# ---------------------------------------------------------------------------
+# [mesh-adjudicator-owner-and-weights] Fix 3: adversarial tests
+# ---------------------------------------------------------------------------
+
+
+def test_absent_owner_id_does_not_grant_verdict():
+    """[mesh-adjudicator-owner-and-weights] half_a with owner_id=None and a
+    distinct half_b must return no_verdict_reason == owner_absent, NOT a
+    corroborated/inconclusive verdict -- absent identity must not grade
+    better than declared-same-owner."""
+    half_a = _make_half("hello world", owner_id=None)
+    half_b = _make_half("hello world", owner_id="owner-b")
+
+    outcome = adjudicate(half_a, half_b)
+
+    assert outcome.verdict is None
+    assert outcome.no_verdict_reason == NO_VERDICT_OWNER_ABSENT
+
+
+def test_both_absent_owner_does_not_grant_verdict():
+    """[mesh-adjudicator-owner-and-weights] Both halves with owner_id=None
+    must also refuse -- even if the identity would be trivially 'equal',
+    there is no identity to assert distinct-ness of."""
+    half_a = _make_half("hello world", owner_id=None)
+    half_b = _make_half("hello world", owner_id=None)
+
+    outcome = adjudicate(half_a, half_b)
+
+    assert outcome.verdict is None
+    assert outcome.no_verdict_reason == NO_VERDICT_OWNER_ABSENT
+
+
+def test_one_side_weights_digest_unknown_no_shared_assertion():
+    """[mesh-adjudicator-owner-and-weights] When one side's weights_digest is
+    None (unknown) and the other is known, the outcome's weights_digest must
+    be None -- we cannot assert both sides shared the same weights when one
+    never declared theirs."""
+    half_a = _make_half("hello world", owner_id="owner-a", weights_digest=None)
+    half_b = _make_half("hello world", owner_id="owner-b", weights_digest="sha256:bbb")
+
+    outcome = adjudicate(half_a, half_b)
+
+    assert outcome.verdict == VERDICT_CORROBORATED  # not blocked by absent weights
+    assert outcome.weights_digest is None, (
+        "outcome.weights_digest must be None when one side is unknown -- "
+        "publishing 'sha256:bbb' would falsely assert shared weights"
+    )
+
+
+def test_seal_does_not_assert_shared_weights_when_one_side_unknown():
+    """[mesh-adjudicator-owner-and-weights] The sealed capsule's adjudication
+    block must carry weights_digest=None when one side did not declare its
+    weights -- the capsule must not assert shared weights it cannot verify."""
+    half_a = _make_half("hello world", owner_id="owner-a", weights_digest=None)
+    half_b = _make_half("hello world", owner_id="owner-b", weights_digest="sha256:bbb")
+    outcome = adjudicate(half_a, half_b)
+    capsule = seal_adjudication_capsule(outcome, operator="test-org", developer="test@v1")
+
+    adj = capsule["model_attestation"]["compute_attestation"]["adjudication"]
+    assert adj.get("weights_digest") is None, (
+        "sealed capsule must not assert shared weights when one side's digest is unknown"
+    )

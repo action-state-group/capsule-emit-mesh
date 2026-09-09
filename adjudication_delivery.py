@@ -213,20 +213,27 @@ def seal_adjudication_ack_refused(
     "discoverable later" claim actually true. `None` when the original
     verdict was not a ``contradicted:<owner_id>`` shape (never fabricated).
     """
-    original_verdict = _adjudication_block(adjudication_capsule).get("verdict")
+    original_block = _adjudication_block(adjudication_capsule)
+    original_verdict = original_block.get("verdict")
     counterparty_ref = (
         original_verdict.split(":", 1)[1]
         if isinstance(original_verdict, str) and original_verdict.startswith("contradicted:")
         else None
     )
-    compute_attestation = {
-        "adjudication_ack_refused": {
-            "adjudication_capsule_id": adjudication_capsule["capsule_id"],
-            "verdict": original_verdict,
-            "counterparty_ref": counterparty_ref,
-            "refusal": refusal,
-        }
+    # [mesh-referee-attribution] Forward referee_id from the original
+    # adjudication block so verifiers querying ack_refusal records can
+    # confirm the refused verdict was produced by an attributed referee --
+    # `ask_history._classify_receipt_for_x` gates ack_refusal tallies on
+    # this field being present and non-empty.
+    ack_refused_block: dict[str, Any] = {
+        "adjudication_capsule_id": adjudication_capsule["capsule_id"],
+        "verdict": original_verdict,
+        "counterparty_ref": counterparty_ref,
+        "refusal": refusal,
     }
+    if original_block.get("referee_id"):
+        ack_refused_block["referee_id"] = original_block["referee_id"]
+    compute_attestation = {"adjudication_ack_refused": ack_refused_block}
     capsule = emit(
         action_type="fyi",
         operator=operator,

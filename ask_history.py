@@ -308,6 +308,16 @@ def sample_reference_candidates(
     return ranked[:k]
 
 
+def _is_attributed_adjudication(adjudication: dict[str, Any]) -> bool:
+    """[mesh-referee-attribution] Return True only when the adjudication
+    block carries a non-empty ``referee_id`` field -- meaning the verdict was
+    produced by an identified referee party whose identity was verified by
+    ``adjudicate()`` before the capsule was sealed.  An unattributed
+    adjudication (no ``referee_id``) cannot be trusted as an independent
+    tiebreak, so ack_refusal tallies that reference one are not counted."""
+    return bool(adjudication.get("referee_id"))
+
+
 def _classify_receipt_for_x(receipt: dict[str, Any], x_node_id: str, tally: dict[str, int]) -> None:
     """Fold one verified reference receipt's adjudication content into
     *tally* (mutated in place: ``corroborated``/``contradicted``/
@@ -319,6 +329,14 @@ def _classify_receipt_for_x(receipt: dict[str, Any], x_node_id: str, tally: dict
     land in these per-``X`` buckets; the counters exist so a shape that DOES
     start naming an owner on those verdicts is picked up automatically, with
     no code change here.
+
+    [mesh-referee-attribution] ``ack_refusals`` are only counted when the
+    referenced adjudication block carries an attributed ``referee_id`` --
+    i.e. when the verdict that was refused originated from an identified
+    referee.  An unattributed accusation (no ``referee_id``) predates the
+    attribution requirement or was produced outside the verified pipeline and
+    is not counted, so a forged unattributed ack_refusal does not inflate the
+    tally.
     """
     for adjudication in _iter_dicts_by_key(receipt, "adjudication"):
         verdict = adjudication.get("verdict")
@@ -330,7 +348,8 @@ def _classify_receipt_for_x(receipt: dict[str, Any], x_node_id: str, tally: dict
             tally["inconclusive"] += 1
     for ack_refused in _iter_dicts_by_key(receipt, "adjudication_ack_refused"):
         if ack_refused.get("verdict") == f"{_VERDICT_CONTRADICTED_PREFIX}{x_node_id}":
-            tally["ack_refusals"] += 1
+            if _is_attributed_adjudication(ack_refused):
+                tally["ack_refusals"] += 1
 
 
 @dataclass

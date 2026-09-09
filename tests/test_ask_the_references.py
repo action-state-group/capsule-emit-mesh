@@ -56,6 +56,8 @@ import evidence_server as es
 from adjudication_delivery import seal_adjudication_ack_refused
 from twin_adjudicator import (
     AdjudicationHalf,
+    RefereeIdentity,
+    RefereeResult,
     adjudicate,
     contradicted,
     seal_adjudication_capsule,
@@ -233,9 +235,19 @@ def _build_gcp_caught_by_m4(tmp_path, *, prune_seq_1: bool = False):
     cap_a, _disc_a = _make_served_half("hello world", owner_id="m4")
     half_a = AdjudicationHalf.from_capsule_and_disclosure(cap_a, _disc_a)
     half_b = AdjudicationHalf.from_capsule_and_disclosure(cap_b, _disc_b)
-    outcome = adjudicate(half_a, half_b)
-    forced = outcome.__class__(**{**outcome.__dict__, "verdict": contradicted("gcp")})
-    adjudication = seal_adjudication_capsule(forced, operator="test-org", developer="referee@v1")
+    # [mesh-referee-attribution] Use an attributed referee so the sealed
+    # adjudication capsule carries referee_id -- ack_refusals are only
+    # counted when the referenced adjudication is attributed.
+    outcome = adjudicate(
+        half_a,
+        half_b,
+        referee=lambda a, b, c: RefereeResult(
+            verdict=contradicted("gcp"),
+            margin=c.margin,
+            identity=RefereeIdentity(referee_id="m4-referee-node"),
+        ),
+    )
+    adjudication = seal_adjudication_capsule(outcome, operator="test-org", developer="referee@v1")
 
     gcp_door_state = es.EvidenceServerState(
         ledger_dir=gcp_state.ledger_dir, ledger_path=gcp_state.ledger_path, signing_key_path=gcp_state.signing_key_path
@@ -319,8 +331,11 @@ def test_classify_receipt_only_attributes_owner_naming_verdicts_to_x():
         "gcp",
         tally,
     )
+    # [mesh-referee-attribution] ack_refusals are only counted when the
+    # adjudication_ack_refused block carries a non-empty referee_id --
+    # i.e. the verdict originated from an identified referee.
     ah._classify_receipt_for_x(
-        {"model_attestation": {"compute_attestation": {"adjudication_ack_refused": {"verdict": "contradicted:gcp"}}}},
+        {"model_attestation": {"compute_attestation": {"adjudication_ack_refused": {"verdict": "contradicted:gcp", "referee_id": "node-xyz"}}}},
         "gcp",
         tally,
     )
