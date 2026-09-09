@@ -116,9 +116,9 @@ def test_subjects_are_both_owners_for_contradicted():
     half_b = _make_half("beta", owner_id="owner-b")
 
     def referee(a, b, comparison):
-        from twin_adjudicator import RefereeResult, contradicted
+        from twin_adjudicator import RefereeIdentity, RefereeResult, contradicted
 
-        return RefereeResult(verdict=contradicted("owner-b"), margin=comparison.margin)
+        return RefereeResult(verdict=contradicted("owner-b"), margin=comparison.margin, identity=RefereeIdentity(referee_id="test-referee-node"))
 
     outcome = adjudicate(half_a, half_b, logprob_tau=0.0, referee=referee)
     assert outcome.verdict == "contradicted:owner-b"

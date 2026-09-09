@@ -109,6 +109,7 @@ from twin_adjudicator import (
     AdjudicationHalf,
     ComparisonResult,
     Referee,
+    RefereeIdentity,
     RefereeResult,
     contradicted,
     token_at,
@@ -396,6 +397,14 @@ def live_referee(
         capsule_id=record.capsule_id,
         referee_record_status=record.status,
         referee_record_nonce=nonce,
+        # [mesh-referee-attribution] The referee's stable identity is its
+        # target_peer_id -- the same mesh peer id the caller used to reach
+        # it.  `referee_capsule_id` is forwarded from the resolved record
+        # (None when unresolved) so the adjudication capsule can cite it.
+        identity=RefereeIdentity(
+            referee_id=target_peer_id,
+            referee_capsule_id=record.capsule_id,
+        ),
     )
 
 
