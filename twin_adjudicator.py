@@ -130,6 +130,7 @@ __all__ = [
     "MARGIN_TAU_DENOMINATOR",
     "MARGIN_TAU_RATIONALE",
     "NO_VERDICT_NO_REQUESTER_TRANSCRIPT",
+    "NO_VERDICT_OWNER_ABSENT",
     "NO_VERDICT_REFEREE_NOT_INDEPENDENT",
     "NO_VERDICT_REFEREE_UNREACHABLE",
     "NO_VERDICT_SAME_OWNER_TWIN",
@@ -203,6 +204,12 @@ NO_VERDICT_REFEREE_NOT_INDEPENDENT = "referee_not_independent"
 REFEREE_RECORD_RESOLVED = "resolved"
 REFEREE_RECORD_CITATION_UNVERIFIED = "citation_unverified"
 REFEREE_RECORD_UNRESOLVED = "unresolved"
+
+#: [mesh-adjudicator-owner-and-weights] Returned when either half's owner_id
+#: is absent (None).  Absent identity must never grade better than
+#: declared-same-owner: a node that omits its owner_id would otherwise bypass
+#: the same_owner_twin guard entirely.
+NO_VERDICT_OWNER_ABSENT = "owner_absent"
 
 #: [mesh-referee-attribution] Returned when the referee callable raises any
 #: exception (referee unreachable or refused).  A first-class outcome, never
@@ -713,7 +720,31 @@ def adjudicate(
             half_b_capsule_id=half_b_id,
         )
 
-    shared_weights_digest = half_a.weights_digest or half_b.weights_digest
+    # [mesh-adjudicator-owner-and-weights] shared_weights_digest is only set
+    # when BOTH halves agree on the same non-None value.  When one side is
+    # None, we cannot assert that a shared digest was used -- publishing the
+    # other side's digest would be a false shared-weights claim.
+    if half_a.weights_digest is not None and half_b.weights_digest is not None:
+        shared_weights_digest: str | None = half_a.weights_digest  # both equal (mismatch case returned above)
+    else:
+        shared_weights_digest = None  # at least one unknown -- cannot assert shared
+
+    # [mesh-adjudicator-owner-and-weights] Absent owner_id must never grade
+    # better than declared-same-owner.  A node that omits owner_id entirely
+    # would bypass the same_owner_twin guard, which is always wrong.
+    if half_a.owner_id is None or half_b.owner_id is None:
+        return AdjudicationOutcome(
+            verdict=None,
+            no_verdict_reason=NO_VERDICT_OWNER_ABSENT,
+            divergence_index=None,
+            margin=0.0,
+            margin_tau=margin_tau,
+            prefix_digest=None,
+            twin_owner_distinct=None,
+            weights_digest=shared_weights_digest,
+            half_a_capsule_id=half_a_id,
+            half_b_capsule_id=half_b_id,
+        )
 
     twin_owner_distinct: bool | None = None
     if half_a.owner_id is not None and half_b.owner_id is not None:

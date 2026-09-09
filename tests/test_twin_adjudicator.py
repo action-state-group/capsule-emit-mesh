@@ -31,6 +31,7 @@ from twin_adjudicator import (
     MARGIN_TAU_DENOMINATOR,
     MARGIN_TAU_RATIONALE,
     NO_VERDICT_NO_REQUESTER_TRANSCRIPT,
+    NO_VERDICT_OWNER_ABSENT,
     NO_VERDICT_REFEREE_NOT_INDEPENDENT,
     NO_VERDICT_REFEREE_UNREACHABLE,
     NO_VERDICT_SAME_OWNER_TWIN,
@@ -733,3 +734,67 @@ def test_seal_none_for_referee_unreachable():
     outcome = adjudicate(half_a, half_b, referee=_raises)
 
     assert seal_adjudication_capsule(outcome, operator="test-org", developer="test@v1") is None
+
+
+# ---------------------------------------------------------------------------
+# [mesh-adjudicator-owner-and-weights] Fix 3: adversarial tests
+# ---------------------------------------------------------------------------
+
+
+def test_absent_owner_id_does_not_grant_verdict():
+    """[mesh-adjudicator-owner-and-weights] half_a with owner_id=None and a
+    distinct half_b must return no_verdict_reason == owner_absent, NOT a
+    corroborated/inconclusive verdict -- absent identity must not grade
+    better than declared-same-owner."""
+    half_a = _make_half("hello world", owner_id=None)
+    half_b = _make_half("hello world", owner_id="owner-b")
+
+    outcome = adjudicate(half_a, half_b)
+
+    assert outcome.verdict is None
+    assert outcome.no_verdict_reason == NO_VERDICT_OWNER_ABSENT
+
+
+def test_both_absent_owner_does_not_grant_verdict():
+    """[mesh-adjudicator-owner-and-weights] Both halves with owner_id=None
+    must also refuse -- even if the identity would be trivially 'equal',
+    there is no identity to assert distinct-ness of."""
+    half_a = _make_half("hello world", owner_id=None)
+    half_b = _make_half("hello world", owner_id=None)
+
+    outcome = adjudicate(half_a, half_b)
+
+    assert outcome.verdict is None
+    assert outcome.no_verdict_reason == NO_VERDICT_OWNER_ABSENT
+
+
+def test_one_side_weights_digest_unknown_no_shared_assertion():
+    """[mesh-adjudicator-owner-and-weights] When one side's weights_digest is
+    None (unknown) and the other is known, the outcome's weights_digest must
+    be None -- we cannot assert both sides shared the same weights when one
+    never declared theirs."""
+    half_a = _make_half("hello world", owner_id="owner-a", weights_digest=None)
+    half_b = _make_half("hello world", owner_id="owner-b", weights_digest="sha256:bbb")
+
+    outcome = adjudicate(half_a, half_b)
+
+    assert outcome.verdict == VERDICT_CORROBORATED  # not blocked by absent weights
+    assert outcome.weights_digest is None, (
+        "outcome.weights_digest must be None when one side is unknown -- "
+        "publishing 'sha256:bbb' would falsely assert shared weights"
+    )
+
+
+def test_seal_does_not_assert_shared_weights_when_one_side_unknown():
+    """[mesh-adjudicator-owner-and-weights] The sealed capsule's adjudication
+    block must carry weights_digest=None when one side did not declare its
+    weights -- the capsule must not assert shared weights it cannot verify."""
+    half_a = _make_half("hello world", owner_id="owner-a", weights_digest=None)
+    half_b = _make_half("hello world", owner_id="owner-b", weights_digest="sha256:bbb")
+    outcome = adjudicate(half_a, half_b)
+    capsule = seal_adjudication_capsule(outcome, operator="test-org", developer="test@v1")
+
+    adj = capsule["model_attestation"]["compute_attestation"]["adjudication"]
+    assert adj.get("weights_digest") is None, (
+        "sealed capsule must not assert shared weights when one side's digest is unknown"
+    )
