@@ -1815,7 +1815,21 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
     return status_code, response_body, out_headers
 
 
-def make_handler(state: NodeState, upstream_base: str):
+#: [mesh-live-tab-pane-proxy] Q2 ruling default -- the fork tab's dashboard
+#: origin this sidecar's Ledger-pane routes answer CORS preflight for. A
+#: caller can override via ``--pane-dashboard-origin``; ``None`` disables
+#: the pane routes' CORS header entirely (same-origin/non-browser callers
+#: still get a response body, a browser cross-origin fetch is just blocked
+#: client-side -- fail closed, never a wildcard).
+DEFAULT_PANE_DASHBOARD_ORIGIN = "http://localhost:3131"
+
+#: Every path this sidecar answers as a Ledger-pane JSON route -- the one
+#: place do_GET/do_OPTIONS both key on, so a new pane can't be added to one
+#: dispatcher and forgotten in the other.
+_PANE_ROUTE_PATHS = ("/accountability/pane-a", "/accountability/pane-b", "/accountability/pane-c")
+
+
+def make_handler(state: NodeState, upstream_base: str, *, pane_dashboard_origin: str | None = DEFAULT_PANE_DASHBOARD_ORIGIN):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -2014,7 +2028,95 @@ def make_handler(state: NodeState, upstream_base: str):
             if parsed.path == "/accountability/finder":
                 self._handle_finder(parsed)
                 return
+            if parsed.path in _PANE_ROUTE_PATHS:
+                self._handle_pane_route(parsed)
+                return
             self._proxy_passthrough("GET", b"")
+
+        def do_OPTIONS(self):  # noqa: N802
+            """CORS preflight for the Ledger-pane routes only -- every other
+            path falls through to the same passthrough do_GET/do_POST
+            already use for anything this sidecar doesn't itself own, so an
+            OPTIONS request to the upstream is proxied exactly like before
+            this route existed (there was no do_OPTIONS at all previously,
+            so every OPTIONS request 501'd; this is strictly additive)."""
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path not in _PANE_ROUTE_PATHS:
+                self._proxy_passthrough("OPTIONS", b"")
+                return
+            self.send_response(204)
+            self._send_pane_cors_headers()
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def _cors_allowed_origin(self) -> str | None:
+            """The ``Origin`` header value to echo back, or ``None`` when it
+            doesn't match the configured dashboard origin -- an allowlist of
+            exactly one, never a wildcard (Q2 ruling: loopback bind, CORS
+            allowlist = dashboard origin). ``None`` here means the response
+            still carries a body (useful for a non-browser/same-origin
+            caller, e.g. curl or a same-process test) but a cross-origin
+            browser fetch is blocked client-side for lacking the header --
+            fail closed, not a 403 that would also break the loopback case."""
+            if pane_dashboard_origin is None:
+                return None
+            request_origin = self.headers.get("Origin")
+            if request_origin == pane_dashboard_origin:
+                return request_origin
+            return None
+
+        def _send_pane_cors_headers(self) -> None:
+            allowed = self._cors_allowed_origin()
+            if allowed is None:
+                return
+            self.send_header("Access-Control-Allow-Origin", allowed)
+            self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "*")
+            self.send_header("Vary", "Origin")
+
+        def _handle_pane_route(self, parsed: urllib.parse.ParseResult) -> None:
+            """[mesh-live-tab-pane-proxy] L1 -- GET /accountability/pane-a|
+            b|c, JSON, loopback + CORS-allowlisted (Q2 ruling). Lazily
+            imported for the same reason ``_handle_finder`` imports
+            ``ledger_finder`` lazily: this module is still mid-way through
+            its own top-level imports the first time Python would resolve a
+            module-level import of ``accountability_pane_routes`` (which
+            itself imports ``capsule_accountability_tab`` ->
+            ``capsule_exchange_tab``/``bilateral_demo``, both of which
+            import NodeState back out of this module)."""
+            from accountability_pane_routes import build_pane_a_json, build_pane_b_json, build_pane_c_json
+
+            params = urllib.parse.parse_qs(parsed.query)
+
+            def _one(name: str) -> str | None:
+                values = params.get(name)
+                return values[0] if values and values[0] else None
+
+            try:
+                if parsed.path == "/accountability/pane-a":
+                    payload = build_pane_a_json(state)
+                elif parsed.path == "/accountability/pane-b":
+                    payload = build_pane_b_json(state)
+                else:
+                    limit_raw = _one("limit")
+                    after_seq_raw = _one("after_seq")
+                    payload = build_pane_c_json(
+                        state,
+                        exchange_id=_one("exchange_id"),
+                        limit=int(limit_raw) if limit_raw is not None else None,
+                        after_seq=int(after_seq_raw) if after_seq_raw is not None else 0,
+                    )
+                status = 200
+            except Exception as exc:  # sidecar-internal failure -- never silently swallow (do_POST's own convention)
+                payload = {"error": f"capsule sidecar error: {exc}"}
+                status = 500
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self._send_pane_cors_headers()
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def _handle_finder(self, parsed: urllib.parse.ParseResult) -> None:
             """[mesh-ui-ledger-finder] The Accountability page's Finder,
@@ -2081,8 +2183,11 @@ def run_sidecar(
     listen_port: int = 8089,
     upstream_base: str = "http://127.0.0.1:9337",
     state: NodeState,
+    pane_dashboard_origin: str | None = DEFAULT_PANE_DASHBOARD_ORIGIN,
 ) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer((listen_host, listen_port), make_handler(state, upstream_base))
+    server = ThreadingHTTPServer(
+        (listen_host, listen_port), make_handler(state, upstream_base, pane_dashboard_origin=pane_dashboard_origin)
+    )
     return server
 
 
@@ -2160,6 +2265,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--upstream", default="http://127.0.0.1:9337")
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--listen-port", type=int, default=8089)
+    parser.add_argument(
+        "--pane-dashboard-origin",
+        default=DEFAULT_PANE_DASHBOARD_ORIGIN,
+        help="[mesh-live-tab-pane-proxy] CORS allowlist (exactly one origin, never a wildcard) for "
+        "GET /accountability/pane-a|b|c -- the fork tab's Ledger panes read these directly from "
+        "this sidecar (Q2 ruling). Pass an empty string to disable the CORS header entirely.",
+    )
     parser.add_argument(
         "--role",
         choices=ROLES,
@@ -2361,7 +2473,13 @@ def main(argv: list[str] | None = None) -> int:
         plugin_reconnect_cp = state.plugin_checkpoint.reconnect()
         if plugin_reconnect_cp is not None:
             print(f"plugin-ledger reconnect checkpoint emitted: {state.plugin_checkpoint.witness_status()}")
-    server = run_sidecar(listen_host=args.listen_host, listen_port=args.listen_port, upstream_base=args.upstream, state=state)
+    server = run_sidecar(
+        listen_host=args.listen_host,
+        listen_port=args.listen_port,
+        upstream_base=args.upstream,
+        state=state,
+        pane_dashboard_origin=args.pane_dashboard_origin or None,
+    )
     print(f"capsule sidecar listening on http://{args.listen_host}:{args.listen_port} -> upstream {args.upstream}")
     print(f"role={state.role} node_id={state.node_id} model_package_digest={state.model_package_digest}")
     if state.role == ROLE_PROVIDER:

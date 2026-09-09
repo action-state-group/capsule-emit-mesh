@@ -57,6 +57,7 @@ from typing import Any
 from agent_manifest._tdx_verify import TdxVerificationError, verify_tdx_quote
 
 import assurance_map
+import ledger_store_backend
 from bilateral_demo import ClientAck, verify_client_ack
 from capsule_mesh_view import _poc_block, _verify_ok_map, verify_results_for
 from capsule_mesh_viewer import _load_verify_js, friendly_model_name, serving_provenance
@@ -99,7 +100,14 @@ __all__ = [
 #: view / not yet asked -- never amber for "not shown here". A block that is
 #: honestly not wired yet uses this state, distinct from the four-state
 #: capsule_id/rung discipline above.
-BLOCK_PENDING = "pending"
+#: [mesh-live-tab-pane-proxy] L2: references / absences-against-me / the
+#: refusals-issued and native-log fallbacks are each a mechanism that does
+#: not exist in this repo yet -- exactly ``assurance_map.STATE_NOT_CHECKED``'s
+#: definition, not the ad hoc ``"pending"`` string these blocks carried
+#: before the five-state map existed (same migration
+#: ``peer_accountability_tab.CELL_PENDING`` already did). Kept as its own
+#: name because "pending" reads better at the call sites below.
+BLOCK_PENDING = assurance_map.STATE_NOT_CHECKED
 
 REFERENCES_PENDING_REASON = (
     "what my counterparties report when asked about me is not available on this view yet: "
@@ -122,15 +130,26 @@ def freshness_grade(client_nonce_source: str | None) -> dict[str, Any]:
     ``client_supplied`` is the only state this tool calls verified: a fresh,
     client-contributed nonce the node did not mint itself. A DETECTED replay
     (``client_supplied_replayed``) is an honest FAILURE, never folded into
-    "present-unverified" -- the node saying "I saw a replay" is worse than
-    the node saying nothing about freshness at all, and must render that way.
+    a weaker state -- the node saying "I saw a replay" is worse than the
+    node saying nothing about freshness at all, and must render that way.
+
+    [mesh-live-tab-pane-proxy] L2 (§7 ruling, "pending/present-unverified in
+    the freshness-rung ... now in scope"): a node-generated nonce source
+    (``sidecar_generated_fallback``/``local_ingress``) carries no
+    client-supplied freshness claim to independently verify in the first
+    place -- that is exactly ``assurance_map.STATE_NOT_CHECKED``'s
+    definition, not the old ladder's ``present-unverified`` word (which read
+    as "unverified evidence" when there was no freshness claim to check).
+    ``client_supplied``/``client_supplied_replayed``/no-source-at-all stay on
+    this rung's own verified/failed/absent vocabulary -- those are real
+    graded outcomes, not a migrated stub.
     """
     if client_nonce_source == "client_supplied":
         state = STATE_VERIFIED
     elif client_nonce_source == "client_supplied_replayed":
         state = STATE_FAILED
     elif client_nonce_source in ("sidecar_generated_fallback", "local_ingress"):
-        state = STATE_PRESENT_UNVERIFIED
+        state = assurance_map.STATE_NOT_CHECKED
     else:
         state = STATE_ABSENT
     return {"state": state, "client_nonce_source": client_nonce_source}
@@ -1014,14 +1033,15 @@ def _read_first_json(path: str) -> dict[str, Any]:
 
 
 def _cmd_html(args: argparse.Namespace) -> int:
-    records = _read_records(args.ledger)
+    ledger_dir = ledger_store_backend.as_ledger_dir(Path(args.ledger).resolve())
+    records, _archived_segments = ledger_store_backend.read_all_capsules(ledger_dir)
     if not records:
         print(f"capsule-accountability-tab: no records in {args.ledger}", file=sys.stderr)
         return 1
     witness = _read_first_json(args.witness) if args.witness else None
     payload = build_tab_payload(
         records,
-        ledger_dir=Path(args.ledger).resolve().parent,
+        ledger_dir=ledger_dir,
         witness_checkpoint=witness,
         operator=args.operator,
         node_id=args.node_id,

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 
+import assurance_map
 import checkpointing
 import pytest
 from capsule_emit.checkpoint import WitnessRecord
@@ -255,7 +256,7 @@ def test_rung_summary_weights_digest_never_fabricated_even_with_a_real_record():
 def test_shared_summary_is_honestly_absent_not_a_fabricated_zero():
     shared = shared_summary()
     for field in ("cards_served", "bundles_served", "refusals_issued"):
-        assert shared[field]["state"] == "absent"
+        assert shared[field]["state"] == assurance_map.STATE_NOT_CHECKED
         assert "mesh-e14-evidence-responder" in shared[field]["reason"]
 
 
@@ -328,7 +329,7 @@ def test_end_to_end_card_carries_the_fixed_honesty_line_and_all_rows(tmp_path, f
     assert card["honesty_line"] == HONESTY_LINE
     assert card["sealing"]["unsealed_count"] == 1
     assert card["history"]["checkpoint_count"] == 2
-    assert card["shared"]["refusals_issued"]["state"] == "absent"
+    assert card["shared"]["refusals_issued"]["state"] == assurance_map.STATE_NOT_CHECKED
     assert set(card) == {"node_id", "sealing", "history", "rung", "shared", "adjudications", "honesty_line"}
 
 
