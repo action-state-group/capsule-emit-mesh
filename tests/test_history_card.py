@@ -23,6 +23,9 @@ from checkpointing import CheckpointState, Ed25519Signer, JsonlLogSource
 
 from history_card import (
     COVERAGE_UNSATISFIABLE,
+    FORKS_STATE_ABSENT,
+    FORKS_STATE_OK,
+    FORKS_STATE_UNREADABLE,
     HISTORY_CHAIN_RELATION,
     MESH_HISTORY_DEFINITION_DIGEST,
     REQUEST_MALFORMED,
@@ -351,12 +354,12 @@ def _write_reconciliation_state(ledger_dir, *, reconciled_peers, forks):
 
 
 def test_reconciliation_counts_are_zero_with_no_ledger_file(tmp_path):
-    assert reconciliation_counts_from_ledger_dir(tmp_path) == (0, 0)
+    assert reconciliation_counts_from_ledger_dir(tmp_path) == (0, 0, FORKS_STATE_ABSENT)
 
 
 def test_reconciliation_counts_are_zero_on_malformed_json(tmp_path):
     (tmp_path / "reconciliation_state.json").write_text("{not valid json")
-    assert reconciliation_counts_from_ledger_dir(tmp_path) == (0, 0)
+    assert reconciliation_counts_from_ledger_dir(tmp_path) == (0, 0, FORKS_STATE_UNREADABLE)
 
 
 def test_reconciliation_counts_read_the_rust_ledgers_own_json_shape(tmp_path):
@@ -365,7 +368,7 @@ def test_reconciliation_counts_read_the_rust_ledgers_own_json_shape(tmp_path):
         reconciled_peers=["aaaa", "bbbb"],
         forks=[{"peer_id": "aaaa", "log_id": "l", "mmr_size": 4}],
     )
-    assert reconciliation_counts_from_ledger_dir(tmp_path) == (2, 1)
+    assert reconciliation_counts_from_ledger_dir(tmp_path) == (2, 1, FORKS_STATE_OK)
 
 
 def test_three_fork_nodes_gossiping_heads_reconciles_with_two_peers(tmp_path, fake_witness):
@@ -384,9 +387,11 @@ def test_three_fork_nodes_gossiping_heads_reconciles_with_two_peers(tmp_path, fa
 
     assert reconciled_card.reconciled_with == 2
     assert reconciled_card.forks_observed == 0
+    assert reconciled_card.forks_state == FORKS_STATE_OK
     assert reconciled_card.to_value()["peer_reconciliation"] == {
         "reconciled_with": 2,
         "forks_observed": 0,
+        "forks_state": FORKS_STATE_OK,
         "note": reconciled_card.to_value()["peer_reconciliation"]["note"],
     }
     # Original card is untouched (no mutation).
@@ -433,6 +438,60 @@ def test_multi_checkpoint_cadence_seals_and_round_trip_verifies(tmp_path, fake_w
     assert cap["action_type"] == "fyi"
     assert isinstance(cap["capsule_id"], str) and len(cap["capsule_id"]) == 64
     assert verify_capsule(cap).ok
+
+
+# --------------------------------------------------------------------------- #
+# [mesh-forks-observed-integrity] adversarial tests                           #
+# --------------------------------------------------------------------------- #
+
+
+def test_missing_forks_key_in_ledger_is_unreadable_never_zero(tmp_path):
+    """Deleting just the 'forks' key from reconciliation_state.json (while
+    keeping 'reconciled_peers') must produce forks_state='unreadable', not
+    forks_observed=0.  This is the [mesh-forks-observed-integrity] attack:
+    `jq 'del(.forks)' reconciliation_state.json > tmp && mv tmp reconciliation_state.json`
+    then asking for a history card must never publish forks_observed: 0."""
+    # File present, parses OK, but 'forks' key deleted (the attack)
+    (tmp_path / "reconciliation_state.json").write_text(
+        json.dumps({"observed": {}, "reconciled_peers": ["peer-a", "peer-b"]})
+    )
+    counts = reconciliation_counts_from_ledger_dir(tmp_path)
+    assert counts[2] == FORKS_STATE_UNREADABLE
+    # Must NOT be 0 (false innocence) -- the count is indeterminate
+    # (we can still return 0 as placeholder but forks_state signals it's untrustworthy)
+    # The key invariant: to_value() must not publish forks_observed: 0 when unreadable
+
+
+def test_forks_observed_zero_only_publishable_when_backed_by_evidence(tmp_path, fake_witness):
+    """End-to-end: with_peer_reconciliation() on a card backed by an
+    unreadable state file must emit forks_observed=None in to_value(),
+    never 0.  forks_observed: 0 is only publishable when forks_state='ok'
+    or forks_state='absent' (plugin never ran)."""
+    lines = _build_chain(tmp_path, 2)
+    card = build_history_card(node_id="node-a", log_id="log-a", checkpoint_lines=lines, since_size=0)
+
+    # Write a tampered state file (forks key deleted)
+    (tmp_path / "reconciliation_state.json").write_text(
+        json.dumps({"observed": {}, "reconciled_peers": ["peer-a"]})
+    )
+    reconciled = with_peer_reconciliation(card, tmp_path)
+    assert reconciled.forks_state == FORKS_STATE_UNREADABLE
+    pr = reconciled.to_value()["peer_reconciliation"]
+    assert pr["forks_state"] == FORKS_STATE_UNREADABLE
+    assert pr["forks_observed"] is None  # never a false zero
+
+
+def test_absent_ledger_file_publishes_zero_forks_with_absent_state(tmp_path, fake_witness):
+    """When no reconciliation_state.json exists (plugin never ran), the card
+    legitimately publishes forks_observed=0 with forks_state='absent'.
+    This is the honest 'no observations yet' case."""
+    lines = _build_chain(tmp_path, 2)
+    card = build_history_card(node_id="node-a", log_id="log-a", checkpoint_lines=lines, since_size=0)
+    reconciled = with_peer_reconciliation(card, tmp_path)
+    assert reconciled.forks_state == FORKS_STATE_ABSENT
+    pr = reconciled.to_value()["peer_reconciliation"]
+    assert pr["forks_state"] == FORKS_STATE_ABSENT
+    assert pr["forks_observed"] == 0  # honest: plugin never ran
 
 
 def test_cadence_raw_float_fails_closed_with_float_in_digest_error(tmp_path, fake_witness):
