@@ -2061,8 +2061,23 @@ def make_handler(state: NodeState, upstream_base: str, *, pane_dashboard_origin:
             if pane_dashboard_origin is None:
                 return None
             request_origin = self.headers.get("Origin")
+            if request_origin is None:
+                return None
             if request_origin == pane_dashboard_origin:
                 return request_origin
+            # Loopback-alias equivalence: treat localhost / 127.0.0.1 / [::1]
+            # on the SAME PORT as equivalent. Single-origin allowlist preserved.
+            _LOOPBACK = {"localhost", "127.0.0.1", "::1", "[::1]"}
+            try:
+                import urllib.parse
+                req = urllib.parse.urlparse(request_origin)
+                ref = urllib.parse.urlparse(pane_dashboard_origin)
+                if req.port == ref.port and req.hostname in _LOOPBACK and ref.hostname in _LOOPBACK:
+                    # Return the REQUESTED origin (not the configured one) so the
+                    # browser sees its own Origin echoed back — required for CORS.
+                    return request_origin
+            except Exception:
+                pass
             return None
 
         def _send_pane_cors_headers(self) -> None:

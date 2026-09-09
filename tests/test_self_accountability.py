@@ -250,14 +250,18 @@ def test_rung_summary_weights_digest_never_fabricated_even_with_a_real_record():
     assert rung["weights_digest"]["reason"]
 
 
-# ── shared_summary -- honestly absent, cites the E14 blocker --------------
+# ── shared_summary -- honestly absent, plain reason string ----------------
 
 
 def test_shared_summary_is_honestly_absent_not_a_fabricated_zero():
     shared = shared_summary()
     for field in ("cards_served", "bundles_served", "refusals_issued"):
         assert shared[field]["state"] == assurance_map.STATE_NOT_CHECKED
-        assert "mesh-e14-evidence-responder" in shared[field]["reason"]
+        # Reason must be non-empty and must not contain internal task IDs
+        reason = shared[field]["reason"]
+        assert reason
+        assert "[mesh-" not in reason
+        assert "capsule-emit-mesh #" not in reason
 
 
 # ── adjudications_summary -- involving-me filter ---------------------------

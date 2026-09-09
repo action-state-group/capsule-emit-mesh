@@ -484,9 +484,8 @@ class HistoryCard:
                 "ack_refusals_about_x": self.ack_refusals_about_x,
                 "note": (
                     "counts from live-asking a SAMPLE of this card's own counterparties "
-                    "(discovery mechanism 1, [mesh-ask-the-references]) about a DIFFERENT "
-                    "node's history -- never derived from this log's own checkpoint chain, "
-                    "never a score; refusals are counted, never inferred from"
+                    "about a DIFFERENT node's history -- never derived from this log's own "
+                    "checkpoint chain; refusals are counted, never inferred"
                 ),
             },
             "not_a_score": (

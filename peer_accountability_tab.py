@@ -162,11 +162,7 @@ UNKNOWN_PEER = "unknown"
 #: that ANSWERS a peer's request exists. The current, real gap is different:
 #: nothing yet logs the requests THIS node SENDS to a peer (no evidence
 #: client, no send-log persistence) -- see `ASKED_ABSENT_REASON` below.
-ASKED_ABSENT_REASON = (
-    "no log of evidence-requests this node has SENT to this peer exists yet: the responder "
-    "that answers a peer's request is merged (capsule-emit-mesh #83, [mesh-e15-evidence-http-route]), "
-    "but nothing persists a per-peer send/answer log for requests this node initiates"
-)
+ASKED_ABSENT_REASON = "Not yet counted — this node doesn't persist served/refused counts."
 
 #: v2 (mesh-accountability-panes-v2-2026-09-05.md §4): "History (theirs) must
 #: be THEIR card fetched via the evidence client (checkpoints subject,
@@ -198,8 +194,7 @@ SERVED_PENDING_REASON = (
 )
 
 VERDICTS_REFERENCES_PENDING_REASON = (
-    "what my counterparties report when asked about this peer is not available on this view yet: "
-    "pending [mesh-ask-the-references]"
+    "what counterparties report when asked about this peer is not available on this view yet."
 )
 
 #: Rung ordering per `capsule_sidecar.derive_cross_party_rung`'s own

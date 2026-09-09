@@ -79,11 +79,7 @@ HONESTY_LINE = "coverage is checked by counterparties, not by this node; hardwar
 #: persists a served/refused count for this card to tally (same gap
 #: `peer_accountability_tab.ASKED_ABSENT_REASON` documents for the
 #: per-peer view).
-SHARED_ABSENT_REASON = (
-    "evidence-request responder counts are not yet available on this node: [mesh-e14-evidence-"
-    "responder]'s responder is merged (capsule-emit-mesh #83, [mesh-e15-evidence-http-route]), "
-    "but nothing persists a served/refused count for it to tally"
-)
+SHARED_ABSENT_REASON = "Not yet counted — this node doesn't persist served/refused counts."
 
 #: Substrings that must never appear as a dict key anywhere in a Pane A
 #: card -- "properties, not scores" (rules block, batch draft). Checked by
@@ -230,7 +226,7 @@ def rung_summary(latest_record: dict[str, Any] | None) -> dict[str, Any]:
             "state": "absent",
             "source": None,
             "capture_method": None,
-            "reason": "no capsule field named weights_digest exists in records this sidecar emits today",
+            "reason": "not present in records emitted by this node",
         },
         "identity": {
             "source": "node_ownership",
