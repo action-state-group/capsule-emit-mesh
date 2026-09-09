@@ -28,6 +28,8 @@ from agent_action_capsule.emit import emit
 from capsule_sidecar import digest_json
 from twin_adjudicator import (
     DEFAULT_MARGIN_TAU,
+    MARGIN_TAU_DENOMINATOR,
+    MARGIN_TAU_RATIONALE,
     NO_VERDICT_NO_REQUESTER_TRANSCRIPT,
     NO_VERDICT_REFEREE_NOT_INDEPENDENT,
     NO_VERDICT_SAME_OWNER_TWIN,
@@ -596,3 +598,57 @@ def test_seal_adjudication_capsule_omits_referee_fields_when_no_referee_called()
     assert "tau" not in adj
     assert "referee_capsule_id" not in adj
     assert "referee_logprobs_absent" not in adj
+
+
+# ---------------------------------------------------------------------------
+# [mesh-adjudicator-margin-tau] Fix 1: adversarial tests
+# ---------------------------------------------------------------------------
+
+
+def test_default_margin_tau_is_0_9():
+    """[mesh-adjudicator-margin-tau] DEFAULT_MARGIN_TAU must be 0.9 --
+    the adversarial-council lowering that prevents a single trailing token
+    from forcing inconclusive."""
+    assert DEFAULT_MARGIN_TAU == 0.9
+
+
+def test_trailing_token_does_not_force_inconclusive():
+    """[mesh-adjudicator-margin-tau] A single trailing token on one side
+    (out of 20 total in the longer sequence: margin = 19/20 = 0.95 >= 0.9)
+    must NOT force inconclusive -- that would let an accused node trivially
+    evade with one appended token."""
+    text_a = " ".join(["word"] * 19)
+    text_b = " ".join(["word"] * 19) + " extra"
+    # margin = 19/20 = 0.95 >= DEFAULT_MARGIN_TAU (0.9) -> corroborated
+    half_a = _make_half(text_a, owner_id="owner-a")
+    half_b = _make_half(text_b, owner_id="owner-b")
+
+    outcome = adjudicate(half_a, half_b)
+
+    assert outcome.verdict == VERDICT_CORROBORATED, (
+        f"single trailing token must not force inconclusive (margin={outcome.margin})"
+    )
+
+
+def test_many_trailing_tokens_still_inconclusive():
+    """[mesh-adjudicator-margin-tau] Systematic injection of many trailing
+    tokens (> 10% of the longer sequence) must still produce inconclusive --
+    the threshold is not a blank pass for large divergences.
+    8 matching tokens out of 11 total (margin = 8/11 ≈ 0.727) < 0.9."""
+    text_a = " ".join(["word"] * 8)
+    text_b = text_a + " extra1 extra2 extra3"  # 11 tokens total
+    half_a = _make_half(text_a, owner_id="owner-a")
+    half_b = _make_half(text_b, owner_id="owner-b")
+
+    outcome = adjudicate(half_a, half_b)
+
+    assert outcome.verdict == VERDICT_INCONCLUSIVE, (
+        f"systematic trailing-token injection (8/11 = {8/11:.3f}) must still be inconclusive"
+    )
+
+
+def test_margin_tau_denominator_and_rationale_exported():
+    """[mesh-adjudicator-margin-tau] MARGIN_TAU_DENOMINATOR and
+    MARGIN_TAU_RATIONALE must be non-empty strings exported from the module."""
+    assert isinstance(MARGIN_TAU_DENOMINATOR, str) and MARGIN_TAU_DENOMINATOR
+    assert isinstance(MARGIN_TAU_RATIONALE, str) and MARGIN_TAU_RATIONALE

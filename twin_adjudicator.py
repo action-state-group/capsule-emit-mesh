@@ -127,6 +127,8 @@ from capsule_sidecar import ROLE_PROVIDER, digest_json
 __all__ = [
     "CAPTURE_METHOD_DETERMINISTIC_REPLAY",
     "DEFAULT_MARGIN_TAU",
+    "MARGIN_TAU_DENOMINATOR",
+    "MARGIN_TAU_RATIONALE",
     "NO_VERDICT_NO_REQUESTER_TRANSCRIPT",
     "NO_VERDICT_REFEREE_NOT_INDEPENDENT",
     "NO_VERDICT_SAME_OWNER_TWIN",
@@ -199,12 +201,33 @@ REFEREE_RECORD_RESOLVED = "resolved"
 REFEREE_RECORD_CITATION_UNVERIFIED = "citation_unverified"
 REFEREE_RECORD_UNRESOLVED = "unresolved"
 
-#: Only a fully-matching comparison (margin == 1.0) clears the default
-#: threshold. Two temperature-0, fixed-seed, same-weights runs are expected
-#: to be byte-identical; any measured margin below this is, first-class,
-#: `inconclusive` -- a trigger for the (separate, upstream-gated) referee
-#: tiebreak, never a verdict this module reaches on its own.
-DEFAULT_MARGIN_TAU = 1.0
+#: Tolerable-difference threshold for the text-margin verdict rule.
+#: Denominator: ``token_count_of_longer_sequence`` (see
+#: ``MARGIN_TAU_DENOMINATOR``).  A margin >= 0.9 means at most 10% of the
+#: longer sequence's tokens diverged -- corroborated.  Any margin below 0.9
+#: is, first-class, ``inconclusive`` -- a trigger for the (separate,
+#: upstream-gated) referee tiebreak, never a verdict this module reaches on
+#: its own.  The 0.9 threshold exists so that a single trailing token added
+#: by one twin does not force ``inconclusive``; evasion via systematic
+#: trailing-token injection raises the per-node inconclusive RATE, which is
+#: observable via [mesh-expectation-comparison].
+DEFAULT_MARGIN_TAU = 0.9
+
+#: The denominator used when computing the margin fraction: the token count
+#: of the LONGER of the two sequences (``max(len_a, len_b)``).  Published
+#: as a constant so verifiers know exactly how to reproduce the calculation
+#: from ``ComparisonResult.len_a`` and ``ComparisonResult.len_b``.
+MARGIN_TAU_DENOMINATOR = "token_count_of_longer_sequence"
+
+#: Human-readable rationale for the DEFAULT_MARGIN_TAU choice.  Cited in
+#: the adjudication capsule's ``margin_tau`` field so an auditor can recover
+#: the reasoning from the sealed record alone.
+MARGIN_TAU_RATIONALE = (
+    "tokens matched / max(len_a, len_b); 0.9 means up to 10% trailing tokens"
+    " differ without triggering inconclusive; evasion via systematic"
+    " trailing-token injection raises the per-node inconclusive RATE observable"
+    " via [mesh-expectation-comparison]"
+)
 
 
 def contradicted(owner_id: str) -> str:
