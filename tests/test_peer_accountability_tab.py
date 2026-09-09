@@ -621,3 +621,250 @@ def test_render_peers_tab_html_escapes_hostile_lt_in_payload_values():
     html = render_peers_tab_html(payload)
     assert "<script>alert" not in html
     assert "\\u003cscript>alert(1)\\u003c/script>" in html
+
+
+# ---------------------------------------------------------------------------
+# label_counterparty -- served_by_node_id peer extraction (the real-data gap)
+# ---------------------------------------------------------------------------
+
+
+def _served_capsule(*, capsule_id: str, served_by_node_id: str, timestamp: str = "2026-09-07T00:00:00Z", role: str = "served") -> dict:
+    """Minimal capsule with a serving_provenance.served_by_node_id field,
+    matching the shape the Rust plugin emits on the serving path."""
+    return {
+        "capsule_id": capsule_id,
+        "operator": "op",
+        "timestamp": timestamp,
+        "model_attestation": {
+            "model_id": "m",
+            "compute_attestation": {
+                "x-mesh-poc-v1": {
+                    "role": role,
+                    "serving_provenance": {
+                        "served_by_node_id": served_by_node_id,
+                        "requesting_party": "unknown",
+                        "exchange_id": f"ex-{capsule_id}",
+                        "dispatch_path": "raw_proxy",
+                    },
+                }
+            },
+        },
+        "effect": {"request_digest": "a" * 64, "response_digest": "b" * 64, "effect_attestation": "gate_executed"},
+        "disposition": {"decision": "accept", "verdict_class": "executed"},
+    }
+
+
+def _requested_capsule(*, capsule_id: str, served_by_node_id: str, timestamp: str = "2026-09-07T00:00:00Z") -> dict:
+    """Capsule with role=requested and a remote served_by_node_id -- the
+    shape a requestor-side sidecar record would carry."""
+    cap = _served_capsule(capsule_id=capsule_id, served_by_node_id=served_by_node_id, timestamp=timestamp, role="requested")
+    return cap
+
+
+# ---
+
+OWN_NODE_ID = "aaaa" * 16  # 64 hex chars
+PEER_A_NODE_ID = "bbbb" * 16
+PEER_B_NODE_ID = "cccc" * 16
+
+
+def test_label_counterparty_served_by_own_node_is_unknown():
+    """A record where served_by_node_id == own_node_id is not a peer -- it's
+    this node's own serving record.  Must stay 'unknown'."""
+    from capsule_mesh_view import label_counterparty
+
+    cap = _served_capsule(capsule_id="c1", served_by_node_id=OWN_NODE_ID)
+    assert label_counterparty(cap, OWN_NODE_ID) == "unknown"
+
+
+def test_label_counterparty_served_by_peer_returns_peer_key():
+    """A record where served_by_node_id differs from own_node_id is a peer's
+    record in a cross-node combined ledger view -- must be identified."""
+    from capsule_mesh_view import label_counterparty
+
+    cap = _served_capsule(capsule_id="c1", served_by_node_id=PEER_A_NODE_ID)
+    label = label_counterparty(cap, OWN_NODE_ID)
+    assert label.startswith("node:")
+    assert PEER_A_NODE_ID[:16] in label
+
+
+def test_label_counterparty_role_requested_uses_served_by_as_peer():
+    """When role=requested (this node sent the request), served_by_node_id
+    is the REMOTE serving node -- a peer regardless of own_node_id."""
+    from capsule_mesh_view import label_counterparty
+
+    cap = _requested_capsule(capsule_id="c1", served_by_node_id=PEER_A_NODE_ID)
+    label = label_counterparty(cap, OWN_NODE_ID)
+    assert label.startswith("node:")
+    assert PEER_A_NODE_ID[:16] in label
+
+
+def test_label_counterparty_requesting_party_used_when_non_unknown():
+    """serving_provenance.requesting_party is used as a peer id when it is
+    a real node id (not 'unknown')."""
+    from capsule_mesh_view import label_counterparty
+
+    cap = _capsule(capsule_id="c1", timestamp="t")
+    # inject a non-unknown requesting_party
+    cap["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["serving_provenance"] = {
+        "served_by_node_id": OWN_NODE_ID,
+        "requesting_party": PEER_A_NODE_ID,
+    }
+    label = label_counterparty(cap, OWN_NODE_ID)
+    assert label.startswith("node:")
+    assert PEER_A_NODE_ID[:16] in label
+
+
+def test_group_by_peer_with_own_node_id_separates_peer_records():
+    """group_by_peer with own_node_id extracts distinct peer buckets from
+    a combined cross-node record set.  This is the gap that left the pane
+    empty: without own_node_id, all records group under 'unknown'."""
+    own_caps = [_served_capsule(capsule_id=f"own-{i}", served_by_node_id=OWN_NODE_ID, timestamp=f"2026-09-07T0{i}:00:00Z") for i in range(3)]
+    peer_a_caps = [_served_capsule(capsule_id=f"pa-{i}", served_by_node_id=PEER_A_NODE_ID, timestamp=f"2026-09-07T0{i}:10:00Z") for i in range(2)]
+    peer_b_caps = [_served_capsule(capsule_id=f"pb-{i}", served_by_node_id=PEER_B_NODE_ID, timestamp=f"2026-09-07T0{i}:20:00Z") for i in range(4)]
+
+    groups = group_by_peer(own_caps + peer_a_caps + peer_b_caps, own_node_id=OWN_NODE_ID)
+
+    peer_ids = set(groups.keys())
+    # own records bucket under UNKNOWN_PEER (served_by_node_id == own)
+    assert UNKNOWN_PEER in peer_ids
+    assert len(groups[UNKNOWN_PEER]) == 3
+    # peer A and peer B each get their own bucket
+    peer_keys = {k for k in peer_ids if k != UNKNOWN_PEER}
+    assert len(peer_keys) == 2
+    for k in peer_keys:
+        assert k.startswith("node:")
+    # count check
+    total_peer_records = sum(len(v) for k, v in groups.items() if k != UNKNOWN_PEER)
+    assert total_peer_records == 6  # 2 + 4
+
+
+def test_group_by_peer_without_own_node_id_all_served_records_are_unknown():
+    """Without own_node_id, all served records (requesting_party=unknown,
+    no cross_party) fall into the 'unknown' bucket -- the PRE-FIX behaviour
+    that left the pane empty when the sidecar didn't pass its node_id."""
+    caps = [_served_capsule(capsule_id=f"c{i}", served_by_node_id=PEER_A_NODE_ID) for i in range(3)]
+
+    groups = group_by_peer(caps)  # no own_node_id
+
+    assert list(groups.keys()) == [UNKNOWN_PEER]
+    assert len(groups[UNKNOWN_PEER]) == 3
+
+
+def test_build_peers_payload_shows_distinct_peer_rows_from_cross_node_records(tmp_path, fake_witness):
+    """build_peers_payload returns MORE THAN ONE peer row (not just the
+    UNKNOWN_PEER bucket) when given combined cross-node records.  This is the
+    end-to-end assertion the task requires: the Peers pane shows the nodes."""
+    lines = _build_chain(tmp_path, 2)
+
+    own_caps = [_served_capsule(capsule_id=f"own-{i}", served_by_node_id=OWN_NODE_ID, timestamp=f"2026-09-07T00:0{i}:00Z") for i in range(5)]
+    peer_a_caps = [_served_capsule(capsule_id=f"pa-{i}", served_by_node_id=PEER_A_NODE_ID, timestamp=f"2026-09-07T01:0{i}:00Z") for i in range(3)]
+    peer_b_caps = [_served_capsule(capsule_id=f"pb-{i}", served_by_node_id=PEER_B_NODE_ID, timestamp=f"2026-09-07T02:0{i}:00Z") for i in range(4)]
+
+    payload = build_peers_payload(
+        own_caps + peer_a_caps + peer_b_caps,
+        node_id=OWN_NODE_ID,
+        log_id="log-test",
+        checkpoint_lines=lines,
+    )
+
+    assert payload["peer_count"] > 1, "must have more than one peer row -- not just the unknown bucket"
+    # two identified peers
+    identified = [r for r in payload["rows"] if r["peer_id"] is not None]
+    assert len(identified) == 2
+    # all identified peers have real node keys (not None)
+    for row in identified:
+        assert row["peer_id"] is not None
+        assert row["peer_id"].startswith("node:")
+        # honest pending cells -- history/served/verdicts are not_checked, never fabricated
+        assert row["history"]["state"] == CELL_PENDING
+        assert row["served"]["state"] == CELL_PENDING
+
+
+# ---------------------------------------------------------------------------
+# Real cross-node fixture ledger (full-ledgers-3node-20260907)
+# ---------------------------------------------------------------------------
+
+
+import pathlib
+
+_FIXTURE_DIR = pathlib.Path(
+    "/Users/intangible/dev/asg/_work/mesh-live-run-2026-09-06/out/full-ledgers-3node-20260907"
+)
+_GCP_A_NODE_ID = "781419308be2123b1884a5dba24dec0ffc5a2d59148eb312ea82ef1c7e0ff4ae"
+_GCP_B_NODE_ID = "c814d483196404b7c6aea71f24edec0233c3442b7799338e90853f204307ed5a"
+_M4_NODE_ID = "d534fb999c0fc6e38368103ceaaeb3393df3b21315c4dae91ac8cb666000149d"
+
+
+def _read_jsonl_fixture(name: str) -> list[dict]:
+    path = _FIXTURE_DIR / name
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8") as fh:
+        return [json.loads(line) for line in fh if line.strip()]
+
+
+@pytest.mark.skipif(
+    not _FIXTURE_DIR.exists(),
+    reason="cross-node fixture ledger not present at expected path",
+)
+def test_cross_node_fixture_gcp_a_sees_gcp_b_as_peer():
+    """Against the real 3-node capture ledger: GCP-A combined with GCP-B
+    records should yield at least ONE identified peer row with GCP-B's
+    actual node key -- the check the task requires."""
+    records = _read_jsonl_fixture("GCP-A.jsonl") + _read_jsonl_fixture("GCP-B.jsonl")
+    assert records, "fixture records must be non-empty"
+
+    payload = build_peers_payload(
+        records,
+        node_id=_GCP_A_NODE_ID,
+        log_id="GCP-A-crossnode",
+        checkpoint_lines=[],
+    )
+
+    assert payload["peer_count"] > 1, f"expected >1 peer rows, got {payload['peer_count']}"
+    identified = [r for r in payload["rows"] if r["peer_id"] is not None]
+    assert len(identified) >= 1, "at least one identified peer row (not just UNKNOWN_PEER)"
+    peer_ids = {r["peer_id"] for r in identified}
+    # GCP-B's node id must appear as a peer key
+    assert any(_GCP_B_NODE_ID[:16] in pid for pid in peer_ids), (
+        f"GCP-B node key not found in peer_ids={peer_ids}"
+    )
+    # all identified peer rows must have honest NOT_CHECKED cells (pending, never fabricated)
+    for row in identified:
+        assert row["history"]["state"] == CELL_PENDING
+        assert row["served"]["state"] == CELL_PENDING
+        assert row["node"]["state"] == CELL_PRESENT
+
+
+@pytest.mark.skipif(
+    not _FIXTURE_DIR.exists(),
+    reason="cross-node fixture ledger not present at expected path",
+)
+def test_cross_node_fixture_three_nodes_yields_two_peer_rows():
+    """Against the real 3-node capture ledger (GCP-A + GCP-B + M4):
+    from GCP-A's perspective, the other two nodes are peers -- the pane
+    must show exactly two identified peer rows plus one UNKNOWN_PEER bucket
+    (GCP-A's own served records that requested_party=unknown doesn't resolve)."""
+    records = (
+        _read_jsonl_fixture("GCP-A.jsonl")
+        + _read_jsonl_fixture("GCP-B.jsonl")
+        + _read_jsonl_fixture("M4.jsonl")
+    )
+    assert records, "fixture records must be non-empty"
+
+    payload = build_peers_payload(
+        records,
+        node_id=_GCP_A_NODE_ID,
+        log_id="GCP-A-3node",
+        checkpoint_lines=[],
+    )
+
+    # At least 3 rows: 2 identified peers + 1 unknown bucket
+    assert payload["peer_count"] >= 3, f"expected >=3 peer rows (2 peers + unknown), got {payload['peer_count']}"
+    identified = [r for r in payload["rows"] if r["peer_id"] is not None]
+    assert len(identified) >= 2, f"expected >=2 identified peers, got {len(identified)}"
+    # Both known nodes must appear
+    peer_ids = {r["peer_id"] for r in identified}
+    assert any(_GCP_B_NODE_ID[:16] in pid for pid in peer_ids), "GCP-B must appear"
+    assert any(_M4_NODE_ID[:16] in pid for pid in peer_ids), "M4 must appear"
