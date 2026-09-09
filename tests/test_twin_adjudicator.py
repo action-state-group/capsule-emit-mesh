@@ -32,6 +32,7 @@ from twin_adjudicator import (
     MARGIN_TAU_RATIONALE,
     NO_VERDICT_NO_REQUESTER_TRANSCRIPT,
     NO_VERDICT_REFEREE_NOT_INDEPENDENT,
+    NO_VERDICT_REFEREE_UNREACHABLE,
     NO_VERDICT_SAME_OWNER_TWIN,
     NO_VERDICT_WEIGHTS_MISMATCH,
     RELATION_ADJUDICATES,
@@ -40,7 +41,9 @@ from twin_adjudicator import (
     AdjudicationHalf,
     ForgedHalfError,
     PreimageDigestMismatchError,
+    RefereeIdentity,
     RefereeResult,
+    UnattributableRefereeError,
     adjudicate,
     compare_transcripts,
     contradicted,
@@ -462,7 +465,7 @@ def test_divergence_always_calls_referee_disputant_logprobs_never_consulted():
 
     def _referee(a, b, comparison):
         calls.append((a, b, comparison))
-        return RefereeResult(verdict=contradicted("owner-b"), margin=4.9)
+        return RefereeResult(verdict=contradicted("owner-b"), margin=4.9, identity=RefereeIdentity(referee_id="test-referee-node"))
 
     outcome = adjudicate(half_a, half_b, referee=_referee)
 
@@ -497,7 +500,8 @@ def test_referee_own_thin_logprob_margin_overrides_to_inconclusive():
         half_b,
         logprob_tau=0.5,
         referee=lambda a, b, comparison: RefereeResult(
-            verdict=contradicted("owner-b"), margin=0.2, logprobs_absent=False
+            verdict=contradicted("owner-b"), margin=0.2, logprobs_absent=False,
+            identity=RefereeIdentity(referee_id="test-referee-node"),
         ),
     )
 
@@ -520,7 +524,8 @@ def test_referee_logprobs_absent_is_inert_but_labeled():
         half_b,
         logprob_tau=0.5,
         referee=lambda a, b, comparison: RefereeResult(
-            verdict=contradicted("owner-b"), margin=0.0, logprobs_absent=True
+            verdict=contradicted("owner-b"), margin=0.0, logprobs_absent=True,
+            identity=RefereeIdentity(referee_id="test-referee-node"),
         ),
     )
 
@@ -556,7 +561,7 @@ def test_referee_independent_of_both_disputants_is_called():
 
     def _referee(a, b, comparison):
         calls.append((a, b, comparison))
-        return RefereeResult(verdict=VERDICT_CORROBORATED, margin=6.0)
+        return RefereeResult(verdict=VERDICT_CORROBORATED, margin=6.0, identity=RefereeIdentity(referee_id="test-referee-node"))
 
     outcome = adjudicate(half_a, half_b, referee=_referee, referee_owner_id="owner-c")
 
@@ -573,7 +578,8 @@ def test_seal_adjudication_capsule_publishes_referee_capsule_id_and_tau():
         half_b,
         logprob_tau=0.5,
         referee=lambda a, b, comparison: RefereeResult(
-            verdict=contradicted("owner-b"), margin=4.9, capsule_id="referee-capsule-123"
+            verdict=contradicted("owner-b"), margin=4.9, capsule_id="referee-capsule-123",
+            identity=RefereeIdentity(referee_id="test-referee-node"),
         ),
     )
 
@@ -652,3 +658,78 @@ def test_margin_tau_denominator_and_rationale_exported():
     MARGIN_TAU_RATIONALE must be non-empty strings exported from the module."""
     assert isinstance(MARGIN_TAU_DENOMINATOR, str) and MARGIN_TAU_DENOMINATOR
     assert isinstance(MARGIN_TAU_RATIONALE, str) and MARGIN_TAU_RATIONALE
+
+
+# ---------------------------------------------------------------------------
+# [mesh-referee-attribution] Fix 2: adversarial tests
+# ---------------------------------------------------------------------------
+
+
+def test_forged_referee_is_rejected_not_sealed():
+    """[mesh-referee-attribution] A referee callable that returns no identity
+    (identity=None) must raise UnattributableRefereeError -- an unattributed
+    verdict must never seal.  A lambda supplying only verdict+margin is the
+    paradigm forge."""
+    half_a = _make_half("text a", owner_id="owner-a")
+    half_b = _make_half("text b", owner_id="owner-b")
+
+    with pytest.raises(UnattributableRefereeError):
+        adjudicate(
+            half_a,
+            half_b,
+            referee=lambda a, b, c: RefereeResult(verdict=contradicted("owner-b"), margin=1.0),
+        )
+
+
+def test_attributed_referee_seals_with_referee_id():
+    """[mesh-referee-attribution] A referee that supplies a RefereeIdentity
+    produces a sealed capsule that names ``referee_id`` in the adjudication
+    block -- a verifier can trace the verdict to its origin."""
+    half_a = _make_half("text a", owner_id="owner-a")
+    half_b = _make_half("text b", owner_id="owner-b")
+
+    outcome = adjudicate(
+        half_a,
+        half_b,
+        referee=lambda a, b, c: RefereeResult(
+            verdict=contradicted("owner-b"),
+            margin=1.0,
+            identity=RefereeIdentity(referee_id="node-xyz"),
+        ),
+    )
+    capsule = seal_adjudication_capsule(outcome, operator="test-org", developer="test@v1")
+    adj = capsule["model_attestation"]["compute_attestation"]["adjudication"]
+    assert adj["referee_id"] == "node-xyz"
+
+
+def test_referee_unreachable_returns_no_verdict():
+    """[mesh-referee-attribution] A referee callable that raises any exception
+    must produce an AdjudicationOutcome with no_verdict_reason ==
+    NO_VERDICT_REFEREE_UNREACHABLE -- never propagate the exception to the
+    caller."""
+
+    def _raises(a, b, c):
+        raise RuntimeError("referee refused")
+
+    half_a = _make_half("text a", owner_id="owner-a")
+    half_b = _make_half("text b", owner_id="owner-b")
+
+    outcome = adjudicate(half_a, half_b, referee=_raises)
+
+    assert outcome.verdict is None
+    assert outcome.no_verdict_reason == NO_VERDICT_REFEREE_UNREACHABLE
+
+
+def test_seal_none_for_referee_unreachable():
+    """[mesh-referee-attribution] An outcome with no_verdict_reason ==
+    referee_unreachable returns None from seal_adjudication_capsule -- same
+    as other no-verdict cases; a crashed-referee outcome must never seal."""
+
+    def _raises(a, b, c):
+        raise RuntimeError("referee refused")
+
+    half_a = _make_half("text a", owner_id="owner-a")
+    half_b = _make_half("text b", owner_id="owner-b")
+    outcome = adjudicate(half_a, half_b, referee=_raises)
+
+    assert seal_adjudication_capsule(outcome, operator="test-org", developer="test@v1") is None

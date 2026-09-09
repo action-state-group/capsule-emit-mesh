@@ -131,6 +131,7 @@ __all__ = [
     "MARGIN_TAU_RATIONALE",
     "NO_VERDICT_NO_REQUESTER_TRANSCRIPT",
     "NO_VERDICT_REFEREE_NOT_INDEPENDENT",
+    "NO_VERDICT_REFEREE_UNREACHABLE",
     "NO_VERDICT_SAME_OWNER_TWIN",
     "NO_VERDICT_WEIGHTS_MISMATCH",
     "REFEREE_RECORD_CITATION_UNVERIFIED",
@@ -147,7 +148,9 @@ __all__ = [
     "ForgedHalfError",
     "PreimageDigestMismatchError",
     "Referee",
+    "RefereeIdentity",
     "RefereeResult",
+    "UnattributableRefereeError",
     "adjudicate",
     "compare_transcripts",
     "contradicted",
@@ -201,6 +204,12 @@ REFEREE_RECORD_RESOLVED = "resolved"
 REFEREE_RECORD_CITATION_UNVERIFIED = "citation_unverified"
 REFEREE_RECORD_UNRESOLVED = "unresolved"
 
+#: [mesh-referee-attribution] Returned when the referee callable raises any
+#: exception (referee unreachable or refused).  A first-class outcome, never
+#: propagated as-is -- callers see ``no_verdict_reason=referee_unreachable``,
+#: not a crash.
+NO_VERDICT_REFEREE_UNREACHABLE = "referee_unreachable"
+
 #: Tolerable-difference threshold for the text-margin verdict rule.
 #: Denominator: ``token_count_of_longer_sequence`` (see
 #: ``MARGIN_TAU_DENOMINATOR``).  A margin >= 0.9 means at most 10% of the
@@ -249,6 +258,35 @@ class ForgedHalfError(RuntimeError):
 
 class PreimageDigestMismatchError(RuntimeError):
     """A fixture half's disclosed preimage does not hash to its declared `response_digest`."""
+
+
+class UnattributableRefereeError(RuntimeError):
+    """[mesh-referee-attribution] A referee returned a result with no
+    ``RefereeIdentity`` (``identity=None``).  An unattributed verdict must
+    never seal -- any callable that omits identity is rejected before its
+    result can be acted upon.  Supply a ``RefereeIdentity`` with a non-empty
+    ``referee_id`` to pass this gate.
+    """
+
+
+@dataclass(frozen=True)
+class RefereeIdentity:
+    """[mesh-referee-attribution] Identity of the referee party that produced
+    a ``RefereeResult``.  Required: a ``RefereeResult`` with ``identity=None``
+    raises ``UnattributableRefereeError`` before its verdict can be adopted.
+
+    ``referee_id`` is the referee node's stable identifier (e.g. its node id
+    or the capsule_id of its own registration record).
+    ``referee_capsule_id`` is the capsule id the referee node sealed for its
+    own served half, when that record has been resolved and verified; ``None``
+    when unavailable (resolution is best-effort, never a blocker).
+    ``signature`` is an optional hex signature over the verdict+margin by the
+    referee's key; ``None`` when the referee did not supply one.
+    """
+
+    referee_id: str
+    referee_capsule_id: str | None = None
+    signature: str | None = None
 
 
 @dataclass(frozen=True)
@@ -469,6 +507,11 @@ class RefereeResult:
     capsule_id: str | None = None
     referee_record_status: str = REFEREE_RECORD_UNRESOLVED
     referee_record_nonce: str | None = None
+    #: [mesh-referee-attribution] Identity of the referee party.  Required:
+    #: ``adjudicate()`` raises ``UnattributableRefereeError`` when this is
+    #: ``None``.  Callers supply a ``RefereeIdentity`` with a non-empty
+    #: ``referee_id``; see that dataclass for field semantics.
+    identity: RefereeIdentity | None = None
 
 
 #: A referee call: given both halves and the `ComparisonResult` that
@@ -524,6 +567,12 @@ class AdjudicationOutcome:
     #: gets an entry (nonce cited, `capsule_id: None`), never a silent
     #: omission. Empty tuple when no referee was called.
     references: tuple[dict[str, Any], ...] = ()
+    #: [mesh-referee-attribution] The ``referee_id`` string from the
+    #: ``RefereeResult.identity`` that was verified by ``adjudicate()``.
+    #: ``None`` when no referee was called.  Stored here so
+    #: ``seal_adjudication_capsule`` can cite it in the adjudication block
+    #: without re-accessing the original ``RefereeResult``.
+    referee_identity_id: str | None = None
 
     def has_verdict(self) -> bool:
         return self.verdict is not None
@@ -707,7 +756,33 @@ def adjudicate(
         # Text divergence is the only escalation trigger -- the disputants'
         # own logprobs are never read here (see the module docstring's
         # 2026-09-08 ruling). Any divergence calls the referee.
-        referee_result = referee(half_a, half_b, comparison)
+        #
+        # [mesh-referee-attribution] Wrap in try/except: a referee that
+        # raises is referee_unreachable -- a first-class outcome, never a
+        # crash propagated to the caller.
+        try:
+            referee_result = referee(half_a, half_b, comparison)
+        except Exception:  # noqa: BLE001
+            return AdjudicationOutcome(
+                verdict=None,
+                no_verdict_reason=NO_VERDICT_REFEREE_UNREACHABLE,
+                divergence_index=comparison.divergence_index,
+                margin=comparison.margin,
+                margin_tau=margin_tau,
+                prefix_digest=comparison.prefix_digest,
+                twin_owner_distinct=twin_owner_distinct,
+                weights_digest=shared_weights_digest,
+                half_a_capsule_id=half_a_id,
+                half_b_capsule_id=half_b_id,
+            )
+
+        # [mesh-referee-attribution] An unattributed verdict must never seal.
+        if referee_result.identity is None:
+            raise UnattributableRefereeError(
+                "referee result has no identity -- an unattributed verdict must not seal;"
+                " supply a RefereeIdentity with a non-empty referee_id"
+            )
+        referee_identity_id = referee_result.identity.referee_id
 
         verdict = referee_result.verdict
         if (
@@ -747,6 +822,7 @@ def adjudicate(
             referee_called=True,
             referee_capsule_id=referee_result.capsule_id,
             references=references,
+            referee_identity_id=referee_identity_id,
         )
 
     verdict = VERDICT_CORROBORATED if comparison.margin >= margin_tau else VERDICT_INCONCLUSIVE
@@ -810,6 +886,9 @@ def seal_adjudication_capsule(
     # disputants') actually ran.
     if outcome.referee_called:
         adjudication["referee_capsule_id"] = outcome.referee_capsule_id
+        # [mesh-referee-attribution] Cite the referee's identity so a
+        # verifier can trace which party produced this verdict.
+        adjudication["referee_id"] = outcome.referee_identity_id
         # [mesh-referee-capsule-citation] The nonce-correlation citation --
         # present even when `referee_capsule_id` above is `None` (an
         # unresolved/unverified door still names the nonce it was asked
