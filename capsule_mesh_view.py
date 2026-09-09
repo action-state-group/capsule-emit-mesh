@@ -136,23 +136,62 @@ def label_role(record: dict[str, Any], source_log: str) -> str:
     return _DEFAULT_ROLE_BY_SOURCE.get(source_log, "unknown")
 
 
-def label_counterparty(record: dict[str, Any]) -> str:
-    """Best-effort counterparty label from bilateral evidence, else "unknown".
+def label_counterparty(record: dict[str, Any], own_node_id: str | None = None) -> str:
+    """Best-effort counterparty label from exchange capsule fields, else "unknown".
 
-    No capsule field names a human/node identity for the other party today
-    -- `cross_party.initiator_ref` (draft-mih-agent-bilateral-attestation-01
-    Move 2) is the only cross-party evidence a capsule carries, and it is a
-    digest over the initiator's request attestation, not a claimed identity.
-    "unknown" is the honest label absent that evidence -- it matches the
-    self-attested rung on the trust ladder (TRANSLATION.md), not a bug.
+    Priority order (each tier tried only when the previous returns nothing):
+
+    1. ``cross_party.initiator_ref`` (bilateral attestation, Move 2): a digest
+       over the initiator's OWN signed request attestation -- the strongest
+       counterparty binding currently in the schema.
+    2. ``serving_provenance.served_by_node_id``: the node that served the
+       exchange.  Used as a peer identifier when the record's role is
+       ``requested`` (this node sent the request, so ``served_by_node_id`` is
+       the REMOTE node) or when a cross-node combined ledger view is in use
+       (``own_node_id`` supplied and ``served_by_node_id`` differs from it).
+    3. ``serving_provenance.requesting_party``: the node that originated the
+       request.  Used when role is ``served`` and ``requesting_party`` is a
+       non-empty, non-``"unknown"`` string.
+
+    ``"unknown"`` is the honest label when none of the above resolves to a
+    distinct peer identity -- never a fabricated or inferred claim.  The
+    ``_COUNTERPARTY_NAMING_KEYS`` in ``ask_history.py`` mirrors these three
+    fields: any field that carries a node id there is also checked here.
     """
-    cross_party = _poc_block(record).get("cross_party")
-    if not cross_party:
-        return "unknown"
-    initiator_ref = cross_party.get("initiator_ref")
-    if not initiator_ref:
-        return "unknown"
-    return f"initiator:{initiator_ref[:12]}"
+    poc = _poc_block(record)
+
+    # Tier 1: bilateral attestation (strongest -- a signed request digest)
+    cross_party = poc.get("cross_party")
+    if cross_party:
+        initiator_ref = cross_party.get("initiator_ref")
+        if initiator_ref:
+            return f"initiator:{initiator_ref[:12]}"
+        counterparty_ref = cross_party.get("counterparty_ref")
+        if counterparty_ref:
+            return f"counterparty:{counterparty_ref[:12]}"
+
+    sp = poc.get("serving_provenance") or {}
+
+    # Tier 2: served_by_node_id -- the node that actually ran the model
+    served_by = sp.get("served_by_node_id")
+    if served_by and served_by != "unknown":
+        role = poc.get("role")
+        # When this node sent the request (role=requested), served_by_node_id
+        # is the REMOTE peer -- always a counterparty.
+        if role == "requested":
+            return f"node:{served_by[:16]}"
+        # When viewing a cross-node combined ledger (own_node_id supplied),
+        # a record whose served_by_node_id differs from own_node_id was
+        # sealed by a DIFFERENT node -- that node is the peer.
+        if own_node_id and served_by != own_node_id:
+            return f"node:{served_by[:16]}"
+
+    # Tier 3: requesting_party -- who originated the request
+    requesting_party = sp.get("requesting_party")
+    if requesting_party and requesting_party != "unknown":
+        return f"node:{requesting_party[:16]}"
+
+    return "unknown"
 
 
 def reconcile_record(record: dict[str, Any]) -> dict[str, Any]:

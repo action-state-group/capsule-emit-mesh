@@ -9,11 +9,17 @@ Composes verbs that already exist; re-derives none of their evidence:
 
   - **peer identity**: ``capsule_mesh_view.label_counterparty()`` -- the
     same best-effort counterparty label the per-exchange machine view
-    already computes from ``cross_party.initiator_ref`` (a digest over the
-    initiator's OWN signed request attestation). Reused byte-for-byte, not
-    re-derived. Records with no such evidence group under ``UNKNOWN_PEER``
-    -- an explicit "not one identified node" bucket, never silently
-    presented as though it were a single peer.
+    already computes from capsule evidence.  Priority: (1) bilateral
+    ``cross_party.initiator_ref`` / ``cross_party.counterparty_ref``; (2)
+    ``serving_provenance.served_by_node_id`` when the record's role is
+    ``requested`` or (in a combined multi-node ledger view) when
+    ``served_by_node_id`` differs from this node's own ID; (3)
+    ``serving_provenance.requesting_party`` when non-empty and not
+    ``"unknown"``.  These are the same three fields ``ask_history.
+    discover_counterparties`` walks (``_COUNTERPARTY_NAMING_KEYS``),
+    reused here byte-for-byte.  Records with no such evidence group under
+    ``UNKNOWN_PEER`` -- an explicit "not one identified node" bucket, never
+    silently presented as though it were a single peer.
   - **rung**: ``capsule_accountability_tab.cross_party_grade()`` (reused
     byte-for-byte) applied to every exchange with a peer, folded to the
     WORST rung seen -- never rounds up a peer's row past its weakest
@@ -255,12 +261,25 @@ def render_cell_text(cell: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def group_by_peer(records: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
-    """Group ledger records by `capsule_mesh_view.label_counterparty()`,
-    reused unmodified -- never a second, competing peer-identity derivation."""
+def group_by_peer(
+    records: list[dict[str, Any]], own_node_id: str | None = None
+) -> dict[str, list[dict[str, Any]]]:
+    """Group ledger records by ``capsule_mesh_view.label_counterparty()``.
+
+    ``own_node_id``, when supplied, is passed to ``label_counterparty`` so
+    that it can identify a REMOTE peer from ``serving_provenance.
+    served_by_node_id`` in combined cross-node ledger views (records from
+    multiple nodes merged into one sequence -- each record's
+    ``served_by_node_id`` then identifies WHICH node sealed it; any record
+    where that value differs from ``own_node_id`` is a peer record, and the
+    peer key is ``node:<served_by_node_id[:16]>``).
+
+    Never a second, competing peer-identity derivation -- ``label_counterparty``
+    is the single source of truth and is always called, never bypassed.
+    """
     groups: dict[str, list[dict[str, Any]]] = {}
     for record in records:
-        groups.setdefault(label_counterparty(record), []).append(record)
+        groups.setdefault(label_counterparty(record, own_node_id), []).append(record)
     return groups
 
 
@@ -287,12 +306,20 @@ def node_cell(peer_id: str, records: list[dict[str, Any]]) -> dict[str, Any]:
             "member_kind": None,
             "exchange_count": len(records),
         }
+    # Determine which capsule field(s) supplied the peer identity so the cell
+    # is honest about its evidence strength, same as every other cell here.
+    if peer_id.startswith("initiator:") or peer_id.startswith("counterparty:"):
+        source_field = "cross_party.initiator_ref / cross_party.counterparty_ref"
+    elif peer_id.startswith("node:"):
+        source_field = "serving_provenance.served_by_node_id / serving_provenance.requesting_party"
+    else:
+        source_field = "label_counterparty"
     return {
         "state": CELL_PRESENT,
         "text": peer_id,
         "peer_id": peer_id,
         "member_kind": "member",
-        "source": "cross_party.initiator_ref",
+        "source": source_field,
         "capture_method": "label_counterparty",
         "exchange_count": len(records),
     }
@@ -661,7 +688,7 @@ def build_peers_payload(
     checkpoint_lines = checkpoint_lines or []
     card = build_history_card(node_id=node_id, log_id=log_id, checkpoint_lines=checkpoint_lines, since_size=since_size)
     own_served_summary_value = _own_served_summary_value(node_id, records, checkpoint_lines, source_log)
-    groups = group_by_peer(records)
+    groups = group_by_peer(records, own_node_id=node_id)
     rows = [
         build_peer_row(
             peer_id,
