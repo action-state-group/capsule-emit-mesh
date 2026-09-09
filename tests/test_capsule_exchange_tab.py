@@ -588,7 +588,7 @@ class _FakeVerifyResult:
         self.findings = [_FakeFinding(c) for c in codes]
 
 
-def _assert_all_three_recompute_states(*, verify_result, verify_ran, expected_state):
+def _assert_recompute_states(*, verify_result, verify_ran, expected_state):
     record = _capsule(capsule_id="r" * 64, role="requested")
     properties = build_assurance_map(
         record, verify_result=verify_result, verify_ran=verify_ran, has_witness_checkpoint=False
@@ -596,21 +596,48 @@ def _assert_all_three_recompute_states(*, verify_result, verify_ran, expected_st
     for key in (
         assurance_map.PROPERTY_CONTENT_BINDING,
         assurance_map.PROPERTY_PRODUCER_SIGNATURE,
-        assurance_map.PROPERTY_CONTINUITY,
     ):
         assert properties[key]["state"] == expected_state
 
 
 def test_build_assurance_map_verify_did_not_run_recompute_properties_not_checked():
-    _assert_all_three_recompute_states(
-        verify_result=None, verify_ran=False, expected_state=assurance_map.STATE_NOT_CHECKED
+    _assert_recompute_states(verify_result=None, verify_ran=False, expected_state=assurance_map.STATE_NOT_CHECKED)
+    # continuity, too: verify didn't run, so it hasn't even reached the
+    # checkpoint-gating question yet.
+    record = _capsule(capsule_id="r" * 64, role="requested")
+    properties = build_assurance_map(
+        record, verify_result=None, verify_ran=False, has_witness_checkpoint=False
     )
+    assert properties[assurance_map.PROPERTY_CONTINUITY]["state"] == assurance_map.STATE_NOT_CHECKED
 
 
 def test_build_assurance_map_verify_ran_clean_recompute_properties_pass():
-    _assert_all_three_recompute_states(
+    _assert_recompute_states(
         verify_result=_FakeVerifyResult([]), verify_ran=True, expected_state=assurance_map.STATE_PASS
     )
+
+
+def test_build_assurance_map_continuity_not_present_without_a_checkpoint_even_when_chain_is_clean():
+    """The live defect [mesh-ledger-earned-pass-and-native-panes] fixed: an
+    intact hash-chain with NO checkpoint at all must never render continuity
+    as PASS -- there is nothing for continuity to bind."""
+    record = _capsule(capsule_id="r" * 64, role="requested")
+    properties = build_assurance_map(
+        record, verify_result=_FakeVerifyResult([]), verify_ran=True, has_witness_checkpoint=False
+    )
+    assert properties[assurance_map.PROPERTY_CONTINUITY]["state"] == assurance_map.STATE_NOT_PRESENT
+
+
+def test_build_assurance_map_continuity_not_checked_with_a_checkpoint_whose_signature_is_unverified():
+    """A checkpoint was supplied, but this view doesn't verify its signature
+    yet (``checkpoint_signature`` stays NOT_CHECKED) -- continuity can't
+    outrun that; it also stays NOT_CHECKED, never PASS."""
+    record = _capsule(capsule_id="r" * 64, role="requested")
+    properties = build_assurance_map(
+        record, verify_result=_FakeVerifyResult([]), verify_ran=True, has_witness_checkpoint=True
+    )
+    assert properties[assurance_map.PROPERTY_CHECKPOINT_SIGNATURE]["state"] == assurance_map.STATE_NOT_CHECKED
+    assert properties[assurance_map.PROPERTY_CONTINUITY]["state"] == assurance_map.STATE_NOT_CHECKED
 
 
 def test_build_assurance_map_content_binding_fails_on_capsule_id_mismatch():
@@ -623,7 +650,7 @@ def test_build_assurance_map_content_binding_fails_on_capsule_id_mismatch():
     )
     assert properties[assurance_map.PROPERTY_CONTENT_BINDING]["state"] == assurance_map.STATE_FAIL
     assert properties[assurance_map.PROPERTY_PRODUCER_SIGNATURE]["state"] == assurance_map.STATE_PASS
-    assert properties[assurance_map.PROPERTY_CONTINUITY]["state"] == assurance_map.STATE_PASS
+    assert properties[assurance_map.PROPERTY_CONTINUITY]["state"] == assurance_map.STATE_NOT_PRESENT
 
 
 def test_build_assurance_map_producer_signature_fails_on_invalid_signature():
@@ -703,12 +730,28 @@ def test_build_assurance_map_identity_authority_fails_when_owner_cert_invalid():
     assert properties[assurance_map.PROPERTY_IDENTITY_AUTHORITY]["state"] == assurance_map.STATE_FAIL
 
 
-def test_build_assurance_map_capture_coverage_pass_when_both_digests_present():
+def test_build_assurance_map_capture_coverage_states_the_boundary_when_both_digests_present():
+    """capture_coverage is not a pass/fail check -- it names which boundary
+    and recording rule produced this half. Never PASS ([mesh-ledger-earned-
+    pass-and-native-panes] Part A item 2)."""
     record = _capsule(capsule_id="r" * 64, role="requested")
     properties = build_assurance_map(
         record, verify_result=None, verify_ran=False, has_witness_checkpoint=False
     )
-    assert properties[assurance_map.PROPERTY_CAPTURE_COVERAGE]["state"] == assurance_map.STATE_PASS
+    coverage = properties[assurance_map.PROPERTY_CAPTURE_COVERAGE]
+    assert coverage["state"] == assurance_map.STATE_NOT_CHECKED
+    assert coverage["text"] == "captured at the sidecar observe path (rule: every served exchange)"
+
+
+def test_build_assurance_map_capture_coverage_never_reports_pass():
+    """Mutant this test exists to catch: restoring the deleted PASS branch
+    for capture_coverage."""
+    record = _capsule(capsule_id="r" * 64, role="requested")
+    for has_checkpoint in (False, True):
+        properties = build_assurance_map(
+            record, verify_result=None, verify_ran=False, has_witness_checkpoint=has_checkpoint
+        )
+        assert properties[assurance_map.PROPERTY_CAPTURE_COVERAGE]["state"] != assurance_map.STATE_PASS
 
 
 def test_build_assurance_map_capture_coverage_not_present_when_a_digest_is_missing():
