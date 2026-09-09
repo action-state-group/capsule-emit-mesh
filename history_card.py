@@ -770,12 +770,26 @@ def verify_history_card(card_value: dict[str, Any], checkpoint_lines: list[dict[
     # passes its own offline verification.  This does NOT weaken the
     # cryptographic chain-walk check: those properties live in
     # recomputed.properties (inside core_account()) which is untouched here.
+    #
+    # [mesh-forks-observed-integrity]: forks_state must also be folded so that
+    # to_value() re-derives forks_observed correctly for the recomputed card.
+    # When forks_state=="unreadable", to_value() emits forks_observed=None;
+    # the stored forks_observed field value is irrelevant in that case (to_value
+    # overrides it).  We always fold the raw integer back as 0 for the unreadable
+    # case -- to_value() will re-derive None from forks_state, matching what the
+    # published card emitted.
     pr_block = card_value.get("peer_reconciliation") or {}
     refs_block = card_value.get("references") or {}
+    published_forks_state = pr_block.get("forks_state", FORKS_STATE_ABSENT)
+    # forks_observed in the published card is None when forks_state=="unreadable"
+    # (to_value() emits null); fold back 0 in that case since to_value() will
+    # re-derive None from forks_state -- never store None in the int field.
+    published_forks_observed = pr_block.get("forks_observed") or 0
     recomputed = replace(
         recomputed,
         reconciled_with=pr_block.get("reconciled_with", 0),
-        forks_observed=pr_block.get("forks_observed", 0),
+        forks_observed=published_forks_observed,
+        forks_state=published_forks_state,
         references_asked=refs_block.get("asked", 0),
         references_answered=refs_block.get("answered", 0),
         adjudications_about_x=dict(refs_block.get("adjudications_about_x") or {}),
