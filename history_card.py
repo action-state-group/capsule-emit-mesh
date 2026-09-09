@@ -198,6 +198,28 @@ class HistoryProperties:
     #: The stat values are exact decimal STRINGS (`float_to_str`), never JSON
     #: floats -- this dict lands in a digest-bearing field via `seal_history_card`.
     cadence: dict[str, Any] = field(default_factory=dict)
+    #: Whether the temporal properties (`history_depth`, `cadence`) are bounded
+    #: by external witness receipt times.  Two values:
+    #:
+    #: ``"producer_asserted"`` -- all timestamps come from the producer's own
+    #: checkpoint records (``cp.timestamp`` is a self-written field).  An actor
+    #: can backdate or fast-forward these timestamps with no cryptographic cost;
+    #: a "three-year unbroken cadence" is an afternoon's work on a fresh log.
+    #: ``history_depth`` and ``cadence`` stats are STRUCTURALLY correct (they
+    #: reflect the chain as presented) but carry no independent time guarantee.
+    #:
+    #: ``"receipt_bounded"`` -- at least one checkpoint in the verified prefix
+    #: carries a real (non-stub) witness receipt, meaning a Transparency Service
+    #: confirmed the checkpoint's existence.  The TS registration places an
+    #: external upper bound on when that checkpoint could have occurred relative
+    #: to the TS's own clock, partially bounding the producer's timestamp claims.
+    #: Note: current receipts do not carry a TS-signed time field that this
+    #: verifier can decode; the bound is structural (presence of a real receipt),
+    #: not numeric.
+    #:
+    #: [mesh-history-card-time-provenance]: no published temporal property may
+    #: be derivable purely from producer-written timestamps without this label.
+    temporal_provenance: str = "producer_asserted"
 
     def to_value(self) -> dict[str, Any]:
         return {
@@ -205,6 +227,7 @@ class HistoryProperties:
             "history_depth": self.history_depth,
             "unforked": self.unforked,
             "cadence": dict(self.cadence),
+            "temporal_provenance": self.temporal_provenance,
         }
 
 
@@ -585,6 +608,21 @@ def build_history_card(
     continuity, unforked, depth, verified_prefix = _walk_chain(in_range, cose_by_size, boundary=boundary)
     cadence = _cadence(verified_prefix)
 
+    # [mesh-history-card-time-provenance]: determine whether the temporal
+    # properties (history_depth, cadence) are bounded by external witness
+    # receipts or are purely producer-asserted.  A real (non-stub) witness
+    # receipt on ANY checkpoint in the verified prefix places an external
+    # constraint on when that checkpoint could have occurred -- the producer
+    # cannot backdate past the TS's own registration time.  Without any real
+    # receipt, the cadence and depth numbers are derived entirely from the
+    # producer's own self-written cp.timestamp fields.
+    has_real_witnesses = any(
+        not w.is_stub
+        for cp in verified_prefix
+        for w in (cp.witnesses or [])
+    )
+    temporal_provenance = "receipt_bounded" if has_real_witnesses else "producer_asserted"
+
     span = ([boundary] if boundary is not None else []) + verified_prefix
     from_ref = CheckpointRef.from_record(span[0]) if span else None
     to_ref = CheckpointRef.from_record(verified_prefix[-1]) if verified_prefix else (
@@ -600,7 +638,13 @@ def build_history_card(
         since_size=since_size,
         from_checkpoint=from_ref,
         to_checkpoint=to_ref,
-        properties=HistoryProperties(continuity=continuity, history_depth=depth, unforked=unforked, cadence=cadence),
+        properties=HistoryProperties(
+            continuity=continuity,
+            history_depth=depth,
+            unforked=unforked,
+            cadence=cadence,
+            temporal_provenance=temporal_provenance,
+        ),
         checkpoint_count=len(in_range),
         witnesses=witnesses,
         witnessed=bool(witnesses),
@@ -678,6 +722,28 @@ def verify_history_card(card_value: dict[str, Any], checkpoint_lines: list[dict[
         )
     except ValueError as exc:
         return HistoryVerifyResult(ok=False, errors=[str(exc)])
+
+    # [mesh-history-card-enrichment-verify]: peer_reconciliation and references
+    # live OUTSIDE core_account() -- they come from a separate observation store
+    # (the mesh plugin's gossip-fed reconciliation ledger and ask_history counts),
+    # not from the checkpoint chain.  build_history_card() always returns a card
+    # with their default (zero) values.  Before comparing with the published card
+    # we must fold in whatever enrichment the published card carries, so that an
+    # enriched card (produced by with_peer_reconciliation() / with_references())
+    # passes its own offline verification.  This does NOT weaken the
+    # cryptographic chain-walk check: those properties live in
+    # recomputed.properties (inside core_account()) which is untouched here.
+    pr_block = card_value.get("peer_reconciliation") or {}
+    refs_block = card_value.get("references") or {}
+    recomputed = replace(
+        recomputed,
+        reconciled_with=pr_block.get("reconciled_with", 0),
+        forks_observed=pr_block.get("forks_observed", 0),
+        references_asked=refs_block.get("asked", 0),
+        references_answered=refs_block.get("answered", 0),
+        adjudications_about_x=dict(refs_block.get("adjudications_about_x") or {}),
+        ack_refusals_about_x=refs_block.get("ack_refusals_about_x", 0),
+    )
 
     errors: list[str] = []
     if recomputed.to_value() != card_value:

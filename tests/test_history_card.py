@@ -33,6 +33,7 @@ from history_card import (
     seal_history_card,
     verify_history_card,
     with_peer_reconciliation,
+    with_references,
 )
 
 
@@ -446,3 +447,186 @@ def test_cadence_raw_float_fails_closed_with_float_in_digest_error(tmp_path, fak
 
     with pytest.raises(FloatInDigestError):
         seal_history_card(tampered_card, operator="op", developer="dev", signing_node_id="node-a")
+
+
+# --------------------------------------------------------------------------- #
+# [mesh-history-card-time-provenance] (P1)                                    #
+# Temporal properties derived from producer-written cp.timestamp are labelled #
+# producer_asserted; real witness receipts flip the label to receipt_bounded.  #
+# --------------------------------------------------------------------------- #
+
+
+def test_temporal_provenance_is_producer_asserted_with_stub_witnesses(tmp_path, monkeypatch):
+    """A card built from checkpoints whose only witnesses are stubs (is_stub=True)
+    must label its temporal properties as producer_asserted.
+
+    Adversarial-council finding [mesh-history-card-time-provenance]: an actor
+    can backdate cp.timestamp at zero cost -- generate a log, checkpoint N times
+    with backdated timestamps, sign each.  'Three years of unbroken 60-second
+    cadence' is an afternoon's work.  Temporal properties derived purely from
+    producer-written timestamps must carry the producer_asserted label so a
+    relying party knows they are unverified claims."""
+    def _stub_register(checkpoint_cose: bytes, ts_url: str, *, timeout: float = 30.0) -> WitnessRecord:
+        return WitnessRecord(
+            ts_url=ts_url,
+            entry_hash="stub-entry-hash",
+            receipt_b64="stub",
+            leaf_index=0,
+            tree_size=1,
+            is_stub=True,
+        )
+
+    monkeypatch.setattr(checkpointing, "register_checkpoint", _stub_register)
+    lines = _build_chain(tmp_path, 4)
+    node_id = node_id_from_key_id(lines[0]["key_id"])
+    card = build_history_card(node_id=node_id, log_id="log-a", checkpoint_lines=lines, since_size=0)
+
+    assert card.properties.temporal_provenance == "producer_asserted", (
+        "a chain with only stub witnesses must be labelled producer_asserted -- "
+        "no real TS has bounded these timestamps externally"
+    )
+    # The card must still round-trip through the verifier correctly.
+    result = verify_history_card(card.to_value(), lines)
+    assert result.ok, result.errors
+
+
+def test_temporal_provenance_is_receipt_bounded_with_real_witnesses(tmp_path, fake_witness):
+    """A card built from checkpoints with real (non-stub, is_stub=False) witnesses
+    labels its temporal properties as receipt_bounded.
+
+    The fake_witness fixture returns WitnessRecord(is_stub=False) -- these count
+    as real for labelling purposes because a real TS registration places an
+    external upper bound on when that checkpoint could have occurred."""
+    lines = _build_chain(tmp_path, 4)
+    node_id = node_id_from_key_id(lines[0]["key_id"])
+    card = build_history_card(node_id=node_id, log_id="log-a", checkpoint_lines=lines, since_size=0)
+
+    assert card.properties.temporal_provenance == "receipt_bounded", (
+        "a chain with real (non-stub) witness receipts must be labelled receipt_bounded"
+    )
+    result = verify_history_card(card.to_value(), lines)
+    assert result.ok, result.errors
+
+
+def test_backdated_card_is_still_labelled_producer_asserted_not_silently_accepted(tmp_path, monkeypatch):
+    """Demonstrate the specific adversarial scenario: a producer backdates
+    cp.timestamp values to forge a multi-year history in minutes.  Without
+    real witnesses the card must be labelled producer_asserted, never published
+    as if the cadence were externally verified."""
+    def _stub_register(checkpoint_cose: bytes, ts_url: str, *, timeout: float = 30.0) -> WitnessRecord:
+        return WitnessRecord(
+            ts_url=ts_url,
+            entry_hash="stub",
+            receipt_b64="stub",
+            leaf_index=0,
+            tree_size=1,
+            is_stub=True,
+        )
+
+    monkeypatch.setattr(checkpointing, "register_checkpoint", _stub_register)
+    lines = _build_chain(tmp_path, 4)
+    # Backdate the timestamps to simulate a forged history spanning years.
+    backdated = copy.deepcopy(lines)
+    base_year = 2020
+    for i, line in enumerate(backdated):
+        line["timestamp"] = f"{base_year + i}-01-01T00:00:00Z"
+
+    node_id = node_id_from_key_id(backdated[0]["key_id"])
+    card = build_history_card(node_id=node_id, log_id="log-a", checkpoint_lines=backdated, since_size=0)
+
+    # The chain walk succeeds (backdated timestamps don't break the MMR proofs).
+    assert card.properties.continuity == "unbroken"
+    # But the temporal provenance is correctly labelled producer_asserted --
+    # a relying party reading the card knows the cadence numbers are unverified.
+    assert card.properties.temporal_provenance == "producer_asserted"
+    # The card must still verify (it's internally consistent).
+    result = verify_history_card(card.to_value(), backdated)
+    assert result.ok, result.errors
+
+
+# --------------------------------------------------------------------------- #
+# [mesh-history-card-enrichment-verify] (P2)                                  #
+# Enriched cards (with_peer_reconciliation / with_references) must verify.    #
+# --------------------------------------------------------------------------- #
+
+
+def test_enriched_card_via_peer_reconciliation_verifies(tmp_path, fake_witness):
+    """An enriched card (via with_peer_reconciliation) must pass its own offline
+    verification.
+
+    Adversarial-council finding [mesh-history-card-enrichment-verify]: before
+    the fix, to_value() always emitted peer_reconciliation at the enriched
+    values but build_history_card() always used defaults (zero), so any enriched
+    card failed verify_history_card() with 'recomputed card does not match the
+    published card'.  This was a straight bug: the verifier was broken for the
+    primary enrichment path."""
+    lines = _build_chain(tmp_path, 3)
+    node_id = node_id_from_key_id(lines[0]["key_id"])
+    card = build_history_card(node_id=node_id, log_id="log-a", checkpoint_lines=lines, since_size=0)
+
+    # Verify the base card first (sanity check).
+    base_result = verify_history_card(card.to_value(), lines)
+    assert base_result.ok, f"base card must verify before enrichment: {base_result.errors}"
+
+    # Enrich via with_peer_reconciliation.
+    state = {"observed": {}, "reconciled_peers": ["peer-x", "peer-y", "peer-z"], "forks": [{"fake": "fork"}]}
+    (tmp_path / "reconciliation_state.json").write_text(json.dumps(state))
+    enriched = with_peer_reconciliation(card, tmp_path)
+
+    assert enriched.reconciled_with == 3
+    assert enriched.forks_observed == 1
+
+    # The enriched card must also verify -- this was the bug.
+    result = verify_history_card(enriched.to_value(), lines)
+    assert result.ok, (
+        f"enriched card (with_peer_reconciliation) must verify offline: {result.errors}"
+    )
+
+
+def test_enriched_card_via_with_references_verifies(tmp_path, fake_witness):
+    """An enriched card (via with_references) must pass its own offline
+    verification.
+
+    Both enrichment paths must verify: with_peer_reconciliation AND
+    with_references (the full regression as stated in
+    [mesh-history-card-enrichment-verify])."""
+    lines = _build_chain(tmp_path, 3)
+    node_id = node_id_from_key_id(lines[0]["key_id"])
+    card = build_history_card(node_id=node_id, log_id="log-a", checkpoint_lines=lines, since_size=0)
+
+    enriched = with_references(
+        card,
+        references_asked=10,
+        references_answered=8,
+        adjudications_about_x={"contradicted": 2, "inconclusive": 1},
+        ack_refusals_about_x=3,
+    )
+
+    result = verify_history_card(enriched.to_value(), lines)
+    assert result.ok, (
+        f"enriched card (with_references) must verify offline: {result.errors}"
+    )
+
+
+def test_both_enrichment_paths_combined_verify(tmp_path, fake_witness):
+    """A card enriched by BOTH with_peer_reconciliation and with_references
+    (chained) must also verify."""
+    lines = _build_chain(tmp_path, 3)
+    node_id = node_id_from_key_id(lines[0]["key_id"])
+    card = build_history_card(node_id=node_id, log_id="log-a", checkpoint_lines=lines, since_size=0)
+
+    state = {"observed": {}, "reconciled_peers": ["p1"], "forks": []}
+    (tmp_path / "reconciliation_state.json").write_text(json.dumps(state))
+    enriched = with_peer_reconciliation(card, tmp_path)
+    enriched = with_references(
+        enriched,
+        references_asked=5,
+        references_answered=4,
+        adjudications_about_x={},
+        ack_refusals_about_x=0,
+    )
+
+    result = verify_history_card(enriched.to_value(), lines)
+    assert result.ok, (
+        f"doubly-enriched card must verify offline: {result.errors}"
+    )
