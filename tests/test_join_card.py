@@ -76,6 +76,7 @@ def _exchange_line(
     capsule_id,
     model_canonical_ref=None,
     weights_digest=None,
+    effective_settings_digest=None,
     gpu=None,
     vram_bytes=None,
     is_soc=None,
@@ -89,7 +90,11 @@ def _exchange_line(
                 "x-mesh-poc-v1": {
                     "serving_provenance": {
                         "served_by_node_id": served_by_node_id,
-                        "model": {"canonical_ref": model_canonical_ref, "weights_digest": weights_digest},
+                        "model": {
+                            "canonical_ref": model_canonical_ref,
+                            "weights_digest": weights_digest,
+                            "effective_settings_digest": effective_settings_digest,
+                        },
                         "hardware": {"gpu": gpu, "vram_bytes": vram_bytes, "is_soc": is_soc},
                     },
                     "evidence_refs": {"binary_attestation": {"measurement_class": measurement_class}},
@@ -229,6 +234,52 @@ def test_mutant_weights_digest_changed_without_a_new_card_is_broken():
     mismatch = next(m for m in entry.mismatches if m["field"] == "weights_digest")
     assert mismatch["exchange"] == "f" * 64
     assert mismatch["card"] == "a" * 64
+
+
+def test_mutant_effective_settings_digest_changed_without_a_new_card_is_broken():
+    """[mesh-b3-effective-settings] Same weights, different resolved settings
+    (e.g. a silent KV-cache-policy downgrade) across loads, with no new card
+    sealed to announce it -- exactly the `changed_without_saying` case this
+    field exists to catch, independent of the weights_digest check above."""
+    card = _card(
+        models=[ModelRef(name="meta/Llama-3.2-3B", weights_digest="a" * 64, effective_settings_digest="b" * 64)]
+    )
+    cap = _sealed_card_line(card)
+    tampered = _exchange_line(
+        capsule_id="e1",
+        model_canonical_ref="meta/Llama-3.2-3B",
+        weights_digest="a" * 64,  # unchanged -- same served bytes
+        effective_settings_digest="c" * 64,  # settings silently changed
+    )
+    result = card_consistency([cap, tampered])
+    assert result.ok is False
+    assert result.broken_count == 1
+    entry = result.entries[0]
+    assert entry.status == STATUS_BROKEN
+    fields = {m["field"] for m in entry.mismatches}
+    assert "effective_settings_digest" in fields
+    assert "weights_digest" not in fields  # weights matched -- only settings drifted
+    mismatch = next(m for m in entry.mismatches if m["field"] == "effective_settings_digest")
+    assert mismatch["exchange"] == "c" * 64
+    assert mismatch["card"] == "b" * 64
+
+
+def test_effective_settings_digest_absent_on_either_side_is_not_compared():
+    """Matches `weights_digest`'s own absence discipline (`_field`'s
+    docstring): a host predating this field, or a card sealed before this
+    node's first load, must not fabricate a mismatch out of nothing."""
+    card = _card()  # default ModelRef has no effective_settings_digest
+    cap = _sealed_card_line(card)
+    exchange = _exchange_line(
+        capsule_id="e1",
+        model_canonical_ref="meta/Llama-3.2-3B",
+        weights_digest="a" * 64,
+        effective_settings_digest="b" * 64,  # exchange has one, card does not
+    )
+    result = card_consistency([cap, exchange])
+    assert result.ok is True
+    fields = {m["field"] for m in result.entries[0].mismatches}
+    assert "effective_settings_digest" not in fields
 
 
 def test_mutant_hardware_changed_on_soc_without_a_new_card_is_broken():

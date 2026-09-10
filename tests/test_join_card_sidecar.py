@@ -95,8 +95,40 @@ def test_seal_join_card_first_start_has_no_supersedes(cs):
     assert len(lines) == 1
     card_block = lines[0]["model_attestation"]["compute_attestation"]["x-mesh-join-card-v1"]
     assert card_block["card"]["supersedes"] is None
-    assert card_block["card"]["models"] == [{"name": "meta/Llama-3.2-3B", "weights_digest": None}]
+    assert card_block["card"]["models"] == [
+        {
+            "name": "meta/Llama-3.2-3B",
+            "weights_digest": None,
+            "effective_settings_digest": None,
+            "load_epoch": None,
+        }
+    ]
     assert card_block["card"]["announcement_digest"] == state.advertisement.digest()
+
+
+def test_seal_join_card_sources_effective_settings_digest_from_manifest(cs):
+    """[mesh-b3-effective-settings] `effective_settings_digest`/`load_epoch`
+    are sourced from the manifest exactly like `weights_digest` already is
+    (see `seal_join_card`'s docstring) -- present in the sealed card when the
+    manifest carries them."""
+    tmp_dir = pathlib.Path(tempfile.mkdtemp())
+    state = _make_state(cs, tmp_dir)
+    state.manifest["weights_digest"] = "a" * 64
+    state.manifest["effective_settings_digest"] = "b" * 64
+    state.manifest["load_epoch"] = 3
+
+    cs.seal_join_card(state)
+
+    lines = _ledger_lines(state)
+    card_block = lines[0]["model_attestation"]["compute_attestation"]["x-mesh-join-card-v1"]
+    assert card_block["card"]["models"] == [
+        {
+            "name": "meta/Llama-3.2-3B",
+            "weights_digest": "a" * 64,
+            "effective_settings_digest": "b" * 64,
+            "load_epoch": 3,
+        }
+    ]
 
 
 def test_seal_join_card_on_model_change_supersedes_the_first(cs):

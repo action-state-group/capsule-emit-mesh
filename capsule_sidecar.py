@@ -1386,10 +1386,10 @@ def maybe_seal_identity_capsule(state: NodeState) -> str | None:
 
 def seal_join_card(state: NodeState) -> str:
     """[mesh-join-card] Seal + record this node's join card -- what it
-    currently claims about itself (hardware, served models + weights_digest,
-    measurement rung, a digest of its own current advertisement) -- so
-    `join_card.card_consistency` has something to check every later exchange
-    against.
+    currently claims about itself (hardware, served models + weights_digest +
+    effective_settings_digest/load_epoch, measurement rung, a digest of its
+    own current advertisement) -- so `join_card.card_consistency` has
+    something to check every later exchange against.
 
     Called once at startup (this function does not itself watch for
     "any change to served models / inventory" -- this sidecar loads its
@@ -1407,7 +1407,21 @@ def seal_join_card(state: NodeState) -> str:
 
     hardware = capture_mac_hardware_inventory()
     model_id = state.manifest.get("model_id")
-    models = [ModelRef(name=model_id, weights_digest=state.manifest.get("weights_digest"))] if model_id else []
+    models = (
+        [
+            ModelRef(
+                name=model_id,
+                weights_digest=state.manifest.get("weights_digest"),
+                # [mesh-b3-effective-settings] Mirrors weights_digest's own
+                # sourcing exactly: both ride the manifest until this sidecar
+                # gains a live reload path (see this function's docstring).
+                effective_settings_digest=state.manifest.get("effective_settings_digest"),
+                load_epoch=state.manifest.get("load_epoch"),
+            )
+        ]
+        if model_id
+        else []
+    )
 
     card = build_card(
         node_id=state.node_id,

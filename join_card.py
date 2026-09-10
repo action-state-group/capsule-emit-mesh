@@ -31,6 +31,23 @@ from an earlier one, and checked against every exchange sealed since.
     module's honest answer to "PeerAnnouncement bytes as gossiped" (see the
     HONEST GAP note below).
 
+**A second, related HONEST GAP (`[mesh-b3-effective-settings]`).**
+`models[].effective_settings_digest` / `load_epoch` are the host's SHA-256
+over the resolved output-affecting serving settings (KV cache K/V precision,
+context window, batch/micro-batch size, flash-attention policy, GPU layers,
+speculative-decoding mode, sampling Request Defaults) and its load-epoch id,
+now additive fields on `ServedModelIdentity` / `PeerAnnouncement` in
+`mesh-llm-protocol/proto/node.proto` -- so the intended source is the SAME
+announcement this module already cannot read (see the HONEST GAP above), not
+a per-exchange mirror. Rather than invent a new per-exchange wire path that
+does not exist for `weights_digest` either, this module takes the same
+caller-supplied shape: `capsule_sidecar.seal_join_card` sources both from
+`state.manifest` (mirroring exactly how `weights_digest` already gets there),
+and `_exchange_claims` reads them from the same nested
+`x-mesh-poc-v1.serving_provenance.model` shape `weights_digest` already
+tolerates, so `card_consistency` is ready to compare the moment any producer
+populates that key -- it does not itself claim that producer exists yet.
+
 **HONEST GAP, stated not hidden.** The mesh-full-ladder-rehearsal runbook
 describes `announcement_digest` as a hash of the node's own current
 `PeerAnnouncement` -- the actual mesh-llm gossip struct
@@ -212,17 +229,40 @@ def _values_equal(a: Any, b: Any) -> bool:
 class ModelRef:
     """One currently-served model, named + content-addressed. `weights_digest`
     is `None` when the host has not yet emitted one for this model (a host
-    predating `[mesh-weights-digest-at-load]`) -- absent, never fabricated."""
+    predating `[mesh-weights-digest-at-load]`) -- absent, never fabricated.
+
+    `effective_settings_digest` / `load_epoch` (`[mesh-b3-effective-settings]`)
+    are the host's SHA-256 over the resolved output-affecting serving settings
+    (KV cache K/V precision, context window, batch/micro-batch size,
+    flash-attention policy, GPU layers, speculative-decoding mode, sampling
+    Request Defaults) and the load-epoch id that pairs with it, mirrored the
+    same way `weights_digest` already is -- computed by the host once per
+    model load, never per request. `None` for a host predating this field, or
+    before this node's first load. A silent settings change (same
+    `weights_digest`, a different `effective_settings_digest`) is exactly the
+    thing `card_consistency` below exists to catch as `changed_without_saying`."""
 
     name: str
     weights_digest: str | None = None
+    effective_settings_digest: str | None = None
+    load_epoch: int | None = None
 
     def to_value(self) -> dict[str, Any]:
-        return {"name": self.name, "weights_digest": self.weights_digest}
+        return {
+            "name": self.name,
+            "weights_digest": self.weights_digest,
+            "effective_settings_digest": self.effective_settings_digest,
+            "load_epoch": self.load_epoch,
+        }
 
     @classmethod
     def from_value(cls, value: dict[str, Any]) -> "ModelRef":
-        return cls(name=value.get("name", ""), weights_digest=value.get("weights_digest"))
+        return cls(
+            name=value.get("name", ""),
+            weights_digest=value.get("weights_digest"),
+            effective_settings_digest=value.get("effective_settings_digest"),
+            load_epoch=value.get("load_epoch"),
+        )
 
 
 @dataclass
@@ -393,6 +433,7 @@ def _exchange_claims(line: dict[str, Any]) -> dict[str, Any] | None:
     return {
         "model_name": clean(model.get("canonical_ref") or sp.get("model_canonical_ref")),
         "weights_digest": clean(model.get("weights_digest")),
+        "effective_settings_digest": clean(model.get("effective_settings_digest")),
         "hardware_gpu": clean(hardware.get("gpu") or sp.get("hardware_gpu")),
         "hardware_vram_bytes": clean(
             hardware.get("vram_bytes") if hardware.get("vram_bytes") is not None else sp.get("hardware_vram_bytes")
@@ -645,8 +686,22 @@ def card_consistency(ledger_lines: list[dict[str, Any]]) -> CardConsistencyResul
                         "card": [m.name for m in current_card.models],
                     }
                 )
-            elif _field(mismatches, "weights_digest", claims["weights_digest"], model_ref.weights_digest):
-                fields_compared += 1
+            else:
+                if _field(mismatches, "weights_digest", claims["weights_digest"], model_ref.weights_digest):
+                    fields_compared += 1
+                # [mesh-b3-effective-settings] Same weights, different
+                # resolved settings across loads -- exactly the silent
+                # degradation this field exists to catch (see ModelRef's
+                # docstring). Independent of the weights_digest check above:
+                # a node can serve the same bytes at a different KV cache
+                # precision / context window / etc.
+                if _field(
+                    mismatches,
+                    "effective_settings_digest",
+                    claims["effective_settings_digest"],
+                    model_ref.effective_settings_digest,
+                ):
+                    fields_compared += 1
 
         if _field(mismatches, "measurement_rung", claims["measurement_rung"], current_card.measurement_rung):
             fields_compared += 1
