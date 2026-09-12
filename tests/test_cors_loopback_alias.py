@@ -4,11 +4,29 @@
 Verifies that the sidecar accepts any loopback alias (localhost,
 127.0.0.1, ::1, [::1]) on the same port as the configured dashboard
 origin, and continues to reject a completely different origin.
+
+Alphabetically ahead of ``test_forwarded_copy_and_keys.py``/
+``test_bilateral_demo.py``/``test_replay_spot_check.py`` -- the three files
+that stub ``model_identity`` at collection time and whose OWN tests depend
+on that stub staying in place (see ``tests/conftest.py``'s note). This file
+does not stub it itself since it's alphabetically behind
+``test_accountability_pane_routes.py``, which already installs the stub
+first -- but it must never call ``importlib.reload()`` on whatever is
+sitting in ``sys.modules['model_identity']``: reloading a hand-built
+``types.ModuleType`` stub falls back to `importlib.util.find_spec`, which
+resolves the real ``model_identity.py`` on disk and permanently replaces
+the stub for the rest of the process (bounce 2026-09-11 -- this is exactly
+what broke ``test_forwarded_copy_and_keys.py`` after this file was added).
+``agent_action_capsule.canonical`` et al. don't need reloading either --
+``conftest.py`` already binds them to the real modules before any test
+file collects, so reloading them here only mints fresh, differently-keyed
+class objects that break other files' ``pytest.raises(SomeRealError)``
+checks (isinstance against the old identity). Import ``capsule_sidecar``
+plain, real, once -- no reload gymnastics.
 """
 from __future__ import annotations
 
 import http.client
-import importlib
 import json
 import pathlib
 import sys
@@ -20,22 +38,10 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-_POLLUTABLE_MODULES = [
-    "agent_action_capsule.canonical",
-    "agent_action_capsule.contracts",
-    "agent_action_capsule.emit",
-    "agent_action_capsule.verify",
-    "model_identity",
-]
-
 
 def _capsule_sidecar():
     import capsule_sidecar as cs
 
-    for name in _POLLUTABLE_MODULES:
-        if name in sys.modules:
-            importlib.reload(sys.modules[name])
-    importlib.reload(cs)
     return cs
 
 
