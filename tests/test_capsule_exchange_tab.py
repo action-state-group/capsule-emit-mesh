@@ -340,18 +340,16 @@ def test_render_exchange_subtab_html_escapes_hostile_owner_id():
 # ---------------------------------------------------------------------------
 
 
-def _synthetic_view(*, digest_match_state=STATE_VERIFIED, verdict_marks=("ok", "warn", "warn"), rung_states=None, witness_pending=True):
+def _synthetic_view(*, digest_match_state=STATE_VERIFIED, verdict_marks=("ok", "warn", "warn"), witness_pending=True):
     """A hand-built view dict, decoupled from `build_exchange_view`'s real
     fixtures, to unit-test `worst_state`'s fold logic in isolation. The
     default marks mirror what `build_verdict` actually returns today for any
     exchange without cross-party evidence (line 2 warn = no witness receipt
     in this bundle -- excluded from the fold while pending, per doc §3; line
     3 warn = "who asked: self-attested" -- a REAL limitation, always folded)."""
-    rung_states = rung_states or {"freshness": {"state": STATE_ABSENT}, "cross_party": {"rung": "unilateral_fallback"}, "runtime_binding": {"state": STATE_ABSENT}}
     return {
         "pair": {"digest_match": {"state": digest_match_state}},
         "verdict": [{"mark": m, "text": ""} for m in verdict_marks],
-        "rungs": rung_states,
         "witness_receipt_reverify": {"state": PENDING if witness_pending else STATE_VERIFIED},
     }
 
@@ -363,9 +361,9 @@ def test_worst_state_is_verified_when_everything_checked_is_clean():
 
 def test_worst_state_real_pair_fixture_reads_present_unverified_not_a_fabricated_pass():
     """The shared `_pair()` fixture carries no cross-party evidence, so
-    `cross_party_grade` is honestly `unilateral_fallback` and build_verdict's
-    line 3 ("who asked: self-attested") is a REAL limitation -- doc §3 keeps
-    that one amber. The header must reflect it, not round up to verified."""
+    build_verdict's line 3 ("who asked: self-attested") is a REAL
+    limitation -- doc §3 keeps that one amber. The header must reflect it,
+    not round up to verified."""
     requester, provider = _pair()
     view = build_exchange_view(requester, all_records=[requester, provider], source_log="sidecar")
     assert worst_state(view) == STATE_PRESENT_UNVERIFIED
