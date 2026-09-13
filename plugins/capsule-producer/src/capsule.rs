@@ -7,11 +7,18 @@
 //! cross_party, bilateral evaluation) or chaining/ledger, which are later
 //! milestones per the task.
 
-use crate::jcs::compute_capsule_id;
+use crate::jcs::{compute_capsule_id, CANONICALIZATION_JCS};
 use serde_json::{json, Map, Value};
 
 pub const SPEC_VERSION: &str = "draft-mih-scitt-agent-action-capsule-02";
-pub const FORMAT_VERSION: &str = "2";
+/// [capsule-emit-mesh-jcs-vintage-split] Format 4: this plugin declares
+/// `canonicalization_id: "jcs"` on every capsule it seals (below), so
+/// `capsule_id` is computed over plain, non-normalizing JCS -- never the
+/// vintage/format-2 absent-field construction. §5.1/§6: a producer emitting a
+/// NEW capsule with normalization (format 2) is non-conformant; format 2
+/// stays valid only for verifying capsules sealed before this plugin declared
+/// the field.
+pub const FORMAT_VERSION: &str = "4";
 
 /// Token accounting for one exchange, sourced verbatim from the OpenAI-shaped
 /// response body's `usage` object (`openai-frontend`'s `Usage`:
@@ -493,6 +500,13 @@ pub fn seal(input: &CapsuleInput) -> Result<Value, crate::jcs::JcsError> {
     body.insert("operator".into(), json!(input.operator));
     body.insert("developer".into(), json!(input.developer));
     body.insert("timestamp".into(), json!(input.timestamp));
+    // [capsule-emit-mesh-jcs-vintage-split] Declare the canonicalization
+    // profile on every new capsule (§5.1 format 4) -- this is what routes
+    // `compute_capsule_id` below onto the non-normalizing jcs branch instead
+    // of the vintage/format-2 absent-field construction. Placed alongside
+    // `format_version` in the preimage; key order is irrelevant to JCS, which
+    // sorts by UTF-16 code unit.
+    body.insert("canonicalization_id".into(), json!(CANONICALIZATION_JCS));
     if let Some(d) = &input.domain {
         body.insert("domain".into(), json!(d));
     }
@@ -685,11 +699,10 @@ mod tests {
     /// [capsule-emit-mesh-jcs-vintage-split] A sealed capsule body routinely
     /// carries explicit JSON nulls -- e.g. `dispatch_path`/`hardware.device`
     /// here, from `Option<String>: None` fields serialized via `json!()` --
-    /// not just absent keys. This is why `compute_capsule_id` MUST stay on
-    /// the normalizing `vintage_json_digest` path (see `jcs::compute_capsule_id`
-    /// doc comment): the pre-`capsule_id` body handed to it contains real
-    /// nulls today, so switching to the non-normalizing `json_digest` would
-    /// change the `capsule_id` of ordinary, already-producible capsules.
+    /// not just absent keys. Because `seal()` declares
+    /// `canonicalization_id: "jcs"`, `compute_capsule_id` takes the
+    /// non-normalizing branch (see `jcs::compute_capsule_id` doc comment):
+    /// these nulls stay IN the digest preimage, they are not silently dropped.
     #[test]
     fn sealed_capsule_body_can_carry_a_null() {
         let capsule = seal(&base_input(None)).unwrap();
@@ -704,13 +717,36 @@ mod tests {
         );
 
         // The capsule_id is still reproducible by re-running compute_capsule_id
-        // over the same sealed body (minus capsule_id/chain) -- proving these
-        // nulls really do reach the digest preimage compute_capsule_id sees,
-        // not just the rendered capsule.
+        // over the same sealed body (minus capsule_id) -- proving these nulls
+        // really do reach the digest preimage compute_capsule_id sees, not
+        // just the rendered capsule.
         let mut body = capsule.as_object().unwrap().clone();
         body.remove("capsule_id");
         let recomputed = crate::jcs::compute_capsule_id(&Value::Object(body)).unwrap();
         assert_eq!(recomputed, capsule["capsule_id"]);
+    }
+
+    /// [capsule-emit-mesh-jcs-vintage-split] THE ACCEPTANCE-CENTERPIECE cross-
+    /// language pin: this plugin's real `seal()` output for a fixed input
+    /// (carrying real nulls, per the test above) matches
+    /// `agent_action_capsule.canonical.compute_capsule_id` for the byte-
+    /// identical JSON, computed independently in Python. Frozen 2026-09-13 by
+    /// serializing this exact `base_input(None)` sealed body (minus
+    /// `capsule_id`) and feeding it to
+    /// `agent_action_capsule.canonical.compute_capsule_id` directly (not the
+    /// typed `Capsule`/`emit()` path, which enforces its own field set --
+    /// this pins the same digest FUNCTION the Rust port implements). If this
+    /// ever goes red, the two implementations have diverged; do not "fix" it
+    /// by re-freezing the constant without finding out why.
+    #[test]
+    fn capsule_id_matches_python_reference_on_a_body_with_nulls() {
+        let capsule = seal(&base_input(None)).unwrap();
+        assert_eq!(
+            capsule["capsule_id"],
+            "0e20f37a5f30e9de51335286efd9ff5e7df24899c77892f60014700ef9eb7efe",
+            "capsule_id diverged from the Python reference's compute_capsule_id \
+             for the same null-carrying body"
+        );
     }
 
     /// The enriched capsule carries EVERY provenance field the host exposes,
@@ -880,15 +916,17 @@ mod tests {
         assert_eq!(capsule["assurance"]["ledger_mode"], "chained");
     }
 
+    /// [capsule-emit-mesh-jcs-vintage-split] REVERSED by this task: under the
+    /// vintage/format-2 construction `jcs::CHAIN_LINKAGE_FIELDS` excluded
+    /// `chain` from the digest entirely. Now that `seal()` declares
+    /// `canonicalization_id: "jcs"` (format 4), `compute_capsule_id` commits
+    /// `chain` INTO the preimage (only `capsule_id`/`signature`/`key_id` are
+    /// excluded -- see `jcs::compute_capsule_id`) -- a format-4 Capsule-ID
+    /// identifies its position on the chain, not just its stream. Varying
+    /// `parent_capsule_id`/`relation` between two otherwise-identical chained
+    /// capsules now correctly changes `capsule_id`.
     #[test]
-    fn capsule_id_is_independent_of_the_chain_blocks_content() {
-        // §5.1 / jcs::CHAIN_LINKAGE_FIELDS excludes `chain` itself from the
-        // digest -- so among capsules that are ALREADY chained (same
-        // ledger_mode), varying parent_capsule_id/relation must not perturb
-        // capsule_id. (ledger_mode itself IS digest-bearing -- see the
-        // standalone-vs-chained test above, where ledger_mode "standalone"
-        // vs "chained" correctly DOES change capsule_id; that's a different
-        // field, not the chain block's content.)
+    fn capsule_id_commits_the_chain_blocks_content() {
         let chained_a = seal(&base_input(Some(ChainLink {
             parent_capsule_id: "f".repeat(64),
             relation: "follows".to_string(),
@@ -899,9 +937,10 @@ mod tests {
             relation: "confirms".to_string(),
         })))
         .unwrap();
-        assert_eq!(chained_a["capsule_id"], chained_b["capsule_id"]);
-        // And the chain block itself is still exactly what was supplied,
-        // even though it didn't affect the digest.
+        assert_ne!(
+            chained_a["capsule_id"], chained_b["capsule_id"],
+            "format-4 capsule_id must commit chain content"
+        );
         assert_eq!(chained_a["chain"]["parent_capsule_id"], "f".repeat(64));
         assert_eq!(chained_b["chain"]["parent_capsule_id"], "0".repeat(64));
     }

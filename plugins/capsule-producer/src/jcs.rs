@@ -24,6 +24,10 @@ pub enum JcsError {
     UnsafeInteger(i128),
     #[error("value is not JSON-serializable here")]
     NotSerializable,
+    #[error("canonicalization_id {0:?} is not supported; expected {CANONICALIZATION_JCS:?}")]
+    UnsupportedCanonicalizationId(String),
+    #[error("canonicalization_id must be a string")]
+    CanonicalizationIdNotString,
 }
 
 /// Absent-field normalization (§2): remove members whose value is null, an empty
@@ -167,40 +171,68 @@ pub fn vintage_json_digest(v: &Value) -> Result<String, JcsError> {
     Ok(hex::encode(Sha256::digest(&bytes)))
 }
 
-/// Fields excluded from the canonical capsule form under BOTH constructions
-/// (§5.1): `capsule_id`/`chain` (the vintage absent-field identity
-/// construction) plus the producer-envelope bookkeeping fields that are NEVER
-/// part of any `capsule_id` preimage under any format -- `signature`/`key_id`
-/// are attached to a ledger line AFTER the id is computed, so hashing them in
-/// would hash a signature into the id it signs.
+/// Fields excluded from the canonical capsule form under the vintage
+/// (format-2) construction ONLY (§5.1): `capsule_id`/`chain` -- a format-2
+/// Capsule-ID identifies its stream, not its position on it, so `chain` is
+/// dropped along with `capsule_id` itself. A declared-`jcs` (format-4)
+/// Capsule commits `chain` -- see [`compute_capsule_id`].
 pub const CHAIN_LINKAGE_FIELDS: &[&str] = &["capsule_id", "chain"];
+/// Producer-envelope bookkeeping fields that are NEVER part of any
+/// `capsule_id` preimage under ANY format -- `signature`/`key_id` are
+/// attached to a ledger line AFTER the id is computed, so hashing them in
+/// would hash a signature into the id it signs.
 pub const LOCAL_ONLY_FIELDS: &[&str] = &["signature", "key_id"];
+/// Plain RFC 8785 JCS is the only algorithm new Capsules may declare.
+pub const CANONICALIZATION_JCS: &str = "jcs";
 
-/// Recompute `capsule_id` (§5.1): the JSON-DIGEST of the canonical capsule
-/// form. This plugin's `seal()` never declares `canonicalization_id`, so every
-/// capsule it produces is the vintage/format-2 construction: exclude
-/// `capsule_id`/`chain`/`signature`/`key_id`, then apply the NORMALIZING
-/// [`vintage_json_digest`] -- matching the Python reference's
-/// `compute_capsule_id` for a capsule with no `canonicalization_id` field.
-/// This MUST stay on the normalizing path: sealed capsule bodies routinely
-/// carry explicit nulls (e.g. `serving_provenance.hostname` when the host
-/// reported none -- see `capsule::tests::sealed_capsule_body_can_carry_a_null`),
-/// so switching this to the non-normalizing [`json_digest`] would change the
-/// `capsule_id` of every already-ledgered capsule that has one, breaking
-/// re-verification. Migrating to the `jcs`-declared, non-normalizing
-/// construction is a producer-format change, not a digest-function port --
-/// out of scope here; see `[capsule-emit-mesh-jcs-vintage-split]`.
+/// Recompute `capsule_id` (§5.1) using the Capsule's declared profile --
+/// line-for-line port of the Python reference `compute_capsule_id`.
+///
+/// Missing `canonicalization_id` selects the vintage format-2 construction:
+/// remove `capsule_id`/`chain`/`signature`/`key_id`, then apply the
+/// NORMALIZING [`vintage_json_digest`]. This path is VERIFICATION-ONLY --
+/// sealed capsule bodies produced before the [`CANONICALIZATION_JCS`] split
+/// (2026-08-28) never declared `canonicalization_id`, so their `capsule_id`
+/// only re-verifies through this branch; no current producer path may emit a
+/// new capsule missing the declaration (§5.1, §6 format 2 is
+/// verification-only).
+///
+/// A present declaration must be exactly `"jcs"` (format 4): remove only
+/// `capsule_id`/`signature`/`key_id` (keeping `chain` IN the preimage -- a
+/// format-4 Capsule-ID commits its position on the chain, not just its
+/// stream) and apply the non-normalizing [`json_digest`]. An explicit JSON
+/// `null` on any other field (e.g. `serving_provenance.hostname` when the
+/// host reported none) changes this digest, unlike the vintage path.
+/// Producers MUST declare `canonicalization_id: "jcs"` on every new capsule
+/// -- see `capsule::seal()`.
 pub fn compute_capsule_id(capsule: &Value) -> Result<String, JcsError> {
     let obj = capsule.as_object().ok_or(JcsError::NotSerializable)?;
-    let mut canonical = Map::new();
-    for (k, v) in obj {
-        if !CHAIN_LINKAGE_FIELDS.contains(&k.as_str())
-            && !LOCAL_ONLY_FIELDS.contains(&k.as_str())
-        {
-            canonical.insert(k.clone(), v.clone());
+    match obj.get("canonicalization_id") {
+        None => {
+            let mut canonical = Map::new();
+            for (k, v) in obj {
+                if !CHAIN_LINKAGE_FIELDS.contains(&k.as_str())
+                    && !LOCAL_ONLY_FIELDS.contains(&k.as_str())
+                {
+                    canonical.insert(k.clone(), v.clone());
+                }
+            }
+            vintage_json_digest(&Value::Object(canonical))
         }
+        Some(Value::String(algorithm)) => {
+            if algorithm != CANONICALIZATION_JCS {
+                return Err(JcsError::UnsupportedCanonicalizationId(algorithm.clone()));
+            }
+            let mut canonical = Map::new();
+            for (k, v) in obj {
+                if k != "capsule_id" && !LOCAL_ONLY_FIELDS.contains(&k.as_str()) {
+                    canonical.insert(k.clone(), v.clone());
+                }
+            }
+            json_digest(&Value::Object(canonical))
+        }
+        Some(_) => Err(JcsError::CanonicalizationIdNotString),
     }
-    vintage_json_digest(&Value::Object(canonical))
 }
 
 #[cfg(test)]
@@ -246,32 +278,115 @@ mod tests {
         );
     }
 
-    /// `compute_capsule_id` must stay on the normalizing path (a capsule with
-    /// no `canonicalization_id` is the vintage/format-2 construction) -- an
-    /// explicit null on a non-linkage field must NOT change the recomputed id.
+    /// [capsule-emit-mesh-jcs-vintage-split] With NO `canonicalization_id`
+    /// declared, `compute_capsule_id` takes the vintage/format-2 branch and
+    /// normalizes -- an explicit null on a non-linkage field must NOT change
+    /// the recomputed id. This is VERIFICATION-ONLY behavior (pre-2026-08-28
+    /// legacy capsules); no current producer path in this crate emits a new
+    /// capsule missing the declaration -- see `compute_capsule_id_does_not_
+    /// normalize_when_canonicalization_id_is_jcs` for the producer path.
     #[test]
-    fn compute_capsule_id_still_normalizes_explicit_nulls() {
+    fn compute_capsule_id_normalizes_explicit_nulls_when_canonicalization_id_absent() {
         let with_null = json!({"action_id": "a", "note": null});
         let without_null = json!({"action_id": "a"});
         assert_eq!(
             compute_capsule_id(&with_null).unwrap(),
             compute_capsule_id(&without_null).unwrap(),
-            "compute_capsule_id must remain on the vintage normalizing path"
+            "with no canonicalization_id declared, compute_capsule_id must take \
+             the vintage normalizing branch"
         );
     }
 
     /// `compute_capsule_id` excludes `signature`/`key_id` (LOCAL_ONLY_FIELDS)
-    /// from the preimage, same as `capsule_id`/`chain` -- mirrors the Python
-    /// reference exactly, even though no call site in this crate ever passes a
-    /// capsule value carrying either field today (see the module doc).
+    /// from the preimage on the vintage (no-declaration) branch, same as
+    /// `capsule_id`/`chain` -- mirrors the Python reference exactly.
     #[test]
-    fn compute_capsule_id_excludes_local_only_fields() {
+    fn compute_capsule_id_excludes_local_only_fields_on_vintage_branch() {
         let base = json!({"action_id": "a"});
         let with_envelope = json!({"action_id": "a", "signature": "deadbeef", "key_id": "k1"});
         assert_eq!(
             compute_capsule_id(&base).unwrap(),
             compute_capsule_id(&with_envelope).unwrap()
         );
+    }
+
+    /// [capsule-emit-mesh-jcs-vintage-split] THE ACCEPTANCE-CENTERPIECE fix:
+    /// a capsule that DECLARES `canonicalization_id: "jcs"` (every new capsule
+    /// this plugin's `seal()` now produces) must NOT normalize -- an explicit
+    /// null must change the recomputed id, exactly like `json_digest`. Before
+    /// this fix, `compute_capsule_id` ignored the declaration entirely and
+    /// always normalized, which is what the bounced review caught: a producer
+    /// that computes capsule_id with normalization is emitting format 2,
+    /// which §5.1/§6 forbid for new capsules.
+    #[test]
+    fn compute_capsule_id_does_not_normalize_when_canonicalization_id_is_jcs() {
+        let with_null = json!({"action_id": "a", "note": null, "canonicalization_id": "jcs"});
+        let without_null = json!({"action_id": "a", "canonicalization_id": "jcs"});
+        assert_ne!(
+            compute_capsule_id(&with_null).unwrap(),
+            compute_capsule_id(&without_null).unwrap(),
+            "with canonicalization_id: jcs declared, compute_capsule_id must NOT \
+             normalize away an explicit null"
+        );
+    }
+
+    /// [capsule-emit-mesh-jcs-vintage-split] Format-4 commits `chain` into the
+    /// preimage (only `capsule_id`/`signature`/`key_id` are excluded) -- unlike
+    /// the vintage branch, which drops `chain` along with `capsule_id`. A
+    /// declared-jcs capsule's id must change when its chain block changes.
+    #[test]
+    fn compute_capsule_id_commits_chain_when_canonicalization_id_is_jcs() {
+        let a = json!({
+            "action_id": "a", "canonicalization_id": "jcs",
+            "chain": {"parent_capsule_id": "f".repeat(64), "relation": "follows"},
+        });
+        let b = json!({
+            "action_id": "a", "canonicalization_id": "jcs",
+            "chain": {"parent_capsule_id": "0".repeat(64), "relation": "confirms"},
+        });
+        assert_ne!(
+            compute_capsule_id(&a).unwrap(),
+            compute_capsule_id(&b).unwrap(),
+            "format-4 capsule_id must commit chain content, unlike the vintage branch"
+        );
+    }
+
+    /// `compute_capsule_id` excludes `signature`/`key_id` on the jcs (declared)
+    /// branch too -- the local-only exclusion applies under BOTH formats.
+    #[test]
+    fn compute_capsule_id_excludes_local_only_fields_on_jcs_branch() {
+        let base = json!({"action_id": "a", "canonicalization_id": "jcs"});
+        let with_envelope = json!({
+            "action_id": "a", "canonicalization_id": "jcs",
+            "signature": "deadbeef", "key_id": "k1",
+        });
+        assert_eq!(
+            compute_capsule_id(&base).unwrap(),
+            compute_capsule_id(&with_envelope).unwrap()
+        );
+    }
+
+    /// A declared `canonicalization_id` that isn't `"jcs"` fails closed --
+    /// mirrors the Python reference raising `ValueError` for an unsupported
+    /// algorithm rather than silently falling back to a known one.
+    #[test]
+    fn compute_capsule_id_rejects_unsupported_canonicalization_id() {
+        let v = json!({"action_id": "a", "canonicalization_id": "jcs-n"});
+        assert!(matches!(
+            compute_capsule_id(&v),
+            Err(JcsError::UnsupportedCanonicalizationId(algo)) if algo == "jcs-n"
+        ));
+    }
+
+    /// A non-string `canonicalization_id` fails closed -- mirrors the Python
+    /// reference's `TypeError`.
+    #[test]
+    fn compute_capsule_id_rejects_non_string_canonicalization_id() {
+        let v = json!({"action_id": "a", "canonicalization_id": 7});
+        assert!(matches!(
+            compute_capsule_id(&v),
+            Err(JcsError::CanonicalizationIdNotString)
+        ));
     }
 
     #[test]
