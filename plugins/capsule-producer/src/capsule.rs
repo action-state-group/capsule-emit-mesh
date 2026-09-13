@@ -682,6 +682,37 @@ mod tests {
             ["serving_provenance"]
     }
 
+    /// [capsule-emit-mesh-jcs-vintage-split] A sealed capsule body routinely
+    /// carries explicit JSON nulls -- e.g. `dispatch_path`/`hardware.device`
+    /// here, from `Option<String>: None` fields serialized via `json!()` --
+    /// not just absent keys. This is why `compute_capsule_id` MUST stay on
+    /// the normalizing `vintage_json_digest` path (see `jcs::compute_capsule_id`
+    /// doc comment): the pre-`capsule_id` body handed to it contains real
+    /// nulls today, so switching to the non-normalizing `json_digest` would
+    /// change the `capsule_id` of ordinary, already-producible capsules.
+    #[test]
+    fn sealed_capsule_body_can_carry_a_null() {
+        let capsule = seal(&base_input(None)).unwrap();
+        let prov = provenance(&capsule);
+        assert!(
+            prov["dispatch_path"].is_null(),
+            "serving_provenance.dispatch_path must be a literal null, not merely absent"
+        );
+        assert!(
+            prov["hardware"]["device"].is_null(),
+            "serving_provenance.hardware.device must be a literal null, not merely absent"
+        );
+
+        // The capsule_id is still reproducible by re-running compute_capsule_id
+        // over the same sealed body (minus capsule_id/chain) -- proving these
+        // nulls really do reach the digest preimage compute_capsule_id sees,
+        // not just the rendered capsule.
+        let mut body = capsule.as_object().unwrap().clone();
+        body.remove("capsule_id");
+        let recomputed = crate::jcs::compute_capsule_id(&Value::Object(body)).unwrap();
+        assert_eq!(recomputed, capsule["capsule_id"]);
+    }
+
     /// The enriched capsule carries EVERY provenance field the host exposes,
     /// under `x-mesh-poc-v1.serving_provenance`, plus the truthfully-renamed
     /// `model_name_digest`. This is the record that must answer "which model,
