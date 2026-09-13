@@ -780,6 +780,59 @@ as free-form, best-effort — under an explicit `x-mesh-poc-v1` namespace, so
 nothing here is silently presented as ratified spec. A real proposal would go
 through REGISTRY.md §12 ("Specification Required") before any of this graduates.
 
+### Digest context: `effect.request_digest` / `effect.response_digest`
+
+`request_digest`/`response_digest` are **not plain RFC 8785 JCS over the wire
+body** — the AAC reference digest
+(`agent_action_capsule.canonical.json_digest`, `HEX(SHA-256(JCS(v)))`) is
+*plain* JCS and refuses any JSON float outright (§5.1), while OpenAI-shaped
+chat bodies are full of floats (`temperature`, `top_p`, penalties, ...). This
+profile's digest context (CPB's term — draft-mih-sokolov-scitt-payload-binding
+§13.2) therefore adds one producer-side step ahead of `jcs` and is declared
+here, exactly, so a stranger never has to reverse-engineer it from
+`capsule_sidecar.py`:
+
+| Purpose | Algorithm | Pre-transform | Field set | Exclusion set | Domain separation | Pre-image encoding | Representation |
+|---|---|---|---|---|---|---|---|
+| I/O digest (§5.2 `effect.request_digest` / `effect.response_digest`) | `jcs` | `float-repr-stringify/1` | the decoded JSON request/response body, in full | none — the whole decoded body participates | none | JCS UTF-8 octets (per `jcs`), of the pre-transformed value | `bare-hex` (lowercase SHA-256 hex digest) |
+
+**`float-repr-stringify/1`** (named so a future, collision-free transform is a
+versioned change to this row, never a silent one): before `jcs` sees the
+value, every JSON float in the body is replaced, recursively, by the decimal
+string Python's `repr()` produces for it — the shortest decimal string that
+reparses to the identical `float64`. Integers are passed through unchanged
+(still subject to `jcs`'s own ±(2^53−1) safe-integer bound, below). Reference
+implementation: `_stringify_floats()` / `digest_json()` in `capsule_sidecar.py`.
+
+Three consequences a verifier of this profile must know, stated plainly, not
+excused:
+
+1. **The float→string rule is exact, and it is Python's, not RFC 8785's own
+   number-to-string algorithm.** `repr()` renders in plain decimal form unless
+   the value's decimal exponent is `< -4` or `>= 16`, in which case it renders
+   in exponential form (e.g. `0.0001` → `"0.0001"`, `0.00001` → `"1e-05"`,
+   `1e16` → `"1e+16"`) — the same threshold Python's own `float.__repr__` uses.
+   This is **not** guaranteed byte-identical to another language's "shortest
+   round-trip float" renderer (e.g. Rust's `f64::to_string()` or ECMAScript's
+   Number-to-String); a second producer only reproduces this profile's digest
+   by implementing this exact rule, not merely "stringify the float."
+2. **Integers beyond ±(2^53−1) are refused, so no digest exists for such a
+   body.** `float-repr-stringify/1` never touches integers — `jcs`'s own
+   `UnsafeIntegerError` guard still applies to every integer in the body
+   unchanged. A request or response containing an integer outside the
+   JS-safe range makes `digest_json()` raise; the sidecar produces **no**
+   `request_digest`/`response_digest` for that exchange, not a best-effort or
+   truncated one.
+3. **`0.7` and `"0.7"` digest identically — a type-collapsing collision
+   inherent to this construction.** Because every float is stringified before
+   `jcs` runs, a body carrying the JSON float `0.7` at some field and a body
+   carrying the JSON string `"0.7"` at the same field produce the same JCS
+   bytes and therefore the same digest. This digest context cannot
+   distinguish "this was numeric" from "this was always a string" at any
+   position where both are plausible values; it is a known, accepted
+   limitation of `float-repr-stringify/1`, not a defect to be silently
+   patched here.
+
 ## Two IETF draft citations
 
 1. **`draft-mih-scitt-agent-action-capsule-02`**, "An Agent Action Capsule Profile
