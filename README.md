@@ -808,21 +808,35 @@ Three consequences a verifier of this profile must know, stated plainly, not
 excused:
 
 1. **The float→string rule is exact, and it is Python's, not RFC 8785's own
-   number-to-string algorithm.** `repr()` renders in plain decimal form unless
-   the value's decimal exponent is `< -4` or `>= 16`, in which case it renders
-   in exponential form (e.g. `0.0001` → `"0.0001"`, `0.00001` → `"1e-05"`,
-   `1e16` → `"1e+16"`) — the same threshold Python's own `float.__repr__` uses.
-   This is **not** guaranteed byte-identical to another language's "shortest
-   round-trip float" renderer (e.g. Rust's `f64::to_string()` or ECMAScript's
-   Number-to-String); a second producer only reproduces this profile's digest
-   by implementing this exact rule, not merely "stringify the float."
-2. **Integers beyond ±(2^53−1) are refused, so no digest exists for such a
-   body.** `float-repr-stringify/1` never touches integers — `jcs`'s own
-   `UnsafeIntegerError` guard still applies to every integer in the body
-   unchanged. A request or response containing an integer outside the
-   JS-safe range makes `digest_json()` raise; the sidecar produces **no**
-   `request_digest`/`response_digest` for that exchange, not a best-effort or
-   truncated one.
+   number-to-string algorithm.** `repr()` renders the shortest decimal digit
+   string that reparses to the identical `float64`, in one of two forms:
+   fixed-point when the value's decimal exponent `exp` satisfies
+   `-4 <= exp < 16`, otherwise exponential — with an explicit sign and **at
+   least two exponent digits** (`e+16`, `e-05`, never `e16` or `e-5`). Negative
+   zero is preserved as its own value, never collapsed to positive:
+   `-0.0` → `"-0.0"`. Worked vectors: `0.0001` → `"0.0001"`, `1e-05` →
+   `"1e-05"`, `1e16` → `"1e+16"`, `0.1 + 0.2` → `"0.30000000000000004"`,
+   `-0.0` → `"-0.0"`. This is the same rule Python's own `float.__repr__`
+   uses, but it is **not** guaranteed byte-identical to another language's
+   "shortest round-trip float" renderer (e.g. Rust's `f64::to_string()` or
+   ECMAScript's Number-to-String); a second producer only reproduces this
+   profile's digest by implementing this exact rule, not merely "stringify
+   the float." JSON has no `inf`/`nan` literal, so neither arises here.
+2. **An unsafe integer OMITS the digest — it never fabricates one, and the
+   exchange still seals.** `float-repr-stringify/1` never touches integers —
+   `jcs`'s own `UnsafeIntegerError` guard still applies to every integer in
+   the body unchanged. This is symmetric for `request_digest` and
+   `response_digest`: an integer beyond ±(2^53−1) anywhere in the request or
+   response body means that side's digest field is `None`/absent, never a
+   crash, never a best-effort or truncated digest, and never a blocked
+   response. Before commit `ca88c96` ("guard all six `digest_json()` call
+   sites against `UnsafeIntegerError`/`FloatInDigestError`"), **no** call
+   site — request or response — caught this: the exception was unhandled and
+   escaped call sites unguarded, one of them as an opaque 500 with no sealed
+   capsule. `ca88c96` is what made the six sites symmetric, by adding a
+   shared `_safe_digest_json()` helper that catches
+   `UnsafeIntegerError`/`FloatInDigestError` at every one of them and omits
+   the field instead.
 3. **`0.7` and `"0.7"` digest identically — a type-collapsing collision
    inherent to this construction.** Because every float is stringified before
    `jcs` runs, a body carrying the JSON float `0.7` at some field and a body
