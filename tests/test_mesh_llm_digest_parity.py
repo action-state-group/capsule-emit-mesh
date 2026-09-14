@@ -119,3 +119,54 @@ def test_frozen_digest_is_a_real_sha256_of_the_canonical_bytes():
         b'{"max_tokens":512,"messages":[{"content":"hello","role":"user"}],'
         b'"model":"hermes-2-pro-mistral-7b","temperature":"0.7","top_p":"1.0"}'
     )
+
+
+# [capsule-emit-mesh-request-digest-unsafe-int-guard] -0.0 and 1e-05 are the
+# two edge cases README's "Digest context" section names explicitly
+# (consequence 1: repr()'s sign-preserving negative zero, and its
+# exponential-notation threshold at decimal exponent < -4). Pinned here,
+# cross-checked against a LIVE capsule_sidecar.digest_json() run at authoring
+# time, so #1841's Rust port has the same frozen constant to assert against
+# for these two floats specifically -- not just the whole-number/ordinary
+# cases MESH_LLM_REQUEST_BODY above already covers.
+NEGATIVE_ZERO_AND_SMALL_EXPONENT_BODY = {
+    "model": "hermes-2-pro-mistral-7b",
+    "messages": [{"role": "user", "content": "hello"}],
+    "temperature": -0.0,
+    "top_p": 1e-05,
+}
+
+# Recorded from a live `capsule_sidecar.digest_json(NEGATIVE_ZERO_AND_SMALL_EXPONENT_BODY)`
+# run (2026-09-13, agent-action-capsule 0.3.0) -- a future canonicalization
+# change on either side must update this constant deliberately, never silently.
+NEGATIVE_ZERO_AND_SMALL_EXPONENT_FROZEN_DIGEST = (
+    "c2cb16c85258feefd0c3108b9c4f47788af7d3e0b8498c438fd5d5636c489586"
+)
+
+
+def test_negative_zero_and_small_exponent_float_stringification_matches_repr():
+    """The two named edge cases stringify exactly as Python's repr() renders
+    them: -0.0 keeps its sign (never collapses to "0.0"), and 1e-05 renders
+    in exponential form (decimal exponent -5 is < -4, the threshold repr()
+    switches on)."""
+    assert capsule_sidecar._stringify_floats(-0.0) == "-0.0"
+    assert capsule_sidecar._stringify_floats(1e-05) == "1e-05"
+
+
+def test_negative_zero_and_small_exponent_digest_matches_frozen_constant():
+    """capsule-emit's canonical digest for the -0.0/1e-05 body is byte-for-byte
+    the frozen constant above -- re-pins the SAME cross-impl contract as
+    test_capsule_emit_canonical_digest_matches_mesh_llm_frozen_constant, for
+    the two float edge cases this task's review specifically called out."""
+    canonical_input = _stringify_floats(NEGATIVE_ZERO_AND_SMALL_EXPONENT_BODY)
+    digest = json_digest(canonical_input)
+    assert digest == NEGATIVE_ZERO_AND_SMALL_EXPONENT_FROZEN_DIGEST
+
+
+def test_sidecar_negative_zero_and_small_exponent_digest_matches_frozen_constant():
+    """This repo's own sidecar surface agrees with the same frozen constant --
+    closes the same three-way loop (Rust host <-> Python sidecar <->
+    capsule-emit canonical) test_sidecar_digest_json_matches_mesh_llm_frozen_constant
+    closes above, for -0.0/1e-05 specifically."""
+    digest = capsule_sidecar.digest_json(NEGATIVE_ZERO_AND_SMALL_EXPONENT_BODY)
+    assert digest == NEGATIVE_ZERO_AND_SMALL_EXPONENT_FROZEN_DIGEST

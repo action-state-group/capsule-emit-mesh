@@ -66,7 +66,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from agent_action_capsule.canonical import json_digest
+from agent_action_capsule.canonical import FloatInDigestError, UnsafeIntegerError, json_digest
 from agent_action_capsule.contracts import Disposition, EffectRecord
 from agent_action_capsule.emit import emit
 from agent_action_capsule.verify import verify as verify_capsule
@@ -521,6 +521,20 @@ def _stringify_floats(value: Any) -> Any:
 
 def digest_json(value: Any) -> str:
     return json_digest(_stringify_floats(value))
+
+
+def _safe_digest_json(value: Any, *, field: str) -> str | None:
+    """``digest_json()``, except an integer outside +/-(2**53-1)
+    (``UnsafeIntegerError``) or a float that reached ``jcs`` unstringified
+    (``FloatInDigestError``) is caught and the digest OMITTED -- never a
+    crash, never a best-effort or truncated digest. See README's "Digest
+    context" section, consequence 2: no digest exists for such a body.
+    """
+    try:
+        return digest_json(value)
+    except (UnsafeIntegerError, FloatInDigestError) as exc:
+        print(f"capsule sidecar: {field} omitted -- {type(exc).__name__}: {exc}")
+        return None
 
 
 def _utc_now_iso() -> str:
@@ -992,9 +1006,9 @@ def build_capsule(
     client_nonce: str,
     client_nonce_source: str,
     request_json: dict[str, Any],
-    request_digest: str,
+    request_digest: str | None,
     status: str,  # "confirmed" | "failed"
-    response_digest: str,
+    response_digest: str | None,
     verdict_class: str,
     disposition_decision: str,
     latency_ms: float,
@@ -1484,7 +1498,7 @@ def _seal_chat_completion(
     client_nonce: str,
     client_nonce_source: str,
     request_json: dict[str, Any],
-    request_digest: str,
+    request_digest: str | None,
     response_json: dict[str, Any],
     status_code: int,
     latency_ms: float,
@@ -1492,11 +1506,16 @@ def _seal_chat_completion(
     bilateral_eval: "BilateralEvalResult | None" = None,
     peer_capsule_id: str | None = None,
 ) -> dict[str, Any]:
-    response_digest = digest_json(response_json)
+    response_digest = _safe_digest_json(response_json, field="response_digest[seal_chat_completion]")
     # [b6a-requester-seal] The shared per-exchange correlator, off the response
     # id — recorded identically by whichever role's sidecar seals this half.
     exchange_id, exchange_id_source = exchange_id_from_response(response_json)
-    if 200 <= status_code < 300:
+    # response_digest is None only when the response body itself could not be
+    # digested (UnsafeIntegerError/FloatInDigestError) -- §5.2's confirmed-
+    # effect invariant REQUIRES a well-formed response_digest, so a 2xx
+    # response the sidecar cannot attest to seals as "failed", never
+    # "confirmed" with a fabricated or absent digest.
+    if 200 <= status_code < 300 and response_digest is not None:
         capsule = build_capsule(
             state,
             client_nonce=client_nonce,
@@ -1517,6 +1536,9 @@ def _seal_chat_completion(
     else:
         # "checked and failed", not "absent" -- see #1233 step 7 (full
         # rationale in handle_chat_completion's non-streaming twin below).
+        # Reached either for a real non-2xx status, or for a 2xx response
+        # whose digest could not be computed (response_digest is None) --
+        # both are honestly "observed but cannot confirm", never "confirmed".
         capsule = build_capsule(
             state,
             client_nonce=client_nonce,
@@ -1665,7 +1687,10 @@ def forwarded_copy_record(forwarded: dict[str, Any], transforms: list[str], upst
     An absent or empty list means either no tool calls or the sidecar had to
     mint them (``--local-model-only`` path).
     """
-    result: dict[str, Any] = {"transforms": transforms, "digest": digest_json(forwarded)}
+    result: dict[str, Any] = {
+        "transforms": transforms,
+        "digest": _safe_digest_json(forwarded, field="forwarded_copy.digest"),
+    }
     if upstream_tool_call_ids is not None:
         result["upstream_tool_call_ids"] = upstream_tool_call_ids
     return result
@@ -1715,7 +1740,7 @@ def synthesize_sse(response_json: dict[str, Any]) -> list[bytes]:
 
 def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[str, str], raw_body: bytes) -> tuple[int, bytes, dict[str, str]]:
     request_json = json.loads(raw_body.decode("utf-8"))
-    request_digest = digest_json(request_json)
+    request_digest = _safe_digest_json(request_json, field="request_digest[handle_chat_completion]")
     client_nonce, client_nonce_source = _resolve_client_nonce(state, headers)
     bilateral_eval = evaluate_bilateral_attestation(headers, raw_body, request_json)
 
@@ -1744,7 +1769,7 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
     latency_ms = (time.monotonic() - start) * 1000
 
     response_json = json.loads(response_body.decode("utf-8"))
-    response_digest = digest_json(response_json)
+    response_digest = _safe_digest_json(response_json, field="response_digest[handle_chat_completion]")
     # Non-streaming: response_body is returned to the caller unmodified, so the
     # forwarded copy IS the raw object. Reported explicitly (empty transforms,
     # digest == response_digest) rather than omitted, so "nothing changed" is a
@@ -1757,7 +1782,12 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
     # _seal_chat_completion / the streaming twin — same derivation everywhere).
     exchange_id, exchange_id_source = exchange_id_from_response(response_json)
 
-    if 200 <= status_code < 300:
+    # response_digest is None only when the response body itself could not be
+    # digested (UnsafeIntegerError/FloatInDigestError) -- §5.2's confirmed-
+    # effect invariant REQUIRES a well-formed response_digest, so a 2xx
+    # response the sidecar cannot attest to seals as "failed", never
+    # "confirmed" with a fabricated or absent digest.
+    if 200 <= status_code < 300 and response_digest is not None:
         capsule = build_capsule(
             state,
             client_nonce=client_nonce,
@@ -1778,7 +1808,8 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
     else:
         # "checked and failed", not "absent" -- see #1233 step 7. The
         # sidecar directly observed the request AND the real error
-        # response; both are digested into the capsule. verdict_class is
+        # response (or a 2xx response it could not digest); both are
+        # digested into the capsule where possible. verdict_class is
         # "errored", not "denied": the spec's own §5.4.2 invariant
         # (NEVER_DISPATCH_VERDICT_CLASSES) rejects "denied" paired with
         # effect.status="failed" -- "denied" means pre-dispatch, and the
@@ -1864,7 +1895,7 @@ def make_handler(state: NodeState, upstream_base: str, *, pane_dashboard_origin:
                     request_digest=None, capsule_id=None,
                 )
                 return
-            request_digest = digest_json(request_json)
+            request_digest = _safe_digest_json(request_json, field="request_digest[do_POST]")
             if request_json.get("stream"):
                 try:
                     self._handle_streaming_chat_completion(headers, raw, request_json, request_id=request_id)
@@ -1931,7 +1962,7 @@ def make_handler(state: NodeState, upstream_base: str, *, pane_dashboard_origin:
             sidecar buffers the full upstream response before re-emitting a
             synthesized SSE stream, rather than forwarding raw bytes live.
             """
-            request_digest = digest_json(request_json)
+            request_digest = _safe_digest_json(request_json, field="request_digest[streaming]")
             client_nonce, client_nonce_source = _resolve_client_nonce(state, headers)
             bilateral_eval = evaluate_bilateral_attestation(headers, raw_body, request_json)
             req = urllib.request.Request(
