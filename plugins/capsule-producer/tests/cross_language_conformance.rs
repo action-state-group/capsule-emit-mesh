@@ -104,6 +104,7 @@ fn sample_capsule_input() -> CapsuleInput {
                 prev_seq: None,
                 peer_capsule_id: None,
                 peer_capsule_id_provenance: None,
+                twin_bracket_id: None,
             },
             role: "served".to_string(),
             observation_point: None,

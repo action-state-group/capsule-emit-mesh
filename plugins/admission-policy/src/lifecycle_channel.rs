@@ -31,7 +31,7 @@
 //! (`mesh-llm`) that this plugin cannot depend on. Field shape verified
 //! against `crates/mesh-llm-host-runtime/src/plugin/openai_exchange.rs` on
 //! that branch (`dispatch_path`/`phase`/`model`/`status`/`capsule_id`/`nonce`/
-//! `serving_provenance`).
+//! `serving_provenance`/`twin_bracket_id`).
 //!
 //! The `serving_provenance` block is the host's proof-of-inference metadata
 //! (#1233 digest advertisement): what ran (model identity hash, revision), at
@@ -237,6 +237,16 @@ pub struct OpenAiExchangeEnvelope {
     /// never fabricated.
     #[serde(default)]
     pub reasoning_digest: Option<String>,
+    /// The id shared by BOTH halves of an ambient twin comparison, minted
+    /// host-side (`mesh-llm-host-runtime`'s
+    /// `runtime::twin_sample::mint_twin_bracket_id`). `#[serde(default)]` for
+    /// forward-compat with a host that predates the field (it then stays
+    /// `None`, never fabricated) -- mirrors host-side
+    /// `OpenAiExchangeEnvelope::twin_bracket_id`, which the host itself omits
+    /// (`skip_serializing_if`) on every exchange that wasn't ambiently
+    /// twinned.
+    #[serde(default)]
+    pub twin_bracket_id: Option<String>,
 }
 
 /// Mirror of the host's `ExchangeUsage` (real token counts). Every field is a
@@ -468,6 +478,8 @@ struct LoggedEnvelope {
     tool_calls_digest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    twin_bracket_id: Option<String>,
 }
 
 impl From<&OpenAiExchangeEnvelope> for LoggedEnvelope {
@@ -487,6 +499,7 @@ impl From<&OpenAiExchangeEnvelope> for LoggedEnvelope {
             response_digest: e.response_digest.clone(),
             tool_calls_digest: e.tool_calls_digest.clone(),
             reasoning_digest: e.reasoning_digest.clone(),
+            twin_bracket_id: e.twin_bracket_id.clone(),
         }
     }
 }
@@ -572,6 +585,21 @@ mod tests {
         assert!(env.reasoning_digest.is_none());
         assert_eq!(env.exchange_id.as_deref(), Some("exch-7"));
         assert!(ObservedLifecycleEvents::is_sealable_host_served(&env));
+    }
+
+    /// A terminal event that carries the host-minted `twin_bracket_id`
+    /// (ambient twin comparison) survives the deserialize; an ordinary
+    /// terminal event that omits the field (the overwhelming majority)
+    /// parses with it `None` -- never a fabricated bracket.
+    #[test]
+    fn twin_bracket_id_round_trips_when_present_and_is_none_when_omitted() {
+        let wire_with_id = r#"{"exchange_id":"exch-7","dispatch_path":"raw_proxy","phase":"terminal","model":"local-gguf/sha256-4ff195f73917d9c2","status":200,"capsule_id":null,"nonce":null,"twin_bracket_id":"twin-abc123"}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire_with_id).expect("parse");
+        assert_eq!(env.twin_bracket_id.as_deref(), Some("twin-abc123"));
+
+        let wire_without_id = r#"{"exchange_id":"exch-7","dispatch_path":"raw_proxy","phase":"terminal","model":"local-gguf/sha256-4ff195f73917d9c2","status":200,"capsule_id":null,"nonce":null}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire_without_id).expect("parse");
+        assert!(env.twin_bracket_id.is_none());
     }
 
     /// The plugin's OWN plugin-served stub terminal event (a synthetic endpoint
@@ -858,6 +886,7 @@ mod tests {
                 vram_bytes: None,
                 is_soc: None,
             }),
+            twin_bracket_id: None,
         };
 
         store.record(event("model-a", Some("gpu-old")));

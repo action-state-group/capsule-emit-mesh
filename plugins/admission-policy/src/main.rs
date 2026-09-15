@@ -150,6 +150,7 @@ fn seal_observed_host_exchange(capsules: &CapsuleState, envelope: &OpenAiExchang
         // `SelfMinted` value must never be surfaced as a peer's claim.
         peer_capsule_id: peer_capsule_id_for_seal(envelope).map(|(id, _)| id),
         peer_capsule_id_provenance: peer_capsule_id_for_seal(envelope).map(|(_, prov)| prov),
+        twin_bracket_id: envelope.twin_bracket_id.as_deref(),
     };
     match capsules.emit_for_observed_host_exchange(&observed) {
         Ok(emitted) => {

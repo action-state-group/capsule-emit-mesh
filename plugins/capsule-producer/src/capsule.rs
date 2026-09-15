@@ -139,6 +139,15 @@ pub struct ServingProvenance {
     /// is `None`. Graded self-attested/peer-asserted, never promoted to a
     /// verified or countersigned claim by this field's mere presence.
     pub peer_capsule_id_provenance: Option<String>,
+    /// The id shared by BOTH halves of an ambient twin comparison, forwarded
+    /// verbatim from the terminal `openai.exchange.v1` envelope's own
+    /// `twin_bracket_id` (host-minted; this plugin never mints or derives
+    /// one). `None` -- and then ABSENT from the sealed capsule, never a
+    /// fabricated default -- on every exchange the envelope reports as not
+    /// twinned (the overwhelming majority). Both rows of a real twin carry
+    /// the identical string because both plugin instances forward the same
+    /// host-minted value off their own terminal envelope for that exchange.
+    pub twin_bracket_id: Option<String>,
 }
 
 impl ServingProvenance {
@@ -151,7 +160,7 @@ impl ServingProvenance {
             }),
             None => Value::Null,
         };
-        json!({
+        let mut value = json!({
             "served_by_node_id": self.served_by_node_id,
             "dispatch_path": self.dispatch_path,
             "requesting_party": self.requesting_party,
@@ -183,7 +192,17 @@ impl ServingProvenance {
             "prev_seq": self.prev_seq,
             "peer_capsule_id": self.peer_capsule_id,
             "peer_capsule_id_provenance": self.peer_capsule_id_provenance,
-        })
+        });
+        // twin_bracket_id: OMITTED entirely when the envelope carried none --
+        // never a null placeholder -- so an untwinned row (the overwhelming
+        // majority) never reads as a half-bracket.
+        if let Some(twin_bracket_id) = &self.twin_bracket_id {
+            value
+                .as_object_mut()
+                .expect("serving_provenance value is always a JSON object")
+                .insert("twin_bracket_id".into(), json!(twin_bracket_id));
+        }
+        value
     }
 }
 
@@ -791,6 +810,7 @@ mod tests {
                     prev_seq: None,
                     peer_capsule_id: None,
                     peer_capsule_id_provenance: None,
+                    twin_bracket_id: None,
                 },
                 role: "served".to_string(),
                 observation_point: None,
@@ -1012,6 +1032,77 @@ mod tests {
         let mut input = base_input(None);
         input.mesh_poc.model_name_digest = "e".repeat(64);
         assert_ne!(seal(&input).unwrap()["capsule_id"], baseline_id.as_str());
+    }
+
+    // =======================================================================
+    // twin_bracket_id -- forwarded verbatim from the terminal envelope,
+    // never minted or defaulted here (see [`ServingProvenance::twin_bracket_id`]).
+    // =======================================================================
+
+    /// Positive vector: when the envelope carried a `twin_bracket_id`, the
+    /// sealed record carries it verbatim under `serving_provenance`.
+    /// MUTANT: drop the forward (stop copying the field into `ServingProvenance`
+    /// before calling `seal`) and this assertion goes red.
+    #[test]
+    fn twin_bracket_id_present_is_carried_verbatim() {
+        let mut input = base_input(None);
+        input.mesh_poc.serving_provenance.twin_bracket_id = Some("twin-abc123".to_string());
+        let capsule = seal(&input).unwrap();
+        assert_eq!(provenance(&capsule)["twin_bracket_id"], "twin-abc123");
+    }
+
+    /// Absence rule: when the envelope carried no `twin_bracket_id` (the
+    /// overwhelming majority of exchanges), the key is OMITTED entirely --
+    /// never `null` -- so a reader can never mistake an untwinned row for a
+    /// half-formed bracket.
+    #[test]
+    fn twin_bracket_id_absent_when_envelope_carried_none() {
+        let capsule = seal(&base_input(None)).unwrap();
+        assert!(
+            provenance(&capsule).get("twin_bracket_id").is_none(),
+            "an absent twin_bracket_id must be omitted, not null"
+        );
+    }
+
+    /// Digest-bound: a real `twin_bracket_id` is committed into `capsule_id`
+    /// like every other provenance fact, so an attester cannot swap a row
+    /// into (or out of) a bracket without changing the sealed record's
+    /// content address.
+    #[test]
+    fn twin_bracket_id_is_digest_bound() {
+        let baseline = seal(&base_input(None)).unwrap();
+        let baseline_id = baseline["capsule_id"].as_str().unwrap().to_string();
+        let mut input = base_input(None);
+        input.mesh_poc.serving_provenance.twin_bracket_id = Some("twin-abc123".to_string());
+        assert_ne!(seal(&input).unwrap()["capsule_id"], baseline_id.as_str());
+    }
+
+    /// Two rows of one real twin: both are sealed from their own node's copy
+    /// of the SAME host-minted id, so both sealed records carry the
+    /// identical `twin_bracket_id` even though everything else about them
+    /// (which node served, the exchange id) differs -- this is what lets a
+    /// reader bracket the two rows together.
+    #[test]
+    fn two_rows_sharing_a_twin_bracket_id_carry_the_identical_value() {
+        let mut requester = base_input(None);
+        requester.mesh_poc.serving_provenance.served_by_node_id = "node-a".to_string();
+        requester.mesh_poc.serving_provenance.exchange_id = "exch-a".to_string();
+        requester.mesh_poc.serving_provenance.twin_bracket_id = Some("twin-shared".to_string());
+
+        let mut served = base_input(None);
+        served.mesh_poc.serving_provenance.served_by_node_id = "node-b".to_string();
+        served.mesh_poc.serving_provenance.exchange_id = "exch-b".to_string();
+        served.mesh_poc.serving_provenance.twin_bracket_id = Some("twin-shared".to_string());
+
+        let requester_capsule = seal(&requester).unwrap();
+        let served_capsule = seal(&served).unwrap();
+        assert_eq!(
+            provenance(&requester_capsule)["twin_bracket_id"],
+            provenance(&served_capsule)["twin_bracket_id"]
+        );
+        assert_eq!(provenance(&requester_capsule)["twin_bracket_id"], "twin-shared");
+        // Different exchanges, same bracket id -- distinct capsule_ids.
+        assert_ne!(requester_capsule["capsule_id"], served_capsule["capsule_id"]);
     }
 
     #[test]

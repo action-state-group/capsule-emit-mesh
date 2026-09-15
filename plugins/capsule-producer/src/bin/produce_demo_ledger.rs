@@ -177,6 +177,8 @@ fn step_input(step: &Step, chain: Option<ChainLink>) -> CapsuleInput {
                 prev_seq: if step.seq > 1 { Some(step.seq - 1) } else { None },
                 peer_capsule_id: None,
                 peer_capsule_id_provenance: None,
+                // Deterministic demo, no host envelope -- never twinned.
+                twin_bracket_id: None,
             },
             // Single-node demo: this node always serves its own steps.
             role: "served".to_string(),
