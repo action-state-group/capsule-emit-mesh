@@ -24,7 +24,9 @@ dependencies = [
     "capsule-emit>=0.8.0",
     # scitt-cose and cryptography are NOT pulled by plain capsule-emit; capsule_sidecar.py imports
     # scitt_cose directly, and requester_commitment.py / node_ownership.py import cryptography directly.
-    "scitt-cose>=0.2.2",
+    # Floor 0.3.0 (matches requirements.txt): history_card.py's `_receipt_grade`
+    # needs `ReceiptResult.protected_header_ext`, added in 0.3.0.
+    "scitt-cose>=0.3.0",
     "cryptography",
 ]
 

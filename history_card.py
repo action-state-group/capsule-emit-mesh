@@ -59,6 +59,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from agent_action_capsule.emit import emit
 from capsule_emit.account import (
@@ -98,6 +99,61 @@ __all__ = [
     "with_peer_reconciliation",
     "with_references",
 ]
+
+def _receipt_grade(witness: Any) -> str | None:  # witness: capsule_emit.checkpoint.WitnessRecord
+    """The RECEIPT grade one witness put on its own stamp -- decoded from the
+    COSE Receipt's protected header, private-use label ``-65537`` (register
+    row 5: ``countersigned-observed`` = existence + time, ``mmr-verified`` =
+    consistency checked). NOT :attr:`HistoryCard.witnessed` -- that is the
+    CLIENT state (derived: does at least one receipt exist), never a claim
+    about what was checked. See :meth:`HistoryCard.witness_words`.
+
+    ``None`` when the receipt carries no such label (stub stamp, pre-label
+    witness, or an undecodable receipt) -- never presented as either grade
+    string.
+
+    Same key-independent structural-decode technique as
+    ``capsule_emit.witness._receipt_grade`` (label ``-65537`` is read from
+    the protected header during ``scitt_cose.verify_receipt``'s decode,
+    before any signature check) -- duplicated here rather than imported
+    because capsule-emit-mesh pins its own capsule-emit release and this
+    helper predates that function's release.
+    """
+    if getattr(witness, "is_stub", False):
+        return None
+    try:
+        import base64
+
+        from scitt_cose import verify_receipt
+    except ImportError:
+        return None
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+        probe_pem = Ed25519PrivateKey.generate().public_key().public_bytes(
+            Encoding.PEM, PublicFormat.SubjectPublicKeyInfo
+        )
+        receipt_bytes = base64.b64decode(witness.receipt_b64)
+        result = verify_receipt(
+            receipt_bytes,
+            leaf_entry_hex=witness.entry_hash,
+            log_public_key_pem=probe_pem,
+        )
+        grade = result.protected_header_ext.get(-65537)
+        return grade if isinstance(grade, str) else None
+    except Exception:  # noqa: BLE001 -- decode-only helper, never raises into rendering
+        return None
+
+
+#: RECEIPT grade -> its rendered word, for :meth:`HistoryCard.witness_words`.
+#: Anything not in this map (unknown label value, or ``None``) renders as
+#: "ungraded" -- never silently treated as either known grade.
+_RECEIPT_GRADE_WORDS = {
+    "mmr-verified": "consistency-verified",
+    "countersigned-observed": "existence-and-time",
+}
+
 
 #: forks_state values -- distinguish honest absence from unreadable/tampered state.
 #: "absent": file not present; plugin never ran; zero is an honest default.
@@ -368,6 +424,14 @@ class HistoryCard:
     checkpoint_count: int
     witnesses: list[str] = field(default_factory=list)
     witnessed: bool = False
+    #: Each `witnesses` entry's OWN receipt grade (ts_url -> `_receipt_grade`
+    #: result) -- the per-witness fact, never conflated with `witnessed`
+    #: (the derived client state: "at least one receipt exists"). A
+    #: checkpoint whose only receipt grades `countersigned-observed` is
+    #: still `witnessed=True` here -- correctly -- but a renderer must show
+    #: this dict beside `witnessed`, never render `witnessed` alone as
+    #: consistency-verified. See `witness_words()`.
+    receipt_grades: dict[str, str | None] = field(default_factory=dict)
     #: peer checkpoint-root reconciliation ([mesh-peer-root-exchange]) --
     #: OUTSIDE `properties`/`core_account()` deliberately: these come from a
     #: separate observation store (the mesh plugin's gossip-fed reconciliation
@@ -435,6 +499,31 @@ class HistoryCard:
         )
         return result.ok
 
+    def witness_words(self) -> str:
+        """Human words for `witnessed` + `receipt_grades` -- words, not
+        codes, for a UI card; `to_value()` carries the codes. Renders BOTH
+        the derived client state and each receipt's own grade beside it, so
+        a checkpoint whose only receipt is `countersigned-observed`
+        (existence + time) is never read as consistency-verified just
+        because `witnessed` is true.
+
+        Examples:
+          "self-attested -- no receipt yet"
+          "witnessed -- 1 receipt: consistency-verified (anchor.example)"
+          "witnessed -- 2 receipts: consistency-verified (anchor.example), "
+          "existence-and-time (rekor.example)"
+        """
+        if not self.witnessed or not self.receipt_grades:
+            return "self-attested -- no receipt yet"
+        n = len(self.receipt_grades)
+        parts = []
+        for ts_url in sorted(self.receipt_grades):
+            grade = self.receipt_grades[ts_url]
+            word = _RECEIPT_GRADE_WORDS.get(grade, "ungraded")
+            host = urlsplit(ts_url).hostname or ts_url
+            parts.append(f"{word} ({host})")
+        return f"witnessed -- {n} receipt{'s' if n != 1 else ''}: " + ", ".join(parts)
+
     def to_value(self) -> dict[str, Any]:
         return {
             "schema": HISTORY_CARD_SCHEMA,
@@ -463,6 +552,10 @@ class HistoryCard:
                 "checkpoint_count": self.checkpoint_count,
                 "witnesses": list(self.witnesses),
                 "witnessed": self.witnessed,
+                # RECEIPT grades (codes, register row 5) -- the derived client
+                # state above (`witnessed`) is never a substitute for these;
+                # see `witness_words()` for the words-not-codes rendering.
+                "receipt_grades": dict(self.receipt_grades),
             },
             "peer_reconciliation": {
                 "reconciled_with": self.reconciled_with,
@@ -666,7 +759,11 @@ def build_history_card(
     )
 
     latest = in_range[-1] if in_range else boundary
-    witnesses = sorted({w.ts_url for w in (latest.witnesses or [])}) if latest is not None else []
+    latest_witness_records = list(latest.witnesses or []) if latest is not None else []
+    witnesses = sorted({w.ts_url for w in latest_witness_records})
+    # One grade per ts_url -- last writer wins on a duplicate URL, same
+    # dedup unit as `witnesses` above.
+    receipt_grades = {w.ts_url: _receipt_grade(w) for w in latest_witness_records}
 
     return HistoryCard(
         node_id=node_id,
@@ -684,6 +781,7 @@ def build_history_card(
         checkpoint_count=len(in_range),
         witnesses=witnesses,
         witnessed=bool(witnesses),
+        receipt_grades=receipt_grades,
     )
 
 
