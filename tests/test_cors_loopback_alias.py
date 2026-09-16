@@ -20,21 +20,24 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-_POLLUTABLE_MODULES = [
-    "agent_action_capsule.canonical",
-    "agent_action_capsule.contracts",
-    "agent_action_capsule.emit",
-    "agent_action_capsule.verify",
-    "model_identity",
-]
-
 
 def _capsule_sidecar():
     import capsule_sidecar as cs
 
-    for name in _POLLUTABLE_MODULES:
-        if name in sys.modules:
-            importlib.reload(sys.modules[name])
+    # NOTE: this used to also reload agent_action_capsule.canonical/contracts/
+    # emit/verify and model_identity before reloading capsule_sidecar itself.
+    # conftest.py's import-order guard already guarantees the
+    # agent_action_capsule.* modules are bound to their real, on-disk
+    # implementations before any test runs, so reloading them here was
+    # never needed to "unstub" anything -- it only re-executed already-real
+    # modules in place, which rebinds their classes to new objects and breaks
+    # isinstance/exception-identity checks in other test files that imported
+    # a class (e.g. FloatInDigestError) before this fixture ran.
+    # model_identity is worse: it is deliberately kept a hand-built stub for
+    # the whole session (see conftest.py), and importlib.reload() on a stub
+    # with no real __spec__ falls back to find_spec(name) and permanently
+    # swaps in the real on-disk model_identity module -- breaking every later
+    # test that depends on the stub's no-op load_manifest/model_package_digest.
     importlib.reload(cs)
     return cs
 
