@@ -1,8 +1,9 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Design note: folding the evidence door + checkpointer into the plugin
 
-**Status:** Step 0 only — a decision input, not a build plan. No port has
-started. Steven rules on migration order before any of this is implemented.
+**Status:** Step 0 only — a design note, not a build plan. No port has
+started. The maintainers decide the migration order before any of this is
+implemented.
 
 ## The problem
 
@@ -13,7 +14,7 @@ witness-anchor clock) and `evidence_server.py` (E15, the HTTP evidence door).
 Neither is on the serving path — the plugin already seals every capsule
 (`plugins/admission-policy/src/capsule_emit.rs`, wired to
 `plugins/capsule-producer`) — but both are required for a node to be a
-complete, install-story-simple accountability node. For anyone who isn't us,
+complete, install-story-simple accountability node. For a third-party operator,
 "mesh-llm + one plugin" is the bar; "mesh-llm + one plugin + two Python
 daemons you also have to supervise" is not.
 
@@ -126,7 +127,7 @@ ledger before and after:
    documented Rust-producer provenance gap (bundle proves log integrity,
    not the individual capsule's own producer signature) are unchanged.
 
-## Migration order candidates (Steven rules)
+## Migration order candidates
 
 Each step below is chosen so a node stays fully working at every
 intermediate stop — no step requires an atomic flag-day cutover.
