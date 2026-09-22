@@ -75,6 +75,7 @@ dependencies = [
  "anyhow",
  "base64",
  "chrono",
+ "cll",
  "coset",
  "der",
  "ecdsa",
@@ -148,6 +149,22 @@ checksum = "57663b653d948a338bfb3eeba9bb2fd5fcfaecb9e199e87e1eda4d9e8b240fd9"
 dependencies = [
  "ciborium-io",
  "half",
+]
+
+[[package]]
+name = "cll"
+version = "0.1.0"
+source = "git+https://github.com/action-state-group/checkpointed-local-log?tag=rust-cll-v0.1.0#fbb993f9ee67ce699193ced7817ea24d10017bf5"
+dependencies = [
+ "base64",
+ "coset",
+ "ed25519-dalek",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "ureq",
 ]
 
 [[package]]
