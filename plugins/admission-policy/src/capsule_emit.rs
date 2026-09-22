@@ -600,6 +600,11 @@ impl CapsuleState {
                     usage,
                     seq: sequence.seq,
                     prev_seq: sequence.prev_seq,
+                    // This path serves the exchange itself -- there is no
+                    // peer half to name (this node IS the server), never a
+                    // fabricated self-reference.
+                    peer_capsule_id: None,
+                    peer_capsule_id_provenance: None,
                 },
                 // This exchange was admitted and served by THIS plugin's own
                 // `/v1` handler -- unambiguously "served", not a guess: there
@@ -743,6 +748,15 @@ pub struct ObservedHostExchange<'a> {
     /// back to the pre-existing honest "no nonce observed" default, never a
     /// fabricated value.
     pub nonce: Option<&'a str>,
+    /// On a `dispatch_path == RemoteMesh` (requester-side) terminal event:
+    /// the capsule id the PEER asserted for its own half, off the host's
+    /// `capsule_id` field. `None` on every other dispatch path (there is no
+    /// peer half to name) and when the host observed none.
+    pub peer_capsule_id: Option<&'a str>,
+    /// The wire value of the host's `CapsuleIdProvenance` for
+    /// `peer_capsule_id` (`lifecycle_channel::capsule_id_provenance_wire_value`)
+    /// -- `None` exactly when `peer_capsule_id` is `None`.
+    pub peer_capsule_id_provenance: Option<&'a str>,
 }
 
 impl CapsuleState {
@@ -784,8 +798,10 @@ impl CapsuleState {
             host_provenance,
             dispatch_path,
             nonce,
+            peer_capsule_id,
+            peer_capsule_id_provenance,
         } = observed;
-        let (model, exchange_id, request_digest, response_digest, tool_calls_digest, reasoning_digest, usage, nonce) = (
+        let (model, exchange_id, request_digest, response_digest, tool_calls_digest, reasoning_digest, usage, nonce, peer_capsule_id, peer_capsule_id_provenance) = (
             *model,
             *exchange_id,
             *request_digest,
@@ -794,6 +810,8 @@ impl CapsuleState {
             *reasoning_digest,
             usage.clone(),
             *nonce,
+            *peer_capsule_id,
+            *peer_capsule_id_provenance,
         );
         let host = host_provenance.clone();
 
@@ -987,6 +1005,13 @@ impl CapsuleState {
                     usage,
                     seq: sequence.seq,
                     prev_seq: sequence.prev_seq,
+                    // The peer's self-asserted capsule id for its own half of
+                    // this exchange, forwarded verbatim off the host's
+                    // RemoteMesh terminal envelope -- present only on the
+                    // requester side (see `ObservedHostExchange::
+                    // peer_capsule_id` doc), never fabricated when absent.
+                    peer_capsule_id: peer_capsule_id.map(str::to_string),
+                    peer_capsule_id_provenance: peer_capsule_id_provenance.map(str::to_string),
                 },
                 role,
                 observation_point,
@@ -1241,6 +1266,8 @@ mod tests {
             host_provenance: HostProvenance::default(),
             dispatch_path: DispatchPath::RawProxy,
             nonce: None,
+            peer_capsule_id: None,
+            peer_capsule_id_provenance: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1278,6 +1305,8 @@ mod tests {
             host_provenance: HostProvenance::default(),
             dispatch_path: DispatchPath::RawProxy,
             nonce: None,
+            peer_capsule_id: None,
+            peer_capsule_id_provenance: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1323,6 +1352,8 @@ mod tests {
             host_provenance: HostProvenance::default(),
             dispatch_path: DispatchPath::RawProxy,
             nonce: None,
+            peer_capsule_id: None,
+            peer_capsule_id_provenance: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1410,6 +1441,8 @@ mod tests {
             },
             dispatch_path: DispatchPath::RawProxy,
             nonce: None,
+            peer_capsule_id: None,
+            peer_capsule_id_provenance: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1471,6 +1504,8 @@ mod tests {
             },
             dispatch_path: DispatchPath::RawProxy,
             nonce: None,
+            peer_capsule_id: None,
+            peer_capsule_id_provenance: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1752,6 +1787,8 @@ mod tests {
             host_provenance: HostProvenance::default(),
             dispatch_path: DispatchPath::RawProxy,
             nonce: None,
+            peer_capsule_id: None,
+            peer_capsule_id_provenance: None,
         };
         let first = state
             .emit_for_observed_host_exchange(&observed)
@@ -1825,6 +1862,8 @@ mod tests {
             },
             dispatch_path,
             nonce: None,
+            peer_capsule_id: None,
+            peer_capsule_id_provenance: None,
         }
     }
 
@@ -2176,6 +2215,80 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// [mesh-e9e10-peer-fetch-two-sided-ledger] piece 1: the requester-side
+    /// capsule carries the PEER's self-asserted capsule id -- the lookup key
+    /// an evidence-door fetch will dereference to populate the two-sided
+    /// ledger's "theirs" column. Forwarded verbatim, labeled as self-attested
+    /// (`peer_asserted`), never promoted to a verified/countersigned claim.
+    #[test]
+    fn remote_mesh_seals_the_peer_asserted_capsule_id_as_the_fetch_join_key() {
+        let dir = std::env::temp_dir().join(format!("cap-peer-capid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "router-node").expect("open state");
+
+        let mut observed = observed_with(DispatchPath::RemoteMesh, Some("peer-node"));
+        observed.peer_capsule_id = Some("peer-cap-987");
+        observed.peer_capsule_id_provenance = Some("peer_asserted");
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal");
+        let sp = &poc_block(&emitted.capsule)["serving_provenance"];
+        assert_eq!(sp["peer_capsule_id"], "peer-cap-987");
+        assert_eq!(sp["peer_capsule_id_provenance"], "peer_asserted");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Negative half of the same check (R4): when the RemoteMesh event
+    /// carries no peer-asserted capsule id (the router observed none),
+    /// `peer_capsule_id` stays `null` -- never a fabricated value standing
+    /// in for an absent fact.
+    #[test]
+    fn remote_mesh_without_a_peer_capsule_id_seals_it_null_never_fabricated() {
+        let dir = std::env::temp_dir().join(format!("cap-peer-capid-absent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "router-node").expect("open state");
+
+        let observed = observed_with(DispatchPath::RemoteMesh, Some("peer-node"));
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal");
+        let sp = &poc_block(&emitted.capsule)["serving_provenance"];
+        assert!(sp["peer_capsule_id"].is_null());
+        assert!(sp["peer_capsule_id_provenance"].is_null());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The plugin's own `/v1` handler path never receives a host envelope at
+    /// all -- there is no peer half to name on it, so `emit_for_exchange`
+    /// must always seal `peer_capsule_id: None`, never invent one. This is
+    /// the sibling guarantee to `main.rs::seal_observed_host_exchange`'s
+    /// `CapsuleIdProvenance::PeerAsserted` match (which stops a locally-
+    /// served envelope's `SelfMinted` marker from being mislabeled as a
+    /// peer's claim on the OBSERVE path) -- this test pins the SERVE path.
+    #[test]
+    fn plugin_served_exchange_never_seals_a_peer_capsule_id() {
+        let dir = std::env::temp_dir().join(format!("cap-no-peer-on-served-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "solo-node").expect("open state");
+
+        let emitted = state
+            .emit_for_exchange(&ExchangeRecord {
+                model: "m",
+                client_nonce: None,
+                request_bytes: br#"{"model":"m","messages":[]}"#,
+                response_bytes: br#"{"id":"x","choices":[]}"#,
+                latency_ms: 1.0,
+                exchange_id: Some("e"),
+                requesting_party: None,
+                host_provenance: None,
+            })
+            .expect("seal");
+        let sp = &poc_block(&emitted.capsule)["serving_provenance"];
+        assert!(sp["peer_capsule_id"].is_null());
+        assert!(sp["peer_capsule_id_provenance"].is_null());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// THE ACCEPTANCE TEST for `[mesh-requester-side-seal-on-proxy]`: a
     /// proxied exchange (peer serves it, router routes it) seals TWO
     /// independently offline-verifiable capsules -- `served` on the peer,
@@ -2231,6 +2344,8 @@ mod tests {
             },
             dispatch_path: DispatchPath::RemoteMesh,
             nonce: Some(shared_nonce),
+            peer_capsule_id: None,
+            peer_capsule_id_provenance: None,
         };
         let router_emitted = router_state
             .emit_for_observed_host_exchange(&router_observed)

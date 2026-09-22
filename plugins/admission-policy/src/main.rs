@@ -20,8 +20,8 @@ use capsule_emit::{CapsuleState, HostProvenance, ObservedHostExchange};
 use capsule_producer::capsule::TokenUsage;
 use decision::Decision;
 use lifecycle_channel::{
-    HostServingProvenance, MirrorUsage, ObservedLifecycleEvents, OpenAiExchangeEnvelope,
-    OPENAI_EXCHANGE_CHANNEL,
+    peer_capsule_id_for_seal, HostServingProvenance, MirrorUsage, ObservedLifecycleEvents,
+    OpenAiExchangeEnvelope, OPENAI_EXCHANGE_CHANNEL,
 };
 use mesh_evidence_bridge::{
     MeshEvidenceRequestArgs, EVIDENCE_REQUEST_CHANNEL, EVIDENCE_REQUEST_OPERATION,
@@ -136,6 +136,11 @@ fn seal_observed_host_exchange(capsules: &CapsuleState, envelope: &OpenAiExchang
         host_provenance,
         dispatch_path: envelope.dispatch_path.clone(),
         nonce: envelope.nonce.as_deref(),
+        // See `lifecycle_channel::peer_capsule_id_for_seal`'s doc for why
+        // this is never a raw `envelope.capsule_id.as_deref()` -- a
+        // `SelfMinted` value must never be surfaced as a peer's claim.
+        peer_capsule_id: peer_capsule_id_for_seal(envelope).map(|(id, _)| id),
+        peer_capsule_id_provenance: peer_capsule_id_for_seal(envelope).map(|(_, prov)| prov),
     };
     match capsules.emit_for_observed_host_exchange(&observed) {
         Ok(emitted) => {

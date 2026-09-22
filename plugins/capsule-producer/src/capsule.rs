@@ -122,6 +122,23 @@ pub struct ServingProvenance {
     /// prior record's `seq` for the same pair -- see
     /// [`crate::sequence::verify_pair_continuity`].
     pub prev_seq: Option<u64>,
+    /// On a `role: "requested"` record: the capsule id the PEER asserted for
+    /// its own (served-side) half of this exchange -- the lookup key an
+    /// evidence-door fetch dereferences to populate the two-sided ledger's
+    /// "theirs" column. Forwarded verbatim off the host's `RemoteMesh`
+    /// terminal envelope (`mesh-llm-host-runtime`'s
+    /// `CapsuleIdProvenance::PeerAsserted`) -- an unauthenticated,
+    /// relay-injectable value observed on the peer's raw response header
+    /// while ROUTING, never itself verified or countersigned here. `None`
+    /// on every `role: "served"` record (there is no peer half to name) and
+    /// on a `requested` record where no value was observed.
+    pub peer_capsule_id: Option<String>,
+    /// How `peer_capsule_id` was obtained -- the wire value of the host's
+    /// `CapsuleIdProvenance` (`"peer_asserted"` today; `"unknown"` for a
+    /// value this mirror predates). `None` exactly when `peer_capsule_id`
+    /// is `None`. Graded self-attested/peer-asserted, never promoted to a
+    /// verified or countersigned claim by this field's mere presence.
+    pub peer_capsule_id_provenance: Option<String>,
 }
 
 impl ServingProvenance {
@@ -164,6 +181,8 @@ impl ServingProvenance {
             "usage": usage,
             "seq": self.seq,
             "prev_seq": self.prev_seq,
+            "peer_capsule_id": self.peer_capsule_id,
+            "peer_capsule_id_provenance": self.peer_capsule_id_provenance,
         })
     }
 }
@@ -654,6 +673,8 @@ mod tests {
                     }),
                     seq: 1,
                     prev_seq: None,
+                    peer_capsule_id: None,
+                    peer_capsule_id_provenance: None,
                 },
                 role: "served".to_string(),
                 observation_point: None,

@@ -100,6 +100,8 @@ fn sample_capsule_input() -> CapsuleInput {
                 }),
                 seq: 1,
                 prev_seq: None,
+                peer_capsule_id: None,
+                peer_capsule_id_provenance: None,
             },
             role: "served".to_string(),
             observation_point: None,
