@@ -61,7 +61,8 @@ def _demo_capsule():
     }
     cap = {
         "spec_version": "draft-mih-scitt-agent-action-capsule-02",
-        "format_version": "2",
+        "format_version": "4",
+        "canonicalization_id": "jcs",
         "capsule_id": "a" * 64,
         "operator": "capsule-emit-mesh-poc-rust",
         "timestamp": "2026-08-30T03:54:33.474Z",

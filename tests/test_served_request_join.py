@@ -43,11 +43,17 @@ import pytest
 import capsule_sidecar as cs
 import served_request_join as srj
 
+# agent_action_capsule.canonical/contracts/emit/verify are bound for real by
+# conftest.py's import-order guard before any test file collects -- they can
+# never be the fake-module stand-ins a stubbing test file creates, so
+# reloading them here bought nothing and cost identity: importlib.reload()
+# rebuilds FloatInDigestError/UnsafeIntegerError as NEW class objects on
+# every call, so any OTHER test's `pytest.raises(FloatInDigestError)` (bound
+# at ITS OWN collection time, before this fixture ever runs) silently stops
+# matching for the rest of the session. Only model_identity still needs
+# healing here -- conftest.py deliberately leaves it stubbable (see its own
+# docstring) for the tests that depend on the stub.
 _POLLUTABLE_MODULES = [
-    "agent_action_capsule.canonical",
-    "agent_action_capsule.contracts",
-    "agent_action_capsule.emit",
-    "agent_action_capsule.verify",
     "model_identity",
 ]
 
