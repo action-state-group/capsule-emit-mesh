@@ -11,10 +11,14 @@
 //! (`mesh-llm`) code.
 //!
 //! **Responder role** (`on_open_stream`): the host already gated this call on
-//! the channel being declared before `connect_stream` ever reaches us, so any
-//! `OpenStreamRequest` this handler receives IS a mesh-inbound evidence
-//! request (nothing else in this plugin calls `open_stream`/`connect_stream`
-//! for anything). We bind a local listener, hand its endpoint back, and once
+//! the channel being declared before `connect_stream` ever reaches us. This
+//! plugin also declares a second stream channel, `ledger-fetch/1`
+//! (`ledger_fetch_bridge`) -- `main.rs` dispatches an inbound
+//! `OpenStreamRequest` to whichever module owns it (tagged via
+//! `metadata_json`, see `ledger_fetch_bridge`'s module doc) before either
+//! bridge function is called, so `handle_open_stream` below only ever
+//! receives a mesh-inbound evidence request, exactly as before. We bind a
+//! local listener, hand its endpoint back, and once
 //! the host bridges the remote QUIC bytes to it, proxy the whole exchange as
 //! ONE buffered HTTP POST to the local `evidence_server.py` (E15) door --
 //! reusing `answer()` unchanged, never re-implementing it in Rust. A read
@@ -75,7 +79,9 @@ fn requester_idle_timeout_ms() -> u64 {
     env_millis("ADMISSION_POLICY_MESH_REQUEST_TIMEOUT_MS", 8_000).as_millis() as u64
 }
 
-fn env_millis(var: &str, default_ms: u64) -> Duration {
+/// Shared with `ledger_fetch_bridge`, the other plugin-mesh-stream carrier --
+/// same env-var-with-default shape, no reason for two copies.
+pub(crate) fn env_millis(var: &str, default_ms: u64) -> Duration {
     Duration::from_millis(
         std::env::var(var)
             .ok()
@@ -86,7 +92,10 @@ fn env_millis(var: &str, default_ms: u64) -> Duration {
 
 static STREAM_NONCE: AtomicU64 = AtomicU64::new(1);
 
-fn next_stream_id(prefix: &str) -> String {
+/// Shared with `ledger_fetch_bridge` -- one nonce space for every
+/// plugin-mesh-stream this process opens, so stream ids never collide
+/// between the two carriers.
+pub(crate) fn next_stream_id(prefix: &str) -> String {
     format!(
         "{prefix}-{}-{}",
         std::process::id(),

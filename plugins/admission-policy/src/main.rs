@@ -1,6 +1,7 @@
 mod capsule_emit;
 mod checkpoint_cadence;
 mod decision;
+mod ledger_fetch_bridge;
 mod lifecycle_channel;
 mod mesh_evidence_bridge;
 mod owner_maintenance;
@@ -29,6 +30,9 @@ use decision::Decision;
 use lifecycle_channel::{
     peer_capsule_id_for_seal, HostServingProvenance, MirrorUsage, ObservedLifecycleEvents,
     OpenAiExchangeEnvelope, OPENAI_EXCHANGE_CHANNEL,
+};
+use ledger_fetch_bridge::{
+    MeshLedgerFetchArgs, LEDGER_FETCH_CHANNEL, LEDGER_FETCH_OPERATION,
 };
 use mesh_evidence_bridge::{
     MeshEvidenceRequestArgs, EVIDENCE_REQUEST_CHANNEL, EVIDENCE_REQUEST_OPERATION,
@@ -624,6 +628,16 @@ async fn main() -> anyhow::Result<()> {
             })
         },
     );
+    evidence_operations.add_json(
+        json_schema_operation::<MeshLedgerFetchArgs>(
+            LEDGER_FETCH_OPERATION,
+            "Ask a mesh peer's admission-policy plugin for one of ITS sealed ledger entries by \
+             capsule_id -- the witness-level fetch half of the two-sided ledger. Returns the raw \
+             unsigned {capsule, signed_statement_b64, node_pub_key_pem} for independent recompute; \
+             never a second attestation.",
+        ),
+        |args, context| Box::pin(ledger_fetch_bridge::handle_mesh_ledger_fetch(args, context)),
+    );
 
     let plugin = DeclarativePluginBuilder::new(PluginMetadata::new(
         PLUGIN_ID,
@@ -642,6 +656,7 @@ async fn main() -> anyhow::Result<()> {
     .mesh_item(mesh_channel(OPENAI_EXCHANGE_CHANNEL))
     .mesh_item(mesh_channel(EVIDENCE_REQUEST_CHANNEL))
     .mesh_item(mesh_channel(record_push_bridge::RECORD_PUSH_CHANNEL))
+    .mesh_item(mesh_channel(LEDGER_FETCH_CHANNEL))
     // Any mesh event carries this node's own peer id; the host sends these
     // kinds as a snapshot right after the plugin loads (see `self_peer`).
     .event_item(events::local_accepting())
@@ -752,6 +767,10 @@ async fn main() -> anyhow::Result<()> {
                 // distinct, stable value for exactly this purpose.
                 if request.content_type.as_deref() == Some(record_push_bridge::RECORD_PUSH_CONTENT_TYPE) {
                     record_push_bridge::handle_open_stream(request, context, capsules).await
+                } else if ledger_fetch_bridge::is_ledger_fetch_request(&request) {
+                    // See `ledger_fetch_bridge`'s module doc for why
+                    // `metadata_json` is its dispatch key.
+                    ledger_fetch_bridge::handle_open_stream(request, context, capsules).await
                 } else {
                     mesh_evidence_bridge::handle_open_stream(request, context).await
                 }

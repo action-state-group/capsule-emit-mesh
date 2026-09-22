@@ -19,7 +19,7 @@ use capsule_producer::capsule::{
 use capsule_producer::cose::{build_signed_statement, SignedStatementInput};
 use capsule_producer::jcs;
 use capsule_producer::keys::{self, KeyPair};
-use capsule_producer::ledger::Ledger;
+use capsule_producer::ledger::{Ledger, LedgerEntry};
 use capsule_producer::sequence::SequenceCounterStore;
 use capsule_producer::timestamp::utc_now_minute;
 use serde_json::{json, Map, Value};
@@ -487,11 +487,9 @@ impl CapsuleState {
             .map(str::to_string)
     }
 
-    /// Not read by this binary today (the e2e test reads the persisted PEM
-    /// straight off disk in the plugin's data dir, matching how a real
-    /// verifier would) -- kept as the public accessor a future `/v1/pubkey`
-    /// debug endpoint or key-rotation caller would need.
-    #[allow(dead_code)]
+    /// Read by the `ledger-fetch/1` responder (`ledger_fetch_bridge`) so a
+    /// peer's fetch response carries the key its own COSE_Sign1 verifies
+    /// against, without a second attestation wrapper.
     pub fn public_key_pem(&self) -> String {
         self.keys.public_key_pem()
     }
@@ -515,6 +513,18 @@ impl CapsuleState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(ledger.pad_to_bucket(bucket, &self.keys.signing_key, &self.node_id)?)
+    }
+
+    /// Looks up one previously-sealed capsule by id -- the `ledger-fetch/1`
+    /// responder's only data source. A thin passthrough: whatever `Ledger::
+    /// lookup` returns (or doesn't) is exactly what goes out, nothing
+    /// re-derived or fabricated here.
+    pub fn lookup(&self, capsule_id: &str) -> anyhow::Result<Option<LedgerEntry>> {
+        Ok(self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lookup(capsule_id)?)
     }
 
     pub fn chain_head(&self) -> Option<String> {
