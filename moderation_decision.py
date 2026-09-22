@@ -5,9 +5,9 @@ Buzz asked for compliance-grade content moderation; the accountable answer is
 not a better classifier, it's a SEALED record of every moderation call a
 user, auditor, or regulator can check offline -- the same rail as mesh
 inference accountability (`join_card.py`, `twin_adjudicator.py`), a
-different Evidence Contract profile on top (`buzz.moderation/v1`, spec lane).
+a different capsule profile on top (`buzz.moderation/v1`, spec lane).
 
-Design note: `_work/buzz-moderation-accountability-profile-2026-09-19.md`.
+Design note: internal moderation-accountability profile note (spec lane).
 
 **epistemic_type: `semantic_judgment`.** Unlike mesh inference accountability
 (deterministic -- a referee recomputes a token), a moderation call is a
@@ -85,9 +85,8 @@ MODERATION_SUBJECT_KEY = "x-mesh-moderation-decision-v1"
 MODERATION_SCHEMA = "capsule-emit-mesh/moderation-decision/v1"
 
 #: [mesh-fabric-vocab-alignment] the fabric's shared record-header vocabulary
-#: convention, extended with the one value that spike design doc
-#: (`_work/buzz-moderation-accountability-profile-2026-09-19.md` sec.1)
-#: introduces: a moderation decision is a semantic JUDGMENT, never a
+#: convention, extended with the one value the spike's internal design
+#: note (sec.1) introduces: a moderation decision is a semantic JUDGMENT, never a
 #: deterministic recompute (`twin_adjudicator.EPISTEMIC_TYPE_ADJUDICATION`)
 #: and never a bare self-report (`EPISTEMIC_TYPE_PRODUCER_CLAIM` below, used
 #: only for the `confidence` sub-field).
