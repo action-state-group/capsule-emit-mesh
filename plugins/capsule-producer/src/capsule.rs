@@ -462,7 +462,12 @@ pub struct CapsuleInput {
     /// from the capsule, never null — when the host exposed no digest for
     /// this exchange. See [`HostBinding`] for the independence rule.
     pub host_binding: Option<HostBinding>,
-    pub runtime: String,
+    /// `compute_attestation.runtime` per the runtime/model extension draft:
+    /// `{name, runtime_digest?, measurement_class?, platform_integrity?}`.
+    /// Build with [`crate::runtime_attest::BinaryAttestation::runtime_value`]
+    /// when a real measurement exists, else `json!({"name": ...})` alone --
+    /// never a fabricated digest/class for an unmeasured binary.
+    pub runtime: Value,
     pub mesh_poc: MeshPocV1,
     pub effect_status: String,
     pub effect_type: String,
@@ -538,7 +543,94 @@ pub fn seal(input: &CapsuleInput) -> Result<Value, crate::jcs::JcsError> {
     if let Some(hb) = &input.host_binding {
         compute_attestation.insert("host_binding".into(), hb.to_value());
     }
-    compute_attestation.insert("runtime".into(), json!(input.runtime));
+    compute_attestation.insert("runtime".into(), input.runtime.clone());
+    compute_attestation.insert("attestation_refs".into(), json!([]));
+
+    // [mesh-runtime-ext-payload-migration] model_attestation fields from the
+    // runtime/model extension draft. agent_action_capsule.ModelAttestation
+    // (the Python contracts dataclass this producer stays byte-compatible
+    // with) has no top-level slot for model_revision/weights_digest/
+    // quantization/decoding/source -- only model_id/provider/
+    // compute_attestation -- so this producer's only free-form extension
+    // point is compute_attestation itself; these fields ride there, same as
+    // x-mesh-poc-v1. Promoting them to true model_attestation siblings needs
+    // a matching agent_action_capsule change, out of this repo's scope.
+    let sp = &input.mesh_poc.serving_provenance;
+    let mut model_source = Map::new();
+    if let Some(rev) = &sp.model_revision {
+        compute_attestation.insert("model_revision".into(), json!(rev));
+        model_source.insert("model_revision".into(), json!("self_reported"));
+    }
+    if let Some(wd) = &sp.weights_digest {
+        // A real SHA-256 of the served GGUF's file bytes (see
+        // ServingProvenance::weights_digest's own doc comment) -- `computed`,
+        // `scope: "file"` per the draft's definition, never `"tensors"`
+        // (only achievable under `attested`).
+        compute_attestation.insert(
+            "weights_digest".into(),
+            json!({"digest_alg": "SHA-256", "digest": wd, "scope": "file"}),
+        );
+        model_source.insert("weights_digest".into(), json!("computed"));
+    }
+    if sp.quantization != "unknown" {
+        compute_attestation.insert("quantization".into(), json!(sp.quantization));
+        model_source.insert("quantization".into(), json!("self_reported"));
+    }
+    let mut decoding = Map::new();
+    for key in ["temperature", "seed"] {
+        if let Some(v) = input.mesh_poc.generation_parameters.get(key) {
+            decoding.insert(key.to_string(), v.clone());
+        }
+    }
+    if !decoding.is_empty() {
+        compute_attestation.insert("decoding".into(), Value::Object(decoding));
+        model_source.insert("decoding".into(), json!("self_reported"));
+    }
+    if !model_source.is_empty() {
+        compute_attestation.insert("source".into(), Value::Object(model_source));
+    }
+
+    // compute_attestation.hardware -- only the two fields this plugin's host
+    // event actually carries (accelerator/memory_bytes); `platform` stays
+    // absent (an `is_soc` flag is not a platform enum -- never guessed).
+    let mut hardware = Map::new();
+    let mut hardware_source = Map::new();
+    if let Some(gpu) = &sp.hardware_gpu {
+        hardware.insert("accelerator".into(), json!(gpu));
+        hardware_source.insert("accelerator".into(), json!("os_reported"));
+    }
+    if let Some(vram) = sp.hardware_vram_bytes {
+        hardware.insert("memory_bytes".into(), json!(vram));
+        hardware_source.insert("memory_bytes".into(), json!("os_reported"));
+    }
+    if !hardware.is_empty() {
+        hardware.insert("source".into(), Value::Object(hardware_source));
+        compute_attestation.insert("hardware".into(), Value::Object(hardware));
+    }
+
+    // compute_attestation.invocation -- this producer serves the model
+    // itself, so requested/resolved are the same self-reported value; usage
+    // is the real response `usage`, provider_reported.
+    let mut invocation = Map::new();
+    let mut invocation_source = Map::new();
+    invocation.insert("requested_model_id".into(), json!(input.model_id));
+    invocation_source.insert("requested_model_id".into(), json!("self_reported"));
+    invocation.insert("resolved_model_id".into(), json!(input.model_id));
+    invocation_source.insert("resolved_model_id".into(), json!("self_reported"));
+    if let Some(usage) = &sp.usage {
+        invocation.insert(
+            "usage".into(),
+            json!({
+                "prompt_tokens": usage.prompt_tokens,
+                "completion_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+            }),
+        );
+        invocation_source.insert("usage".into(), json!("provider_reported"));
+    }
+    invocation.insert("source".into(), Value::Object(invocation_source));
+    compute_attestation.insert("invocation".into(), Value::Object(invocation));
+
     // [mesh-fabric-vocab-alignment] additive record-header field, a
     // top-level sibling of x-mesh-poc-v1 (never nested inside it --
     // epistemic_type is fabric vocabulary, not a PoC extension). Derived
@@ -647,7 +739,7 @@ mod tests {
             tool_calls_digest: None,
             reasoning_digest: None,
             host_binding: None,
-            runtime: "runtime".to_string(),
+            runtime: json!({"name": "runtime"}),
             mesh_poc: MeshPocV1 {
                 client_nonce: "c".repeat(32),
                 client_nonce_source: "client_supplied".to_string(),

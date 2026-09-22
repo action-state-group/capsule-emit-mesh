@@ -66,16 +66,27 @@ from twin_adjudicator import (
 REQUEST_DIGEST = "a" * 64
 
 
-def _half(text: str, *, owner_id: str | None, request_messages: list[dict] | None = None) -> AdjudicationHalf:
+def _half(
+    text: str,
+    *,
+    owner_id: str | None,
+    request_messages: list[dict] | None = None,
+    decoding: dict | None = None,
+) -> AdjudicationHalf:
     """A lightweight, NOT-necessarily-verifiable half -- fine for
     `live_referee()` tests, which never call `agent_action_capsule.verify()`
     themselves. Tests that route through `adjudicate()` need
     `_verifiable_half` instead."""
-    capsule = {"capsule_id": f"capsule-{owner_id}", "model_attestation": {"compute_attestation": {}}}
+    compute_attestation: dict = {}
+    if decoding is not None:
+        compute_attestation["decoding"] = decoding
+    capsule = {"capsule_id": f"capsule-{owner_id}", "model_attestation": {"compute_attestation": compute_attestation}}
     disclosed: dict = {"response_text": text, "response_body": {}}
     if request_messages is not None:
         disclosed["request_body"] = {"messages": request_messages}
-    return AdjudicationHalf(capsule=capsule, disclosed=disclosed, owner_id=owner_id)
+    return AdjudicationHalf(
+        capsule=capsule, disclosed=disclosed, owner_id=owner_id, decoding=compute_attestation.get("decoding")
+    )
 
 
 def _verifiable_half(text: str, *, owner_id: str) -> AdjudicationHalf:
@@ -243,6 +254,69 @@ def test_live_referee_sends_mesh_target_header_and_agreed_prefix():
     assert result.capsule_id is None
     assert result.referee_record_status == REFEREE_RECORD_UNRESOLVED
     assert result.referee_record_nonce == "nonce-agreed-prefix"
+
+
+def test_live_referee_defaults_seed_from_half_a_declared_decoding_when_caller_omits_it():
+    """[mesh-runtime-ext-payload-migration] No `seed` given -> falls back to
+    half A's own sealed `compute_attestation.decoding.seed`."""
+    half_a = _half("the quick brown fox jumps", owner_id="owner-a", decoding={"temperature": "0.7", "seed": 99})
+    half_b = _half("the quick brown wolf jumps", owner_id="owner-b")
+    comparison = compare_transcripts(half_a.response_text, half_b.response_text)
+
+    node = _FakeRefereeNode(response_text="fox")
+    try:
+        live_referee(
+            half_a, half_b, comparison,
+            local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model",
+            nonce="nonce-decoding-fallback",
+        )
+    finally:
+        node.close()
+
+    assert node.last_body["seed"] == 99
+    # Never the twin's temperature -- the referee call is always greedy.
+    assert node.last_body["temperature"] == 0
+
+
+def test_live_referee_explicit_seed_overrides_half_a_declared_decoding():
+    """An explicit caller `seed` always wins -- decoding is only a fallback,
+    never a silent override of a caller's own choice."""
+    half_a = _half("the quick brown fox jumps", owner_id="owner-a", decoding={"seed": 99})
+    half_b = _half("the quick brown wolf jumps", owner_id="owner-b")
+    comparison = compare_transcripts(half_a.response_text, half_b.response_text)
+
+    node = _FakeRefereeNode(response_text="fox")
+    try:
+        live_referee(
+            half_a, half_b, comparison,
+            local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=7,
+            nonce="nonce-explicit-seed",
+        )
+    finally:
+        node.close()
+
+    assert node.last_body["seed"] == 7
+
+
+def test_live_referee_seed_defaults_to_zero_when_neither_caller_nor_half_a_supplies_one():
+    """Neither an explicit seed nor a declared decoding block -- falls back
+    to the honest, documented `0` default rather than crashing or omitting
+    the field the wire body requires."""
+    half_a = _half("the quick brown fox jumps", owner_id="owner-a")
+    half_b = _half("the quick brown wolf jumps", owner_id="owner-b")
+    comparison = compare_transcripts(half_a.response_text, half_b.response_text)
+
+    node = _FakeRefereeNode(response_text="fox")
+    try:
+        live_referee(
+            half_a, half_b, comparison,
+            local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model",
+            nonce="nonce-no-seed-anywhere",
+        )
+    finally:
+        node.close()
+
+    assert node.last_body["seed"] == 0
 
 
 def test_live_referee_matches_twin_b_contradicts_twin_a():

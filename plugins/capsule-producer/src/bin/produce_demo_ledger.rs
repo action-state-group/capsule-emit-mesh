@@ -131,7 +131,7 @@ fn step_input(step: &Step, chain: Option<ChainLink>) -> CapsuleInput {
         tool_calls_digest: None,
         reasoning_digest: None,
         host_binding: None,
-        runtime: "0".repeat(64) + ":rust-demo3",
+        runtime: serde_json::json!({"name": "rust-demo3", "runtime_digest": "0".repeat(64), "measurement_class": "self_measured"}),
         mesh_poc: MeshPocV1 {
             client_nonce: step.nonce_char.to_string().repeat(32),
             client_nonce_source: "client_supplied".to_string(),

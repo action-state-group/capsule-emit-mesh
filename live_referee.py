@@ -307,7 +307,7 @@ def live_referee(
     local_api_base_url: str,
     target_peer_id: str,
     model: str,
-    seed: int,
+    seed: int | None = None,
     nonce: str,
     timeout: float = 30.0,
     evidence_door_base_url: str | None = None,
@@ -332,11 +332,22 @@ def live_referee(
     `REFEREE_RECORD_UNRESOLVED` honestly rather than skipping the citation
     -- `RefereeResult.referee_record_nonce` is always set to *nonce* so the
     caller can still cite it even then.
+
+    [mesh-runtime-ext-payload-migration] *seed* is caller-supplied when
+    given (unchanged behavior). `None` falls back to
+    `half_a.decoding["seed"]` -- half A's OWN sealed
+    `model_attestation.compute_attestation.decoding.seed` (the runtime/model
+    extension draft field) -- so the recompute reuses the same seed the
+    original exchange declared rather than an arbitrary one, when the caller
+    has no opinion. `temperature` is NEVER read from `decoding`: the referee
+    call is deliberately always greedy (`temperature: 0`), unrelated to what
+    the original exchange sampled at -- see the module docstring.
     """
     if comparison.divergence_index is None:
         raise ValueError("live_referee() requires an actual divergence -- comparison.divergence_index is None")
 
-    body = _referee_request_body(half_a, comparison, model=model, seed=seed)
+    resolved_seed = seed if seed is not None else (half_a.decoding or {}).get("seed", 0)
+    body = _referee_request_body(half_a, comparison, model=model, seed=resolved_seed)
     req = urllib.request.Request(
         url=f"{local_api_base_url.rstrip('/')}/v1/chat/completions",
         data=body,
@@ -413,7 +424,7 @@ def build_live_referee(
     local_api_base_url: str,
     target_peer_id: str,
     model: str,
-    seed: int,
+    seed: int | None = None,
     nonce: str,
     timeout: float = 30.0,
     evidence_door_base_url: str | None = None,
