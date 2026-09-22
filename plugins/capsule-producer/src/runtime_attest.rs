@@ -300,6 +300,28 @@ the binary was untampered before hashing.");
             runtime_name
         )
     }
+
+    /// The runtime/model extension draft's `compute_attestation.runtime`
+    /// object shape: `{name, runtime_digest, measurement_class,
+    /// platform_integrity}`, replacing the flat [`Self::runtime_field`]
+    /// string on the producer paths that emit that draft's block.
+    /// `platform_integrity` is present only when a kernel measurement
+    /// (`os_measured`) backs it -- absent, never fabricated, for
+    /// `self_measured`.
+    pub fn runtime_value(&self, runtime_name: &str) -> Value {
+        let mut v = json!({
+            "name": runtime_name,
+            "runtime_digest": self.binary_sha256,
+            "measurement_class": self.measurement_class.as_str(),
+        });
+        if let Some(k) = &self.kernel_signing {
+            v["platform_integrity"] = json!({
+                "sip_enabled": k.sip_enabled,
+                "source": {"sip_enabled": "os_reported"},
+            });
+        }
+        v
+    }
 }
 
 /// The `os_measured` trust-ceiling text, generated from the actual kernel

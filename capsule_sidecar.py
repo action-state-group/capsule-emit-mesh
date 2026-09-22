@@ -551,6 +551,17 @@ def _safe_digest_json(value: Any, *, field: str) -> str | None:
         return None
 
 
+def _safe_embed(value: Any, *, field: str) -> Any | None:
+    """Like ``_safe_digest_json``, but for a value embedded RAW into the
+    capsule body (e.g. ``invocation.usage``) rather than digested. Provider
+    response content can carry the same unsafe integers/floats
+    ``_safe_digest_json`` guards against; embedding it unchecked just moves
+    the crash to ``emit()``'s own canonicalization instead. ``None``
+    (omitted) when unsafe -- never a crash, never a partial value.
+    """
+    return value if _safe_digest_json(value, field=field) is not None else None
+
+
 def _utc_now_iso() -> str:
     from datetime import datetime, timezone
 
@@ -1040,6 +1051,7 @@ def build_capsule(
     forwarded_copy: dict[str, Any] | None = None,
     bilateral_eval: "BilateralEvalResult | None" = None,
     peer_capsule_id: str | None = None,
+    response_json: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # Stringified for the same reason as digest_json() above: this dict is
     # committed into compute_attestation, which is itself committed into
@@ -1161,12 +1173,89 @@ def build_capsule(
     }
     reconciliation = reconcile_advertised_vs_served(state.advertisement, serving_provenance)
 
+    # [mesh-runtime-ext-payload-migration] model_attestation fields from the
+    # runtime/model extension draft. agent_action_capsule.ModelAttestation
+    # (the external contracts dataclass) has no top-level slot for
+    # model_revision/weights_digest/quantization/decoding/source -- only
+    # model_id/provider/compute_attestation -- so this producer's only
+    # free-form extension point is compute_attestation itself; these fields
+    # ride there, namespaced the same way x-mesh-poc-v1 and
+    # x-mesh-lifecycle-v1 already do. Promoting them to true model_attestation
+    # siblings needs a matching agent_action_capsule change, out of this
+    # repo's scope.
+    #
+    # decoding: only what the CLIENT requested (self_reported) -- never what
+    # the model actually used internally, which this proxy cannot observe.
+    decoding = {key: generation_parameters[key] for key in ("temperature", "seed") if key in generation_parameters}
+
+    requested_model_id = request_json.get("model") if isinstance(request_json.get("model"), str) else None
+    resolved_model_id = (
+        response_json.get("model") if response_json and isinstance(response_json.get("model"), str) else None
+    )
+    usage = response_json.get("usage") if response_json and isinstance(response_json.get("usage"), dict) else None
+    if usage is not None:
+        usage = _safe_embed(usage, field="model_attestation.compute_attestation.invocation.usage")
+    finish_status = None
+    response_ref = None
+    if response_json:
+        choices = response_json.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            finish_status = choices[0].get("finish_reason")
+        response_id = response_json.get("id")
+        if isinstance(response_id, str) and response_id:
+            # Digest-only, never the raw provider response id -- the draft's
+            # own rule: response identifiers SHOULD NOT be disclosed across
+            # parties by default.
+            response_ref = {
+                "type": "provider-response",
+                "digest_alg": "SHA-256",
+                "digest": _sha256_hex(response_id.encode("utf-8")),
+            }
+
+    invocation: dict[str, Any] = {}
+    invocation_source: dict[str, str] = {}
+    if requested_model_id is not None:
+        invocation["requested_model_id"] = requested_model_id
+        invocation_source["requested_model_id"] = "self_reported"
+    if resolved_model_id is not None:
+        invocation["resolved_model_id"] = resolved_model_id
+        invocation_source["resolved_model_id"] = "provider_reported"
+    if usage is not None:
+        invocation["usage"] = usage
+        invocation_source["usage"] = "provider_reported"
+    if finish_status is not None:
+        invocation["finish_status"] = finish_status
+        invocation_source["finish_status"] = "provider_reported"
+    if response_ref is not None:
+        invocation["response_ref"] = response_ref
+        invocation_source["response_ref"] = "provider_reported"
+    if invocation_source:
+        invocation["source"] = invocation_source
+
+    # runtime: this proxy's own runtime identity. runtime_digest/measurement_class
+    # are omitted (never asserted over the CLI's `0*64` placeholder) when no
+    # real --runtime-artifact was hashed -- see the WARNING at that flag's
+    # parse site.
+    runtime_block: dict[str, Any] = {"name": state.runtime_label}
+    if state.runtime_digest != "0" * 64:
+        runtime_block["runtime_digest"] = state.runtime_digest
+        runtime_block["measurement_class"] = "self_measured"
+
+    model_source: dict[str, str] = {}
+    if decoding:
+        model_source["decoding"] = "self_reported"
+
     compute_attestation = {
         # Sanctioned ModelAttestation.compute_attestation keys (per its own
-        # docstring): best-effort I/O digests + runtime label.
+        # docstring): best-effort I/O digests + runtime block.
         "agent_input_digest": request_digest,
         "agent_output_digest": response_digest,
-        "runtime": f"{state.runtime_digest}:{state.runtime_label}",
+        # CHANGED (runtime/model extension draft): was a flat "<digest>:<label>"
+        # string; now the draft's runtime{name,runtime_digest,measurement_class}
+        # object. capsule_coordinator_verify.grade_runtime() reads this and
+        # renders it either shape.
+        "runtime": runtime_block,
+        "attestation_refs": [],
         # [mesh-fabric-vocab-alignment] additive record-header field, a
         # top-level sibling of x-mesh-poc-v1 (never nested inside it --
         # epistemic_type is fabric vocabulary, not a PoC extension). See
@@ -1295,6 +1384,14 @@ def build_capsule(
             ),
         },
     }
+    # Runtime/model extension draft fields -- inserted only when non-empty,
+    # same "absent rather than null" discipline as everything else here.
+    if decoding:
+        compute_attestation["decoding"] = decoding
+    if invocation:
+        compute_attestation["invocation"] = invocation
+    if model_source:
+        compute_attestation["source"] = model_source
 
     effect = EffectRecord(
         status=status,
@@ -1563,6 +1660,7 @@ def _seal_chat_completion(
             forwarded_copy=forwarded_copy,
             bilateral_eval=bilateral_eval,
             peer_capsule_id=peer_capsule_id,
+            response_json=response_json,
         )
     else:
         # "checked and failed", not "absent" -- see #1233 step 7 (full
@@ -1586,6 +1684,7 @@ def _seal_chat_completion(
             forwarded_copy=forwarded_copy,
             bilateral_eval=bilateral_eval,
             peer_capsule_id=peer_capsule_id,
+            response_json=response_json,
         )
     signed_statement = sign_capsule(state, capsule)
     record_capsule(state, capsule, signed_statement)
@@ -1835,6 +1934,7 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
             forwarded_copy=forwarded_copy,
             bilateral_eval=bilateral_eval,
             peer_capsule_id=peer_capsule_id,
+            response_json=response_json,
         )
     else:
         # "checked and failed", not "absent" -- see #1233 step 7. The
@@ -1864,6 +1964,7 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
             forwarded_copy=forwarded_copy,
             bilateral_eval=bilateral_eval,
             peer_capsule_id=peer_capsule_id,
+            response_json=response_json,
         )
 
     signed_statement = sign_capsule(state, capsule)

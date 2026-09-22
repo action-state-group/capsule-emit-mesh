@@ -21,7 +21,7 @@ use capsule_producer::keys::{self, KeyPair};
 use capsule_producer::ledger::Ledger;
 use capsule_producer::sequence::SequenceCounterStore;
 use capsule_producer::timestamp::utc_now_iso8601;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -658,33 +658,34 @@ fn hex_sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-/// The `compute_attestation.runtime` value for the SERVED path: the real
-/// measured serving-binary hash + its honesty grade (`os_measured` on macOS,
-/// else `self_measured`) when the binary was measurable, else the honest
-/// legacy `0*64` placeholder (graceful degradation — never a fabricated
-/// hash). Runtime name identifies the serving runtime this plugin fronts.
+/// The `compute_attestation.runtime` value for the SERVED path: the runtime/
+/// model extension draft's `{name, runtime_digest, measurement_class,
+/// platform_integrity}` object, from the real measured serving-binary hash +
+/// its honesty grade (`os_measured` on macOS, else `self_measured`) when the
+/// binary was measurable, else `name` alone (graceful degradation — never a
+/// fabricated digest/class). Runtime name identifies the serving runtime
+/// this plugin fronts.
 fn runtime_field(
     att: &Option<capsule_producer::runtime_attest::BinaryAttestation>,
-) -> String {
+) -> Value {
+    const NAME: &str = "admission-policy-plugin/mesh-llm-host-runtime";
     match att {
-        Some(a) => a.runtime_field("admission-policy-plugin/mesh-llm-host-runtime"),
-        None => format!(
-            "{}:admission-policy-plugin/mesh-llm-host-runtime",
-            "0".repeat(64)
-        ),
+        Some(a) => a.runtime_value(NAME),
+        None => json!({"name": NAME}),
     }
 }
 
 /// The `runtime` value for the OBSERVE path. HONESTY: the measured binary is the
 /// OBSERVING plugin, NOT the host runtime that actually served the inference —
 /// so the runtime name says `observer/...` to keep that distinction legible in
-/// the sealed capsule. Same graceful-degradation placeholder on `None`.
+/// the sealed capsule. Same graceful-degradation shape on `None`.
 fn observer_runtime_field(
     att: &Option<capsule_producer::runtime_attest::BinaryAttestation>,
-) -> String {
+) -> Value {
+    const NAME: &str = "observer/admission-policy-plugin";
     match att {
-        Some(a) => a.runtime_field("observer/admission-policy-plugin"),
-        None => format!("{}:observer/admission-policy-plugin", "0".repeat(64)),
+        Some(a) => a.runtime_value(NAME),
+        None => json!({"name": NAME}),
     }
 }
 
@@ -1631,15 +1632,18 @@ mod tests {
         );
         assert_ne!(digest, "0".repeat(64), "not the placeholder zero-hash");
 
-        let runtime = emitted.capsule["model_attestation"]["compute_attestation"]["runtime"]
-            .as_str()
-            .expect("runtime field present");
-        assert!(
-            runtime.starts_with(digest),
+        // CHANGED (runtime/model extension draft): runtime moved from a flat
+        // "<digest>:<class>:<name>" string to a {name, runtime_digest,
+        // measurement_class} object -- same facts, structured fields.
+        let runtime = &emitted.capsule["model_attestation"]["compute_attestation"]["runtime"];
+        assert_eq!(
+            runtime["runtime_digest"].as_str().expect("runtime_digest present"),
+            digest,
             "runtime field carries the real measured binary hash, not the 0*64 placeholder"
         );
-        assert!(
-            runtime.contains(&measurement_class),
+        assert_eq!(
+            runtime["measurement_class"].as_str().expect("measurement_class present"),
+            measurement_class,
             "runtime field carries whichever grade was actually produced"
         );
 

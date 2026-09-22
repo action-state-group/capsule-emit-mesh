@@ -353,6 +353,14 @@ class AdjudicationHalf:
     disclosed: dict[str, Any]
     owner_id: str | None = None
     weights_digest: str | None = None
+    #: [mesh-runtime-ext-payload-migration] This half's declared
+    #: `model_attestation.compute_attestation.decoding` (`{temperature,
+    #: seed}`, self_reported) -- the runtime/model extension draft's field,
+    #: auto-extracted by `from_capsule_and_disclosure` the same way
+    #: `owner_id` is. `None` when the capsule carries none (older records,
+    #: or a caller that built a half by hand). `live_referee.py` reads this
+    #: to seed its own recompute call when the caller supplies none.
+    decoding: dict[str, Any] | None = None
 
     @property
     def capsule_id(self) -> str:
@@ -392,17 +400,20 @@ class AdjudicationHalf:
         *,
         weights_digest: str | None = None,
     ) -> AdjudicationHalf:
-        """Build a half, auto-extracting `owner_id` from the capsule's
-        existing `compute_attestation.owner` block (b4-who-did) -- a field
-        this repo already carries. `weights_digest` is not on that block
-        (E5 doesn't exist yet) and must be supplied by the caller.
+        """Build a half, auto-extracting `owner_id` and `decoding` from the
+        capsule's existing `compute_attestation.owner`/`.decoding` blocks
+        (b4-who-did / the runtime/model extension draft) -- fields this repo
+        already carries. `weights_digest` is not on that block (E5 doesn't
+        exist yet) and must be supplied by the caller.
         """
-        owner = ((capsule.get("model_attestation") or {}).get("compute_attestation") or {}).get("owner") or {}
+        compute_attestation = (capsule.get("model_attestation") or {}).get("compute_attestation") or {}
+        owner = compute_attestation.get("owner") or {}
         return cls(
             capsule=capsule,
             disclosed=disclosed,
             owner_id=owner.get("owner_id"),
             weights_digest=weights_digest,
+            decoding=compute_attestation.get("decoding"),
         )
 
 

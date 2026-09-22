@@ -102,6 +102,15 @@ def grade_runtime(bundle: StageBundle) -> str:
     runtime = compute_attestation.get("runtime")
     if not runtime:
         return "absent (no compute_attestation.runtime in this record)"
+    # CHANGED (runtime/model extension draft): runtime moved from a flat
+    # "<digest>:<label>" string to a {name, runtime_digest, measurement_class}
+    # object. Older records still on the string shape render unchanged.
+    if isinstance(runtime, dict):
+        name = runtime.get("name", "unknown")
+        digest = runtime.get("runtime_digest")
+        measurement_class = runtime.get("measurement_class")
+        detail = name if digest is None else f"{digest}:{measurement_class}:{name}"
+        return f"self-attested (unverified): {detail}"
     return f"self-attested (unverified): {runtime}"
 
 

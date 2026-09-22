@@ -32,7 +32,7 @@ fn sample_input(seed: &str, chain: Option<ChainLink>) -> CapsuleInput {
         tool_calls_digest: None,
         reasoning_digest: None,
         host_binding: None,
-        runtime: "runtime".to_string(),
+        runtime: serde_json::json!({"name": "runtime"}),
         mesh_poc: MeshPocV1 {
             client_nonce: seed.repeat(32).chars().take(32).collect(),
             client_nonce_source: "client_supplied".to_string(),
