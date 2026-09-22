@@ -1,4 +1,5 @@
 mod capsule_emit;
+mod checkpoint_cadence;
 mod decision;
 mod lifecycle_channel;
 mod mesh_evidence_bridge;
@@ -75,6 +76,14 @@ struct AppState {
     /// `openai.exchange.v1` channel, so the seal path can read the host's real
     /// quantization/hardware/model-digest for the served model.
     lifecycle_events: Arc<ObservedLifecycleEvents>,
+    /// This node's latest self-produced checkpoint head, if the checkpoint
+    /// cadence task is enabled (`checkpoint_cadence::is_enabled`) --
+    /// `[mesh-checkpoint-head-source]`'s sending half reads this to feed
+    /// `PeerAnnouncement.checkpoint`. `None` when the cadence task is off
+    /// (the node's node-by-node cutover hasn't flipped yet) or hasn't
+    /// produced a checkpoint since startup.
+    #[allow(dead_code)]
+    checkpoint_head: Option<checkpoint_cadence::LatestHead>,
 }
 
 /// Adapt the lifecycle-channel's mirror of the host `serving_provenance` block
@@ -295,11 +304,35 @@ async fn main() -> anyhow::Result<()> {
     );
     let lifecycle_events = Arc::new(ObservedLifecycleEvents::open(&data_dir)?);
 
+    // Checkpoint cadence: off by default, node-by-node cutover away from
+    // checkpoint_daemon.py -- see checkpoint_cadence.rs's module doc and
+    // the Path 1 README note. `checkpoint_shutdown_tx` held for the
+    // process lifetime so dropping it doesn't fire the watch early.
+    let (checkpoint_shutdown_tx, checkpoint_shutdown_rx) = tokio::sync::watch::channel(false);
+    let checkpoint_head = if checkpoint_cadence::is_enabled() {
+        let ledger_dir = data_dir.join("ledger");
+        let latest_head = checkpoint_cadence::spawn(
+            ledger_dir,
+            PLUGIN_ID.to_string(),
+            capsules.signing_key().clone(),
+            checkpoint_shutdown_rx,
+        )?;
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            let _ = checkpoint_shutdown_tx.send(true);
+        });
+        Some(latest_head)
+    } else {
+        drop(checkpoint_shutdown_rx);
+        None
+    };
+
     let capsules_for_handler = capsules.clone();
     let app_state = AppState {
         models: Arc::new(models),
         capsules,
         lifecycle_events: lifecycle_events.clone(),
+        checkpoint_head,
     };
     tokio::spawn(serve_admission_http(listener, app_state));
 

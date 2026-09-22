@@ -277,7 +277,7 @@ dependencies = [
 [[package]]
 name = "cll"
 version = "0.1.0"
-source = "git+https://github.com/action-state-group/checkpointed-local-log?tag=rust-cll-v0.1.0#fbb993f9ee67ce699193ced7817ea24d10017bf5"
+source = "git+https://github.com/action-state-group/checkpointed-local-log?tag=rust-cll-v0.2.0#88e99d405241aee790f6795fda612527679114ba"
 dependencies = [
  "base64",
  "coset",
