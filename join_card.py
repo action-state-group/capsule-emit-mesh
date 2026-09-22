@@ -81,6 +81,29 @@ the exchange carries) renders `STATUS_NOTHING_COMPARED` -- distinct from
 reconciled and none to have broken. Byte-identical `STATUS_OK` for "verified"
 and "nothing to verify" is exactly the silent pass this module's status set
 promises never to produce.
+
+**[mesh-fabric-vocab-alignment] `principal_ref` under the `nostr-pubkey`
+host-principal profile.** Under the shared host-principal profile convention,
+`nostr-pubkey` is the first concrete profile: `principal_ref` holds a Nostr
+public key, and under this profile it identifies "the holder of this Nostr
+key," nothing more. This repo is the precedent case: a mesh node already
+holds two keys with no principal binding between them -- an Ed25519 key for
+its capsule ledger and a Nostr key for discovery (see `account_capsule.py`)
+-- and the `principal_ref` binding rule is what lets a host make that
+statement explicit and falsifiable, rather than leaving it as convention.
+The wire form, `"nostr-pubkey:<hex>"` (`nostr_pubkey_principal_ref` below),
+is the profile's example scheme for a profile-defined `principal_ref`.
+`Card.principal_ref` is this join card's binding statement: "the Ed25519 key
+that signed this ledger belongs to the same principal as this Nostr key."
+
+**Same HONEST GAP as `announcement_digest` above.** This sidecar has no read
+access to the host's real Nostr identity bytes today (no gossip/nostr field
+reaches it, same gap `announcement_digest`'s note documents) -- so
+`principal_ref` is `None`, absent rather than fabricated, until a caller with
+real key access (the mesh host, or a Nostr-key-bearing deployment of this
+sidecar) supplies one. `seal_join_card` in `capsule_sidecar.py` wires this
+through end-to-end: pass `--nostr-pubkey` (or leave unset) and the card seals
+with the binding statement or without one, honestly, never a stub value.
 """
 from __future__ import annotations
 
@@ -96,6 +119,9 @@ __all__ = [
     "CARD_SCHEMA",
     "CARD_SUBJECT_KEY",
     "CARD_SUPERSEDES_RELATION",
+    "EPISTEMIC_TYPE_PRODUCER_CLAIM",
+    "HOST_PRINCIPAL_PROFILE_NOSTR_PUBKEY",
+    "nostr_pubkey_principal_ref",
     "STATUS_OK",
     "STATUS_BROKEN",
     "STATUS_NO_CARD_SEALED",
@@ -138,6 +164,23 @@ CARD_SUBJECT_KEY = "x-mesh-join-card-v1"
 #: A later card SUPERSEDES an earlier one over the same node, same convention
 #: as `history_card.HISTORY_SUPERSEDES_RELATION`.
 CARD_SUPERSEDES_RELATION = "supersedes"
+
+#: [mesh-fabric-vocab-alignment] the fabric's shared record-header vocabulary
+#: convention: a join card is this node's own claim
+#: about itself, never an observation of something else.
+EPISTEMIC_TYPE_PRODUCER_CLAIM = "producer_claim"
+
+#: The host-principal profile name this module knows how
+#: to populate `principal_ref` under -- see the module docstring's
+#: "principal_ref under the nostr-pubkey host-principal profile" note.
+HOST_PRINCIPAL_PROFILE_NOSTR_PUBKEY = "nostr-pubkey"
+
+
+def nostr_pubkey_principal_ref(pubkey_hex: str) -> str:
+    """`principal_ref`'s wire form under the `nostr-pubkey` profile --
+    `"nostr-pubkey:<hex>"`, the host-principal profile convention's example
+    for a profile-defined `principal_ref` scheme."""
+    return f"{HOST_PRINCIPAL_PROFILE_NOSTR_PUBKEY}:{pubkey_hex}"
 
 #: `card_consistency` per-exchange status -- a closed set, never a silent pass.
 STATUS_OK = "ok"
@@ -250,6 +293,12 @@ class Card:
     #: Content-addressed (not a capsule_id) so a holder of just the two card
     #: bodies -- no ledger access -- can already tell they chain.
     supersedes: str | None = None
+    #: [mesh-fabric-vocab-alignment] this node's `principal_ref` under the
+    #: `nostr-pubkey` host-principal profile -- see the
+    #: module docstring. `None` when this node has no Nostr identity wired in
+    #: (the HONEST GAP this module already documents for `announcement_digest`),
+    #: never a fabricated value. Build with `nostr_pubkey_principal_ref`.
+    principal_ref: str | None = None
 
     def to_value(self) -> dict[str, Any]:
         return {
@@ -260,6 +309,7 @@ class Card:
             "measurement_rung": self.measurement_rung,
             "announcement_digest": self.announcement_digest,
             "supersedes": self.supersedes,
+            "principal_ref": self.principal_ref,
         }
 
     @classmethod
@@ -271,6 +321,7 @@ class Card:
             measurement_rung=value.get("measurement_rung"),
             announcement_digest=value.get("announcement_digest"),
             supersedes=value.get("supersedes"),
+            principal_ref=value.get("principal_ref"),
         )
 
     def canonical_bytes(self) -> bytes:
@@ -288,6 +339,7 @@ def build_card(
     measurement_rung: str | None = None,
     announcement_digest: str | None = None,
     supersedes: str | None = None,
+    principal_ref: str | None = None,
 ) -> Card:
     return Card(
         node_id=node_id,
@@ -296,6 +348,7 @@ def build_card(
         measurement_rung=measurement_rung,
         announcement_digest=announcement_digest,
         supersedes=supersedes,
+        principal_ref=principal_ref,
     )
 
 
@@ -320,6 +373,9 @@ def seal_card(
     """
     card_subject = dict(card.to_value())
     compute_attestation = {
+        # [mesh-fabric-vocab-alignment] additive record-header field, a
+        # top-level sibling of CARD_SUBJECT_KEY (see EPISTEMIC_TYPE_PRODUCER_CLAIM).
+        "epistemic_type": EPISTEMIC_TYPE_PRODUCER_CLAIM,
         CARD_SUBJECT_KEY: {
             "card": card_subject,
             "card_digest": card.digest(),

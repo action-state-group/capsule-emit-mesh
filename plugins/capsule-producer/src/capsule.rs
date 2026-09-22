@@ -286,6 +286,18 @@ impl MeshPocV1 {
     }
 }
 
+/// [mesh-fabric-vocab-alignment] `epistemic_type` (the fabric's shared
+/// record-header vocabulary convention) for the SAME `x-mesh-poc-v1.role` value this record carries.
+/// `None` for `"conflict"`/`"unknown"`/anything else unrecognized -- an
+/// ambiguous or unlabelable role must never be rounded up to either claim.
+fn epistemic_type_for_role(role: &str) -> Option<&'static str> {
+    match role {
+        "served" => Some("producer_claim"),
+        "requested" => Some("observed_event"),
+        _ => None,
+    }
+}
+
 /// `chain.parent_capsule_id`/`relation` (draft-mih-scitt-agent-action-capsule-02
 /// §5.1, `Chain` in `agent_action_capsule.contracts`). Excluded from the
 /// `capsule_id` digest by `jcs::CHAIN_LINKAGE_FIELDS` (mirrors
@@ -527,6 +539,18 @@ pub fn seal(input: &CapsuleInput) -> Result<Value, crate::jcs::JcsError> {
         compute_attestation.insert("host_binding".into(), hb.to_value());
     }
     compute_attestation.insert("runtime".into(), json!(input.runtime));
+    // [mesh-fabric-vocab-alignment] additive record-header field, a
+    // top-level sibling of x-mesh-poc-v1 (never nested inside it --
+    // epistemic_type is fabric vocabulary, not a PoC extension). Derived
+    // from the SAME x-mesh-poc-v1.role signal, never re-guessed: "served"
+    // is this node's own claim about what it served (`producer_claim`),
+    // "requested" is this node's own observation of what it received
+    // (`observed_event`). `role: "conflict"`/`"unknown"` never map to
+    // either -- omitted, same "absent, never fabricated" discipline as
+    // `role` itself (see MeshPocV1::role's own doc comment).
+    if let Some(epistemic_type) = epistemic_type_for_role(&input.mesh_poc.role) {
+        compute_attestation.insert("epistemic_type".into(), json!(epistemic_type));
+    }
     compute_attestation.insert("x-mesh-poc-v1".into(), input.mesh_poc.to_value());
     body.insert(
         "model_attestation".into(),
@@ -725,6 +749,54 @@ mod tests {
         assert_eq!(prov["usage"]["prompt_tokens"], 11);
         assert_eq!(prov["usage"]["completion_tokens"], 22);
         assert_eq!(prov["usage"]["total_tokens"], 33);
+    }
+
+    /// [mesh-fabric-vocab-alignment] `epistemic_type` -- additive, a
+    /// top-level sibling of `x-mesh-poc-v1`, derived from the SAME `role`
+    /// signal `capsule_mesh_view.label_role()` already treats as
+    /// authoritative. `served` -> `producer_claim` (this node's own claim
+    /// about what it served); `requested` -> `observed_event` (this node's
+    /// own observation of what it received).
+    #[test]
+    fn epistemic_type_for_served_role_is_producer_claim() {
+        let mut input = base_input(None);
+        input.mesh_poc.role = "served".to_string();
+        let capsule = seal(&input).unwrap();
+        assert_eq!(
+            capsule["model_attestation"]["compute_attestation"]["epistemic_type"],
+            "producer_claim"
+        );
+    }
+
+    #[test]
+    fn epistemic_type_for_requested_role_is_observed_event() {
+        let mut input = base_input(None);
+        input.mesh_poc.role = "requested".to_string();
+        let capsule = seal(&input).unwrap();
+        assert_eq!(
+            capsule["model_attestation"]["compute_attestation"]["epistemic_type"],
+            "observed_event"
+        );
+    }
+
+    /// The mutant this guards against: rounding an ambiguous/unrecognized
+    /// role up to either epistemic claim. `conflict`/`unknown` must never
+    /// silently become `producer_claim` or `observed_event` -- the field is
+    /// absent, same "absent, never fabricated" discipline `role` itself
+    /// documents.
+    #[test]
+    fn epistemic_type_absent_for_conflict_and_unknown_roles() {
+        for role in ["conflict", "unknown"] {
+            let mut input = base_input(None);
+            input.mesh_poc.role = role.to_string();
+            let capsule = seal(&input).unwrap();
+            assert!(
+                capsule["model_attestation"]["compute_attestation"]
+                    .get("epistemic_type")
+                    .is_none(),
+                "role={role:?} must never carry an epistemic_type claim"
+            );
+        }
     }
 
     /// The OPTIONAL `tool_calls_digest`/`reasoning_digest` sub-digests ride

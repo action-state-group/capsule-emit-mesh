@@ -143,6 +143,12 @@ __all__ = [
     "VERDICT_CONTRADICTED_PREFIX",
     "VERDICT_CORROBORATED",
     "VERDICT_INCONCLUSIVE",
+    "EPISTEMIC_TYPE_ADJUDICATION",
+    "EPISTEMIC_TYPE_OBSERVED_EVENT",
+    "STATUS_CONTRADICTED",
+    "STATUS_SATISFIED",
+    "STATUS_UNKNOWN",
+    "status_for_verdict",
     "AdjudicationHalf",
     "AdjudicationOutcome",
     "ComparisonResult",
@@ -173,6 +179,41 @@ ADJUDICATION_SCHEMA = "capsule-emit-mesh/adjudication/v1"
 VERDICT_CORROBORATED = "corroborated"
 VERDICT_INCONCLUSIVE = "inconclusive"
 VERDICT_CONTRADICTED_PREFIX = "contradicted:"
+
+#: [mesh-fabric-vocab-alignment] the fabric's shared record-header vocabulary
+#: convention: the adjudication capsule as a whole is
+#: this node's own judgment over the two halves + referee citation.
+EPISTEMIC_TYPE_ADJUDICATION = "adjudication"
+#: A referee-capsule citation inside `adjudication.references` (see
+#: `adjudicate()`) is this node's own OBSERVATION that the referee answered
+#: with a given capsule -- it asserts nothing about the referee's serving
+#: claim itself (that claim's own epistemic_type is `producer_claim`, sealed
+#: on the referee's own node); it is this node's record of having received
+#: it.
+EPISTEMIC_TYPE_OBSERVED_EVENT = "observed_event"
+
+#: [mesh-fabric-vocab-alignment] the fabric's per-verdict status vocabulary
+#: convention that an adjudication bundle's `adjudication`
+#: block carries alongside its own `verdict`, never replacing it.
+STATUS_CONTRADICTED = "CONTRADICTED"
+STATUS_SATISFIED = "SATISFIED"
+STATUS_UNKNOWN = "UNKNOWN"
+
+
+def status_for_verdict(verdict: str) -> str:
+    """Map this module's own `verdict` vocabulary to the fabric's additive
+    per-verdict `status` -- `corroborated` -> `SATISFIED`, `inconclusive` ->
+    `UNKNOWN`, `contradicted:<owner_id>` (any owner) -> `CONTRADICTED`.
+    Raises on an unrecognized verdict rather than silently defaulting: a new
+    verdict value this function does not know about must fail loudly, not
+    round up to `UNKNOWN`."""
+    if verdict == VERDICT_CORROBORATED:
+        return STATUS_SATISFIED
+    if verdict == VERDICT_INCONCLUSIVE:
+        return STATUS_UNKNOWN
+    if verdict.startswith(VERDICT_CONTRADICTED_PREFIX):
+        return STATUS_CONTRADICTED
+    raise ValueError(f"status_for_verdict: unrecognized verdict {verdict!r}")
 
 #: no_verdict_reason values -- distinct from an exception: the inputs are
 #: fine, there is simply nothing to adjudicate.
@@ -834,6 +875,10 @@ def adjudicate(
                     "nonce": referee_result.referee_record_nonce,
                     "status": referee_result.referee_record_status,
                     "capsule_id": referee_result.capsule_id,
+                    # [mesh-fabric-vocab-alignment] this node's own
+                    # observation of the referee's citation -- see
+                    # EPISTEMIC_TYPE_OBSERVED_EVENT's docstring.
+                    "epistemic_type": EPISTEMIC_TYPE_OBSERVED_EVENT,
                 },
             )
 
@@ -898,6 +943,11 @@ def seal_adjudication_capsule(
         "source": outcome.source,
         "capture_method": outcome.capture_method,
         "verdict": outcome.verdict,
+        # [mesh-fabric-vocab-alignment] additive per-verdict fabric status
+        # (see status_for_verdict) -- never replaces `verdict`, which stays
+        # this module's own vocabulary (contradicted:<owner_id> in
+        # particular carries the owner; `status` alone cannot).
+        "status": status_for_verdict(outcome.verdict),
         "divergence_index": outcome.divergence_index,
         # §5.1: a JSON float in a digest-bearing field raises
         # FloatInDigestError -- margin/margin_tau travel as exact
@@ -930,7 +980,12 @@ def seal_adjudication_capsule(
             adjudication["tau"] = float_to_str(outcome.tau, field="adjudication.tau")
             adjudication["referee_logprobs_absent"] = outcome.referee_logprobs_absent
 
-    compute_attestation = {"adjudication": adjudication}
+    compute_attestation = {
+        # [mesh-fabric-vocab-alignment] additive record-header field, a
+        # top-level sibling of "adjudication" (see EPISTEMIC_TYPE_ADJUDICATION).
+        "epistemic_type": EPISTEMIC_TYPE_ADJUDICATION,
+        "adjudication": adjudication,
+    }
     disposition = Disposition(
         decision="accept",
         approver="policy",

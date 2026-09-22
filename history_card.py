@@ -76,6 +76,7 @@ from capsule_emit.numbers import float_to_str
 __all__ = [
     "HISTORY_CARD_SCHEMA",
     "HISTORY_SUBJECT_KEY",
+    "EPISTEMIC_TYPE_DERIVED_METRIC",
     "HISTORY_CHAIN_RELATION",
     "HISTORY_SUPERSEDES_RELATION",
     "MESH_HISTORY_DEFINITION",
@@ -114,6 +115,12 @@ HISTORY_CARD_SCHEMA = "mesh-history-card/1"
 #: Capsule marker for the history card's subject block, mirroring
 #: `account_capsule.ACCOUNT_SUBJECT_KEY`.
 HISTORY_SUBJECT_KEY = "x-mesh-history-v1"
+
+#: [mesh-fabric-vocab-alignment] the fabric's shared record-header vocabulary
+#: convention: a history card is a derived
+#: aggregate/fold over this node's own checkpoint chain, never a claim about
+#: a single exchange and never an observation of one.
+EPISTEMIC_TYPE_DERIVED_METRIC = "derived_metric"
 
 #: The chain_segment traversal relation a history card's `core_account()`
 #: names: consecutive checkpoints link via their own `prev_size`/`prev_root`
@@ -831,6 +838,10 @@ def seal_history_card(
     """
     history_subject = dict(card.to_value())
     compute_attestation = {
+        # [mesh-fabric-vocab-alignment] additive record-header field, a
+        # top-level sibling of HISTORY_SUBJECT_KEY (see
+        # EPISTEMIC_TYPE_DERIVED_METRIC).
+        "epistemic_type": EPISTEMIC_TYPE_DERIVED_METRIC,
         HISTORY_SUBJECT_KEY: {
             "history": history_subject,
             "history_digest": card.digest(),

@@ -376,7 +376,15 @@ def test_build_live_referee_wires_end_to_end_through_adjudicate():
     assert outcome.verdict == "contradicted:owner-b"
     assert outcome.referee_capsule_id is None
     assert outcome.references == (
-        {"kind": "referee_capsule", "nonce": "nonce-h", "status": REFEREE_RECORD_UNRESOLVED, "capsule_id": None},
+        {
+            "kind": "referee_capsule",
+            "nonce": "nonce-h",
+            "status": REFEREE_RECORD_UNRESOLVED,
+            "capsule_id": None,
+            # [mesh-fabric-vocab-alignment] additive field -- see
+            # twin_adjudicator.EPISTEMIC_TYPE_OBSERVED_EVENT.
+            "epistemic_type": "observed_event",
+        },
     )
 
 

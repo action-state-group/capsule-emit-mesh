@@ -366,11 +366,15 @@ def test_seal_adjudication_capsule_for_corroborated_verdict():
     assert capsule is not None
     assert capsule["chain"]["relation"] == RELATION_ADJUDICATES
     assert capsule["chain"]["parent_capsule_id"] == half_a.capsule_id
-    adj = capsule["model_attestation"]["compute_attestation"]["adjudication"]
+    ca = capsule["model_attestation"]["compute_attestation"]
+    adj = ca["adjudication"]
     assert adj["verdict"] == VERDICT_CORROBORATED
     assert adj["half_a_capsule_id"] == half_a.capsule_id
     assert adj["half_b_capsule_id"] == half_b.capsule_id
     assert isinstance(adj["margin"], str)  # exact decimal string, never a float
+    # [mesh-fabric-vocab-alignment] additive record-header field + per-verdict status.
+    assert ca["epistemic_type"] == "adjudication"
+    assert adj["status"] == "SATISFIED"
 
 
 def test_seal_adjudication_capsule_none_when_no_verdict():
@@ -591,6 +595,8 @@ def test_seal_adjudication_capsule_publishes_referee_capsule_id_and_tau():
     assert adj["tau"] == "0.5"
     assert adj["referee_capsule_id"] == "referee-capsule-123"
     assert adj["referee_logprobs_absent"] is False
+    # [mesh-fabric-vocab-alignment] a contradicted:<owner> verdict maps to CONTRADICTED.
+    assert adj["status"] == "CONTRADICTED"
 
 
 def test_seal_adjudication_capsule_omits_referee_fields_when_no_referee_called():
@@ -798,3 +804,24 @@ def test_seal_does_not_assert_shared_weights_when_one_side_unknown():
     assert adj.get("weights_digest") is None, (
         "sealed capsule must not assert shared weights when one side's digest is unknown"
     )
+
+
+# ---------------------------------------------------------------------------
+# [mesh-fabric-vocab-alignment] status_for_verdict
+# ---------------------------------------------------------------------------
+
+
+def test_status_for_verdict_maps_the_full_vocabulary():
+    from twin_adjudicator import STATUS_CONTRADICTED, STATUS_SATISFIED, STATUS_UNKNOWN, status_for_verdict
+
+    assert status_for_verdict(VERDICT_CORROBORATED) == STATUS_SATISFIED
+    assert status_for_verdict(VERDICT_INCONCLUSIVE) == STATUS_UNKNOWN
+    assert status_for_verdict(contradicted("owner-x")) == STATUS_CONTRADICTED
+    assert status_for_verdict(contradicted("owner-y")) == STATUS_CONTRADICTED  # any owner
+
+
+def test_status_for_verdict_raises_on_unrecognized_verdict():
+    from twin_adjudicator import status_for_verdict
+
+    with pytest.raises(ValueError, match="unrecognized verdict"):
+        status_for_verdict("not_a_real_verdict")
