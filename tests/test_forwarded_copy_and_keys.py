@@ -160,15 +160,25 @@ def test_load_or_create_signing_key():
 
 def _make_node_state():
     """Minimal NodeState for _resolve_client_nonce tests -- no real signing key
-    or manifest needed since these tests never sign or emit a capsule."""
+    needed since these tests never sign or emit a capsule. The manifest.json
+    below DOES need to exist and parse, even though these tests never read
+    its content: NodeState.__post_init__ always calls the real
+    model_identity.load_manifest against manifest_path (see
+    test_fabric_vocab_alignment.py's _real_load_manifest fixture docstring for
+    why the module-level sys.modules stub above never actually intercepts
+    it in this process)."""
     d = pathlib.Path(tempfile.mkdtemp())
+    manifest_path = d / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({"model_id": "m/1", "source_model": {"sha256": "e" * 64, "canonical_ref": "m/1"}, "skippy_abi_version": "1"})
+    )
     return cs.NodeState(
         node_id="test-node",
         operator="test-operator",
         developer="test-developer",
         signing_key_pem=b"unused-in-these-tests",
         signing_key_path=d / "keys" / "node-key.pem",  # unused: no checkpoint_config_path given
-        manifest_path=d / "manifest.json",
+        manifest_path=manifest_path,
         runtime_label="test-runtime",
         runtime_digest="0" * 64,
         ledger_dir=d / "ledger",
@@ -197,6 +207,11 @@ def test_plugin_ledger_dir_wires_a_second_read_only_checkpoint_state():
     )
     before = plugin_capsules_path.read_bytes()
 
+    manifest_path = d / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({"model_id": "m/1", "source_model": {"sha256": "e" * 64, "canonical_ref": "m/1"}, "skippy_abi_version": "1"})
+    )
+
     checkpoint_config_path = d / "checkpoint.toml"
     checkpoint_config_path.write_text(
         "[checkpoint]\n"
@@ -211,7 +226,7 @@ def test_plugin_ledger_dir_wires_a_second_read_only_checkpoint_state():
         developer="test-developer",
         signing_key_pem=b"unused-in-these-tests",
         signing_key_path=d / "keys" / "node-key.pem",
-        manifest_path=d / "manifest.json",
+        manifest_path=manifest_path,
         runtime_label="test-runtime",
         runtime_digest="0" * 64,
         ledger_dir=d / "ledger",

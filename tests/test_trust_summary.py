@@ -44,7 +44,8 @@ def _real_capsule(cid_ok: bool = True, tokens=(52, 339, 391)) -> dict:
     pt, ct, tt = tokens
     cap = {
         "spec_version": "draft-mih-scitt-agent-action-capsule-02",
-        "format_version": "2",
+        "format_version": "4",
+        "canonicalization_id": "jcs",
         "operator": "capsule-emit-mesh-poc-rust",
         "timestamp": "2026-08-30T07:03:55.335Z",
         "model_attestation": {

@@ -47,7 +47,8 @@ def _sample_capsules() -> list[dict]:
     # the flat ledger-live fixtures are the only ones checked in.
     nested = {
         "spec_version": "draft-mih-scitt-agent-action-capsule-02",
-        "format_version": "2",
+        "format_version": "4",
+        "canonicalization_id": "jcs",
         "operator": "op",
         "timestamp": "2026-08-30T00:00:00Z",
         "model_attestation": {
@@ -108,11 +109,21 @@ def test_js_recompute_matches_python_reference(tmp_path):
     result = subprocess.run(["node", str(harness)], capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     js_ids = json.loads(result.stdout)
-    py_ids = [compute_capsule_id(c) for c in caps]
     stored = [c["capsule_id"] for c in caps]
-    assert js_ids == py_ids == stored, (
-        f"JS/Python/stored capsule_id divergence:\n js={js_ids}\n py={py_ids}\n stored={stored}"
-    )
+    # mesh_verify.js keeps both recompute branches (vintage format-2 jcs-n AND
+    # format-4 jcs) so old permalinks stay verifiable offline. The Python
+    # reference (agent_action_capsule) dropped the vintage branch outright
+    # (agent-action-capsule#99, "Format-4-only canonical reference") -- its
+    # compute_capsule_id raises on anything but format_version "4". So the
+    # ledger-live/capsules.jsonl legacy-flat-shape entries (real, signed,
+    # anchored historical records -- see ledger-live/README.md; their stored
+    # capsule_id must never be rewritten) are only checked JS-vs-stored here.
+    # The synthetic format-4 capsule above is the one that exercises the full
+    # JS/Python/stored triple-check.
+    assert js_ids == stored, f"JS/stored capsule_id divergence:\n js={js_ids}\n stored={stored}"
+    for cap, js_id in zip(caps, js_ids):
+        if cap.get("format_version") == "4":
+            assert compute_capsule_id(cap) == js_id == cap["capsule_id"]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available; JS parity is a local/CI-with-node check")
