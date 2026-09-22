@@ -175,6 +175,8 @@ fn step_input(step: &Step, chain: Option<ChainLink>) -> CapsuleInput {
                 // reproducible fixture generator.
                 seq: step.seq,
                 prev_seq: if step.seq > 1 { Some(step.seq - 1) } else { None },
+                peer_capsule_id: None,
+                peer_capsule_id_provenance: None,
             },
             // Single-node demo: this node always serves its own steps.
             role: "served".to_string(),

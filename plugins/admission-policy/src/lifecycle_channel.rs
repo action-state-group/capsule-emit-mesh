@@ -112,6 +112,59 @@ pub fn dispatch_path_wire_value(dispatch_path: &DispatchPath) -> &'static str {
     }
 }
 
+/// Mirror of the host's `CapsuleIdProvenance`
+/// (`mesh-llm-host-runtime::plugin::openai_exchange::CapsuleIdProvenance`).
+/// `PeerAsserted` (the only variant a `RemoteMesh` terminal envelope ever
+/// carries) means this node merely OBSERVED the value on a peer's raw
+/// response header while ROUTING the exchange -- an unauthenticated,
+/// relay-injectable claim, never elevated to verified here. `#[serde(other)]`
+/// for the same forward-compat reason as `DispatchPath::Unknown` above: an
+/// unrecognized provenance value is observed, never guessed at, and this
+/// mirror must not fail to parse the whole envelope over a value it predates.
+#[derive(Debug, Clone, Copy, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CapsuleIdProvenance {
+    SelfMinted,
+    PeerAsserted,
+    #[serde(other)]
+    Unknown,
+}
+
+/// The raw wire value a `CapsuleIdProvenance` was serialized as -- same
+/// hand-written-match discipline as `dispatch_path_wire_value` (`Unknown` has
+/// no single canonical host-side wire string, so a round-trip through serde
+/// would be lossy about which unrecognized value this mirror actually saw).
+pub fn capsule_id_provenance_wire_value(provenance: &CapsuleIdProvenance) -> &'static str {
+    match provenance {
+        CapsuleIdProvenance::SelfMinted => "self_minted",
+        CapsuleIdProvenance::PeerAsserted => "peer_asserted",
+        CapsuleIdProvenance::Unknown => "unknown",
+    }
+}
+
+/// THE MISLABELING GUARD: `capsule_id`/`capsule_id_provenance` also carries a
+/// `SelfMinted` value on a locally-served envelope (this node's OWN
+/// `X-Capsule-Id` marker -- nothing to do with a peer). Only a `PeerAsserted`
+/// value names a peer's half of the exchange; every other case (`SelfMinted`,
+/// `Unknown`, or no value at all) must seal `peer_capsule_id: None`, never
+/// surface this node's own marker (or an unrecognized value) as though a peer
+/// had asserted it. `seal_observed_host_exchange` (`main.rs`) calls this
+/// directly rather than re-deriving the match inline, so the guard is unit-
+/// testable independent of the axum/CapsuleState wiring around it.
+pub fn peer_capsule_id_for_seal(
+    envelope: &OpenAiExchangeEnvelope,
+) -> Option<(&str, &'static str)> {
+    match envelope.capsule_id_provenance {
+        Some(CapsuleIdProvenance::PeerAsserted) => envelope.capsule_id.as_deref().map(|id| {
+            (
+                id,
+                capsule_id_provenance_wire_value(&CapsuleIdProvenance::PeerAsserted),
+            )
+        }),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
@@ -135,6 +188,15 @@ pub struct OpenAiExchangeEnvelope {
     pub status: Option<u16>,
     #[serde(default)]
     pub capsule_id: Option<String>,
+    /// How `capsule_id` was obtained -- see [`CapsuleIdProvenance`]. On a
+    /// `RemoteMesh` terminal envelope this is the PEER's asserted capsule id
+    /// for its own half of the exchange (host-side
+    /// `CapsuleIdProvenance::PeerAsserted`) -- the lookup key a later
+    /// evidence-door fetch dereferences, never itself verified here. `None`
+    /// exactly when `capsule_id` is `None`, and always `None` on a host that
+    /// predates this field -- never fabricated.
+    #[serde(default)]
+    pub capsule_id_provenance: Option<CapsuleIdProvenance>,
     #[serde(default)]
     pub nonce: Option<String>,
     /// The host's serving-provenance block for this terminal event -- what
@@ -389,6 +451,8 @@ struct LoggedEnvelope {
     model: String,
     status: Option<u16>,
     capsule_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capsule_id_provenance: Option<CapsuleIdProvenance>,
     nonce: Option<String>,
     /// Persisted so the out-of-process e2e test can confirm the host's real
     /// serving provenance was received (in-memory state isn't visible to it).
@@ -415,6 +479,7 @@ impl From<&OpenAiExchangeEnvelope> for LoggedEnvelope {
             model: e.model.clone(),
             status: e.status,
             capsule_id: e.capsule_id.clone(),
+            capsule_id_provenance: e.capsule_id_provenance,
             nonce: e.nonce.clone(),
             serving_provenance: e.serving_provenance.clone(),
             usage: e.usage,
@@ -565,6 +630,129 @@ mod tests {
         assert_eq!(env.dispatch_path, DispatchPath::RemoteMesh);
     }
 
+    /// A `RemoteMesh` terminal event's `capsule_id`/`capsule_id_provenance`
+    /// -- the peer's self-asserted capsule id for its own half of the
+    /// exchange -- survives the wire round trip byte-for-byte (real shape
+    /// verified against `CapsuleIdProvenance::PeerAsserted`'s host-side wire
+    /// value, `mesh-llm-host-runtime`'s `#[serde(rename_all =
+    /// "snake_case")]`).
+    #[test]
+    fn peer_asserted_capsule_id_survives_the_wire_round_trip() {
+        let wire = r#"{"dispatch_path":"remote_mesh","phase":"terminal","model":"m","status":200,"capsule_id":"peer-cap-abc123","capsule_id_provenance":"peer_asserted"}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
+        assert_eq!(env.capsule_id.as_deref(), Some("peer-cap-abc123"));
+        assert_eq!(
+            env.capsule_id_provenance,
+            Some(CapsuleIdProvenance::PeerAsserted)
+        );
+    }
+
+    /// A locally-served envelope's `capsule_id` is this node's OWN
+    /// `X-Capsule-Id` marker (`SelfMinted`) -- a distinct fact from a peer's
+    /// asserted id, and this mirror must keep the two distinguishable so a
+    /// caller never mislabels this node's own marker as a peer's claim (see
+    /// `main.rs::seal_observed_host_exchange`'s guard).
+    #[test]
+    fn self_minted_capsule_id_parses_as_its_own_distinct_variant() {
+        let wire = r#"{"dispatch_path":"typed_frontend","phase":"terminal","model":"m","status":200,"capsule_id":"self-cap-xyz","capsule_id_provenance":"self_minted"}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
+        assert_eq!(env.capsule_id.as_deref(), Some("self-cap-xyz"));
+        assert_eq!(
+            env.capsule_id_provenance,
+            Some(CapsuleIdProvenance::SelfMinted)
+        );
+        assert_ne!(
+            env.capsule_id_provenance,
+            Some(CapsuleIdProvenance::PeerAsserted)
+        );
+    }
+
+    /// Same forward-compat discipline as `DispatchPath::Unknown`: a
+    /// provenance value this mirror predates must not fail parsing of the
+    /// whole envelope, and must never be silently promoted to
+    /// `PeerAsserted`.
+    #[test]
+    fn unknown_capsule_id_provenance_parses_as_unknown_not_a_parse_failure() {
+        let wire = r#"{"dispatch_path":"remote_mesh","phase":"terminal","model":"m","status":200,"capsule_id":"c","capsule_id_provenance":"some_future_provenance"}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire)
+            .expect("a forward host value must not break parsing of the whole envelope");
+        assert_eq!(env.capsule_id_provenance, Some(CapsuleIdProvenance::Unknown));
+    }
+
+    /// A host predating this field omits it entirely -- `#[serde(default)]`
+    /// keeps it `None`, never a fabricated provenance.
+    #[test]
+    fn missing_capsule_id_provenance_defaults_to_none() {
+        let wire = r#"{"dispatch_path":"remote_mesh","phase":"terminal","model":"m","status":200,"capsule_id":"c"}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
+        assert_eq!(env.capsule_id_provenance, None);
+    }
+
+    /// `capsule_id_provenance_wire_value` matches the host's own
+    /// `#[serde(rename_all = "snake_case")]` wire form exactly -- this is
+    /// the value `main.rs` re-serializes onto `ServingProvenance::
+    /// peer_capsule_id_provenance`, so a mismatch here would silently
+    /// diverge the sealed record from what the host actually sent.
+    #[test]
+    fn capsule_id_provenance_wire_value_matches_the_snake_case_host_wire_form() {
+        assert_eq!(
+            capsule_id_provenance_wire_value(&CapsuleIdProvenance::SelfMinted),
+            "self_minted"
+        );
+        assert_eq!(
+            capsule_id_provenance_wire_value(&CapsuleIdProvenance::PeerAsserted),
+            "peer_asserted"
+        );
+        assert_eq!(
+            capsule_id_provenance_wire_value(&CapsuleIdProvenance::Unknown),
+            "unknown"
+        );
+    }
+
+    /// A `PeerAsserted` value is the only case `peer_capsule_id_for_seal`
+    /// surfaces -- and it returns the exact `(id, wire_value)` pair a caller
+    /// threads onto `ServingProvenance::peer_capsule_id{,_provenance}`.
+    #[test]
+    fn peer_capsule_id_for_seal_surfaces_peer_asserted() {
+        let wire = r#"{"dispatch_path":"remote_mesh","phase":"terminal","model":"m","status":200,"capsule_id":"peer-cap-1","capsule_id_provenance":"peer_asserted"}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
+        assert_eq!(
+            peer_capsule_id_for_seal(&env),
+            Some(("peer-cap-1", "peer_asserted"))
+        );
+    }
+
+    /// THE MISLABELING BUG this guard exists to prevent: a `SelfMinted`
+    /// capsule id (this node's own `X-Capsule-Id` marker on a locally-served
+    /// envelope) must NEVER be surfaced as a peer's claim, even though the
+    /// wire shape is otherwise identical to the `PeerAsserted` case.
+    #[test]
+    fn peer_capsule_id_for_seal_never_surfaces_self_minted() {
+        let wire = r#"{"dispatch_path":"typed_frontend","phase":"terminal","model":"m","status":200,"capsule_id":"self-cap-1","capsule_id_provenance":"self_minted"}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
+        assert_eq!(peer_capsule_id_for_seal(&env), None);
+    }
+
+    /// An unrecognized provenance value (a host that emits a variant this
+    /// mirror predates) is observed, never guessed at -- it must not be
+    /// treated as `PeerAsserted` by default.
+    #[test]
+    fn peer_capsule_id_for_seal_never_surfaces_unknown_provenance() {
+        let wire = r#"{"dispatch_path":"remote_mesh","phase":"terminal","model":"m","status":200,"capsule_id":"c","capsule_id_provenance":"some_future_value"}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
+        assert_eq!(peer_capsule_id_for_seal(&env), None);
+    }
+
+    /// No `capsule_id` at all (a host that predates the field, or a
+    /// `RemoteMesh` event where nothing was observed) stays `None` -- an
+    /// honest absence, never fabricated.
+    #[test]
+    fn peer_capsule_id_for_seal_is_none_when_no_capsule_id_was_observed() {
+        let wire = r#"{"dispatch_path":"remote_mesh","phase":"terminal","model":"m","status":200}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
+        assert_eq!(peer_capsule_id_for_seal(&env), None);
+    }
+
     /// THE GAP `[mesh-requester-side-seal-on-proxy]` CLOSES: a `RemoteMesh`
     /// terminal event (this node routed the exchange to a peer) is sealable as
     /// the REQUESTER'S half, even with no `serving_provenance` at all (the
@@ -647,6 +835,7 @@ mod tests {
             model: model.to_string(),
             status: Some(200),
             capsule_id: None,
+            capsule_id_provenance: None,
             nonce: None,
             usage: None,
             request_digest: None,
