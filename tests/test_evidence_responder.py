@@ -131,3 +131,128 @@ def test_handle_evidence_request_caller_invariance(node_state):
     result_a = handle_evidence_request(node_state, req_a, now=now)
     result_b = handle_evidence_request(node_state, req_b, now=now)
     assert json.dumps(result_a.to_dict(), sort_keys=True) == json.dumps(result_b.to_dict(), sort_keys=True)
+
+
+# [mesh-fabric-vocab-alignment] --------------------------------------------
+
+
+def test_purpose_and_contract_ref_are_logged_never_change_answer_bytes(node_state, capsys):
+    """purpose/contract_ref ride outside RequestMap entirely (see
+    log_request_purpose) -- two requests identical except for those two
+    fields must resolve to byte-identical answers, and the values are still
+    observably logged."""
+    caps = [_seal_into_sidecar_store(node_state, action=f"act-{i}") for i in range(2)]
+    assert node_state.checkpoint.reconnect() is not None
+    cid = caps[0]["capsule_id"]
+
+    now = "2026-09-02T00:00:00Z"
+    req_a = json.dumps({"subject": {"kind": "record", "capsule_id": cid}, "coverage": {}}).encode()
+    req_b = json.dumps(
+        {
+            "subject": {"kind": "record", "capsule_id": cid},
+            "coverage": {},
+            "purpose": "counterparty_check",
+            "contract_ref": "contract-123",
+        }
+    ).encode()
+
+    result_a = handle_evidence_request(node_state, req_a, now=now)
+    result_b = handle_evidence_request(node_state, req_b, now=now)
+    assert json.dumps(result_a.to_dict(), sort_keys=True) == json.dumps(result_b.to_dict(), sort_keys=True)
+
+    out = capsys.readouterr().out
+    assert "purpose='counterparty_check'" in out
+    assert "contract_ref='contract-123'" in out
+
+
+def test_unrecognized_purpose_is_logged_not_refused(node_state, capsys):
+    caps = [_seal_into_sidecar_store(node_state, action="act-0")]
+    assert node_state.checkpoint.reconnect() is not None
+    cid = caps[0]["capsule_id"]
+
+    from capsule_emit.evidence_request import Artifact
+
+    req = json.dumps(
+        {"subject": {"kind": "record", "capsule_id": cid}, "coverage": {}, "purpose": "not_a_real_purpose"}
+    ).encode()
+    result = handle_evidence_request(node_state, req)
+    assert isinstance(result, Artifact)
+    assert "unrecognized purpose" in capsys.readouterr().out
+
+
+def test_augment_evidence_answer_dict_artifact_gets_satisfied_status_and_record_inclusion():
+    from evidence_responder import augment_evidence_answer_dict
+
+    artifact_dict = {"v": 1, "subject_kind": "record", "bundles": [{"capsule_id": "abc"}]}
+    augmented = augment_evidence_answer_dict(artifact_dict)
+    assert augmented["status"] == "SATISFIED"
+    assert augmented["bundles"][0]["coverage_descriptor"] == ["record_inclusion"]
+    # never more than it does -- a single record subject never claims range_completeness
+    assert "range_completeness" not in augmented["bundles"][0]["coverage_descriptor"]
+    # original dict untouched
+    assert "status" not in artifact_dict
+    assert "coverage_descriptor" not in artifact_dict["bundles"][0]
+
+
+def test_augment_evidence_answer_dict_range_final_page_gets_range_completeness():
+    from evidence_responder import augment_evidence_answer_dict
+
+    artifact_dict = {
+        "v": 1,
+        "subject_kind": "range",
+        "bundles": [{"capsule_id": "a"}, {"capsule_id": "b"}],
+        # no next_page_token -- this page reaches the end of the selection
+    }
+    augmented = augment_evidence_answer_dict(artifact_dict)
+    for b in augmented["bundles"]:
+        assert b["coverage_descriptor"] == ["record_inclusion", "range_completeness"]
+
+
+def test_augment_evidence_answer_dict_range_mid_page_never_claims_completeness():
+    from evidence_responder import augment_evidence_answer_dict
+
+    artifact_dict = {
+        "v": 1,
+        "subject_kind": "range",
+        "bundles": [{"capsule_id": "a"}],
+        "next_page_token": "50",  # more remains -- this response alone is not complete
+    }
+    augmented = augment_evidence_answer_dict(artifact_dict)
+    assert augmented["bundles"][0]["coverage_descriptor"] == ["record_inclusion"]
+
+
+def test_augment_evidence_answer_dict_chain_segment_gets_no_coverage_descriptor():
+    from evidence_responder import augment_evidence_answer_dict
+
+    artifact_dict = {"v": 1, "subject_kind": "chain_segment", "bundles": [{"from_size": 0, "to_size": 5}]}
+    augmented = augment_evidence_answer_dict(artifact_dict)
+    assert "coverage_descriptor" not in augmented["bundles"][0]
+    assert augmented["status"] == "SATISFIED"
+
+
+def test_augment_evidence_answer_dict_refusal_status_mapping():
+    from evidence_responder import augment_evidence_answer_dict
+
+    assert augment_evidence_answer_dict({"reason": "no_such_record"})["status"] == "NOT_FOUND"
+    assert augment_evidence_answer_dict({"reason": "coverage_unsatisfiable"})["status"] == "NOT_COMMITTED"
+    assert augment_evidence_answer_dict({"reason": "policy_decline"})["status"] == "WITHHELD"
+    # request_malformed stays a bare refusal reason -- no additive status.
+    assert "status" not in augment_evidence_answer_dict({"reason": "request_malformed"})
+
+
+def test_coverage_descriptor_never_claims_capture_coverage_on_a_unilateral_range():
+    """The acceptance mutant: a bundle claiming capture_coverage on a
+    unilateral (single-ledger) range must be rejected, never shipped."""
+    from evidence_responder import _validate_coverage_descriptor
+
+    with pytest.raises(ValueError, match="capture_coverage"):
+        _validate_coverage_descriptor("range", ["record_inclusion", "capture_coverage"])
+    # the responder's own coverage_descriptor_for never produces this shape
+    # in the first place -- this is the defense-in-depth backstop for any
+    # caller that tries to assert one anyway.
+    with pytest.raises(ValueError):
+        _validate_coverage_descriptor("range", ["reconciliation_coverage"])
+    with pytest.raises(ValueError):
+        _validate_coverage_descriptor("correlation", ["corroboration"])
+    # legitimate claims never raise
+    _validate_coverage_descriptor("range", ["record_inclusion", "range_completeness"])

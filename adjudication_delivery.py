@@ -71,6 +71,7 @@ from agent_action_capsule.verify import verify as verify_capsule
 from capsule_emit.evidence_request import Refusal
 from capsule_emit.signing import resolve_signer
 
+from evidence_responder import status_for_refusal_reason
 from ledger_store_backend import append_capsule, read_all_capsules
 
 __all__ = [
@@ -118,11 +119,20 @@ def _owner_id(capsule: dict[str, Any]) -> str | None:
     return owner.get("owner_id")
 
 
-def _refuse(request_digest: str, reason: str, *, state: Any, issued_at: str) -> Refusal:
+def _refuse(request_digest: str, reason: str, *, state: Any, issued_at: str) -> dict[str, Any]:
+    """Sign a refusal and return its wire dict, with the fabric's additive
+    `status` (`[mesh-fabric-vocab-alignment]`) layered on beside `reason` --
+    `WITHHELD` for `policy_decline`, absent for `request_malformed` (see
+    `evidence_responder.status_for_refusal_reason`'s own docstring)."""
     signer = resolve_signer(str(state.ledger_dir), key_path=state.signing_key_path)
     stub = Refusal(request_digest=request_digest, reason=reason, issued_at=issued_at, key_id="", sig="")
     sig, key_id = signer.sign(stub.signing_body())
-    return Refusal(request_digest=request_digest, reason=reason, issued_at=issued_at, key_id=key_id, sig=sig)
+    refusal = Refusal(request_digest=request_digest, reason=reason, issued_at=issued_at, key_id=key_id, sig=sig)
+    d = refusal.to_dict()
+    status = status_for_refusal_reason(reason)
+    if status is not None:
+        d["status"] = status
+    return d
 
 
 def handle_delivery(state: Any, body: bytes, *, now: str | None = None) -> dict[str, Any]:
@@ -130,7 +140,8 @@ def handle_delivery(state: Any, body: bytes, *, now: str | None = None) -> dict[
     ledger -- duck-typed like ``evidence_server.EvidenceServerState``
     (``ledger_path`` + ``signing_key_path``, nothing else).
 
-    Returns ``{"status": "received"}`` or a signed ``Refusal.to_dict()`` --
+    Returns ``{"status": "received"}`` or a signed refusal dict (``Refusal
+    .to_dict()`` plus an additive fabric ``status``, see ``_refuse``) --
     never raises on malformed input, mirroring E14 ``answer()``'s
     discipline of one signed answer for every well-formed OR malformed
     request.
@@ -141,18 +152,18 @@ def handle_delivery(state: Any, body: bytes, *, now: str | None = None) -> dict[
     try:
         capsule = json.loads(body)
     except Exception:
-        return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at).to_dict()
+        return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at)
 
     if not isinstance(capsule, dict) or not capsule.get("capsule_id"):
-        return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at).to_dict()
+        return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at)
 
     result = verify_capsule(capsule)
     if not result.ok:
-        return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at).to_dict()
+        return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at)
 
     cited = _cited_capsule_ids(capsule)
     if not cited:
-        return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at).to_dict()
+        return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at)
 
     own_records, _archived_segments = read_all_capsules(state.ledger_dir)
     own_entries = {e["capsule_id"]: e for e in own_records}
@@ -160,12 +171,12 @@ def handle_delivery(state: Any, body: bytes, *, now: str | None = None) -> dict[
     if own_half is None:
         # Own half not among the citations -- never received() a verdict
         # about someone else.
-        return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at).to_dict()
+        return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at)
 
     own_owner_id = _owner_id(own_half)
     verdict = _adjudication_block(capsule).get("verdict")
     if own_owner_id and verdict == f"contradicted:{own_owner_id}":
-        return _refuse(request_digest, REASON_POLICY_DECLINE, state=state, issued_at=issued_at).to_dict()
+        return _refuse(request_digest, REASON_POLICY_DECLINE, state=state, issued_at=issued_at)
 
     append_capsule(state.ledger_dir, capsule)
     return {"status": "received"}

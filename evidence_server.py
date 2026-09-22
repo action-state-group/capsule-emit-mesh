@@ -114,7 +114,7 @@ from pathlib import Path
 from typing import Any
 
 from adjudication_delivery import handle_delivery
-from evidence_responder import handle_evidence_request
+from evidence_responder import augment_evidence_answer_dict, handle_evidence_request
 
 __all__ = [
     "EvidenceServerState",
@@ -182,7 +182,12 @@ def make_evidence_handler(state: EvidenceServerState):
                 # evidence_responder.py), so this door hands it state
                 # unchanged rather than pre-building a merged view.
                 result = handle_evidence_request(state, request_bytes)
-                self._write_json(200, result.to_dict())
+                # [mesh-served-summary-derivation] a served_summary/1 success
+                # is already a plain dict (no .to_dict()); an Artifact/Refusal
+                # is not. augment_evidence_answer_dict is additive-only either
+                # way (a no-op on a shape it does not recognize).
+                result_dict = result.to_dict() if hasattr(result, "to_dict") else result
+                self._write_json(200, augment_evidence_answer_dict(result_dict))
                 return
 
             if path == "evidence/deliver":

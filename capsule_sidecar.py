@@ -75,7 +75,7 @@ import scitt_cose
 
 from advertisement import Advertisement, compute_meter, reconcile_advertised_vs_served
 from checkpointing import CheckpointState, Ed25519Signer, JsonlLogSource, load_checkpoint_config
-from join_card import ModelRef, build_card, latest_card, seal_card
+from join_card import ModelRef, build_card, latest_card, nostr_pubkey_principal_ref, seal_card
 from ledger_store_backend import import_flat_ledger_once, open_ledger_store, read_all_capsules
 from mac_hardware_inventory import capture_mac_hardware_inventory
 from model_identity import load_manifest, model_package_digest
@@ -162,6 +162,20 @@ LIFECYCLE_ROLE_SERVED = "served"
 _LIFECYCLE_ROLE_BY_SIDECAR_ROLE = {
     ROLE_REQUESTER: LIFECYCLE_ROLE_REQUESTED,
     ROLE_PROVIDER: LIFECYCLE_ROLE_SERVED,
+}
+
+# [mesh-fabric-vocab-alignment] epistemic_type -- the evidence fabric's
+# shared record-header vocabulary convention: a provider
+# half is this node's own claim about what it served (`producer_claim`); a
+# requester half is this node's own observation of what it received
+# (`observed_event`). Keyed off the SAME ROLE_PROVIDER/ROLE_REQUESTER axis
+# this sidecar's CLI role already uses -- never re-derived from the CPB #70
+# requested/served vocabulary above, which is a different (mesh-local) axis.
+EPISTEMIC_TYPE_PRODUCER_CLAIM = "producer_claim"
+EPISTEMIC_TYPE_OBSERVED_EVENT = "observed_event"
+_EPISTEMIC_TYPE_BY_SIDECAR_ROLE = {
+    ROLE_REQUESTER: EPISTEMIC_TYPE_OBSERVED_EVENT,
+    ROLE_PROVIDER: EPISTEMIC_TYPE_PRODUCER_CLAIM,
 }
 # The vantage point this sidecar observes at, per CPB #70's role/
 # observation_point consistency invariant (client_egress <-> requested;
@@ -678,6 +692,15 @@ class NodeState:
     #: working across restarts without depending on the sidecar staying up.
     disclosure_ttl_seconds: float = DEFAULT_DISCLOSURE_TTL_SECONDS
     disclosure_max_bytes: int | None = None
+    #: [mesh-fabric-vocab-alignment] this node's Nostr discovery pubkey (hex,
+    #: NIP-01 x-only), when known -- `join_card.Card.principal_ref`'s
+    #: `nostr-pubkey` host-principal profile binding statement is populated
+    #: from this. `None` by default: this sidecar has no read access to the
+    #: mesh host's real Nostr identity (same HONEST GAP `join_card.py`'s
+    #: `announcement_digest` note documents) -- absent, never fabricated,
+    #: until a caller that actually holds the key (e.g. `--nostr-pubkey`,
+    #: or a future host-wiring hookup) supplies it.
+    nostr_pubkey_hex: str | None = None
 
     def __post_init__(self) -> None:
         # [mesh-provider-no-body-persistence] Structural invariant, checked at
@@ -1144,6 +1167,11 @@ def build_capsule(
         "agent_input_digest": request_digest,
         "agent_output_digest": response_digest,
         "runtime": f"{state.runtime_digest}:{state.runtime_label}",
+        # [mesh-fabric-vocab-alignment] additive record-header field, a
+        # top-level sibling of x-mesh-poc-v1 (never nested inside it --
+        # epistemic_type is fabric vocabulary, not a PoC extension). See
+        # _EPISTEMIC_TYPE_BY_SIDECAR_ROLE above.
+        "epistemic_type": _EPISTEMIC_TYPE_BY_SIDECAR_ROLE[state.role],
         # Namespaced, PoC-only extension. NOT a registered spec field --
         # riding inside compute_attestation because that block is explicitly
         # documented as a free-form, best-effort dict (contracts.py
@@ -1433,6 +1461,9 @@ def seal_join_card(state: NodeState) -> str:
         measurement_rung=None,
         announcement_digest=state.advertisement.digest() if state.advertisement else None,
         supersedes=prior_card_digest,
+        principal_ref=(
+            nostr_pubkey_principal_ref(state.nostr_pubkey_hex) if state.nostr_pubkey_hex else None
+        ),
     )
     capsule = seal_card(
         card,
@@ -2279,6 +2310,7 @@ def default_state(
     disclose_preimage: bool = False,
     disclosure_ttl_seconds: float = DEFAULT_DISCLOSURE_TTL_SECONDS,
     disclosure_max_bytes: int | None = None,
+    nostr_pubkey_hex: str | None = None,
 ) -> NodeState:
     if role not in ROLES:
         raise ValueError(f"role must be one of {ROLES}, got {role!r}")
@@ -2303,6 +2335,7 @@ def default_state(
         disclose_preimage=disclose_preimage,
         disclosure_ttl_seconds=disclosure_ttl_seconds,
         disclosure_max_bytes=disclosure_max_bytes,
+        nostr_pubkey_hex=nostr_pubkey_hex,
     )
 
 
@@ -2446,6 +2479,15 @@ def main(argv: list[str] | None = None) -> int:
         "cheap first-serve validity re-check. Owner identity is self-asserted -- "
         "see node_ownership.IDENTITY_LIMITATION_CAVEAT.",
     )
+    parser.add_argument(
+        "--nostr-pubkey",
+        help="[mesh-fabric-vocab-alignment] this node's Nostr discovery pubkey (hex, NIP-01 x-only), "
+        "e.g. the SAME key mesh-llm signs its Kind-31990 listing with. When given, the join card's "
+        "principal_ref binds this node's Ed25519 ledger key to this Nostr key under the nostr-pubkey "
+        "host-principal profile. Omit to leave principal_ref "
+        "ABSENT (this sidecar has no other way to learn the host's real Nostr identity -- never "
+        "fabricated; see join_card.py's HONEST GAP note).",
+    )
     args = parser.parse_args(argv)
 
     # [mesh-provider-no-body-persistence] --disclose is requester-only. Catch
@@ -2496,6 +2538,7 @@ def main(argv: list[str] | None = None) -> int:
         disclose_preimage=args.disclose_preimage,
         disclosure_ttl_seconds=args.disclosure_ttl,
         disclosure_max_bytes=args.disclosure_max_bytes,
+        nostr_pubkey_hex=args.nostr_pubkey,
     )
 
     # [mesh-provider-no-body-persistence] One prune pass at startup (covers a

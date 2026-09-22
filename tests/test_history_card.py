@@ -438,6 +438,9 @@ def test_multi_checkpoint_cadence_seals_and_round_trip_verifies(tmp_path, fake_w
     assert cap["action_type"] == "fyi"
     assert isinstance(cap["capsule_id"], str) and len(cap["capsule_id"]) == 64
     assert verify_capsule(cap).ok
+    # [mesh-fabric-vocab-alignment] additive record-header field: a history
+    # card is a derived aggregate over this node's own checkpoint chain.
+    assert cap["model_attestation"]["compute_attestation"]["epistemic_type"] == "derived_metric"
 
 
 # --------------------------------------------------------------------------- #
