@@ -24,7 +24,13 @@
 //!   the REPORTDATA binding, the DCAP cert-chain + signature path, and an
 //!   optional Intel Trust Authority token path.
 //! - [`anchor`] Optional SCITT Transparency Service client
-//!   (`capsule-anchor`'s `/v1/digest` + `/v1/inclusion/{id}`).
+//!   (`capsule-anchor`'s `/v1/digest` + `/v1/inclusion/{id}` +
+//!   `/checkpoints`).
+//! - [`checkpoint`] Layer 1-2 checkpointing over this crate's own ledger:
+//!   an MMR (via the `cll` crate) over `capsule_id` leaves, a durable
+//!   file-backed node store, periodic signed checkpoints, and opt-in
+//!   witness registration -- the Rust re-expression of
+//!   `checkpointing.py`'s `CheckpointState`.
 //! - [`verify`] Offline (no-network) verification composing capsule_id
 //!   recomputation, COSE signature verification, and chain-parent
 //!   membership.
@@ -34,6 +40,7 @@
 
 pub mod anchor;
 pub mod capsule;
+pub mod checkpoint;
 pub mod cose;
 pub mod jcs;
 pub mod keys;

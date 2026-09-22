@@ -12,11 +12,43 @@
 //! the right model: callers decide when/whether to anchor, and a failed
 //! anchor call is never allowed to invalidate an already-sealed, already-
 //! ledgered capsule.
+//!
+//! [`AnchorClient::post_checkpoint_cose`] adds the checkpoint-root sibling of
+//! `post_digest`'s single-capsule-digest anchoring: `POST /checkpoints`,
+//! COSE-only (single-host ruling, 2026-08-27), mirroring
+//! `cll.checkpoint.emit.register_checkpoint`'s wire contract byte-for-byte
+//! (same route, same `Content-Type: application/cll-checkpoint+cbor` body,
+//! same `{entry_hash, receipt_b64, leaf_index, tree_size}` response shape).
+//! As of `[mesh-plugin-checkpoint-cadence]` this is the route the plugin's
+//! checkpoint cadence task (`capsule_producer::checkpoint`) anchors
+//! through; `post_digest`/`/v1/digest` has no call site anywhere in this
+//! workspace (grep `AnchorClient` under `plugins/*/src`) — kept for a
+//! future single-capsule-digest use, not wired to anything today.
 
 use serde::Deserialize;
 use std::time::Duration;
 
 pub const DEFAULT_ANCHOR_BASE: &str = "https://anchor.agentactioncapsule.org";
+
+/// The default *semantic* witness URL a checkpoint's `WitnessRecord.ts_url`
+/// records — same value `cll::witness::DEFAULT_TS_URL` uses. Matches
+/// `cll.checkpoint.emit._PENDING_CNAME_TARGETS`: `witness.agentactioncapsule.org`
+/// has no DNS record of its own yet, so a request to exactly this URL is
+/// dispatched to [`DEFAULT_ANCHOR_BASE`] directly (same deployment, already
+/// answers `/checkpoints`); any other, explicitly-chosen `ts_url` is never
+/// rewritten. Remove this indirection once the alias domain is live.
+pub const DEFAULT_WITNESS_URL: &str = "https://witness.agentactioncapsule.org";
+
+/// Where an HTTP request registering `ts_url` should actually be sent —
+/// `DEFAULT_ANCHOR_BASE` for the default semantic URL, `ts_url` itself
+/// otherwise. See [`DEFAULT_WITNESS_URL`].
+pub fn dispatch_base_for(ts_url: &str) -> &str {
+    if ts_url == DEFAULT_WITNESS_URL {
+        DEFAULT_ANCHOR_BASE
+    } else {
+        ts_url
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum AnchorError {
@@ -119,6 +151,34 @@ impl AnchorClient {
         }
     }
 
+    /// `POST /checkpoints {COSE_Sign1 bytes}` -- registers a checkpoint's
+    /// COSE-wire statement (`cll::checkpoint::checkpoint_to_cose`'s output)
+    /// with the Transparency Service. COSE-only: never a plain JSON
+    /// `CheckpointRecord` body (single-host ruling, 2026-08-27) — never the
+    /// `/v1/digest` route `post_digest` uses for a single capsule digest.
+    pub fn post_checkpoint_cose(
+        &self,
+        checkpoint_cose: &[u8],
+    ) -> Result<CheckpointWitnessResponse, AnchorError> {
+        let url = format!("{}/checkpoints", self.base_url.trim_end_matches('/'));
+        match self
+            .agent
+            .post(&url)
+            .set("Content-Type", cll::checkpoint::CLL_CHECKPOINT_CONTENT_TYPE)
+            .set("Accept", "application/json")
+            .send_bytes(checkpoint_cose)
+        {
+            Ok(resp) => resp
+                .into_json()
+                .map_err(|e| AnchorError::Decode(e.to_string())),
+            Err(ureq::Error::Status(status, resp)) => Err(AnchorError::Status {
+                status,
+                body: resp.into_string().unwrap_or_default(),
+            }),
+            Err(e) => Err(AnchorError::Transport(e.to_string())),
+        }
+    }
+
     /// `GET /anchor/authority-pubkey` -- the raw 32-byte Ed25519 authority
     /// public key (hex) + its `key_id`, for out-of-band pinning and for
     /// verifying receipts offline via `scitt_cose.verify_receipt`.
@@ -144,6 +204,18 @@ impl AnchorClient {
 pub struct AuthorityPubkey {
     pub pubkey_hex: String,
     pub key_id: String,
+}
+
+/// Response shape from `POST /checkpoints` -- matches
+/// `cll.checkpoint.emit.register_checkpoint`'s parse of the same route
+/// field-for-field (`ts_url` is never part of the response; the caller
+/// already knows which URL it dispatched to).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CheckpointWitnessResponse {
+    pub entry_hash: String,
+    pub receipt_b64: String,
+    pub leaf_index: i64,
+    pub tree_size: i64,
 }
 
 impl Default for AnchorClient {

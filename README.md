@@ -180,7 +180,11 @@ current demo capsules.
   canonicalization, COSE_Sign1 (`alg=EdDSA`), per-node chaining, a restart-safe
   durable ledger (byte-identical on-disk shape to the Python path, so either
   side's tooling reads the other's ledger), key persistence + rotation, an
-  optional Transparency-Service anchor client, and offline verification.
+  optional Transparency-Service anchor client, and offline verification. Also
+  carries an opt-in checkpoint cadence over that same ledger
+  (`checkpoint.rs` + `admission-policy`'s `checkpoint_cadence.rs`) — the
+  native-Rust alternative to running `checkpoint_daemon.py` against the
+  plugin's ledger dir; see `docs/CHECKPOINT-BY-DEFAULT.md`'s "Path 1" section.
 
 Both crates carry real, adversarial `#[ignore]`d end-to-end tests that drive a
 capsule through an **actual `mesh-llm-host-runtime` process**, offline-verify it,
@@ -968,7 +972,9 @@ docs/TWIN-REFEREE-SELECTION.md  independence-first select_twin/select_referee: t
 
 # Path 1 — native Rust plugin (primary)
 plugins/admission-policy/       mesh-llm-plugin: Envelope-wire admission + lifecycle-hook capsule emission
+plugins/admission-policy/src/checkpoint_cadence.rs   opt-in in-process checkpoint cadence, see docs/CHECKPOINT-BY-DEFAULT.md
 plugins/capsule-producer/       Rust AAC producer: JCS + COSE_Sign1 + chain + ledger + anchor + verify
+plugins/capsule-producer/src/checkpoint.rs           MMR + signed checkpoint + opt-in witness over the plugin's own ledger (cll crate)
 
 # Path 2 — Python sidecar (alternative)
 capsule_sidecar.py              reverse-proxy observer: proxy + emit + sign + chain (+ SSE + bilateral eval)

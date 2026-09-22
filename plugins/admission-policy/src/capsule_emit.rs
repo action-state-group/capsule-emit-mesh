@@ -450,6 +450,15 @@ impl CapsuleState {
         self.keys.public_key_pem()
     }
 
+    /// This node's own already-loaded signing key -- for a caller (the
+    /// checkpoint cadence task) that needs to sign something ELSE with the
+    /// SAME node identity that signs capsules, through the `&dyn
+    /// CheckpointSigner` trait indirection (`ed25519_dalek::SigningKey`
+    /// implements it), never a second, purpose-minted key.
+    pub fn signing_key(&self) -> &ed25519_dalek::SigningKey {
+        &self.keys.signing_key
+    }
+
     pub fn chain_head(&self) -> Option<String> {
         self.ledger
             .lock()

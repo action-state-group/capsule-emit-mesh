@@ -11,7 +11,7 @@ name = "capsule_producer"
 path = "src/lib.rs"
 
 [dependencies]
-cll = { git = "https://github.com/action-state-group/checkpointed-local-log", tag = "rust-cll-v0.1.0" }
+cll = { git = "https://github.com/action-state-group/checkpointed-local-log", tag = "rust-cll-v0.2.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 coset = "0.4"

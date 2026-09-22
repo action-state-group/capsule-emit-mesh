@@ -130,6 +130,36 @@ the default neutral witness is
 (`capsule_emit.checkpoint.DEFAULT_TS_URL`). Registration is **opt-in, always**:
 no `--witness`/`--ts-url` means self-checkpointed, no network.
 
+## Path 1 (native Rust plugin) nodes: the cadence lives in-process
+
+`checkpoint_daemon.py` above checkpoints whichever `ledger_dir` you point it
+at — including the Rust plugin's own `<data-dir>/ledger`, via
+`capsule_sidecar.py --plugin-checkpoint-config --plugin-ledger-dir`, or a
+standalone `checkpoint_daemon.py --ledger-dir <plugin-data-dir>/ledger`
+invocation. `[mesh-plugin-checkpoint-cadence]` adds a second, in-process
+option for a Path 1 node: `plugins/admission-policy`'s own tokio background
+task (`checkpoint_cadence.rs`, over `plugins/capsule-producer`'s
+`checkpoint.rs` — the same MMR/COSE/cadence logic re-expressed in Rust
+against the `cll` crate), so a Path 1 node needs no separate Python daemon
+process at all — "mesh-llm + one plugin", not "mesh-llm + one plugin + a
+Python checkpointer to also supervise". See
+`docs/DESIGN-fold-sidecar-into-plugin.md` for the fold's full design and
+invariance guarantees.
+
+**Opt-in, node-by-node, mutually exclusive with `checkpoint_daemon.py` on the
+same `ledger_dir`.** Set `ADMISSION_POLICY_CHECKPOINT_CADENCE=on` on the
+plugin process to flip a node onto the in-process cadence task;
+`ADMISSION_POLICY_CHECKPOINT_CADENCE_SECONDS` /
+`_CADENCE_ENTRIES` / `_WITNESS_URLS` override the defaults (300s / 100
+entries / no witnesses — same defaults `checkpoint_daemon.py` uses).
+**Never run both against the same `ledger_dir` at once** — each appends to
+the same `checkpoints.jsonl` and neither knows about the other, so a
+double-run races the chain. Until a node sets the flag,
+`checkpoint_daemon.py` keeps checkpointing that node's plugin ledger exactly
+as it does today; once every Path 1 node has cut over, `checkpoint_daemon.py`
+retires from the Path 1 bring-up story (Path 2 — the Python sidecar — keeps
+using it regardless, since it has no Rust process to move the cadence into).
+
 ## Where the pieces live
 
 | Piece | File |
@@ -141,3 +171,4 @@ no `--witness`/`--ts-url` means self-checkpointed, no network.
 | Sidecar hooks (per-capsule MMR fold) | `capsule_sidecar.py` (`--checkpoint-config`, `--plugin-checkpoint-config`, `--plugin-ledger-dir`) |
 | Config schema | `checkpoint.example.toml` |
 | Tests | `tests/test_checkpoint_daemon.py`, `tests/test_checkpointing.py` |
+| **Path 1 native Rust cadence (opt-in, see above)** | `plugins/capsule-producer/src/checkpoint.rs` (`CheckpointState`), `plugins/admission-policy/src/checkpoint_cadence.rs` (the tokio task + `ADMISSION_POLICY_CHECKPOINT_CADENCE*` env vars) |
