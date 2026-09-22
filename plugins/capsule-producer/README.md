@@ -7,6 +7,10 @@ allow/deny; this crate ports capsule production itself into Rust — Milestone
 chaining, a durable local ledger, key persistence + rotation, an optional
 anchor client, and offline verification.
 
+## Build
+
+`cll` (the Rust CLL crate, `checkpointed-local-log`) is pinned by git tag; bump the tag deliberately, never `branch = main`.
+
 ## Scope
 
 Produce a chained, ledgered, optionally-anchored Agent Action Capsule (AAC)
