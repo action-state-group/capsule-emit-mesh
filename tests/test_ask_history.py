@@ -148,7 +148,7 @@ class TestEndToEnd:
         payload = ah.post_evidence_request(base_url, req)
         assert "reason" in payload
         rendered = ah.render_refusal(payload)
-        assert "REFUSAL reason=no_such_record" in rendered
+        assert "REFUSAL reason=no_such_subject" in rendered
         assert "signature verifies offline: True" in rendered
 
     def test_tamper_check_detects_a_flipped_byte(self, peer):
@@ -337,10 +337,10 @@ class TestFetchAllPages:
 
     def test_refusal_never_pages(self):
         def post(request_map: dict) -> dict:
-            return {"request_digest": "d", "reason": "no_such_record", "issued_at": "t", "key_id": "k", "sig": "s"}
+            return {"request_digest": "d", "reason": "no_such_subject", "issued_at": "t", "key_id": "k", "sig": "s"}
 
         merged = ah.fetch_all_pages(post, {"subject": {"kind": "record", "capsule_id": "ff"}, "coverage": {}})
-        assert merged["reason"] == "no_such_record"
+        assert merged["reason"] == "no_such_subject"
 
     def test_max_pages_guards_against_a_runaway_token(self):
         def post(request_map: dict) -> dict:

@@ -37,16 +37,27 @@ never inside ``handle_evidence_request``'s own return value (so every
 existing caller of this module that reads an ``Artifact``/``Refusal``
 object directly, rather than its wire JSON, is unaffected). The mapping:
 ``Artifact`` (an answer WAS satisfied) -> ``status: SATISFIED``;
-``reason=no_such_record`` -> ``NOT_FOUND``; ``reason=coverage_unsatisfiable``
+``reason=no_such_subject`` -> ``NOT_FOUND``; ``reason=coverage_unsatisfiable``
 -> ``NOT_COMMITTED``; ``reason=policy_decline`` (the delivery door's own
 reason, see ``adjudication_delivery.py``) -> ``WITHHELD``;
 ``reason=request_malformed`` stays a bare refusal reason -- no additive
 status, since a request this door could not even parse was never resolved
 one way or the other.
+
+``no_such_subject``/``coverage_unsatisfiable`` are ``capsule_emit
+.evidence_request``'s own registry-aligned tokens (draft-mih-agent
+-evidence-request-00) -- imported below rather than re-typed as literals,
+so a future rename over there cannot silently desync this mapping the way
+the pre-alignment ``no_such_record`` spelling did here.
 """
 from __future__ import annotations
 
 from typing import Any
+
+from capsule_emit.evidence_request import (
+    REASON_COVERAGE_UNSATISFIABLE,
+    REASON_NO_SUCH_SUBJECT,
+)
 
 #: The one derivation token this module dispatches on directly. Any other
 #: value (including ``None``) falls through to the generic bundle-based
@@ -63,8 +74,8 @@ STATUS_NOT_COMMITTED = "NOT_COMMITTED"
 #: Refusal `reason` -> additive `status`. `request_malformed` is
 #: deliberately absent -- see the module docstring.
 _STATUS_BY_REFUSAL_REASON: dict[str, str] = {
-    "no_such_record": STATUS_NOT_FOUND,
-    "coverage_unsatisfiable": STATUS_NOT_COMMITTED,
+    REASON_NO_SUCH_SUBJECT: STATUS_NOT_FOUND,
+    REASON_COVERAGE_UNSATISFIABLE: STATUS_NOT_COMMITTED,
     "policy_decline": STATUS_WITHHELD,
 }
 

@@ -152,11 +152,11 @@ class TestSelfCheckpointedLedgerOverHTTP:
         assert len(body["bundles"]) == 1
         assert body["bundles"][0]["capsule_id"] == cids[0]
 
-    def test_unknown_capsule_id_refuses_no_such_record_never_500(self, running_server):
+    def test_unknown_capsule_id_refuses_no_such_subject_never_500(self, running_server):
         server, _state = running_server
         status, body = server.post("/evidence-request", {"subject": {"kind": "record", "capsule_id": "ff" * 32}, "coverage": {}})
         assert status == 200  # a signed refusal, not an HTTP-level error
-        assert body["reason"] == "no_such_record"
+        assert body["reason"] == "no_such_subject"
         assert "sig" in body and "key_id" in body
 
     def test_malformed_body_refuses_request_malformed(self, running_server):
@@ -240,7 +240,7 @@ class TestServerWithNoLedgerAtAll:
         try:
             status, body = server.post("/evidence-request", {"subject": {"kind": "record", "capsule_id": "ab" * 32}, "coverage": {}})
             assert status == 200
-            assert body["reason"] == "no_such_record"
+            assert body["reason"] == "no_such_subject"
         finally:
             server.close()
 
@@ -329,4 +329,4 @@ class TestPluginLedgerBridge:
         finally:
             server.close()
         assert status == 200
-        assert body["reason"] in ("no_such_record", "coverage_unsatisfiable")
+        assert body["reason"] in ("no_such_subject", "coverage_unsatisfiable")

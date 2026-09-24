@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from moderation_decision import DECISION_REMOVE, ModerationDecision, PolicyRef, SubjectRef, seal_moderation_decision
 from moderation_evidence_door import (
-    REASON_NO_SUCH_RECORD,
+    REASON_NO_SUCH_SUBJECT,
     REASON_POLICY_DECLINE,
     REASON_REQUEST_MALFORMED,
     SUBJECT_KIND_MESSAGE_DIGEST,
@@ -131,7 +131,7 @@ def test_no_decision_for_digest_is_not_found() -> None:
     answer = answer_redress_request([], req, signer=FakeSigner(), request_digest="r4", issued_at="2026-09-22T00:00:00Z")
     wire = answer.to_wire()
     assert wire["status"] == "NOT_FOUND"
-    assert wire["reason"] == REASON_NO_SUCH_RECORD
+    assert wire["reason"] == REASON_NO_SUCH_SUBJECT
 
 
 def test_decision_with_no_bound_principal_never_satisfies() -> None:
