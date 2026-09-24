@@ -18,10 +18,6 @@ Composes verbs that already exist; re-derives none of their evidence:
     instead of the old free-text "Not yet proven: who asked ..." line
     (``view["verdict"]`` itself is unchanged; ``worst_state`` still folds
     all three marks).
-  - the rung grades (freshness / cross-party / runtime-binding) are
-    ``capsule_accountability_tab``'s own ``freshness_grade`` /
-    ``cross_party_grade`` / ``measurement_class_grade``, reused byte-for-
-    byte.
   - the requester/provider role label is ``capsule_mesh_view.label_role``;
     the exchange correlator is ``serving_provenance()["exchange_id"]``
     ([b6a-requester-seal] / [mesh-b1-requestor-capsule-ledger]).
@@ -73,6 +69,11 @@ signature are RECOMPUTED at render time via
 ``capsule_mesh_view.verify_results_for`` -- the same offline check the live
 tab runs (the JS ``mesh_verify.js`` recompute's Python-equivalent
 implementation) -- never asserted from a passed-through field.
+
+[ledger-T9-retire-rung-vocab]: this view no longer computes or exposes the
+freshness/cross-party/runtime-binding rung ladder (``rung``/
+``unilateral_fallback`` were never rendered here, only carried in the public
+JSON payload) -- ``properties`` above is this pane's one graded surface.
 """
 from __future__ import annotations
 
@@ -89,9 +90,6 @@ from capsule_accountability_tab import (
     STATE_FAILED,
     STATE_PRESENT_UNVERIFIED,
     STATE_VERIFIED,
-    cross_party_grade,
-    freshness_grade,
-    measurement_class_grade,
 )
 from capsule_mesh_view import _poc_block, label_counterparty, label_role, verify_results_for
 from capsule_mesh_viewer import build_verdict, friendly_model_name, serving_provenance
@@ -476,7 +474,6 @@ def build_exchange_view(
     half_a, half_b = (record, counterpart) if this_role == "requested" else (counterpart, record)
 
     sp = serving_provenance(record)
-    poc = _poc_block(record)
     verdict = build_verdict(
         sp,
         verify_ok=verify_ok,
@@ -517,11 +514,6 @@ def build_exchange_view(
         },
         "twin_adjudication": twin_adjudication_placeholder(),
         "witness_receipt_reverify": witness_receipt_reverify_placeholder(),
-        "rungs": {
-            "freshness": freshness_grade(poc.get("client_nonce_source")),
-            "cross_party": cross_party_grade(poc, capsule_id=record.get("capsule_id")),
-            "runtime_binding": measurement_class_grade(poc),
-        },
         # [mesh-panes-map-chips]: the nine-property assurance map + the
         # Issues-filter signal it drives (any FAIL, or -- once Pane C grows a
         # promise line -- a broken/changed_without_saying promise; Pane C has
@@ -558,37 +550,26 @@ FILTER_ISSUES = "issues"
 #: list view). `pending` is intentionally rank 0: an upstream branch not yet
 #: wired into this view is a view limitation, not a failed check, and must
 #: never force a red/amber header on its own.
-#: Rank tiers mirror this codebase's own established tone conventions
-#: (capsule_accountability_tab.py's client-side TONE map): unilateral_fallback
-#: is neutral/absent-tier here, same as everywhere else it renders -- it is
-#: the honest default absent cross-party evidence produces, not a warning.
 _STATE_RANK = {
     STATE_FAILED: 3,
     "bad": 3,
     STATE_PRESENT_UNVERIFIED: 2,
     "warn": 2,
-    "acknowledged_receipt": 2,
-    "self_measured": 2,
-    "os_measured": 2,
     STATE_ABSENT: 1,
-    "unilateral_fallback": 1,
     PENDING: 0,
     STATE_VERIFIED: 0,
     "ok": 0,
-    "full_bilateral": 0,
-    "tee_measured": 0,
 }
 
 
 def worst_state(view: dict[str, Any]) -> str:
     """The row header state = the worst line among this exchange's checks
     ([mesh-exchange-card-mismatch-bug]'s rule): any real failure (a digest
-    mismatch, a failed verdict line, a failed rung) forces
-    ``STATE_FAILED`` regardless of what any other line says; any
-    unverified/warn-shaped line (with nothing worse) forces
-    ``STATE_PRESENT_UNVERIFIED``; only when every line is either verified/ok
-    or honestly absent/pending does the header read ``STATE_VERIFIED``.
-    Never rounds up.
+    mismatch or a failed verdict line) forces ``STATE_FAILED`` regardless of
+    what any other line says; any unverified/warn-shaped line (with nothing
+    worse) forces ``STATE_PRESENT_UNVERIFIED``; only when every line is
+    either verified/ok or honestly absent/pending does the header read
+    ``STATE_VERIFIED``. Never rounds up.
 
     ``build_verdict``'s line 2 (the witness line) always reads ``warn`` today
     because this view's witness re-verify is still the
@@ -605,8 +586,6 @@ def worst_state(view: dict[str, Any]) -> str:
         if index == 1 and witness_pending and line["mark"] != "bad":
             continue
         candidates.append(line["mark"])
-    for key, rung in view["rungs"].items():
-        candidates.append(rung.get("rung") if key == "cross_party" else rung.get("state"))
     worst = max((_STATE_RANK.get(c, 1) for c in candidates), default=0)
     if worst >= 3:
         return STATE_FAILED
@@ -774,15 +753,9 @@ def build_exchange_list_payload(
 
 _TONE_BY_STATE = {
     STATE_ABSENT: "neutral",
-    "unilateral_fallback": "neutral",
     STATE_PRESENT_UNVERIFIED: "warn",
-    "acknowledged_receipt": "warn",
-    "self_measured": "warn",
-    "os_measured": "warn",
     PENDING: "warn",
     STATE_VERIFIED: "good",
-    "full_bilateral": "good",
-    "tee_measured": "good",
     STATE_FAILED: "bad",
 }
 
