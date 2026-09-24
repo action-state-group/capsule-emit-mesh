@@ -25,6 +25,42 @@ model (step 1) alongside it.
 > 4. [**TRUST-MODEL.md**](docs/TRUST-MODEL.md) — the full threat model, assurance
 >    classes, and per-role questions (§2.2–2.5).
 
+## Install
+
+The fastest path onto a Mesh-LLM node — one line, once you have `mesh-llm` itself:
+
+```bash
+mesh-llm plugins install action-state-group/capsule-emit-mesh@0.1.0
+```
+
+This installs the native Rust plugin (**Path 1** below): it registers as an
+`inference` provider, and every exchange it admits gets sealed into a signed,
+hash-chained Agent Action Capsule the moment the node serves it — no other
+setup. Check it's running with `mesh-llm plugins list`; the sealed ledger
+lands at `<plugin data dir>/ledger/capsules.jsonl` (`ADMISSION_POLICY_DATA_DIR`
+to change it — see "Path 1" below).
+
+**What leaves the machine by default: nothing.** Capsules are sealed and
+verified locally; witnessing to a transparency service is opt-in
+(`CAPSULE_ANCHOR=true`, unset/`false` by default) — see
+[`docs/CHECKPOINT-BY-DEFAULT.md`](docs/CHECKPOINT-BY-DEFAULT.md). Nothing is
+sent anywhere unless you turn that on.
+
+**To turn the plugin off**, set `enabled = false` on its `[[plugin]]` entry in
+`mesh-llm`'s config and restart the node:
+
+```toml
+[[plugin]]
+name = "capsule-emit-mesh"
+enabled = false
+```
+
+The release workflow builds macOS/Apple Silicon (`aarch64-apple-darwin`) and
+Linux (`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`) assets; see
+[`.github/workflows/release.yml`](.github/workflows/release.yml) for the build
+matrix. The Python sidecar path below (**Path 2**) has no native binary and
+stays a `pip install` regardless of platform.
+
 Two integration paths ship here (see below): a **native Rust
 `admission-policy-plugin` + `capsule-producer`** on the serving path (primary —
 it seals the host's own `openai.exchange.v1` lifecycle event), and a **Python

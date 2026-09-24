@@ -76,7 +76,7 @@ impl Harness {
             &mut self.stream,
             &proto::Envelope {
                 protocol_version: PROTOCOL_VERSION,
-                plugin_id: "admission-policy".to_string(),
+                plugin_id: "capsule-emit-mesh".to_string(),
                 request_id,
                 payload: Some(payload),
             },
@@ -171,7 +171,7 @@ async fn initialize_declares_real_inference_provider_endpoint() {
     let mut harness = Harness::spawn(&[]).await;
     let response = harness.initialize().await;
 
-    assert_eq!(response.plugin_id, "admission-policy");
+    assert_eq!(response.plugin_id, "capsule-emit-mesh");
     let manifest = response.manifest.expect("plugin declares a manifest");
     let endpoint = inference_endpoint(&manifest);
     assert!(

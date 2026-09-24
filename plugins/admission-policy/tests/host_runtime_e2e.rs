@@ -82,7 +82,7 @@ impl RealHost {
             r#"version = 1
 
 [[plugin]]
-name = "admission-policy"
+name = "capsule-emit-mesh"
 enabled = true
 command = "{PLUGIN_BIN}"
 args = []
@@ -250,7 +250,7 @@ impl RealHost {
             r#"version = 1
 
 [[plugin]]
-name = "admission-policy"
+name = "capsule-emit-mesh"
 enabled = true
 command = "{PLUGIN_BIN}"
 args = []

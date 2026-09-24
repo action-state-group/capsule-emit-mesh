@@ -265,7 +265,7 @@ const CAPSULE_CONTENT_TYPE: &str =
 /// domain fix), beside the ledger at `<data_dir>/learned_self_node_id.json`
 /// (same restart-safe, best-effort convention as `SequenceCounterStore`).
 ///
-/// `PLUGIN_ID` (`"admission-policy"`) is a compile-time plugin-TYPE label,
+/// `PLUGIN_ID` (`"capsule-emit-mesh"`) is a compile-time plugin-TYPE label,
 /// not a mesh node id, and this plugin has no other source for its own real
 /// mesh identity -- the host never sends one directly. But the host DOES
 /// tell us, on every locally-served terminal event

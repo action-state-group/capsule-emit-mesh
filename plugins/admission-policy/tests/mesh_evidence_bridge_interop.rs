@@ -88,7 +88,7 @@ impl Harness {
             &mut self.stream,
             &proto::Envelope {
                 protocol_version: PROTOCOL_VERSION,
-                plugin_id: "admission-policy".to_string(),
+                plugin_id: "capsule-emit-mesh".to_string(),
                 request_id,
                 payload: Some(payload),
             },
@@ -198,7 +198,7 @@ impl Harness {
             &mut self.stream,
             &proto::Envelope {
                 protocol_version: PROTOCOL_VERSION,
-                plugin_id: "admission-policy".to_string(),
+                plugin_id: "capsule-emit-mesh".to_string(),
                 request_id: mesh_stream_envelope.request_id,
                 payload: Some(Payload::OpenMeshStreamResponse(mesh_stream_response)),
             },

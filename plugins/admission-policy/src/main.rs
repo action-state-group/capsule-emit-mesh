@@ -37,7 +37,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::TcpListener;
 
-const PLUGIN_ID: &str = "admission-policy";
+const PLUGIN_ID: &str = "capsule-emit-mesh";
 const PLUGIN_VERSION: &str = "0.1.0";
 const ENDPOINT_ID: &str = "admission-policy-openai";
 
