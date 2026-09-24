@@ -258,3 +258,53 @@ def test_pane_c_drilldown_never_relies_on_the_page_cap(node_state):
 
     assert payload["found"] is True
     assert payload["view"]["capsule_id"] == last["capsule_id"]
+
+
+# ---------------------------------------------------------------------------
+# Retired vocabulary gate [ledger-T9-retire-rung-vocab]
+# ---------------------------------------------------------------------------
+
+#: `rung`/`rungs`/`unilateral_fallback` -- the freshness/cross-party/
+#: runtime-binding ladder Pane C used to carry unrendered in its public
+#: JSON (never shown in the HTML, but a real field/value a stranger reading
+#: the API could see). Pane A/B still carry this vocabulary for their own
+#: not-yet-migrated cells (`capsule_accountability_tab.py`/
+#: `peer_accountability_tab.py`) -- this gate is Pane C only, matching what
+#: this task actually retired.
+_RETIRED_PANE_C_VOCABULARY = ("rung", "unilateral_fallback")
+
+
+def _assert_no_retired_vocabulary(value: object, *, path: str = "$") -> None:
+    """Walk *value* recursively and fail on the first dict key or string
+    value containing a word from `_RETIRED_PANE_C_VOCABULARY` -- total and
+    recursive, same discipline as `self_accountability.assert_no_rating_fields`."""
+    if isinstance(value, dict):
+        for key, sub in value.items():
+            lowered_key = str(key).lower()
+            for word in _RETIRED_PANE_C_VOCABULARY:
+                assert word not in lowered_key, f"{path}.{key} carries retired vocabulary {word!r}"
+            _assert_no_retired_vocabulary(sub, path=f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _assert_no_retired_vocabulary(item, path=f"{path}[{index}]")
+    elif isinstance(value, str):
+        lowered = value.lower()
+        for word in _RETIRED_PANE_C_VOCABULARY:
+            assert word not in lowered, f"{path} carries retired vocabulary {word!r}: {value!r}"
+
+
+def test_pane_c_list_json_never_carries_retired_rung_vocabulary(node_state):
+    """Every seeded record here has no cross-party evidence -- exactly the
+    shape that used to grade `unilateral_fallback` -- so this fixture is a
+    real mutant catch, not a vacuous pass."""
+    _seed(node_state, 3)
+    payload = routes.build_pane_c_json(node_state)
+    _assert_no_retired_vocabulary(payload)
+
+
+def test_pane_c_drilldown_json_never_carries_retired_rung_vocabulary(node_state):
+    capsules = _seed(node_state, 3)
+    exchange_id = capsules[0]["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["serving_provenance"]["exchange_id"]
+    payload = routes.build_pane_c_json(node_state, exchange_id=exchange_id)
+    assert payload["found"] is True
+    _assert_no_retired_vocabulary(payload)
