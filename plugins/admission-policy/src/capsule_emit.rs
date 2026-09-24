@@ -614,6 +614,11 @@ impl CapsuleState {
                     // fabricated self-reference.
                     peer_capsule_id: None,
                     peer_capsule_id_provenance: None,
+                    // This path is admitted directly by this plugin's own
+                    // `/v1` handler -- there is no mesh terminal envelope to
+                    // read an ambient twin bracket off of, so this is never
+                    // twinned on this path.
+                    twin_bracket_id: None,
                 },
                 // This exchange was admitted and served by THIS plugin's own
                 // `/v1` handler -- unambiguously "served", not a guess: there
@@ -767,6 +772,13 @@ pub struct ObservedHostExchange<'a> {
     /// `peer_capsule_id` (`lifecycle_channel::capsule_id_provenance_wire_value`)
     /// -- `None` exactly when `peer_capsule_id` is `None`.
     pub peer_capsule_id_provenance: Option<&'a str>,
+    /// The id shared by BOTH halves of an ambient twin comparison, forwarded
+    /// verbatim off the terminal envelope's own `twin_bracket_id` -- this
+    /// plugin never mints or derives one, only relays what the host already
+    /// minted. `None` on every exchange the envelope reports as not twinned
+    /// (the overwhelming majority) -- the capsule then omits the field
+    /// entirely, never a fabricated bracket.
+    pub twin_bracket_id: Option<&'a str>,
 }
 
 impl CapsuleState {
@@ -810,8 +822,9 @@ impl CapsuleState {
             nonce,
             peer_capsule_id,
             peer_capsule_id_provenance,
+            twin_bracket_id,
         } = observed;
-        let (model, exchange_id, request_digest, response_digest, tool_calls_digest, reasoning_digest, usage, nonce, peer_capsule_id, peer_capsule_id_provenance) = (
+        let (model, exchange_id, request_digest, response_digest, tool_calls_digest, reasoning_digest, usage, nonce, peer_capsule_id, peer_capsule_id_provenance, twin_bracket_id) = (
             *model,
             *exchange_id,
             *request_digest,
@@ -822,6 +835,7 @@ impl CapsuleState {
             *nonce,
             *peer_capsule_id,
             *peer_capsule_id_provenance,
+            *twin_bracket_id,
         );
         let host = host_provenance.clone();
 
@@ -1022,6 +1036,10 @@ impl CapsuleState {
                     // peer_capsule_id` doc), never fabricated when absent.
                     peer_capsule_id: peer_capsule_id.map(str::to_string),
                     peer_capsule_id_provenance: peer_capsule_id_provenance.map(str::to_string),
+                    // Forwarded verbatim off the terminal envelope -- this
+                    // plugin never mints or derives one. `None` on every
+                    // exchange that wasn't ambiently twinned.
+                    twin_bracket_id: twin_bracket_id.map(str::to_string),
                 },
                 role,
                 observation_point,
@@ -1278,6 +1296,7 @@ mod tests {
             nonce: None,
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
+            twin_bracket_id: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1317,6 +1336,7 @@ mod tests {
             nonce: None,
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
+            twin_bracket_id: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1364,6 +1384,7 @@ mod tests {
             nonce: None,
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
+            twin_bracket_id: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1453,6 +1474,7 @@ mod tests {
             nonce: None,
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
+            twin_bracket_id: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1516,6 +1538,7 @@ mod tests {
             nonce: None,
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
+            twin_bracket_id: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -1525,6 +1548,147 @@ mod tests {
         // Fallback output digest is a real 64-hex digest of the terminal facts.
         assert_eq!(ca["agent_output_digest"].as_str().unwrap().len(), 64);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // =======================================================================
+    // twin_bracket_id -- forwarded verbatim off the terminal envelope, never
+    // minted here. [ledger-T11b-twin-bracket]
+    // =======================================================================
+
+    /// An observed host exchange whose terminal envelope carried a
+    /// `twin_bracket_id` seals a capsule that carries the SAME id verbatim
+    /// under `serving_provenance`. MUTANT: drop the forward (stop passing
+    /// `twin_bracket_id` through in `emit_for_observed_host_exchange`) and
+    /// this assertion goes red.
+    #[test]
+    fn observed_host_exchange_with_twin_bracket_id_seals_it_verbatim() {
+        let dir = std::env::temp_dir().join(format!("cap-twin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let observed = ObservedHostExchange {
+            model: "m",
+            exchange_id: Some("e"),
+            request_digest: None,
+            response_digest: None,
+            tool_calls_digest: None,
+            reasoning_digest: None,
+            usage: None,
+            host_provenance: HostProvenance::default(),
+            dispatch_path: DispatchPath::RawProxy,
+            nonce: None,
+            peer_capsule_id: None,
+            peer_capsule_id_provenance: None,
+            twin_bracket_id: Some("twin-abc123"),
+        };
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal");
+        let sp = &emitted.capsule["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]
+            ["serving_provenance"];
+        assert_eq!(sp["twin_bracket_id"], "twin-abc123");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Absence rule: when the terminal envelope carried no `twin_bracket_id`
+    /// (the overwhelming majority of exchanges), the sealed capsule omits
+    /// the field entirely -- never `null` -- so the row renders as an
+    /// ordinary row, never a half-bracket.
+    #[test]
+    fn observed_host_exchange_without_twin_bracket_id_omits_it() {
+        let dir = std::env::temp_dir().join(format!("cap-twin-abs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let observed = ObservedHostExchange {
+            model: "m",
+            exchange_id: Some("e"),
+            request_digest: None,
+            response_digest: None,
+            tool_calls_digest: None,
+            reasoning_digest: None,
+            usage: None,
+            host_provenance: HostProvenance::default(),
+            dispatch_path: DispatchPath::RawProxy,
+            nonce: None,
+            peer_capsule_id: None,
+            peer_capsule_id_provenance: None,
+            twin_bracket_id: None,
+        };
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal");
+        let sp = &emitted.capsule["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]
+            ["serving_provenance"];
+        assert!(
+            sp.get("twin_bracket_id").is_none(),
+            "an absent twin_bracket_id must be omitted, not null"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two rows of one real twin -- this node's own requester-side capsule
+    /// and a peer's served-side capsule (simulated here as two separate
+    /// `CapsuleState`s, mirroring the requester/served pairing test above) --
+    /// both forward the SAME host-minted `twin_bracket_id` off their own
+    /// terminal envelope, so both sealed capsules carry the identical value
+    /// even though everything else about them (node, exchange id) differs.
+    /// This is what lets a reader bracket the two rows together.
+    #[test]
+    fn two_observed_host_exchanges_sharing_a_twin_bracket_id_seal_the_identical_value() {
+        let dir_a = std::env::temp_dir().join(format!("cap-twin-a-{}", std::process::id()));
+        let dir_b = std::env::temp_dir().join(format!("cap-twin-b-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+        let state_a = CapsuleState::open(&dir_a, "node-a").expect("open state a");
+        let state_b = CapsuleState::open(&dir_b, "node-b").expect("open state b");
+
+        let observed_a = ObservedHostExchange {
+            model: "m",
+            exchange_id: Some("exch-a"),
+            request_digest: None,
+            response_digest: None,
+            tool_calls_digest: None,
+            reasoning_digest: None,
+            usage: None,
+            host_provenance: HostProvenance::default(),
+            dispatch_path: DispatchPath::RawProxy,
+            nonce: None,
+            peer_capsule_id: None,
+            peer_capsule_id_provenance: None,
+            twin_bracket_id: Some("twin-shared"),
+        };
+        let observed_b = ObservedHostExchange {
+            model: "m",
+            exchange_id: Some("exch-b"),
+            request_digest: None,
+            response_digest: None,
+            tool_calls_digest: None,
+            reasoning_digest: None,
+            usage: None,
+            host_provenance: HostProvenance::default(),
+            dispatch_path: DispatchPath::RawProxy,
+            nonce: None,
+            peer_capsule_id: None,
+            peer_capsule_id_provenance: None,
+            twin_bracket_id: Some("twin-shared"),
+        };
+
+        let emitted_a = state_a
+            .emit_for_observed_host_exchange(&observed_a)
+            .expect("seal a");
+        let emitted_b = state_b
+            .emit_for_observed_host_exchange(&observed_b)
+            .expect("seal b");
+        let sp_a = &emitted_a.capsule["model_attestation"]["compute_attestation"]
+            ["x-mesh-poc-v1"]["serving_provenance"];
+        let sp_b = &emitted_b.capsule["model_attestation"]["compute_attestation"]
+            ["x-mesh-poc-v1"]["serving_provenance"];
+        assert_eq!(sp_a["twin_bracket_id"], sp_b["twin_bracket_id"]);
+        assert_eq!(sp_a["twin_bracket_id"], "twin-shared");
+        // Different exchanges -- distinct capsule_ids, same bracket.
+        assert_ne!(emitted_a.capsule["capsule_id"], emitted_b.capsule["capsule_id"]);
+
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
     }
 
     /// [adv-run-2-fix-batch] B1 regression: two byte-different, semantically
@@ -1802,6 +1966,7 @@ mod tests {
             nonce: None,
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
+            twin_bracket_id: None,
         };
         let first = state
             .emit_for_observed_host_exchange(&observed)
@@ -1877,6 +2042,7 @@ mod tests {
             nonce: None,
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
+            twin_bracket_id: None,
         }
     }
 
@@ -2359,6 +2525,7 @@ mod tests {
             nonce: Some(shared_nonce),
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
+            twin_bracket_id: None,
         };
         let router_emitted = router_state
             .emit_for_observed_host_exchange(&router_observed)

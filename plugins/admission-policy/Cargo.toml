@@ -20,7 +20,7 @@ mutant-allow-blocked = []
 mutant-allow-malformed = []
 
 [dependencies]
-mesh-llm-plugin = "0.75"
+mesh-llm-plugin = "0.76"
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
 serde = { version = "1", features = ["derive"] }
