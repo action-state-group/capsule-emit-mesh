@@ -41,10 +41,13 @@ lands at `<plugin data dir>/ledger/capsules.jsonl` (`ADMISSION_POLICY_DATA_DIR`
 to change it — see "Path 1" below).
 
 **What leaves the machine by default: nothing.** Capsules are sealed and
-verified locally; witnessing to a transparency service is opt-in
-(`CAPSULE_ANCHOR=true`, unset/`false` by default) — see
+verified locally, and the plugin's own checkpoint cadence — the only thing
+that ever calls out to a witness — is **off by default**
+(`ADMISSION_POLICY_CHECKPOINT_CADENCE=on` to enable it), and even then sends
+nothing unless you also set `ADMISSION_POLICY_CHECKPOINT_WITNESS_URLS`; empty/
+unset means self-checkpointed only, no network. See
 [`docs/CHECKPOINT-BY-DEFAULT.md`](docs/CHECKPOINT-BY-DEFAULT.md). Nothing is
-sent anywhere unless you turn that on.
+sent anywhere unless you turn both of those on.
 
 **To turn the plugin off**, set `enabled = false` on its `[[plugin]]` entry in
 `mesh-llm`'s config and restart the node:
