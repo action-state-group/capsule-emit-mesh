@@ -918,3 +918,18 @@ def test_classify_capsule_kind_never_confuses_ack_refused_with_ack():
         tool_name="adjudication_ack_refused",
     )
     assert classify_capsule_kind(ack_refused) is None
+
+
+def test_classify_capsule_kind_names_a_delivery_receipt_capsule():
+    from twin_adjudicator import CLASSIFY_KIND_DELIVERY_RECEIPT, classify_capsule_kind
+
+    receipt = emit(
+        action_type="fyi",
+        operator="test-org",
+        developer="node-b@v1",
+        compute_attestation={"adjudication_delivery_receipt": {"adjudication_capsule_id": "a" * 64}},
+        prior_capsule_id="a" * 64,
+        chain_relation="adjudication_delivery_receipt",
+        tool_name="adjudication_delivery_receipt",
+    )
+    assert classify_capsule_kind(receipt) == CLASSIFY_KIND_DELIVERY_RECEIPT

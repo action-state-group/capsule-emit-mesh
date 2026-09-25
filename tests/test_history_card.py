@@ -748,16 +748,26 @@ def test_authored_adjudication_is_not_counted_as_delivered():
     assert delivered == {}
 
 
+def _receipt_for(adjudication: dict) -> dict:
+    from adjudication_delivery import seal_adjudication_delivery_receipt
+
+    return seal_adjudication_delivery_receipt(adjudication, operator="test-org", developer="node-b@v1")
+
+
 def test_delivered_card_renders_exactly_3_delivered_2_acked_1_disputed():
     """The acceptance mutant: a log with 3 delivered adjudications, 2 acked
     and 1 rebutted, renders exactly those counts -- never merged with (a)
-    authored or (c) adjudications_about_x."""
+    authored or (c) adjudications_about_x. Each adjudication carries its
+    OWN delivery receipt (the signal `adjudication_provenance_from_ledger`
+    keys "delivered" off), sealed the same way `handle_delivery` seals one
+    automatically on every accepted delivery."""
     from adjudication_delivery import seal_adjudication_ack, seal_adjudication_rebuttal
 
     ledger: list[dict] = []
     for i in range(3):
         adjudication = _corroborated_adjudication(text=f"hello world {i}", owner_a="owner-a", owner_b="owner-b")
         ledger.append(adjudication)
+        ledger.append(_receipt_for(adjudication))
         if i < 2:
             ledger.append(seal_adjudication_ack(adjudication, operator="test-org", developer="node-b@v1"))
         else:
@@ -778,6 +788,44 @@ def test_delivered_card_renders_exactly_3_delivered_2_acked_1_disputed():
     assert len(delivered["corroborated"]["capsule_ids"]["disputed"]) == 1
 
 
+def test_delivered_but_not_yet_acked_is_delivered_never_authored():
+    """Adversarial-review finding: keying "delivered" off ack/rebuttal ALONE
+    misclassifies a verdict this node has accepted but not yet decided on as
+    "authored" -- wrong even in the honest, no-adversary case. The delivery
+    receipt (sealed unconditionally at fold time, before any ack/rebuttal
+    decision) must be enough on its own."""
+    adjudication = _corroborated_adjudication(text="hello world", owner_a="owner-a", owner_b="owner-b")
+    receipt = _receipt_for(adjudication)
+
+    authored, delivered = adjudication_provenance_from_ledger([adjudication, receipt])
+
+    assert authored == {}
+    assert delivered["corroborated"]["delivered"] == 1
+    assert delivered["corroborated"]["acknowledged"] == 0
+    assert delivered["corroborated"]["disputed"] == 0
+
+
+def test_a_second_ack_citing_the_same_adjudication_never_inflates_the_count():
+    """`deliver_to_subjects`'s protocol is ack OR rebuttal, never both. A
+    second citation past the first (a protocol violation, not this
+    function's to prevent) must not push acknowledged + disputed past
+    delivered."""
+    from adjudication_delivery import seal_adjudication_ack, seal_adjudication_rebuttal
+
+    adjudication = _corroborated_adjudication(text="hello world", owner_a="owner-a", owner_b="owner-b")
+    receipt = _receipt_for(adjudication)
+    ack = seal_adjudication_ack(adjudication, operator="test-org", developer="node-b@v1")
+    rebuttal = seal_adjudication_rebuttal(adjudication, basis="changed my mind", operator="test-org", developer="node-b@v1")
+
+    authored, delivered = adjudication_provenance_from_ledger([adjudication, receipt, ack, rebuttal])
+
+    entry = delivered["corroborated"]
+    assert entry["delivered"] == 1
+    assert entry["acknowledged"] + entry["disputed"] == 1  # never 2, even though two citations exist
+    assert entry["acknowledged"] == 1  # ack was first in capsule_lines order
+    assert entry["disputed"] == 0
+
+
 def test_with_adjudications_renders_the_split_and_verifies(tmp_path, fake_witness):
     from adjudication_delivery import seal_adjudication_ack
 
@@ -787,9 +835,10 @@ def test_with_adjudications_renders_the_split_and_verifies(tmp_path, fake_witnes
 
     authored_adj = _corroborated_adjudication(text="authored one", owner_a="owner-x", owner_b="owner-y")
     delivered_adj = _corroborated_adjudication(text="delivered one", owner_a="owner-p", owner_b="owner-q")
+    receipt = _receipt_for(delivered_adj)
     ack = seal_adjudication_ack(delivered_adj, operator="test-org", developer="node-b@v1")
 
-    authored, delivered = adjudication_provenance_from_ledger([authored_adj, delivered_adj, ack])
+    authored, delivered = adjudication_provenance_from_ledger([authored_adj, delivered_adj, receipt, ack])
     enriched = with_adjudications(card, authored=authored, delivered=delivered)
 
     value = enriched.to_value()

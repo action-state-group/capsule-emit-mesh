@@ -73,7 +73,13 @@ from capsule_emit.checkpoint import CheckpointRecord
 from capsule_emit.checkpoint.cose_wire import verify_checkpoint_cose_offline
 from capsule_emit.numbers import float_to_str
 
-from twin_adjudicator import CLASSIFY_KIND_ACK, CLASSIFY_KIND_ADJUDICATION, CLASSIFY_KIND_REBUTTAL, classify_capsule_kind
+from twin_adjudicator import (
+    CLASSIFY_KIND_ACK,
+    CLASSIFY_KIND_ADJUDICATION,
+    CLASSIFY_KIND_DELIVERY_RECEIPT,
+    CLASSIFY_KIND_REBUTTAL,
+    classify_capsule_kind,
+)
 
 __all__ = [
     "HISTORY_CARD_SCHEMA",
@@ -712,31 +718,56 @@ def adjudication_provenance_from_ledger(
     read off a `key_id` field the way a checkpoint's can.
 
     **The rule:** an adjudication capsule is DELIVERED (b) iff this SAME
-    ledger also holds an `ack` or `rebuttal` capsule citing it
+    ledger also holds its own `adjudication_delivery_receipt`
     (`chain.parent_capsule_id` == the adjudication's own `capsule_id`) --
-    exactly the record `deliver_to_subjects` calls for the JUDGED SUBJECT to
-    seal on an accepted delivery (`adjudication_delivery.seal_adjudication_
-    ack`/`.seal_adjudication_rebuttal`). An adjudication capsule with NO such
-    citation is AUTHORED (a) -- this node ran
-    `twin_adjudicator.seal_adjudication_capsule` itself, as requester or
-    referee; a referee never acks/rebuts its own verdict, so the absence of
-    a citation is itself the honest signal, never an assumption.
+    sealed unconditionally by `handle_delivery` itself, at fold time, before
+    the subject has decided ack vs. rebuttal (see
+    `adjudication_delivery.RELATION_ADJUDICATION_DELIVERY_RECEIPT`'s own
+    docstring for why this must NOT key off ack/rebuttal alone: a delivered
+    verdict this node has not yet acked/disputed would otherwise
+    misclassify as authored). An adjudication capsule with NO receipt is
+    AUTHORED (a) -- this node ran `twin_adjudicator.seal_adjudication_
+    capsule` itself, as requester or referee; the absence of a receipt is
+    itself the honest signal, never an assumption.
+
+    `ack`/`rebuttal` citations refine a DELIVERED entry's `acknowledged`/
+    `disputed` counts, capped to AT MOST ONE per adjudication (the earliest,
+    by `capsule_lines` order) -- `deliver_to_subjects`'s protocol is "ack
+    OR rebuttal, never both"; a second citation past the first is a protocol
+    violation this function does not crash on, but also does not let inflate
+    `acknowledged + disputed` past `delivered`.
 
     Returns `(authored, delivered)` in the shape `with_adjudications` takes
     directly. `capsule_lines` may be a node's full ledger or any subset
     (e.g. one `range` pull's bundles) -- this function never reaches outside
     what it is given.
+
+    **Trust scope, stated plainly:** this split is `self_attested`, like
+    every self-reported property elsewhere in this repo (`temporal_
+    provenance`, `node_ownership`'s `IDENTITY_LIMITATION_CAVEAT`) -- nothing
+    here cryptographically stops a node from calling `handle_delivery` on a
+    capsule it authored itself, to make its own verdict read as delivered.
+    See `adjudication_delivery`'s module docstring for the same caveat
+    stated from the transport side.
     """
     by_id = {c["capsule_id"]: c for c in capsule_lines if c.get("capsule_id")}
 
-    # ack/rebuttal citations, keyed by the adjudication capsule_id they cite.
+    # Delivery receipts, keyed by the adjudication capsule_id they cite --
+    # the DELIVERED signal (never the ack/rebuttal decision).
+    receipts: dict[str, str] = {}
+    # ack/rebuttal citations, keyed by the adjudication capsule_id they cite,
+    # in `capsule_lines` order -- only the FIRST is used (see docstring).
     citations: dict[str, list[tuple[str, str]]] = {}
     for cid, capsule in by_id.items():
         kind = classify_capsule_kind(capsule)
-        if kind not in (CLASSIFY_KIND_ACK, CLASSIFY_KIND_REBUTTAL):
+        if kind not in (CLASSIFY_KIND_DELIVERY_RECEIPT, CLASSIFY_KIND_ACK, CLASSIFY_KIND_REBUTTAL):
             continue
         cited = (capsule.get("chain") or {}).get("parent_capsule_id")
-        if cited:
+        if not cited:
+            continue
+        if kind == CLASSIFY_KIND_DELIVERY_RECEIPT:
+            receipts.setdefault(cited, cid)
+        else:
             citations.setdefault(cited, []).append((kind, cid))
 
     authored: dict[str, int] = {}
@@ -746,8 +777,7 @@ def adjudication_provenance_from_ledger(
             continue
         adjudication = ((capsule.get("model_attestation") or {}).get("compute_attestation") or {}).get("adjudication") or {}
         bucket = _verdict_bucket(adjudication.get("verdict"))
-        own_citations = citations.get(cid, [])
-        if not own_citations:
+        if cid not in receipts:
             authored[bucket] = authored.get(bucket, 0) + 1
             continue
         entry = delivered.setdefault(
@@ -755,7 +785,9 @@ def adjudication_provenance_from_ledger(
         )
         entry["delivered"] += 1
         entry["capsule_ids"]["delivered"].append(cid)
-        for citing_kind, own_capsule_id in own_citations:
+        own_citations = citations.get(cid, [])
+        if own_citations:
+            citing_kind, own_capsule_id = own_citations[0]  # first decision only -- see docstring
             state = "acknowledged" if citing_kind == CLASSIFY_KIND_ACK else "disputed"
             entry[state] += 1
             entry["capsule_ids"][state].append(own_capsule_id)

@@ -12,7 +12,11 @@ Route: ``POST /evidence/deliver``
     200 + ``{"status": "received"}`` -- the recipient found its own served
         half among the capsule's cited ``*_capsule_id`` fields and folded
         the capsule, AS TRANSMITTED (signature untouched, never re-signed
-        by the recipient), into its own ledger.
+        by the recipient), into its own ledger, followed by ITS OWN
+        ``adjudication_delivery_receipt`` (see
+        ``seal_adjudication_delivery_receipt``) -- sealed unconditionally,
+        right here, so "this arrived by delivery" is on the record before
+        the subject has even decided whether to ack or dispute it.
     200 + a signed ``Refusal`` (``{request_digest, reason, issued_at,
         key_id, sig}``) -- either
 
@@ -44,10 +48,25 @@ where the judged node's chain shows nothing.
 ``[mesh-adjudications-on-history-card-design]``, ``deliver_to_subjects:
 default on``. Same "the caller, not this module" discipline as the refused
 path: `handle_delivery` folds and transports; it never judges a verdict's
-correctness, so it never seals ack/rebuttal itself. `history_card.py`'s
-own provenance split (authored vs. delivered-with-ack/rebuttal-state) reads
-these two relations plus `twin_adjudicator.RELATION_ADJUDICATES` back out of
-a node's ledger via `twin_adjudicator.classify_capsule_kind`.
+correctness, so it never seals ack/rebuttal itself. `history_card.py`'s own
+provenance split (authored vs. delivered-with-ack/rebuttal-state) keys
+"delivered" off the ``adjudication_delivery_receipt`` above -- NOT off
+whether an ack/rebuttal exists yet, so a verdict this node has accepted but
+not yet acked/disputed still reads as delivered, never misclassified as
+authored -- reading these relations plus `twin_adjudicator.RELATION_
+ADJUDICATES` back out of a node's ledger via `twin_adjudicator.
+classify_capsule_kind`.
+
+**Trust scope of the authored/delivered split, stated plainly:** like every
+other self-reported property in this repo (`temporal_provenance:
+producer_asserted`, `node_ownership`'s `IDENTITY_LIMITATION_CAVEAT`), this
+is `self_attested` -- a node's own ledger is not cryptographically hardened
+against that SAME node calling `handle_delivery` on a capsule it authored
+itself to make its own verdict read as "delivered". Nothing in this repo
+signs a delivery event with the SENDER's key (there is no sender identity
+to check against -- see the module's "Only the citations this repo mints
+today are checked" note above), so this split is honest about a node's own
+bookkeeping, not a cross-party attestation.
 
 **Only the citations this repo mints today are checked.** The full
 twin-adjudication design (``_work/mesh-referee-build-2026-09-02.md`` §2.1)
@@ -92,11 +111,13 @@ __all__ = [
     "REASON_REQUEST_MALFORMED",
     "RELATION_ADJUDICATION_ACK",
     "RELATION_ADJUDICATION_ACK_REFUSED",
+    "RELATION_ADJUDICATION_DELIVERY_RECEIPT",
     "RELATION_ADJUDICATION_REBUTTAL",
     "deliver_adjudication",
     "handle_delivery",
     "seal_adjudication_ack",
     "seal_adjudication_ack_refused",
+    "seal_adjudication_delivery_receipt",
     "seal_adjudication_rebuttal",
 ]
 
@@ -123,6 +144,23 @@ RELATION_ADJUDICATION_ACK_REFUSED = "adjudication_ack_refused"
 RELATION_ADJUDICATION_ACK = "adjudication_ack"
 RELATION_ADJUDICATION_REBUTTAL = "adjudication_rebuttal"
 
+#: [mesh-adjudications-on-history-card-design] The chain.relation for
+#: `handle_delivery`'s OWN receipt of an accepted delivery -- sealed
+#: unconditionally, at fold time, BEFORE the subject has decided ack vs.
+#: rebuttal (see `seal_adjudication_delivery_receipt`). This is the
+#: signal `history_card.adjudication_provenance_from_ledger` reads to tell
+#: "delivered" (provenance b) from "authored" (provenance a): capsules
+#: carry no per-capsule signature (`agent_action_capsule.emit()` signs
+#: nothing at the record level), so authorship cannot be read off a
+#: `key_id`. Keying "delivered" off the ack/rebuttal decision ALONE was
+#: tried first and is wrong even in the honest case -- a delivered verdict
+#: this node has not yet acked/rebutted would misclassify as "authored"
+#: (adversarial council finding, [mesh-adjudications-on-history-card-
+#: design]-review). Keying off THIS receipt instead is correct as soon as
+#: `handle_delivery` folds the capsule, independent of whether/when the
+#: subject later acks or disputes it.
+RELATION_ADJUDICATION_DELIVERY_RECEIPT = "adjudication_delivery_receipt"
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -143,6 +181,42 @@ def _cited_capsule_ids(capsule: dict[str, Any]) -> list[str]:
 def _owner_id(capsule: dict[str, Any]) -> str | None:
     owner = ((capsule.get("model_attestation") or {}).get("compute_attestation") or {}).get("owner") or {}
     return owner.get("owner_id")
+
+
+def seal_adjudication_delivery_receipt(
+    adjudication_capsule: dict[str, Any],
+    *,
+    operator: str = "",
+    developer: str = "",
+) -> dict[str, Any]:
+    """Seal this node's OWN receipt of an accepted delivery -- citing the
+    adjudication by id, no verdict-bearing content beyond that citation.
+    Called by `handle_delivery` itself, unconditionally, at fold time (see
+    `RELATION_ADJUDICATION_DELIVERY_RECEIPT`'s own docstring for why this
+    must not wait for the subject's later ack/rebuttal decision).
+
+    Distinct from `seal_adjudication_ack`/`seal_adjudication_rebuttal`: this
+    is minted automatically, by the transport itself, the instant a delivery
+    is accepted; ack/rebuttal are minted LATER, by the caller, once the
+    subject has actually decided whether it disputes the verdict.
+    """
+    receipt_block = {"adjudication_capsule_id": adjudication_capsule["capsule_id"]}
+    compute_attestation = {"adjudication_delivery_receipt": receipt_block}
+    capsule = emit(
+        action_type="fyi",
+        operator=operator,
+        developer=developer,
+        compute_attestation=compute_attestation,
+        prior_capsule_id=adjudication_capsule["capsule_id"],
+        chain_relation=RELATION_ADJUDICATION_DELIVERY_RECEIPT,
+        domain="action",
+        provenance="referee",
+        tool_name="adjudication_delivery_receipt",
+    )
+    result = verify_capsule(capsule)
+    if not result.ok:
+        raise RuntimeError(f"adjudicator emitted a delivery-receipt capsule that fails its own verify(): {result.findings}")
+    return capsule
 
 
 def _refuse(request_digest: str, reason: str, *, state: Any, issued_at: str) -> dict[str, Any]:
@@ -205,6 +279,11 @@ def handle_delivery(state: Any, body: bytes, *, now: str | None = None) -> dict[
         return _refuse(request_digest, REASON_POLICY_DECLINE, state=state, issued_at=issued_at)
 
     append_capsule(state.ledger_dir, capsule)
+    # [mesh-adjudications-on-history-card-design] Seal the delivery receipt
+    # UNCONDITIONALLY, right here at fold time -- see
+    # RELATION_ADJUDICATION_DELIVERY_RECEIPT's own docstring for why this
+    # must not wait for the subject's later ack/rebuttal decision.
+    append_capsule(state.ledger_dir, seal_adjudication_delivery_receipt(capsule))
     return {"status": "received"}
 
 
@@ -276,11 +355,20 @@ def seal_adjudication_rebuttal(
 ) -> dict[str, Any]:
     """Seal the JUDGED SUBJECT's own record DISPUTING an accepted delivered
     adjudication -- citing the verdict by id plus a STATED ``basis`` (a
-    reason the subject supplies for why it disputes the verdict). ``basis``
-    is a citable reason, never a free-text score or a rating: this function
-    refuses (``ValueError``) to seal a rebuttal with an empty basis, since
-    an unreasoned dispute is indistinguishable from noise and would let a
-    node contest any verdict it dislikes with no accountable trail.
+    reason the subject supplies for why it disputes the verdict).
+
+    **What "no free-text score" actually means here, stated precisely so
+    this docstring does not overclaim:** the record's SCHEMA carries no
+    score/rating field at all -- ``rebuttal_block`` below has exactly
+    ``adjudication_capsule_id``/``verdict``/``basis``, nothing numeric or
+    ordinal. This function does NOT content-validate ``basis`` -- it is a
+    free-form string, and nothing stops a caller from writing a score-
+    shaped value INTO it (e.g. ``basis="2/10"``). The only enforced
+    invariant is non-emptiness (``ValueError`` on ``basis=""``): an
+    unreasoned dispute is indistinguishable from noise and would let a node
+    contest any verdict it dislikes with no accountable trail. Content
+    discipline over what a `basis` string actually says is a caller/policy
+    concern, not something this function checks.
 
     See ``seal_adjudication_ack``'s docstring for how this fits the
     ``deliver_to_subjects`` default-on flow -- the two are mutually

@@ -43,24 +43,53 @@ whole log, not from signing each record individually. So "did *I* seal this
 adjudication, or did it arrive by delivery" cannot be answered by checking
 who signed it.
 
-The honest, purely structural answer is in the ledger's own shape instead:
-`deliver_to_subjects` means every delivered adjudication a node *accepts*
-(`adjudication_delivery.handle_delivery` returning `{"status": "received"}`,
-never a `policy_decline`) gets exactly one follow-up record from that same
-node — an `ack` or a `rebuttal`, citing the adjudication by
-`chain.parent_capsule_id`. A referee never acks or rebuts its own verdict.
-So:
+The honest, purely structural answer is in the ledger's own shape instead —
+but **not** the ack/rebuttal decision alone. An earlier revision of this
+design keyed "delivered" off "does an `ack`/`rebuttal` cite it", and an
+adversarial re-review of this same task caught the bug: a verdict this node
+has *accepted* but not yet acked or disputed would misclassify as
+**authored**, directly contradicting provenance (a)'s own definition
+("never a verdict delivered from elsewhere"). The fix: `handle_delivery`
+itself seals a THIRD kind of follow-up record, unconditionally, the instant
+it accepts a delivery — before the subject has decided anything:
 
-- An `adjudication` capsule **with** an `ack`/`rebuttal` citing it, in the
-  SAME ledger, is **delivered** (provenance 2).
-- An `adjudication` capsule **with no** such citation is **authored**
-  (provenance 1) — this node ran the adjudicator itself.
+```
+seal_adjudication_delivery_receipt(adjudication_capsule, ...) -> capsule
+```
+
+`chain.relation = "adjudication_delivery_receipt"`, citing the adjudication
+by `chain.parent_capsule_id`. So:
+
+- An `adjudication` capsule **with** its own delivery receipt, in the SAME
+  ledger, is **delivered** (provenance 2) — regardless of whether it has
+  been acked/disputed yet.
+- An `adjudication` capsule **with no** receipt is **authored**
+  (provenance 1) — this node ran the adjudicator itself; a receipt is only
+  ever sealed by `handle_delivery`'s own accept path.
+
+`ack`/`rebuttal` citations then only REFINE a delivered entry's
+`acknowledged`/`disputed` counts — capped to at most one decision per
+adjudication (the earliest, by ledger order): `deliver_to_subjects`'s
+protocol is "ack OR rebuttal, never both", so a second citation past the
+first is a protocol violation this function tolerates without letting
+`acknowledged + disputed` exceed `delivered`.
 
 `history_card.adjudication_provenance_from_ledger` implements exactly this
 split, keyed by verdict kind (`corroborated` / `contradicted` /
 `inconclusive` — the `contradicted:<owner_id>` suffix is dropped to the bare
 kind, since the owner named is whichever party the verdict judged, not this
 node).
+
+**Trust scope, stated plainly.** This whole split is `self_attested`, the
+same class of property as `temporal_provenance: producer_asserted` and
+`node_ownership`'s `IDENTITY_LIMITATION_CAVEAT` elsewhere in this repo.
+Nothing here cryptographically stops a node from calling `handle_delivery`
+on a capsule it authored itself, to make its own verdict read as delivered
+— there is no sender identity a delivery is checked against (see
+`adjudication_delivery.py`'s own "only the citations this repo mints today
+are checked" note). This is a node's own honest bookkeeping about its own
+ledger, not a cross-party attestation, and the design does not claim
+otherwise.
 
 ## The classifier hook
 
@@ -72,6 +101,7 @@ by kind"):
 | Kind | `chain.relation` / signal |
 |---|---|
 | `adjudication` | `RELATION_ADJUDICATES` (`"adjudicates"`) |
+| `adjudication_delivery_receipt` | `"adjudication_delivery_receipt"` (`adjudication_delivery.seal_adjudication_delivery_receipt`) — see above; a fifth kind added past the design note's original four, by the adversarial re-review |
 | `ack` | `"adjudication_ack"` (`adjudication_delivery.seal_adjudication_ack`) |
 | `rebuttal` | `"adjudication_rebuttal"` (`adjudication_delivery.seal_adjudication_rebuttal`) |
 | `exchange_twin` | an ordinary served-half capsule carrying `x-mesh-poc-v1.serving_provenance.twin_bracket_id` |
@@ -100,11 +130,16 @@ seal_adjudication_ack(adjudication_capsule, ...) -> capsule
 seal_adjudication_rebuttal(adjudication_capsule, *, basis: str, ...) -> capsule
 ```
 
-Both cite the adjudication by `prior_capsule_id`/`chain.relation`, carry the
-verdict by id (never restated as a score), and — for the rebuttal — a
-`basis` string the caller must supply non-empty (`ValueError` otherwise): an
-unreasoned dispute is indistinguishable from noise, and would let a node
-contest any verdict it dislikes with no accountable trail.
+Both cite the adjudication by `prior_capsule_id`/`chain.relation`. Both
+schemas carry exactly `adjudication_capsule_id`/`verdict` (plus, for the
+rebuttal, `basis`) — no numeric or ordinal field. **Precisely stated:** the
+schema has no score/rating field; `basis` itself is a free-form string this
+module does not content-validate (nothing stops a caller writing a
+score-shaped value into it — that is a caller/policy concern, not a code
+guarantee). The one thing enforced is non-emptiness: `seal_adjudication_
+rebuttal` raises `ValueError` on `basis=""`, since an unreasoned dispute is
+indistinguishable from noise and would let a node contest any verdict it
+dislikes with no accountable trail.
 
 Same "the caller, not this module" discipline `seal_adjudication_ack_refused`
 already documents: `handle_delivery` folds and transports; it never judges a

@@ -44,11 +44,13 @@ from adjudication_delivery import (
     REASON_REQUEST_MALFORMED,
     RELATION_ADJUDICATION_ACK,
     RELATION_ADJUDICATION_ACK_REFUSED,
+    RELATION_ADJUDICATION_DELIVERY_RECEIPT,
     RELATION_ADJUDICATION_REBUTTAL,
     deliver_adjudication,
     handle_delivery,
     seal_adjudication_ack,
     seal_adjudication_ack_refused,
+    seal_adjudication_delivery_receipt,
     seal_adjudication_rebuttal,
 )
 from checkpointing import JsonlLogSource
@@ -128,9 +130,39 @@ def test_corroborated_delivery_is_received_and_folded_into_ledger(tmp_path):
     result = handle_delivery(state, body)
 
     assert result == {"status": "received"}
-    ledger_ids = [c["capsule_id"] for c in read_ledger(ledger_path)]
+    ledger_entries = list(read_ledger(ledger_path))
+    ledger_ids = [c["capsule_id"] for c in ledger_entries]
     assert cap_b["capsule_id"] in ledger_ids
     assert adjudication["capsule_id"] in ledger_ids
+    # [mesh-adjudications-on-history-card-design] handle_delivery ALSO seals
+    # its own delivery receipt, unconditionally, at fold time -- this is the
+    # signal history_card.adjudication_provenance_from_ledger keys
+    # "delivered" off (never the ack/rebuttal decision, which hasn't
+    # happened yet at this point).
+    receipts = [
+        c for c in ledger_entries if c.get("chain", {}).get("relation") == RELATION_ADJUDICATION_DELIVERY_RECEIPT
+    ]
+    assert len(receipts) == 1
+    assert receipts[0]["chain"]["parent_capsule_id"] == adjudication["capsule_id"]
+
+
+def test_delivery_receipt_cites_the_adjudication_and_verifies(tmp_path):
+    from twin_adjudicator import AdjudicationHalf
+
+    cap_a, disc_a = _make_served_half("hello world", owner_id="owner-a")
+    cap_b, disc_b = _make_served_half("hello world", owner_id="owner-b")
+    half_a = AdjudicationHalf.from_capsule_and_disclosure(cap_a, disc_a)
+    half_b = AdjudicationHalf.from_capsule_and_disclosure(cap_b, disc_b)
+    outcome = adjudicate(half_a, half_b)
+    adjudication = seal_adjudication_capsule(outcome, operator="test-org", developer="referee@v1")
+
+    receipt = seal_adjudication_delivery_receipt(adjudication, operator="test-org", developer="node-b@v1")
+
+    assert receipt["chain"]["relation"] == RELATION_ADJUDICATION_DELIVERY_RECEIPT
+    assert receipt["chain"]["parent_capsule_id"] == adjudication["capsule_id"]
+    block = receipt["model_attestation"]["compute_attestation"]["adjudication_delivery_receipt"]
+    assert block["adjudication_capsule_id"] == adjudication["capsule_id"]
+    assert verify_capsule(receipt).ok
 
 
 def test_contradicted_verdict_naming_recipient_refuses_policy_decline(tmp_path):
@@ -315,11 +347,25 @@ def test_rebuttal_capsule_cites_the_delivered_verdict_and_carries_its_basis(tmp_
     assert verify_capsule(rebuttal).ok
 
 
-def test_rebuttal_with_no_stated_basis_is_refused_never_a_free_text_score(tmp_path):
+def test_rebuttal_with_no_stated_basis_is_refused(tmp_path):
     adjudication, _ledger_path, _state = _delivered_corroborated_adjudication(tmp_path)
 
     with pytest.raises(ValueError):
         seal_adjudication_rebuttal(adjudication, basis="", operator="test-org", developer="node-b@v1")
+
+
+def test_rebuttal_schema_carries_no_score_or_rating_field(tmp_path):
+    """The narrower, actually-enforced claim: the rebuttal record's SCHEMA
+    has no numeric/ordinal field at all -- only `adjudication_capsule_id`/
+    `verdict`/`basis`. `basis` itself is a free-form string this function
+    does NOT content-validate (a caller could still write a score-shaped
+    value into it -- see `seal_adjudication_rebuttal`'s own docstring)."""
+    adjudication, _ledger_path, _state = _delivered_corroborated_adjudication(tmp_path)
+
+    rebuttal = seal_adjudication_rebuttal(adjudication, basis="disagree", operator="test-org", developer="node-b@v1")
+
+    block = rebuttal["model_attestation"]["compute_attestation"]["adjudication_rebuttal"]
+    assert set(block.keys()) == {"adjudication_capsule_id", "verdict", "basis"}
 
 
 # ---------------------------------------------------------------------------

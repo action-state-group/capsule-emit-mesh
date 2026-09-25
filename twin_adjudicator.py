@@ -160,6 +160,7 @@ __all__ = [
     "UnattributableRefereeError",
     "CLASSIFY_KIND_ACK",
     "CLASSIFY_KIND_ADJUDICATION",
+    "CLASSIFY_KIND_DELIVERY_RECEIPT",
     "CLASSIFY_KIND_EXCHANGE_TWIN",
     "CLASSIFY_KIND_REBUTTAL",
     "adjudicate",
@@ -669,24 +670,34 @@ CLASSIFY_KIND_ADJUDICATION = "adjudication"
 CLASSIFY_KIND_ACK = "ack"
 CLASSIFY_KIND_REBUTTAL = "rebuttal"
 CLASSIFY_KIND_EXCHANGE_TWIN = "exchange_twin"
+#: A fifth kind, beyond the design note's original four (adjudication/ack/
+#: rebuttal/exchange_twin) -- added by the adversarial review of this same
+#: task: keying "delivered" off ack/rebuttal ALONE misclassifies a verdict
+#: this node has accepted but not yet acked/disputed as "authored". See
+#: `adjudication_delivery.RELATION_ADJUDICATION_DELIVERY_RECEIPT`'s own
+#: docstring for the full reasoning.
+CLASSIFY_KIND_DELIVERY_RECEIPT = "adjudication_delivery_receipt"
 
 #: [mesh-adjudications-on-history-card-design] `chain.relation` values for
-#: the subject's own ack/rebuttal of a delivered adjudication, minted by
+#: the subject's own ack/rebuttal of a delivered adjudication, and for
+#: `handle_delivery`'s own delivery-receipt, minted by
 #: `adjudication_delivery.seal_adjudication_ack` /
-#: `.seal_adjudication_rebuttal`. Named here VERBATIM rather than imported
-#: -- reaching into `adjudication_delivery` just for two strings would
-#: couple this module to that one's whole import surface (HTTP transport,
-#: signer resolution) for no benefit; `ask_history.py`'s own verdict-
-#: vocabulary constants cite the same precedent.
+#: `.seal_adjudication_rebuttal` / `.seal_adjudication_delivery_receipt`.
+#: Named here VERBATIM rather than imported -- reaching into
+#: `adjudication_delivery` just for three strings would couple this module
+#: to that one's whole import surface (HTTP transport, signer resolution)
+#: for no benefit; `ask_history.py`'s own verdict-vocabulary constants cite
+#: the same precedent.
 _RELATION_ADJUDICATION_ACK = "adjudication_ack"
 _RELATION_ADJUDICATION_REBUTTAL = "adjudication_rebuttal"
+_RELATION_ADJUDICATION_DELIVERY_RECEIPT = "adjudication_delivery_receipt"
 
 
 def classify_capsule_kind(capsule: dict[str, Any]) -> str | None:
     """The chain-segment leaf-kind classifier HOOK for this module's own
     record shapes (design note `_work/mesh-sharing-policy-history-and-money-
     2026-09-24.md` §3's "leaf counts per checkpoint by kind"): one line per
-    kind, no new record type. Returns one of the four `CLASSIFY_KIND_*`
+    kind, no new record type. Returns one of the `CLASSIFY_KIND_*`
     constants, or `None` when *capsule* is none of this module's kinds (an
     ordinary served exchange, a card, a close record, ... -- classified
     elsewhere, not here).
@@ -694,13 +705,20 @@ def classify_capsule_kind(capsule: dict[str, Any]) -> str | None:
     `CLASSIFY_KIND_ADJUDICATION` -- `chain.relation == RELATION_ADJUDICATES`,
     this module's own verdict capsule (`seal_adjudication_capsule`).
 
+    `CLASSIFY_KIND_DELIVERY_RECEIPT` -- `handle_delivery`'s OWN, unconditional
+    receipt of an accepted delivery (`adjudication_delivery.seal_adjudication_
+    delivery_receipt`) -- sealed at fold time, BEFORE the subject has decided
+    ack vs. rebuttal. This is the signal provenance (b) "delivered" keys off,
+    never the ack/rebuttal decision alone (see that function's docstring).
+
     `CLASSIFY_KIND_ACK` / `CLASSIFY_KIND_REBUTTAL` -- the JUDGED SUBJECT's
-    own record of an accepted/disputed delivered adjudication
+    own record of accepting/disputing a delivered adjudication
     (`adjudication_delivery.seal_adjudication_ack` /
     `.seal_adjudication_rebuttal`). Distinct from
     `RELATION_ADJUDICATION_ACK_REFUSED` (that module's existing
     `adjudication_ack_refused` relation, for a delivery this node refused
-    to even hold) -- ack/rebuttal are the accepted-delivery path.
+    to even hold) -- ack/rebuttal/delivery-receipt are all accepted-delivery
+    records.
 
     `CLASSIFY_KIND_EXCHANGE_TWIN` -- an ordinary served-half capsule that
     carries a `twin_bracket_id` under its own `x-mesh-poc-v1.
@@ -712,6 +730,8 @@ def classify_capsule_kind(capsule: dict[str, Any]) -> str | None:
     relation = ((capsule.get("chain") or {}).get("relation"))
     if relation == RELATION_ADJUDICATES:
         return CLASSIFY_KIND_ADJUDICATION
+    if relation == _RELATION_ADJUDICATION_DELIVERY_RECEIPT:
+        return CLASSIFY_KIND_DELIVERY_RECEIPT
     if relation == _RELATION_ADJUDICATION_ACK:
         return CLASSIFY_KIND_ACK
     if relation == _RELATION_ADJUDICATION_REBUTTAL:
