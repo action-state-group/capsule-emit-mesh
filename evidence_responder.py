@@ -43,10 +43,49 @@ reason, see ``adjudication_delivery.py``) -> ``WITHHELD``;
 ``reason=request_malformed`` stays a bare refusal reason -- no additive
 status, since a request this door could not even parse was never resolved
 one way or the other.
+
+**[mesh-sharing-policy-v0] relationship policy for `record`/`correlation`/
+`chain_segment`.** Before today, this door answered every well-formed
+request from anyone -- structurally correct (a malformed/absent subject was
+always refused), but with no OPERATOR policy at all. ``handle_evidence_request``
+now takes two new, both-optional keyword args: ``requester_id`` (a
+self-declared identity string the caller supplies out of band -- e.g.
+``evidence_server.py``'s ``X-Mesh-Requester-Id`` header; ``None`` when the
+caller supplies none) and ``policy`` (a ``share_policy.SharePolicy``; when
+``None``, the gate below never runs at all -- see ``share_policy``'s own
+"backward-compatible by construction" note). When ``policy`` IS supplied,
+every ``record``/``correlation``/``chain_segment`` request is classified by
+:func:`classify_relationship` and checked against ``policy.history_segments``
+via :func:`relationship_allowed`; a disallowed request is refused
+``not_authorized``, signed with this node's own key like every other
+refusal here.
+
+Identity here is exactly as self-attested as everything else this system
+already trusts a claim about (``counterparty_ref``, ``requesting_party`` --
+see ``ask_history.py``'s own ``_COUNTERPARTY_NAMING_KEYS``): this gate is an
+operator policy knob (spam/scope reduction), never an access-control
+boundary -- a stranger who lies about being a counterparty still cannot
+produce a real capsule id or correlation value it has no honest way to
+know, and gains nothing a ``peers``-tier operator wouldn't have handed it
+anyway. Never a score, never a computed standing -- see ``share_policy``'s
+module docstring.
+
+``chain_segment`` is additionally dispatched OUTSIDE ``answer()`` now (see
+:func:`_handle_chain_segment_request`), so this module's own
+:func:`classify_leaf_kind` -- not ``capsule_emit.chain_segment``'s generic
+default -- names a twin-bracketed leaf ``exchange_twin``. Known, honest
+scope limit: this path does not (yet) honor ``coverage.min_freshness`` (it
+does honor ``coverage.expected_pin``) -- the same class of deliberate
+scope-cut as this module's own ``allow_forced_checkpoint`` note above.
 """
 from __future__ import annotations
 
+import hashlib
 from typing import Any
+
+from capsule_emit.evidence_request import Refusal
+
+from share_policy import SharePolicy
 
 #: The one derivation token this module dispatches on directly. Any other
 #: value (including ``None``) falls through to the generic bundle-based
@@ -60,12 +99,19 @@ STATUS_NOT_FOUND = "NOT_FOUND"
 STATUS_WITHHELD = "WITHHELD"
 STATUS_NOT_COMMITTED = "NOT_COMMITTED"
 
+#: [mesh-sharing-policy-v0] NEW reason, scoped to this responder's own
+#: relationship gate (mirrors `adjudication_delivery.REASON_POLICY_DECLINE`'s
+#: precedent of a new reason for a NEW responder decision, not one of E14's
+#: own closed `capsule_emit.evidence_request.REFUSAL_REASONS`).
+REASON_NOT_AUTHORIZED = "not_authorized"
+
 #: Refusal `reason` -> additive `status`. `request_malformed` is
 #: deliberately absent -- see the module docstring.
 _STATUS_BY_REFUSAL_REASON: dict[str, str] = {
     "no_such_record": STATUS_NOT_FOUND,
     "coverage_unsatisfiable": STATUS_NOT_COMMITTED,
     "policy_decline": STATUS_WITHHELD,
+    REASON_NOT_AUTHORIZED: STATUS_WITHHELD,
 }
 
 
@@ -214,26 +260,138 @@ def augment_evidence_answer_dict(d: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _refuse_served_summary(request_bytes: bytes, reason: str, *, state: Any, issued_at: str) -> Any:
-    """Sign a ``served_summary/1`` refusal with the SAME shape and the SAME
-    node key every other refusal/capsule from this sidecar carries.
-
+def _sign_refusal(request_digest: str, reason: str, *, signer: Any, issued_at: str) -> Refusal:
+    """Sign one ``Refusal`` against an already-resolved ``signer`` --
     ``capsule_emit.evidence_request._refuse`` is private and does exactly
     this three-line stub-then-sign dance; duplicated here rather than
     reached into, same precedent that module's own ``_record_exists`` cites
-    for not reaching into a sibling package's private helper.
-    """
-    import hashlib
-    import os
-
-    from capsule_emit import signing as _signing
-    from capsule_emit.evidence_request import Refusal
-
-    request_digest = hashlib.sha256(request_bytes).hexdigest()
-    signer = _signing.resolve_signer(os.fspath(state.ledger_dir), key_path=state.signing_key_path)
+    for not reaching into a sibling package's private helper. Shared by
+    every mesh-local refusal reason this module signs (``served_summary/1``,
+    ``not_authorized``, the ``chain_segment`` bypass path)."""
     stub = Refusal(request_digest=request_digest, reason=reason, issued_at=issued_at, key_id="", sig="")
     sig, key_id = signer.sign(stub.signing_body())
     return Refusal(request_digest=request_digest, reason=reason, issued_at=issued_at, key_id=key_id, sig=sig)
+
+
+def _resolve_state_signer(state: Any) -> Any:
+    import os
+
+    from capsule_emit import signing as _signing
+
+    return _signing.resolve_signer(os.fspath(state.ledger_dir), key_path=state.signing_key_path)
+
+
+def _refuse_served_summary(request_bytes: bytes, reason: str, *, state: Any, issued_at: str) -> Any:
+    """Sign a ``served_summary/1`` refusal with the SAME shape and the SAME
+    node key every other refusal/capsule from this sidecar carries."""
+    request_digest = hashlib.sha256(request_bytes).hexdigest()
+    signer = _resolve_state_signer(state)
+    return _sign_refusal(request_digest, reason, signer=signer, issued_at=issued_at)
+
+
+#: [mesh-sharing-policy-v0] fields a mesh capsule may name a counterparty
+#: node under -- the same free-form ``compute_attestation`` extension-data
+#: convention ``ask_history.py``'s own ``_COUNTERPARTY_NAMING_KEYS`` and
+#: ``capsule_emit.evidence_request``'s ``_CORRELATION_KEY_ALIASES["counterparty"]``
+#: already walk. Duplicated locally (both of those are module-private, and
+#: ``ask_history.py`` already imports THIS module -- see its own top matter --
+#: so importing back from it would be a cycle) rather than reached into.
+_COUNTERPARTY_NAMING_KEYS = frozenset({"requesting_party", "served_by_node_id", "counterparty_ref"})
+
+#: The subject kinds [mesh-sharing-policy-v0]'s relationship gate applies to
+#: -- ``range`` is deliberately excluded (out of this item's scope; the
+#: design note names only these three).
+RELATIONSHIP_GATED_SUBJECT_KINDS = frozenset({"record", "correlation", "chain_segment"})
+
+RELATIONSHIP_COUNTERPARTY = "counterparty"
+RELATIONSHIP_IDENTIFIED = "identified"
+RELATIONSHIP_STRANGER = "stranger"
+
+#: Which relationships each ``history_segments`` tier answers. ``off``
+#: answers nobody via this gate (a node that wants zero exposure, even to
+#: its own past counterparties, through this door); ``peers`` answers
+#: everyone, including a caller who declared no identity at all -- today's
+#: pre-[mesh-sharing-policy-v0] behavior, restored by explicit opt-in.
+_ALLOWED_RELATIONSHIPS_BY_TIER: dict[str, frozenset[str]] = {
+    "off": frozenset(),
+    "counterparties": frozenset({RELATIONSHIP_COUNTERPARTY}),
+    "prospective": frozenset({RELATIONSHIP_COUNTERPARTY, RELATIONSHIP_IDENTIFIED}),
+    "peers": frozenset({RELATIONSHIP_COUNTERPARTY, RELATIONSHIP_IDENTIFIED, RELATIONSHIP_STRANGER}),
+}
+
+
+def _iter_values_by_key(obj: Any, keys: frozenset[str]) -> Any:
+    """Recursively walk *obj* (a JSON-decoded capsule record -- nested
+    dicts/lists only) and yield every string value found under a key in
+    *keys*, at any depth -- same generic walk as
+    ``capsule_emit.evidence_request._iter_values_by_key``, duplicated per
+    this module's own "duplicated here rather than reached into" precedent
+    (that one is private too)."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in keys and isinstance(v, str):
+                yield v
+            yield from _iter_values_by_key(v, keys)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _iter_values_by_key(item, keys)
+
+
+def classify_relationship(requester_id: str | None, ledger_entries: list[dict[str, Any]]) -> str:
+    """This node's own, LOCALLY-CHECKABLE relationship to ``requester_id``:
+
+    * ``stranger`` -- no identity was declared at all (``requester_id`` is
+      ``None``/empty). The only case this function can be certain of without
+      looking anything up.
+    * ``counterparty`` -- ``requester_id`` names a party this node has a
+      past exchange record with (walks ``_COUNTERPARTY_NAMING_KEYS`` over
+      every entry, same fields ``ask_history.py``'s own reference-discovery
+      walk already trusts).
+    * ``identified`` -- ``requester_id`` was declared but matches no past
+      exchange this node holds.
+
+    Identity is exactly as self-attested as everything else this vocabulary
+    already trusts a claim about (see the module docstring's "relationship
+    policy" note) -- this function never verifies a signature over
+    ``requester_id``, because the wire carries none to verify.
+    """
+    if not requester_id:
+        return RELATIONSHIP_STRANGER
+    for entry in ledger_entries:
+        if requester_id in _iter_values_by_key(entry, _COUNTERPARTY_NAMING_KEYS):
+            return RELATIONSHIP_COUNTERPARTY
+    return RELATIONSHIP_IDENTIFIED
+
+
+def relationship_allowed(relationship: str, history_segments_tier: str) -> bool:
+    """Whether a caller classified as *relationship* gets an answer under
+    *history_segments_tier* -- see ``_ALLOWED_RELATIONSHIPS_BY_TIER``."""
+    return relationship in _ALLOWED_RELATIONSHIPS_BY_TIER[history_segments_tier]
+
+
+def classify_leaf_kind(entry: dict[str, Any]) -> str:
+    """[mesh-sharing-policy-v0] this repo's own ``chain_segment`` leaf
+    vocabulary: everything ``capsule_emit.chain_segment``'s own
+    ``_default_classify`` already names (``stamp``, ``adjudication``,
+    generic ``capsule``) PLUS ``exchange_twin`` for a leaf carrying an
+    ``x-mesh-poc-v1.twin_bracket_id`` -- "a half carrying a bracket id, one
+    classifier line, no new record" (design note §3). Duplicates
+    ``_default_classify``'s own three lines rather than importing it
+    (private) -- same precedent as this module's other private-helper
+    duplications.
+    """
+    kind = entry.get("kind")
+    if kind:
+        return "stamp" if kind == "checkpoint_stamp" else str(kind)
+    chain = entry.get("chain")
+    if isinstance(chain, dict) and chain.get("relation") == "adjudicates":
+        return "adjudication"
+    twin_bracket_id = (
+        ((entry.get("model_attestation") or {}).get("compute_attestation") or {}).get("x-mesh-poc-v1") or {}
+    ).get("twin_bracket_id")
+    if twin_bracket_id:
+        return "exchange_twin"
+    return "capsule"
 
 
 def _read_jsonl(path: Any) -> list[dict[str, Any]]:
@@ -268,7 +426,59 @@ def _handle_served_summary_request(state: Any, request_bytes: bytes, req: Any, *
     return _refuse_served_summary(request_bytes, reason, state=state, issued_at=issued_at)
 
 
-def handle_evidence_request(state: Any, request_bytes: bytes, *, now: str | None = None) -> Any:
+def _handle_chain_segment_request(state: Any, request_bytes: bytes, req: Any, *, issued_at: str) -> Any:
+    """[mesh-sharing-policy-v0] ``chain_segment`` dispatched OUTSIDE
+    ``answer()``, so this responder's own :func:`classify_leaf_kind` names
+    leaves -- never ``capsule_emit.chain_segment``'s generic default. Honors
+    ``coverage.expected_pin`` (same semantics as ``answer()``'s own check);
+    deliberately does NOT honor ``coverage.min_freshness`` yet -- see the
+    module docstring's scope note. Never paged (a chain segment is
+    O(checkpoints), same as ``answer()``'s own chain_segment leg).
+    """
+    from capsule_emit.chain_segment import ChainSegmentError
+    from capsule_emit.chain_segment import chain_segment as _chain_segment_fn
+    from capsule_emit.evidence_request import Artifact
+    from ledger_store_backend import read_all_capsules
+
+    request_digest = hashlib.sha256(request_bytes).hexdigest()
+    signer = _resolve_state_signer(state)
+    entries, _archived_segments = read_all_capsules(state.ledger_dir)
+    if not entries:
+        return _sign_refusal(request_digest, "no_such_record", signer=signer, issued_at=issued_at)
+
+    subject = req.subject
+    try:
+        segment = _chain_segment_fn(
+            entries,
+            from_size=subject.get("from_size"),
+            to_size=subject.get("to_size"),
+            last=subject.get("last"),
+            self_owner_id=signer.key_id,
+            leaf_digests=bool(subject.get("leaf_digests", False)),
+            classify=classify_leaf_kind,
+        )
+    except ChainSegmentError:
+        return _sign_refusal(request_digest, "coverage_unsatisfiable", signer=signer, issued_at=issued_at)
+
+    expected_pin = (req.coverage or {}).get("expected_pin")
+    if expected_pin is not None:
+        pin_matches = (
+            segment.checkpoint.mmr_size == expected_pin["mmr_size"] and segment.checkpoint.root == expected_pin["root"]
+        )
+        if not pin_matches:
+            return _sign_refusal(request_digest, "coverage_unsatisfiable", signer=signer, issued_at=issued_at)
+
+    return Artifact(v=1, subject_kind="chain_segment", bundles=(segment,))
+
+
+def handle_evidence_request(
+    state: Any,
+    request_bytes: bytes,
+    *,
+    now: str | None = None,
+    requester_id: str | None = None,
+    policy: SharePolicy | None = None,
+) -> Any:
     """Answer one evidence request against ``state``'s own ledger.
 
     Returns a ``capsule_emit.evidence_request.Artifact``/``Refusal``, or —
@@ -285,10 +495,17 @@ def handle_evidence_request(state: Any, request_bytes: bytes, *, now: str | None
     automatically — no code change needed to get the safe behavior; wiring
     an explicit opt-in is a separate follow-up for whenever a node actually
     wants one.
+
+    ``requester_id``/``policy`` — see the module docstring's
+    "[mesh-sharing-policy-v0] relationship policy" note. Both default to
+    ``None``, which reproduces this function's exact pre-existing behavior
+    (every existing caller that predates this gate is unaffected).
     """
+    from datetime import datetime, timezone
+
     from capsule_emit.evidence_request import RequestMalformedError, answer, parse_request
 
-    from ledger_store_backend import materialize_flat_view
+    from ledger_store_backend import materialize_flat_view, read_all_capsules
 
     # [mesh-fabric-vocab-alignment] side-effecting only -- see
     # log_request_purpose's docstring for the caller-invariance guarantee.
@@ -301,6 +518,23 @@ def handle_evidence_request(state: Any, request_bytes: bytes, *, now: str | None
 
     if req is not None and req.derivation == SERVED_SUMMARY_DERIVATION_TOKEN:
         return _handle_served_summary_request(state, request_bytes, req, now=now)
+
+    issued_at = now or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    if (
+        policy is not None
+        and req is not None
+        and req.subject.get("kind") in RELATIONSHIP_GATED_SUBJECT_KINDS
+    ):
+        ledger_entries, _archived_segments = read_all_capsules(state.ledger_dir)
+        relationship = classify_relationship(requester_id, ledger_entries)
+        if not relationship_allowed(relationship, policy.history_segments):
+            request_digest = hashlib.sha256(request_bytes).hexdigest()
+            signer = _resolve_state_signer(state)
+            return _sign_refusal(request_digest, REASON_NOT_AUTHORIZED, signer=signer, issued_at=issued_at)
+
+    if req is not None and req.subject.get("kind") == "chain_segment":
+        return _handle_chain_segment_request(state, request_bytes, req, issued_at=issued_at)
 
     # [mesh-ledger-store-migration] answer() only understands a flat JSONL
     # file -- materialize_flat_view is a no-op passthrough for a still-flat
