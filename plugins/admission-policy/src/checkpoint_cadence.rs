@@ -2,11 +2,15 @@
 //! `capsule_producer::checkpoint::CheckpointState` over this node's ledger,
 //! replacing `checkpoint_daemon.py` once a node opts in.
 //!
-//! **Off by default, node-by-node cutover (`[mesh-plugin-checkpoint-cadence]`,
-//! `docs/DESIGN-fold-sidecar-into-plugin.md`).** `checkpoint_daemon.py`
-//! keeps checkpointing a node's ledger on the same files until the operator
-//! sets [`ENV_ENABLE`] to `"on"`. The two must NEVER run against the same
-//! `ledger_dir` at once -- both would append lines to the same
+//! **On by default (`[mesh-closed-on-frozen-base]` change (5), Steven
+//! 2026-09-25), witness off.** Earlier this was off by default for a
+//! node-by-node cutover (`[mesh-plugin-checkpoint-cadence]`,
+//! `docs/DESIGN-fold-sidecar-into-plugin.md`); now a node checkpoints its own
+//! ledger locally out of the box so Integrity shows a real chain rather than
+//! "no checkpoint yet". Set [`ENV_ENABLE`] to `"off"` to disable. The operator
+//! MUST set it off on any node where `checkpoint_daemon.py` still anchors the
+//! SAME `ledger_dir`: the two must NEVER run against the same `ledger_dir` at
+//! once -- both would append lines to the same
 //! `checkpoints.jsonl` and race each other's chain. This is an operator
 //! choice, not something this task can detect and refuse safely (a lock
 //! file would only catch a same-host double-run, not a daemon started on a
@@ -43,9 +47,16 @@ const ENV_CADENCE_ENTRIES: &str = "ADMISSION_POLICY_CHECKPOINT_CADENCE_ENTRIES";
 const ENV_WITNESS_URLS: &str = "ADMISSION_POLICY_CHECKPOINT_WITNESS_URLS";
 
 pub fn is_enabled() -> bool {
+    // On by default (`[mesh-closed-on-frozen-base]` change (5), Steven 2026-09-25:
+    // local checkpoint cadence on, witness off -- `CheckpointCadenceConfig`'s
+    // empty `witness_urls` keeps anchoring off -- so a node's Integrity shows a
+    // real local checkpoint chain instead of "no checkpoint yet"). Set
+    // `ADMISSION_POLICY_CHECKPOINT_CADENCE=off` to disable, which an operator
+    // MUST do on any node where `checkpoint_daemon.py` still anchors the SAME
+    // `ledger_dir` -- the two must never run together (see the module header).
     std::env::var(ENV_ENABLE)
-        .map(|v| v == "on")
-        .unwrap_or(false)
+        .map(|v| v != "off")
+        .unwrap_or(true)
 }
 
 fn config_from_env() -> CheckpointCadenceConfig {
