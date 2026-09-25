@@ -62,6 +62,30 @@ has the requester counter-sign or acknowledge the provider's `capsule_id` as
 its own claim (that would be `cross_party.counterparty_ref`) — it only cites
 the provider's bytes by digest, the {{xref}} mechanism, nothing more.
 
+CORRELATION FALLBACK ([mesh-reconcile-join-request-digest], 2026-09-25):
+`exchange_id` is host-minted — each host mints its OWN id for the same real
+exchange, so two cross-node halves routinely carry DIFFERENT `exchange_id`
+values even though they attest the identical exchange (the same finding
+`provenance_fold_join.py`'s module docstring already made for a different
+join, verified against a real host). The join order is `exchange_id` ->
+`request_digest` -> `twin_bracket_id`: try `exchange_id` first (cheapest,
+host-native); when it does not correlate the two halves, fall back to
+`compute_attestation.agent_input_digest` (the canonical digest of the request
+body, independently computed by both producers over the same wire bytes —
+the same correlator `provenance_fold_join.py` already uses as its PRIMARY
+key). `twin_bracket_id` is carried and recorded as a THIRD key when both
+halves happen to share one, but is NEVER itself a join requirement or a
+fallback key: it names which twin duel an exchange belongs to, a different
+relationship than "these two halves are the same exchange". A pair that
+correlates by `request_digest` alone is exactly as eligible for the CLOSED
+gate as one that correlates by `exchange_id` — the join key never changes the
+gate (bytes held + signature verifies + committed digests equal).
+`join_served_request()` still refuses — as `ConflictingCorrelationError`,
+distinct from `ExchangeIdMismatchError` — when `exchange_id` agrees but the
+two halves' `agent_input_digest` values disagree: an equal host-minted id can
+never override a real digest mismatch, since joining anyway would fabricate a
+same-exchange relationship the wire bytes themselves contradict.
+
 WHAT THIS IS NOT
   - NOT a real-time capture path. `build_capsule` (capsule_sidecar.py) seals
     each half at request/response time, before either side could possibly
@@ -96,6 +120,7 @@ __all__ = [
     "REFERENCE_DIGEST_ALG",
     "REFERENCE_TYPE_CAPSULE",
     "SIG_ALG",
+    "ConflictingCorrelationError",
     "ExchangeIdMismatchError",
     "JoinerNotRequesterError",
     "RoleMismatchError",
@@ -188,11 +213,27 @@ class RoleMismatchError(ValueError):
 
 
 class ExchangeIdMismatchError(ValueError):
-    """The two halves do not share one `serving_provenance.exchange_id`.
+    """Neither `exchange_id` nor the `request_digest` fallback correlates the
+    two halves (the join order: `exchange_id` -> `request_digest` ->
+    `twin_bracket_id` — see the module docstring's CORRELATION FALLBACK
+    section; `twin_bracket_id` is never itself a fallback key).
 
     Joining two capsules from DIFFERENT exchanges would fabricate a
     served<->request relationship that never happened at the wire — refused
     rather than minted.
+    """
+
+
+class ConflictingCorrelationError(ValueError):
+    """The two halves' `exchange_id` values agree, but their
+    `compute_attestation.agent_input_digest` (`request_digest`) values do
+    not — the CONFLICTING state, distinct from `ExchangeIdMismatchError`'s
+    "no correlator agrees at all".
+
+    An equal host-minted `exchange_id` can never override a real digest
+    disagreement: joining anyway would assert a same-exchange relationship
+    the wire bytes themselves contradict. Refused rather than minted; the
+    join key never changes the gate.
     """
 
 
@@ -219,9 +260,24 @@ class SignerMismatchError(ValueError):
     """
 
 
+def _compute_attestation(capsule: dict[str, Any]) -> dict[str, Any]:
+    return (capsule.get("model_attestation") or {}).get("compute_attestation") or {}
+
+
 def _serving_provenance(capsule: dict[str, Any]) -> dict[str, Any]:
-    poc = ((capsule.get("model_attestation") or {}).get("compute_attestation") or {}).get("x-mesh-poc-v1") or {}
+    poc = _compute_attestation(capsule).get("x-mesh-poc-v1") or {}
     return poc.get("serving_provenance") or {}
+
+
+def _agent_input_digest(capsule: dict[str, Any]) -> str | None:
+    """The canonical request-body digest (`request_digest`), sealed as
+    `compute_attestation.agent_input_digest` — a SIBLING of `x-mesh-poc-v1`,
+    not nested inside it (see `capsule_sidecar.py`'s emission site). The same
+    field, same correlator `provenance_fold_join._agent_input_digest()` reads
+    for its own (same-node, different-producers) join — here used as the
+    `exchange_id` join's fallback key, per the module docstring's
+    CORRELATION FALLBACK section."""
+    return _compute_attestation(capsule).get("agent_input_digest")
 
 
 def _asserted_by_node_id(joined_capsule: dict[str, Any]) -> str | None:
@@ -305,12 +361,16 @@ def join_served_request(
 
     Raises :class:`UnverifiableHalfError` if either half fails its own
     `verify()`, :class:`RoleMismatchError` if the two arguments are not the
-    roles they claim, :class:`ExchangeIdMismatchError` if they do not share
-    one `exchange_id`, and :class:`JoinerNotRequesterError` if
-    *joiner_node_id* is not the node the requester half itself names as the
-    requesting party — never silently joins two records that should not be
-    joined, and never lets a party mint a join claiming to have been a
-    requester it was not.
+    roles they claim, :class:`JoinerNotRequesterError` if *joiner_node_id* is
+    not the node the requester half itself names as the requesting party,
+    :class:`ExchangeIdMismatchError` if neither `exchange_id` nor the
+    `request_digest` fallback correlates the two halves, and
+    :class:`ConflictingCorrelationError` if `exchange_id` agrees but
+    `request_digest` does not (see the module docstring's CORRELATION
+    FALLBACK section for the `exchange_id` -> `request_digest` ->
+    `twin_bracket_id` join order) — never silently joins two records that
+    should not be joined, and never lets a party mint a join claiming to have
+    been a requester it was not.
     """
     for half, label in ((provider_capsule, "provider"), (requester_capsule, "requester")):
         result = verify_capsule(half)
@@ -339,29 +399,76 @@ def join_served_request(
 
     provider_exchange_id = _serving_provenance(provider_capsule).get("exchange_id")
     requester_exchange_id = _serving_provenance(requester_capsule).get("exchange_id")
-    if not provider_exchange_id or provider_exchange_id != requester_exchange_id:
+    exchange_id_correlates = bool(provider_exchange_id) and provider_exchange_id == requester_exchange_id
+
+    provider_request_digest = _agent_input_digest(provider_capsule)
+    requester_request_digest = _agent_input_digest(requester_capsule)
+    request_digest_correlates = bool(provider_request_digest) and provider_request_digest == requester_request_digest
+
+    if exchange_id_correlates:
+        # CONFLICTING (design doc §9): an agreeing host-minted exchange_id
+        # must never override a real digest disagreement -- both producers
+        # independently computed agent_input_digest over the same wire
+        # bytes, so if they disagree the halves describe DIFFERENT requests
+        # regardless of what the host chose to call them.
+        if provider_request_digest and requester_request_digest and not request_digest_correlates:
+            raise ConflictingCorrelationError(
+                f"exchange_id {requester_exchange_id!r} agrees, but provider "
+                f"request_digest {provider_request_digest!r} != requester "
+                f"request_digest {requester_request_digest!r} -- CONFLICTING, "
+                f"refusing to join"
+            )
+        join_key = "exchange_id"
+    elif request_digest_correlates:
+        # Fallback (join order: exchange_id -> request_digest ->
+        # twin_bracket_id): each host mints its own exchange_id, so
+        # cross-node halves routinely never share one even for the same
+        # real exchange -- request_digest is the correlator that survives.
+        join_key = "request_digest"
+    else:
         raise ExchangeIdMismatchError(
-            f"provider exchange_id {provider_exchange_id!r} != "
-            f"requester exchange_id {requester_exchange_id!r} -- refusing to join"
+            f"provider exchange_id {provider_exchange_id!r} != requester "
+            f"exchange_id {requester_exchange_id!r}, and provider "
+            f"request_digest {provider_request_digest!r} != requester "
+            f"request_digest {requester_request_digest!r} -- neither "
+            f"correlator agrees, refusing to join"
         )
 
-    compute_attestation = {
-        "served_request_join": {
-            "schema": JOIN_SCHEMA,
-            # Carried directly (not just reachable by dereferencing
-            # chain.parent_capsule_id) so a stranger reading only this join
-            # capsule already knows which exchange it is about.
-            "exchange_id": requester_exchange_id,
-            # HONESTY GRADE, sealed INTO the join itself (same discipline as
-            # node_ownership.seal_identity_capsule's identity_limitation):
-            # who is making this specific assertion, and what that assertion
-            # does and does not prove. Committed to capsule_id below, so
-            # tampering either field post-seal is caught by verify() same as
-            # tampering `references`.
-            "asserted_by_node_id": joiner_node_id,
-            "assertion_limitation": JOIN_ASSERTION_CAVEAT,
-        }
+    # twin_bracket_id: recorded as a THIRD key, exactly when both halves
+    # happen to carry the identical value -- never required, never itself a
+    # join/fallback key (see the module docstring's CORRELATION FALLBACK
+    # section: it names a twin duel, a different relationship than "these
+    # two halves are the same exchange").
+    provider_twin_bracket_id = _serving_provenance(provider_capsule).get("twin_bracket_id")
+    requester_twin_bracket_id = _serving_provenance(requester_capsule).get("twin_bracket_id")
+    twin_bracket_id_agrees = (
+        bool(provider_twin_bracket_id) and provider_twin_bracket_id == requester_twin_bracket_id
+    )
+
+    served_request_join_block: dict[str, Any] = {
+        "schema": JOIN_SCHEMA,
+        "join_key": join_key,
     }
+    # Carried directly (not just reachable by dereferencing
+    # chain.parent_capsule_id) so a stranger reading only this join capsule
+    # already knows which correlators the two halves actually agreed on --
+    # only correlators that agree are recorded, never a fabricated shared
+    # value for one that didn't.
+    if exchange_id_correlates:
+        served_request_join_block["exchange_id"] = requester_exchange_id
+    if request_digest_correlates:
+        served_request_join_block["request_digest"] = requester_request_digest
+    if twin_bracket_id_agrees:
+        served_request_join_block["twin_bracket_id"] = requester_twin_bracket_id
+    # HONESTY GRADE, sealed INTO the join itself (same discipline as
+    # node_ownership.seal_identity_capsule's identity_limitation): who is
+    # making this specific assertion, and what that assertion does and does
+    # not prove. Committed to capsule_id below, so tampering either field
+    # post-seal is caught by verify() same as tampering `references`.
+    served_request_join_block["asserted_by_node_id"] = joiner_node_id
+    served_request_join_block["assertion_limitation"] = JOIN_ASSERTION_CAVEAT
+
+    compute_attestation = {"served_request_join": served_request_join_block}
     disposition = Disposition(
         decision="accept",
         approver="policy",

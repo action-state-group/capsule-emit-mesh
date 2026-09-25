@@ -81,7 +81,7 @@ def _state(tmp_path: Path, *, role: str, node_id: str) -> "cs.NodeState":
     )
 
 
-def _seal(state: "cs.NodeState", response_json: dict) -> dict:
+def _seal(state: "cs.NodeState", response_json: dict, *, request_digest: str = "a" * 64) -> dict:
     cs_mod, _ = _real_modules()
     exchange_id, source = cs_mod.exchange_id_from_response(response_json)
     return cs_mod.build_capsule(
@@ -89,7 +89,7 @@ def _seal(state: "cs.NodeState", response_json: dict) -> dict:
         client_nonce="n" * 32,
         client_nonce_source="client_supplied",
         request_json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "temperature": 0.2},
-        request_digest="a" * 64,
+        request_digest=request_digest,
         status="confirmed",
         response_digest=cs_mod.digest_json(response_json),
         verdict_class="executed",
@@ -98,6 +98,23 @@ def _seal(state: "cs.NodeState", response_json: dict) -> dict:
         exchange_id=exchange_id,
         exchange_id_source=source,
     )
+
+
+def _with_twin_bracket_id(capsule: dict, twin_bracket_id: str) -> dict:
+    """A real sealed capsule carries no `twin_bracket_id` from the Python
+    sidecar path (host-forwarded, Rust-plugin-only field — see
+    `served_request_join.py`'s CORRELATION FALLBACK docstring section). To
+    exercise the third-key recording without a live host, patch it into a
+    copy's own `serving_provenance` and recompute `capsule_id` over the
+    resulting bytes — the same "still self-consistent, still verify()-clean"
+    shape a real Rust-sealed capsule would have, never a tampered one."""
+    from agent_action_capsule.canonical import compute_capsule_id
+
+    patched = copy.deepcopy(capsule)
+    poc = patched["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]
+    poc["serving_provenance"]["twin_bracket_id"] = twin_bracket_id
+    patched["capsule_id"] = compute_capsule_id(patched)
+    return patched
 
 
 def _pubkey_pem(state: "cs.NodeState") -> bytes:
@@ -264,14 +281,94 @@ def test_stripping_references_fails_verify(tmp_path: Path) -> None:
 
 
 def test_refuses_when_exchange_ids_differ(tmp_path: Path) -> None:
+    """Neither correlator agrees: distinct exchange_ids AND distinct
+    request_digests -- genuinely two different exchanges, refused."""
     _, srj_mod = _real_modules()
     provider_state = _state(tmp_path, role=cs.ROLE_PROVIDER, node_id="prov-1")
     requester_state = _state(tmp_path, role=cs.ROLE_REQUESTER, node_id="req-1")
-    provider_capsule = _seal(provider_state, _response("chatcmpl-exchange-a"))
-    requester_capsule = _seal(requester_state, _response("chatcmpl-exchange-b"))
+    provider_capsule = _seal(provider_state, _response("chatcmpl-exchange-a"), request_digest="a" * 64)
+    requester_capsule = _seal(requester_state, _response("chatcmpl-exchange-b"), request_digest="b" * 64)
 
     with pytest.raises(srj_mod.ExchangeIdMismatchError):
         srj_mod.join_served_request(provider_capsule, requester_capsule, joiner_node_id="req-1")
+
+
+# ---------------------------------------------------------------------------
+# 3b. request_digest fallback [mesh-reconcile-join-request-digest] -- the
+#     join order is exchange_id -> request_digest -> twin_bracket_id, wired
+#     because each host mints its own exchange_id: cross-node halves for the
+#     SAME real exchange routinely carry DIFFERENT exchange_id values, the
+#     same M4/M3-tour scenario (distinct exchange_ids, same request_digest).
+# ---------------------------------------------------------------------------
+
+
+def test_joins_via_request_digest_fallback_when_exchange_ids_differ(tmp_path: Path) -> None:
+    _, srj_mod = _real_modules()
+    provider_state = _state(tmp_path, role=cs.ROLE_PROVIDER, node_id="prov-1")
+    requester_state = _state(tmp_path, role=cs.ROLE_REQUESTER, node_id="req-1")
+    shared_request_digest = "d" * 64
+    provider_capsule = _seal(
+        provider_state, _response("chatcmpl-m4-exchange"), request_digest=shared_request_digest
+    )
+    requester_capsule = _seal(
+        requester_state, _response("chatcmpl-m3-exchange"), request_digest=shared_request_digest
+    )
+
+    joined = srj_mod.join_served_request(provider_capsule, requester_capsule, joiner_node_id="req-1")
+
+    from agent_action_capsule.verify import verify as verify_capsule
+
+    result = verify_capsule(joined)
+    assert result.ok, result.findings
+
+    block = joined["model_attestation"]["compute_attestation"]["served_request_join"]
+    assert block["join_key"] == "request_digest"
+    assert block["request_digest"] == shared_request_digest
+    assert "exchange_id" not in block
+
+
+def test_refuses_conflicting_when_exchange_id_agrees_but_request_digest_differs(tmp_path: Path) -> None:
+    """CONFLICTING (design doc §9): equal exchange_id, unequal request_digest
+    -- refused, not silently joined on the weaker (host-minted, relay-
+    visible) correlator."""
+    _, srj_mod = _real_modules()
+    provider_state = _state(tmp_path, role=cs.ROLE_PROVIDER, node_id="prov-1")
+    requester_state = _state(tmp_path, role=cs.ROLE_REQUESTER, node_id="req-1")
+    response = _response("chatcmpl-conflicting-exchange")
+    provider_capsule = _seal(provider_state, response, request_digest="a" * 64)
+    requester_capsule = _seal(requester_state, response, request_digest="b" * 64)
+
+    with pytest.raises(srj_mod.ConflictingCorrelationError):
+        srj_mod.join_served_request(provider_capsule, requester_capsule, joiner_node_id="req-1")
+
+
+def test_twin_bracket_id_recorded_as_third_key_when_both_halves_carry_it(tmp_path: Path) -> None:
+    """twin_bracket_id is recorded as a supplementary third key when both
+    halves happen to share it -- never required for the join to succeed."""
+    _, srj_mod = _real_modules()
+    provider_capsule, requester_capsule = _halves(tmp_path)
+    provider_capsule = _with_twin_bracket_id(provider_capsule, "twin-shared")
+    requester_capsule = _with_twin_bracket_id(requester_capsule, "twin-shared")
+
+    joined = srj_mod.join_served_request(provider_capsule, requester_capsule, joiner_node_id="req-1")
+
+    block = joined["model_attestation"]["compute_attestation"]["served_request_join"]
+    assert block["join_key"] == "exchange_id"
+    assert block["twin_bracket_id"] == "twin-shared"
+
+
+def test_twin_bracket_id_never_required_when_only_one_half_carries_it(tmp_path: Path) -> None:
+    """A half with no twin_bracket_id at all (the common, non-twin case)
+    must never block or degrade a join that otherwise correlates."""
+    _, srj_mod = _real_modules()
+    provider_capsule, requester_capsule = _halves(tmp_path)
+    provider_capsule = _with_twin_bracket_id(provider_capsule, "twin-only-on-provider")
+
+    joined = srj_mod.join_served_request(provider_capsule, requester_capsule, joiner_node_id="req-1")
+
+    block = joined["model_attestation"]["compute_attestation"]["served_request_join"]
+    assert block["join_key"] == "exchange_id"
+    assert "twin_bracket_id" not in block
 
 
 def test_refuses_when_arguments_are_swapped(tmp_path: Path) -> None:
