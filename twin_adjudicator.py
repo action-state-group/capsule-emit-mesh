@@ -158,7 +158,12 @@ __all__ = [
     "RefereeIdentity",
     "RefereeResult",
     "UnattributableRefereeError",
+    "CLASSIFY_KIND_ACK",
+    "CLASSIFY_KIND_ADJUDICATION",
+    "CLASSIFY_KIND_EXCHANGE_TWIN",
+    "CLASSIFY_KIND_REBUTTAL",
     "adjudicate",
+    "classify_capsule_kind",
     "compare_transcripts",
     "contradicted",
     "seal_adjudication_capsule",
@@ -653,6 +658,68 @@ def _verify_preimage_or_raise(label: str, half: AdjudicationHalf) -> None:
             f"{label} ({half.capsule_id[:16]}…): disclosed response digest {recomputed!r} "
             f"!= declared response_digest {declared!r} -- refusing to compare unverified bytes"
         )
+
+
+#: [mesh-adjudications-on-history-card-design] The chain-segment leaf-kind
+#: classifier's own vocabulary for this module's record shapes -- see
+#: `classify_capsule_kind`. Named here (not in `history_card.py`) because
+#: this module owns the record shapes being classified; `history_card.py`
+#: imports these four rather than re-deriving them.
+CLASSIFY_KIND_ADJUDICATION = "adjudication"
+CLASSIFY_KIND_ACK = "ack"
+CLASSIFY_KIND_REBUTTAL = "rebuttal"
+CLASSIFY_KIND_EXCHANGE_TWIN = "exchange_twin"
+
+#: [mesh-adjudications-on-history-card-design] `chain.relation` values for
+#: the subject's own ack/rebuttal of a delivered adjudication, minted by
+#: `adjudication_delivery.seal_adjudication_ack` /
+#: `.seal_adjudication_rebuttal`. Named here VERBATIM rather than imported
+#: -- reaching into `adjudication_delivery` just for two strings would
+#: couple this module to that one's whole import surface (HTTP transport,
+#: signer resolution) for no benefit; `ask_history.py`'s own verdict-
+#: vocabulary constants cite the same precedent.
+_RELATION_ADJUDICATION_ACK = "adjudication_ack"
+_RELATION_ADJUDICATION_REBUTTAL = "adjudication_rebuttal"
+
+
+def classify_capsule_kind(capsule: dict[str, Any]) -> str | None:
+    """The chain-segment leaf-kind classifier HOOK for this module's own
+    record shapes (design note `_work/mesh-sharing-policy-history-and-money-
+    2026-09-24.md` §3's "leaf counts per checkpoint by kind"): one line per
+    kind, no new record type. Returns one of the four `CLASSIFY_KIND_*`
+    constants, or `None` when *capsule* is none of this module's kinds (an
+    ordinary served exchange, a card, a close record, ... -- classified
+    elsewhere, not here).
+
+    `CLASSIFY_KIND_ADJUDICATION` -- `chain.relation == RELATION_ADJUDICATES`,
+    this module's own verdict capsule (`seal_adjudication_capsule`).
+
+    `CLASSIFY_KIND_ACK` / `CLASSIFY_KIND_REBUTTAL` -- the JUDGED SUBJECT's
+    own record of an accepted/disputed delivered adjudication
+    (`adjudication_delivery.seal_adjudication_ack` /
+    `.seal_adjudication_rebuttal`). Distinct from
+    `RELATION_ADJUDICATION_ACK_REFUSED` (that module's existing
+    `adjudication_ack_refused` relation, for a delivery this node refused
+    to even hold) -- ack/rebuttal are the accepted-delivery path.
+
+    `CLASSIFY_KIND_EXCHANGE_TWIN` -- an ordinary served-half capsule that
+    carries a `twin_bracket_id` under its own `x-mesh-poc-v1.
+    serving_provenance` block (the id shared by both halves of an ambient
+    twin comparison, forwarded verbatim off the terminal envelope --
+    `[ledger-T11b-twin-bracket]`; never minted by this module). One
+    classifier line, no new record.
+    """
+    relation = ((capsule.get("chain") or {}).get("relation"))
+    if relation == RELATION_ADJUDICATES:
+        return CLASSIFY_KIND_ADJUDICATION
+    if relation == _RELATION_ADJUDICATION_ACK:
+        return CLASSIFY_KIND_ACK
+    if relation == _RELATION_ADJUDICATION_REBUTTAL:
+        return CLASSIFY_KIND_REBUTTAL
+    poc = ((capsule.get("model_attestation") or {}).get("compute_attestation") or {}).get("x-mesh-poc-v1") or {}
+    if (poc.get("serving_provenance") or {}).get("twin_bracket_id"):
+        return CLASSIFY_KIND_EXCHANGE_TWIN
+    return None
 
 
 def _half_role(half: AdjudicationHalf) -> str | None:

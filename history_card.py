@@ -73,6 +73,8 @@ from capsule_emit.checkpoint import CheckpointRecord
 from capsule_emit.checkpoint.cose_wire import verify_checkpoint_cose_offline
 from capsule_emit.numbers import float_to_str
 
+from twin_adjudicator import CLASSIFY_KIND_ACK, CLASSIFY_KIND_ADJUDICATION, CLASSIFY_KIND_REBUTTAL, classify_capsule_kind
+
 __all__ = [
     "HISTORY_CARD_SCHEMA",
     "HISTORY_SUBJECT_KEY",
@@ -98,6 +100,8 @@ __all__ = [
     "reconciliation_counts_from_ledger_dir",
     "with_peer_reconciliation",
     "with_references",
+    "adjudication_provenance_from_ledger",
+    "with_adjudications",
 ]
 
 #: forks_state values -- distinguish honest absence from unreadable/tampered state.
@@ -397,6 +401,42 @@ class HistoryCard:
     references_answered: int = 0
     adjudications_about_x: dict[str, int] = field(default_factory=dict)
     ack_refusals_about_x: int = 0
+    #: "never_asked" until `with_references()` has actually run at least
+    #: once; "asked" thereafter, REGARDLESS of whether `references_asked`
+    #: came back 0 (no candidates found) -- distinguishes "this card was
+    #: never asked to report on its references" from "it was asked and
+    #: found zero", the same discipline `forks_state` uses for
+    #: `forks_observed` ([mesh-forks-observed-integrity]). Without this, a
+    #: card whose enrichment step never ran and a card that genuinely asked
+    #: zero references both publish `asked: 0` -- indistinguishable, and the
+    #: design note's own "never 'never asked = zero'" rule would be violated
+    #: silently.
+    references_state: str = "never_asked"
+    #: [mesh-adjudications-on-history-card-design] provenance (a): verdicts
+    #: this node itself AUTHORED -- sealed locally, as requester or referee
+    #: (`twin_adjudicator.seal_adjudication_capsule`), never a verdict
+    #: delivered from elsewhere. Keyed by verdict KIND
+    #: (corroborated/contradicted/inconclusive -- the `contradicted:<owner>`
+    #: suffix is dropped, since from this node's own authored perspective
+    #: the owner is whichever party the verdict named, not this node).
+    #: Never merged with `delivered_adjudications` or `adjudications_about_x`
+    #: -- three provenances, three labels (design note §3).
+    authored_adjudications: dict[str, int] = field(default_factory=dict)
+    #: provenance (b): verdicts DELIVERED to this node (`deliver_to_subjects`,
+    #: default on -- every node a twin adjudication judges receives it) with
+    #: THIS node's own `ack`/`rebuttal` state. Keyed by verdict kind; each
+    #: value is `{"delivered": n, "acknowledged": k, "disputed": j,
+    #: "capsule_ids": {"delivered": [...], "acknowledged": [...],
+    #: "disputed": [...]}}`. `acknowledged + disputed <= delivered` (a
+    #: delivered verdict this node has not yet acked/rebutted counts toward
+    #: neither).
+    delivered_adjudications: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: "never_enriched" until `with_adjudications()` has run; "enriched"
+    #: thereafter -- same discipline as `references_state` above, for the
+    #: SAME reason: a card that was never asked to report on its own
+    #: authored/delivered adjudications must never publish empty dicts
+    #: indistinguishable from "asked, and there are none".
+    adjudications_state: str = "never_enriched"
 
     def core_account(self) -> CoreAccount | None:
         """The neutral-core `Account` this card is a view of: a
@@ -489,10 +529,30 @@ class HistoryCard:
                 "answered": self.references_answered,
                 "adjudications_about_x": dict(self.adjudications_about_x),
                 "ack_refusals_about_x": self.ack_refusals_about_x,
+                "state": self.references_state,
                 "note": (
                     "counts from live-asking a SAMPLE of this card's own counterparties "
                     "about a DIFFERENT node's history -- never derived from this log's own "
-                    "checkpoint chain; refusals are counted, never inferred"
+                    "checkpoint chain; refusals are counted, never inferred. state="
+                    "'never_asked' means this card was never enriched with with_references() "
+                    "-- NOT that zero references were asked."
+                ),
+            },
+            "adjudications": {
+                "authored": dict(self.authored_adjudications),
+                "delivered": {
+                    verdict_kind: _copy_delivered_entry(entry)
+                    for verdict_kind, entry in sorted(self.delivered_adjudications.items())
+                },
+                "state": self.adjudications_state,
+                "note": (
+                    "three provenances, never merged: 'authored' is this node's own verdicts, "
+                    "sealed locally as requester or referee; 'delivered' is verdicts about a "
+                    "twin this node was itself party to, with THIS node's own ack/rebuttal "
+                    "state; verdicts about a DIFFERENT node, learned by asking references, are "
+                    "under 'references.adjudications_about_x' above, never here. state="
+                    "'never_enriched' means this card was never enriched with "
+                    "with_adjudications() -- NOT that there are none."
                 ),
             },
             "not_a_score": (
@@ -587,7 +647,120 @@ def with_references(
         references_answered=references_answered,
         adjudications_about_x=dict(adjudications_about_x),
         ack_refusals_about_x=ack_refusals_about_x,
+        references_state="asked",
     )
+
+
+def with_adjudications(
+    card: HistoryCard,
+    *,
+    authored: dict[str, int],
+    delivered: dict[str, dict[str, Any]],
+) -> HistoryCard:
+    """Return a copy of `card` with the `[mesh-adjudications-on-history-
+    card-design]` provenance (a)/(b) fields folded in -- never mutates
+    `card`, same discipline as `with_peer_reconciliation`/`with_references`.
+    These come from this node's OWN ledger (see
+    `adjudication_provenance_from_ledger`), so -- like peer reconciliation
+    and references -- they sit outside `core_account()`/`verify()`'s scope:
+    folding them in never perturbs the cryptographically-verified chain-walk
+    properties.
+    """
+    return replace(
+        card,
+        authored_adjudications=dict(authored),
+        delivered_adjudications={k: _copy_delivered_entry(v) for k, v in delivered.items()},
+        adjudications_state="enriched",
+    )
+
+
+def _copy_delivered_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "delivered": entry.get("delivered", 0),
+        "acknowledged": entry.get("acknowledged", 0),
+        "disputed": entry.get("disputed", 0),
+        "capsule_ids": {
+            state: list(entry.get("capsule_ids", {}).get(state, [])) for state in ("delivered", "acknowledged", "disputed")
+        },
+    }
+
+
+def _verdict_bucket(verdict: str | None) -> str:
+    """The verdict-KIND bucket a card groups by -- drops the
+    `contradicted:<owner_id>` suffix (`"contradicted"`), same vocabulary
+    `ask_history._classify_receipt_for_x`'s tally already uses. `"unknown"`
+    for a capsule whose `adjudication` block carries no verdict at all
+    (should not occur for a capsule `classify_capsule_kind` already named
+    `CLASSIFY_KIND_ADJUDICATION`, but never crashes on a malformed one)."""
+    if verdict is None:
+        return "unknown"
+    if verdict.startswith("contradicted:"):
+        return "contradicted"
+    return verdict
+
+
+def adjudication_provenance_from_ledger(
+    capsule_lines: list[dict[str, Any]],
+) -> tuple[dict[str, int], dict[str, dict[str, Any]]]:
+    """Split every `chain.relation == "adjudicates"` capsule in
+    `capsule_lines` (this node's OWN ledger) into provenance (a) authored
+    vs. provenance (b) delivered-with-ack/rebuttal-state, using ONLY the
+    ledger's own structural content -- capsules carry no per-capsule
+    signature to check authorship against (`agent_action_capsule.emit()`
+    signs nothing at the capsule level; integrity comes from the checkpoint
+    chain over the whole log, not per-record) -- so authorship cannot be
+    read off a `key_id` field the way a checkpoint's can.
+
+    **The rule:** an adjudication capsule is DELIVERED (b) iff this SAME
+    ledger also holds an `ack` or `rebuttal` capsule citing it
+    (`chain.parent_capsule_id` == the adjudication's own `capsule_id`) --
+    exactly the record `deliver_to_subjects` calls for the JUDGED SUBJECT to
+    seal on an accepted delivery (`adjudication_delivery.seal_adjudication_
+    ack`/`.seal_adjudication_rebuttal`). An adjudication capsule with NO such
+    citation is AUTHORED (a) -- this node ran
+    `twin_adjudicator.seal_adjudication_capsule` itself, as requester or
+    referee; a referee never acks/rebuts its own verdict, so the absence of
+    a citation is itself the honest signal, never an assumption.
+
+    Returns `(authored, delivered)` in the shape `with_adjudications` takes
+    directly. `capsule_lines` may be a node's full ledger or any subset
+    (e.g. one `range` pull's bundles) -- this function never reaches outside
+    what it is given.
+    """
+    by_id = {c["capsule_id"]: c for c in capsule_lines if c.get("capsule_id")}
+
+    # ack/rebuttal citations, keyed by the adjudication capsule_id they cite.
+    citations: dict[str, list[tuple[str, str]]] = {}
+    for cid, capsule in by_id.items():
+        kind = classify_capsule_kind(capsule)
+        if kind not in (CLASSIFY_KIND_ACK, CLASSIFY_KIND_REBUTTAL):
+            continue
+        cited = (capsule.get("chain") or {}).get("parent_capsule_id")
+        if cited:
+            citations.setdefault(cited, []).append((kind, cid))
+
+    authored: dict[str, int] = {}
+    delivered: dict[str, dict[str, Any]] = {}
+    for cid, capsule in by_id.items():
+        if classify_capsule_kind(capsule) != CLASSIFY_KIND_ADJUDICATION:
+            continue
+        adjudication = ((capsule.get("model_attestation") or {}).get("compute_attestation") or {}).get("adjudication") or {}
+        bucket = _verdict_bucket(adjudication.get("verdict"))
+        own_citations = citations.get(cid, [])
+        if not own_citations:
+            authored[bucket] = authored.get(bucket, 0) + 1
+            continue
+        entry = delivered.setdefault(
+            bucket, {"delivered": 0, "acknowledged": 0, "disputed": 0, "capsule_ids": {"delivered": [], "acknowledged": [], "disputed": []}}
+        )
+        entry["delivered"] += 1
+        entry["capsule_ids"]["delivered"].append(cid)
+        for citing_kind, own_capsule_id in own_citations:
+            state = "acknowledged" if citing_kind == CLASSIFY_KIND_ACK else "disputed"
+            entry[state] += 1
+            entry["capsule_ids"][state].append(own_capsule_id)
+
+    return authored, delivered
 
 
 def node_id_from_key_id(key_id: str) -> str:
@@ -784,8 +957,16 @@ def verify_history_card(card_value: dict[str, Any], checkpoint_lines: list[dict[
     # overrides it).  We always fold the raw integer back as 0 for the unreadable
     # case -- to_value() will re-derive None from forks_state, matching what the
     # published card emitted.
+    # [mesh-adjudications-on-history-card-design]: the same fold applies to
+    # the `adjudications` block -- authored_adjudications/
+    # delivered_adjudications/adjudications_state live outside
+    # core_account() exactly like peer_reconciliation/references do (they
+    # come from this node's own ledger content, not the checkpoint chain),
+    # so an enriched card (produced by with_adjudications()) must fold its
+    # published values back in before the byte-for-byte comparison below.
     pr_block = card_value.get("peer_reconciliation") or {}
     refs_block = card_value.get("references") or {}
+    adj_block = card_value.get("adjudications") or {}
     published_forks_state = pr_block.get("forks_state", FORKS_STATE_ABSENT)
     # forks_observed in the published card is None when forks_state=="unreadable"
     # (to_value() emits null); fold back 0 in that case since to_value() will
@@ -800,6 +981,10 @@ def verify_history_card(card_value: dict[str, Any], checkpoint_lines: list[dict[
         references_answered=refs_block.get("answered", 0),
         adjudications_about_x=dict(refs_block.get("adjudications_about_x") or {}),
         ack_refusals_about_x=refs_block.get("ack_refusals_about_x", 0),
+        references_state=refs_block.get("state", "never_asked"),
+        authored_adjudications=dict(adj_block.get("authored") or {}),
+        delivered_adjudications={k: _copy_delivered_entry(v) for k, v in (adj_block.get("delivered") or {}).items()},
+        adjudications_state=adj_block.get("state", "never_enriched"),
     )
 
     errors: list[str] = []

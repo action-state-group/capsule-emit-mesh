@@ -34,6 +34,7 @@ if "model_identity" not in sys.modules:
 import pytest
 from agent_action_capsule.contracts import Disposition, EffectRecord
 from agent_action_capsule.emit import emit
+from agent_action_capsule.verify import verify as verify_capsule
 from capsule_emit.evidence_request import verify_refusal_offline
 from capsule_emit.ledger import read_ledger
 
@@ -41,10 +42,14 @@ import evidence_server as es
 from adjudication_delivery import (
     REASON_POLICY_DECLINE,
     REASON_REQUEST_MALFORMED,
+    RELATION_ADJUDICATION_ACK,
     RELATION_ADJUDICATION_ACK_REFUSED,
+    RELATION_ADJUDICATION_REBUTTAL,
     deliver_adjudication,
     handle_delivery,
+    seal_adjudication_ack,
     seal_adjudication_ack_refused,
+    seal_adjudication_rebuttal,
 )
 from checkpointing import JsonlLogSource
 from twin_adjudicator import adjudicate, contradicted, seal_adjudication_capsule
@@ -252,6 +257,69 @@ def test_ack_refused_capsule_cites_the_original_verdict(tmp_path):
     block = ack_refused["model_attestation"]["compute_attestation"]["adjudication_ack_refused"]
     assert block["adjudication_capsule_id"] == adjudication["capsule_id"]
     assert block["refusal"]["reason"] == REASON_POLICY_DECLINE
+
+
+# ---------------------------------------------------------------------------
+# seal_adjudication_ack / seal_adjudication_rebuttal -- the JUDGED SUBJECT's
+# own record of an ACCEPTED delivery (never a policy_decline)
+# ---------------------------------------------------------------------------
+
+
+def _delivered_corroborated_adjudication(tmp_path):
+    """A corroborated verdict delivered to and accepted by owner-b's own
+    ledger -- the shared fixture every ack/rebuttal test below starts from."""
+    from twin_adjudicator import AdjudicationHalf
+
+    cap_a, disc_a = _make_served_half("hello world", owner_id="owner-a")
+    cap_b, disc_b = _make_served_half("hello world", owner_id="owner-b")
+    half_a = AdjudicationHalf.from_capsule_and_disclosure(cap_a, disc_a)
+    half_b = AdjudicationHalf.from_capsule_and_disclosure(cap_b, disc_b)
+    outcome = adjudicate(half_a, half_b)
+    adjudication = seal_adjudication_capsule(outcome, operator="test-org", developer="referee@v1")
+
+    key_path = _keys(tmp_path)
+    ledger_path = tmp_path / "m3-ledger" / "capsules.jsonl"
+    _seed_ledger(ledger_path, cap_b)
+    state = _state(ledger_path, key_path)
+    result = handle_delivery(state, json.dumps(adjudication).encode("utf-8"))
+    assert result == {"status": "received"}
+    return adjudication, ledger_path, state
+
+
+def test_ack_capsule_cites_the_delivered_verdict(tmp_path):
+    adjudication, _ledger_path, _state = _delivered_corroborated_adjudication(tmp_path)
+
+    ack = seal_adjudication_ack(adjudication, operator="test-org", developer="node-b@v1")
+
+    assert ack["chain"]["relation"] == RELATION_ADJUDICATION_ACK
+    assert ack["chain"]["parent_capsule_id"] == adjudication["capsule_id"]
+    block = ack["model_attestation"]["compute_attestation"]["adjudication_ack"]
+    assert block["adjudication_capsule_id"] == adjudication["capsule_id"]
+    assert block["verdict"] == "corroborated"
+    assert verify_capsule(ack).ok
+
+
+def test_rebuttal_capsule_cites_the_delivered_verdict_and_carries_its_basis(tmp_path):
+    adjudication, _ledger_path, _state = _delivered_corroborated_adjudication(tmp_path)
+
+    rebuttal = seal_adjudication_rebuttal(
+        adjudication, basis="my own transcript differs from what was compared", operator="test-org", developer="node-b@v1"
+    )
+
+    assert rebuttal["chain"]["relation"] == RELATION_ADJUDICATION_REBUTTAL
+    assert rebuttal["chain"]["parent_capsule_id"] == adjudication["capsule_id"]
+    block = rebuttal["model_attestation"]["compute_attestation"]["adjudication_rebuttal"]
+    assert block["adjudication_capsule_id"] == adjudication["capsule_id"]
+    assert block["verdict"] == "corroborated"
+    assert block["basis"] == "my own transcript differs from what was compared"
+    assert verify_capsule(rebuttal).ok
+
+
+def test_rebuttal_with_no_stated_basis_is_refused_never_a_free_text_score(tmp_path):
+    adjudication, _ledger_path, _state = _delivered_corroborated_adjudication(tmp_path)
+
+    with pytest.raises(ValueError):
+        seal_adjudication_rebuttal(adjudication, basis="", operator="test-org", developer="node-b@v1")
 
 
 # ---------------------------------------------------------------------------

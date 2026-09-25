@@ -29,12 +29,14 @@ from history_card import (
     HISTORY_CHAIN_RELATION,
     MESH_HISTORY_DEFINITION_DIGEST,
     REQUEST_MALFORMED,
+    adjudication_provenance_from_ledger,
     answer_full_history_request,
     build_history_card,
     node_id_from_key_id,
     reconciliation_counts_from_ledger_dir,
     seal_history_card,
     verify_history_card,
+    with_adjudications,
     with_peer_reconciliation,
     with_references,
 )
@@ -692,3 +694,174 @@ def test_both_enrichment_paths_combined_verify(tmp_path, fake_witness):
     assert result.ok, (
         f"doubly-enriched card must verify offline: {result.errors}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# [mesh-adjudications-on-history-card-design]                                 #
+# Three provenances (authored / delivered-with-ack-or-rebuttal / about-x),    #
+# never merged -- and the "never enriched" state, never a false zero.         #
+# --------------------------------------------------------------------------- #
+
+
+def _served_half(text: str, *, owner_id: str):
+    from agent_action_capsule.contracts import Disposition, EffectRecord
+    from agent_action_capsule.emit import emit
+
+    from capsule_sidecar import digest_json
+
+    body = {"choices": [{"message": {"role": "assistant", "content": text}}]}
+    digest = digest_json(body)
+    effect = EffectRecord(status="confirmed", type="inference_completion", request_digest="a" * 64, response_digest=digest)
+    disposition = Disposition(decision="accept", approver="policy", human_disposed=False, verdict_class="confirmed")
+    capsule = emit(
+        action_type="decide",
+        operator="test-org",
+        developer="mesh-node@v1",
+        compute_attestation={"owner": {"owner_id": owner_id}},
+        effect=effect,
+        disposition=disposition,
+        tool_name="serve_exchange",
+    )
+    disclosed = {"capsule_id": capsule["capsule_id"], "response_body": body, "response_text": text}
+    return capsule, disclosed
+
+
+def _corroborated_adjudication(*, text: str, owner_a: str, owner_b: str) -> dict:
+    from twin_adjudicator import AdjudicationHalf, adjudicate, seal_adjudication_capsule
+
+    cap_a, disc_a = _served_half(text, owner_id=owner_a)
+    cap_b, disc_b = _served_half(text, owner_id=owner_b)
+    half_a = AdjudicationHalf.from_capsule_and_disclosure(cap_a, disc_a)
+    half_b = AdjudicationHalf.from_capsule_and_disclosure(cap_b, disc_b)
+    outcome = adjudicate(half_a, half_b)
+    return seal_adjudication_capsule(outcome, operator="test-org", developer="referee@v1")
+
+
+def test_authored_adjudication_is_not_counted_as_delivered():
+    """A verdict this node sealed itself (no ack/rebuttal citing it in the
+    SAME ledger) is provenance (a) authored, never (b) delivered."""
+    adjudication = _corroborated_adjudication(text="hello world", owner_a="owner-a", owner_b="owner-b")
+
+    authored, delivered = adjudication_provenance_from_ledger([adjudication])
+
+    assert authored == {"corroborated": 1}
+    assert delivered == {}
+
+
+def test_delivered_card_renders_exactly_3_delivered_2_acked_1_disputed():
+    """The acceptance mutant: a log with 3 delivered adjudications, 2 acked
+    and 1 rebutted, renders exactly those counts -- never merged with (a)
+    authored or (c) adjudications_about_x."""
+    from adjudication_delivery import seal_adjudication_ack, seal_adjudication_rebuttal
+
+    ledger: list[dict] = []
+    for i in range(3):
+        adjudication = _corroborated_adjudication(text=f"hello world {i}", owner_a="owner-a", owner_b="owner-b")
+        ledger.append(adjudication)
+        if i < 2:
+            ledger.append(seal_adjudication_ack(adjudication, operator="test-org", developer="node-b@v1"))
+        else:
+            ledger.append(
+                seal_adjudication_rebuttal(
+                    adjudication, basis="disagree with the comparison", operator="test-org", developer="node-b@v1"
+                )
+            )
+
+    authored, delivered = adjudication_provenance_from_ledger(ledger)
+
+    assert authored == {}
+    assert delivered["corroborated"]["delivered"] == 3
+    assert delivered["corroborated"]["acknowledged"] == 2
+    assert delivered["corroborated"]["disputed"] == 1
+    assert len(delivered["corroborated"]["capsule_ids"]["delivered"]) == 3
+    assert len(delivered["corroborated"]["capsule_ids"]["acknowledged"]) == 2
+    assert len(delivered["corroborated"]["capsule_ids"]["disputed"]) == 1
+
+
+def test_with_adjudications_renders_the_split_and_verifies(tmp_path, fake_witness):
+    from adjudication_delivery import seal_adjudication_ack
+
+    lines = _build_chain(tmp_path, 3)
+    node_id = node_id_from_key_id(lines[0]["key_id"])
+    card = build_history_card(node_id=node_id, log_id="log-a", checkpoint_lines=lines, since_size=0)
+
+    authored_adj = _corroborated_adjudication(text="authored one", owner_a="owner-x", owner_b="owner-y")
+    delivered_adj = _corroborated_adjudication(text="delivered one", owner_a="owner-p", owner_b="owner-q")
+    ack = seal_adjudication_ack(delivered_adj, operator="test-org", developer="node-b@v1")
+
+    authored, delivered = adjudication_provenance_from_ledger([authored_adj, delivered_adj, ack])
+    enriched = with_adjudications(card, authored=authored, delivered=delivered)
+
+    value = enriched.to_value()
+    assert value["adjudications"]["state"] == "enriched"
+    assert value["adjudications"]["authored"] == {"corroborated": 1}
+    assert value["adjudications"]["delivered"]["corroborated"]["delivered"] == 1
+    assert value["adjudications"]["delivered"]["corroborated"]["acknowledged"] == 1
+    assert value["adjudications"]["delivered"]["corroborated"]["disputed"] == 0
+
+    result = verify_history_card(value, lines)
+    assert result.ok, f"enriched card (with_adjudications) must verify offline: {result.errors}"
+
+    # Original card is untouched (no mutation) -- same discipline as
+    # with_peer_reconciliation/with_references.
+    assert card.adjudications_state == "never_enriched"
+    assert card.authored_adjudications == {}
+    assert card.delivered_adjudications == {}
+
+
+def test_adjudication_about_x_from_a_reference_is_never_counted_as_delivered(tmp_path, fake_witness):
+    """Provenance (c) `adjudications_about_x` (learned by asking references,
+    `with_references`) and provenance (b) `delivered` (this node's OWN
+    ledger content, `with_adjudications`) are fully separate fields -- a
+    reference's report about a DIFFERENT node's contradicted verdict must
+    never inflate this card's own `delivered` counts."""
+    lines = _build_chain(tmp_path, 2)
+    card = build_history_card(node_id="node-a", log_id="log-a", checkpoint_lines=lines, since_size=0)
+
+    enriched = with_references(
+        card,
+        references_asked=3,
+        references_answered=2,
+        adjudications_about_x={"contradicted": 5, "corroborated": 1},
+        ack_refusals_about_x=0,
+    )
+
+    value = enriched.to_value()
+    assert value["references"]["adjudications_about_x"] == {"contradicted": 5, "corroborated": 1}
+    # (b) was never enriched on this card -- must read as the "never
+    # enriched" state, and an empty delivered dict, never a false zero
+    # borrowed from (c)'s numbers.
+    assert value["adjudications"]["state"] == "never_enriched"
+    assert value["adjudications"]["delivered"] == {}
+    assert value["adjudications"]["authored"] == {}
+
+
+def test_never_enriched_adjudications_state_is_the_default_not_a_false_zero(tmp_path, fake_witness):
+    lines = _build_chain(tmp_path, 2)
+    card = build_history_card(node_id="node-a", log_id="log-a", checkpoint_lines=lines, since_size=0)
+
+    value = card.to_value()
+    assert value["adjudications"]["state"] == "never_enriched"
+    assert value["adjudications"]["authored"] == {}
+    assert value["adjudications"]["delivered"] == {}
+
+
+def test_never_asked_references_state_is_distinct_from_asked_and_found_zero(tmp_path, fake_witness):
+    """[mesh-ask-the-references]: a card that was never enriched with
+    with_references() must render state='never_asked', distinct from a card
+    that WAS enriched and genuinely found zero candidates -- both would
+    otherwise publish asked=0, indistinguishable."""
+    lines = _build_chain(tmp_path, 2)
+    card = build_history_card(node_id="node-a", log_id="log-a", checkpoint_lines=lines, since_size=0)
+    never_asked = card.to_value()
+    assert never_asked["references"]["state"] == "never_asked"
+    assert never_asked["references"]["asked"] == 0
+
+    asked_and_found_zero = with_references(
+        card, references_asked=0, references_answered=0, adjudications_about_x={}, ack_refusals_about_x=0
+    ).to_value()
+    assert asked_and_found_zero["references"]["state"] == "asked"
+    assert asked_and_found_zero["references"]["asked"] == 0
+    # Same numeric "asked": 0 in both, but the state field disambiguates them.
+    assert never_asked["references"]["asked"] == asked_and_found_zero["references"]["asked"]
+    assert never_asked["references"]["state"] != asked_and_found_zero["references"]["state"]

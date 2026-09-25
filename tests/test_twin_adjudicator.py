@@ -825,3 +825,96 @@ def test_status_for_verdict_raises_on_unrecognized_verdict():
 
     with pytest.raises(ValueError, match="unrecognized verdict"):
         status_for_verdict("not_a_real_verdict")
+
+
+# ---------------------------------------------------------------------------
+# [mesh-adjudications-on-history-card-design] classify_capsule_kind -- the
+# chain-segment leaf-kind classifier hook
+# ---------------------------------------------------------------------------
+
+
+def test_classify_capsule_kind_names_an_adjudication_capsule():
+    from twin_adjudicator import CLASSIFY_KIND_ADJUDICATION, classify_capsule_kind
+
+    half_a = _make_half("hello world", owner_id="owner-a")
+    half_b = _make_half("hello world", owner_id="owner-b")
+    outcome = adjudicate(half_a, half_b)
+    capsule = seal_adjudication_capsule(outcome, operator="test-org", developer="referee@v1")
+
+    assert classify_capsule_kind(capsule) == CLASSIFY_KIND_ADJUDICATION
+
+
+def test_classify_capsule_kind_names_an_ack_capsule():
+    from twin_adjudicator import CLASSIFY_KIND_ACK, classify_capsule_kind
+
+    ack = emit(
+        action_type="fyi",
+        operator="test-org",
+        developer="node-b@v1",
+        compute_attestation={"adjudication_ack": {"adjudication_capsule_id": "a" * 64, "verdict": "corroborated"}},
+        prior_capsule_id="a" * 64,
+        chain_relation="adjudication_ack",
+        tool_name="adjudication_ack",
+    )
+    assert classify_capsule_kind(ack) == CLASSIFY_KIND_ACK
+
+
+def test_classify_capsule_kind_names_a_rebuttal_capsule():
+    from twin_adjudicator import CLASSIFY_KIND_REBUTTAL, classify_capsule_kind
+
+    rebuttal = emit(
+        action_type="fyi",
+        operator="test-org",
+        developer="node-b@v1",
+        compute_attestation={
+            "adjudication_rebuttal": {
+                "adjudication_capsule_id": "a" * 64,
+                "verdict": "corroborated",
+                "basis": "disagree",
+            }
+        },
+        prior_capsule_id="a" * 64,
+        chain_relation="adjudication_rebuttal",
+        tool_name="adjudication_rebuttal",
+    )
+    assert classify_capsule_kind(rebuttal) == CLASSIFY_KIND_REBUTTAL
+
+
+def test_classify_capsule_kind_names_an_exchange_twin_half():
+    from twin_adjudicator import CLASSIFY_KIND_EXCHANGE_TWIN, classify_capsule_kind
+
+    compute_attestation = {"x-mesh-poc-v1": {"serving_provenance": {"twin_bracket_id": "twin-abc123"}}}
+    capsule = emit(
+        action_type="decide",
+        operator="test-org",
+        developer="mesh-node@v1",
+        compute_attestation=compute_attestation,
+        tool_name="serve_exchange",
+    )
+    assert classify_capsule_kind(capsule) == CLASSIFY_KIND_EXCHANGE_TWIN
+
+
+def test_classify_capsule_kind_none_for_an_ordinary_served_half():
+    from twin_adjudicator import classify_capsule_kind
+
+    half = _make_half("hello world", owner_id="owner-a")
+    assert classify_capsule_kind(half.capsule) is None
+
+
+def test_classify_capsule_kind_never_confuses_ack_refused_with_ack():
+    """The REQUESTER's own record of a REFUSED delivery
+    (`adjudication_ack_refused`) is a distinct relation from the SUBJECT's
+    own record of an ACCEPTED one (`adjudication_ack`) -- the classifier
+    must not fold the two together."""
+    from twin_adjudicator import classify_capsule_kind
+
+    ack_refused = emit(
+        action_type="fyi",
+        operator="test-org",
+        developer="requester@v1",
+        compute_attestation={"adjudication_ack_refused": {"adjudication_capsule_id": "a" * 64}},
+        prior_capsule_id="a" * 64,
+        chain_relation="adjudication_ack_refused",
+        tool_name="adjudication_ack_refused",
+    )
+    assert classify_capsule_kind(ack_refused) is None

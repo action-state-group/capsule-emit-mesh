@@ -37,6 +37,18 @@ refusal, the caller -- not this module, see `seal_adjudication_ack_refused`
 verdict, so the requester's OWN chain holds a record of the decline even
 where the judged node's chain shows nothing.
 
+**On an ACCEPTED delivery** (``{"status": "received"}``, never a
+``policy_decline``), the SUBJECT's own follow-up is one of
+``seal_adjudication_ack`` (does not dispute the verdict) or
+``seal_adjudication_rebuttal`` (disputes it, with a stated ``basis``) --
+``[mesh-adjudications-on-history-card-design]``, ``deliver_to_subjects:
+default on``. Same "the caller, not this module" discipline as the refused
+path: `handle_delivery` folds and transports; it never judges a verdict's
+correctness, so it never seals ack/rebuttal itself. `history_card.py`'s
+own provenance split (authored vs. delivered-with-ack/rebuttal-state) reads
+these two relations plus `twin_adjudicator.RELATION_ADJUDICATES` back out of
+a node's ledger via `twin_adjudicator.classify_capsule_kind`.
+
 **Only the citations this repo mints today are checked.** The full
 twin-adjudication design (``_work/mesh-referee-build-2026-09-02.md`` §2.1)
 cites FOUR records -- requester commitment, half A, half B, referee half --
@@ -78,10 +90,14 @@ __all__ = [
     "EVIDENCE_DELIVER_PATH",
     "REASON_POLICY_DECLINE",
     "REASON_REQUEST_MALFORMED",
+    "RELATION_ADJUDICATION_ACK",
     "RELATION_ADJUDICATION_ACK_REFUSED",
+    "RELATION_ADJUDICATION_REBUTTAL",
     "deliver_adjudication",
     "handle_delivery",
+    "seal_adjudication_ack",
     "seal_adjudication_ack_refused",
+    "seal_adjudication_rebuttal",
 ]
 
 EVIDENCE_DELIVER_PATH = "/evidence/deliver"
@@ -96,6 +112,16 @@ REASON_REQUEST_MALFORMED = "request_malformed"
 #: The new chain.relation value for the requester's own record of a refused
 #: delivery -- mirrors `twin_adjudicator.RELATION_ADJUDICATES`.
 RELATION_ADJUDICATION_ACK_REFUSED = "adjudication_ack_refused"
+
+#: [mesh-adjudications-on-history-card-design] The chain.relation values for
+#: the JUDGED SUBJECT's own record of an ACCEPTED delivery (`handle_delivery`
+#: returned `{"status": "received"}`, i.e. this was never `policy_decline`d)
+#: -- `deliver_to_subjects`'s default-on behaviour (design note §3): every
+#: judged node seals ONE of these citing the delivered verdict, never both.
+#: Distinct from `RELATION_ADJUDICATION_ACK_REFUSED` above, which is the
+#: REQUESTER's own record of a delivery the subject refused to even hold.
+RELATION_ADJUDICATION_ACK = "adjudication_ack"
+RELATION_ADJUDICATION_REBUTTAL = "adjudication_rebuttal"
 
 
 def _now_iso() -> str:
@@ -193,6 +219,97 @@ def deliver_adjudication(capsule: dict[str, Any], door_base_url: str, *, timeout
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read())
+
+
+def seal_adjudication_ack(
+    adjudication_capsule: dict[str, Any],
+    *,
+    operator: str = "",
+    developer: str = "",
+) -> dict[str, Any]:
+    """Seal the JUDGED SUBJECT's own record of an ACCEPTED delivered
+    adjudication -- citing the verdict by id, never restating it as a score.
+
+    ``deliver_to_subjects: default on`` (design note §3): every node a twin
+    adjudication judges receives the verdict via ``handle_delivery``; once
+    that call has folded the capsule into this node's own ledger (i.e.
+    returned ``{"status": "received"}``, never a ``policy_decline`` --
+    ``handle_delivery`` itself already refuses to hold a verdict that names
+    THIS node as the contradicted party, so an accepted delivery is never
+    one this node disputes on citation grounds alone), the subject seals
+    ONE follow-up record: this ``ack`` when it does not dispute the verdict,
+    or ``seal_adjudication_rebuttal`` when it does. Never both, and never
+    automatic -- same "the caller, not this module" discipline
+    ``seal_adjudication_ack_refused`` already documents: this module folds
+    and transports, it does not itself judge whether a verdict is correct.
+    """
+    ack_block = {
+        "adjudication_capsule_id": adjudication_capsule["capsule_id"],
+        "verdict": _adjudication_block(adjudication_capsule).get("verdict"),
+    }
+    compute_attestation = {"adjudication_ack": ack_block}
+    capsule = emit(
+        action_type="fyi",
+        operator=operator,
+        developer=developer,
+        compute_attestation=compute_attestation,
+        prior_capsule_id=adjudication_capsule["capsule_id"],
+        chain_relation=RELATION_ADJUDICATION_ACK,
+        domain="action",
+        provenance="referee",
+        tool_name="adjudication_ack",
+    )
+    # [adv-run-2-fix-batch] discipline: verify BEFORE returning -- matches
+    # twin_adjudicator.seal_adjudication_capsule.
+    result = verify_capsule(capsule)
+    if not result.ok:
+        raise RuntimeError(f"adjudicator emitted an ack capsule that fails its own verify(): {result.findings}")
+    return capsule
+
+
+def seal_adjudication_rebuttal(
+    adjudication_capsule: dict[str, Any],
+    *,
+    basis: str,
+    operator: str = "",
+    developer: str = "",
+) -> dict[str, Any]:
+    """Seal the JUDGED SUBJECT's own record DISPUTING an accepted delivered
+    adjudication -- citing the verdict by id plus a STATED ``basis`` (a
+    reason the subject supplies for why it disputes the verdict). ``basis``
+    is a citable reason, never a free-text score or a rating: this function
+    refuses (``ValueError``) to seal a rebuttal with an empty basis, since
+    an unreasoned dispute is indistinguishable from noise and would let a
+    node contest any verdict it dislikes with no accountable trail.
+
+    See ``seal_adjudication_ack``'s docstring for how this fits the
+    ``deliver_to_subjects`` default-on flow -- the two are mutually
+    exclusive follow-ups to the SAME accepted delivery, chosen by the
+    caller (this module never judges a verdict's correctness itself).
+    """
+    if not basis:
+        raise ValueError("seal_adjudication_rebuttal requires a non-empty basis")
+    rebuttal_block = {
+        "adjudication_capsule_id": adjudication_capsule["capsule_id"],
+        "verdict": _adjudication_block(adjudication_capsule).get("verdict"),
+        "basis": basis,
+    }
+    compute_attestation = {"adjudication_rebuttal": rebuttal_block}
+    capsule = emit(
+        action_type="fyi",
+        operator=operator,
+        developer=developer,
+        compute_attestation=compute_attestation,
+        prior_capsule_id=adjudication_capsule["capsule_id"],
+        chain_relation=RELATION_ADJUDICATION_REBUTTAL,
+        domain="action",
+        provenance="referee",
+        tool_name="adjudication_rebuttal",
+    )
+    result = verify_capsule(capsule)
+    if not result.ok:
+        raise RuntimeError(f"adjudicator emitted a rebuttal capsule that fails its own verify(): {result.findings}")
+    return capsule
 
 
 def seal_adjudication_ack_refused(
