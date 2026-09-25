@@ -146,19 +146,23 @@ Python checkpointer to also supervise". See
 `docs/DESIGN-fold-sidecar-into-plugin.md` for the fold's full design and
 invariance guarantees.
 
-**Opt-in, node-by-node, mutually exclusive with `checkpoint_daemon.py` on the
-same `ledger_dir`.** Set `ADMISSION_POLICY_CHECKPOINT_CADENCE=on` on the
-plugin process to flip a node onto the in-process cadence task;
-`ADMISSION_POLICY_CHECKPOINT_CADENCE_SECONDS` /
-`_CADENCE_ENTRIES` / `_WITNESS_URLS` override the defaults (300s / 100
-entries / no witnesses — same defaults `checkpoint_daemon.py` uses).
-**Never run both against the same `ledger_dir` at once** — each appends to
-the same `checkpoints.jsonl` and neither knows about the other, so a
-double-run races the chain. Until a node sets the flag,
-`checkpoint_daemon.py` keeps checkpointing that node's plugin ledger exactly
-as it does today; once every Path 1 node has cut over, `checkpoint_daemon.py`
-retires from the Path 1 bring-up story (Path 2 — the Python sidecar — keeps
-using it regardless, since it has no Rust process to move the cadence into).
+**On by default (local only), mutually exclusive with `checkpoint_daemon.py`
+on the same `ledger_dir`.** The in-process cadence task runs automatically on
+plugin startup; set `ADMISSION_POLICY_CHECKPOINT_CADENCE=off` to opt a node
+OUT (e.g. because that node still runs `checkpoint_daemon.py` against the
+same ledger — see the race note below).
+`ADMISSION_POLICY_CHECKPOINT_CADENCE_SECONDS` / `_CADENCE_ENTRIES` /
+`_WITNESS_URLS` override the defaults (300s / 100 entries / no witnesses —
+same defaults `checkpoint_daemon.py` uses). Witnessing stays **opt-in**
+regardless of the cadence default: `_WITNESS_URLS` empty/unset means
+self-checkpointed only, no network, even with the cadence task running.
+**Never run both `checkpoint_daemon.py` and the in-process cadence against
+the same `ledger_dir` at once** — each appends to the same
+`checkpoints.jsonl` and neither knows about the other, so a double-run races
+the chain; a node still running `checkpoint_daemon.py` against its plugin
+ledger must set `ADMISSION_POLICY_CHECKPOINT_CADENCE=off` until it cuts over.
+Path 2 (the Python sidecar) has no Rust process to move the cadence into and
+keeps using `checkpoint_daemon.py` regardless.
 
 ## Where the pieces live
 
@@ -171,4 +175,4 @@ using it regardless, since it has no Rust process to move the cadence into).
 | Sidecar hooks (per-capsule MMR fold) | `capsule_sidecar.py` (`--checkpoint-config`, `--plugin-checkpoint-config`, `--plugin-ledger-dir`) |
 | Config schema | `checkpoint.example.toml` |
 | Tests | `tests/test_checkpoint_daemon.py`, `tests/test_checkpointing.py` |
-| **Path 1 native Rust cadence (opt-in, see above)** | `plugins/capsule-producer/src/checkpoint.rs` (`CheckpointState`), `plugins/admission-policy/src/checkpoint_cadence.rs` (the tokio task + `ADMISSION_POLICY_CHECKPOINT_CADENCE*` env vars) |
+| **Path 1 native Rust cadence (on by default, local only, see above)** | `plugins/capsule-producer/src/checkpoint.rs` (`CheckpointState`), `plugins/admission-policy/src/checkpoint_cadence.rs` (the tokio task + `ADMISSION_POLICY_CHECKPOINT_CADENCE*` env vars) |

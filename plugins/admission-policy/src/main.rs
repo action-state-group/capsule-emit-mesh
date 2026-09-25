@@ -79,9 +79,9 @@ struct AppState {
     /// This node's latest self-produced checkpoint head, if the checkpoint
     /// cadence task is enabled (`checkpoint_cadence::is_enabled`) --
     /// `[mesh-checkpoint-head-source]`'s sending half reads this to feed
-    /// `PeerAnnouncement.checkpoint`. `None` when the cadence task is off
-    /// (the node's node-by-node cutover hasn't flipped yet) or hasn't
-    /// produced a checkpoint since startup.
+    /// `PeerAnnouncement.checkpoint`. On by default; `None` when the
+    /// operator has opted out (`ADMISSION_POLICY_CHECKPOINT_CADENCE=off`)
+    /// or hasn't produced a checkpoint since startup.
     #[allow(dead_code)]
     checkpoint_head: Option<checkpoint_cadence::LatestHead>,
 }

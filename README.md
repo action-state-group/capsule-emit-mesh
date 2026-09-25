@@ -41,13 +41,15 @@ lands at `<plugin data dir>/ledger/capsules.jsonl` (`ADMISSION_POLICY_DATA_DIR`
 to change it — see "Path 1" below).
 
 **What leaves the machine by default: nothing.** Capsules are sealed and
-verified locally, and the plugin's own checkpoint cadence — the only thing
-that ever calls out to a witness — is **off by default**
-(`ADMISSION_POLICY_CHECKPOINT_CADENCE=on` to enable it), and even then sends
-nothing unless you also set `ADMISSION_POLICY_CHECKPOINT_WITNESS_URLS`; empty/
-unset means self-checkpointed only, no network. See
+verified locally. The plugin's own checkpoint cadence — a local background
+clock that folds the ledger into a signed Merkle Mountain Range — is **on by
+default** (local only; set `ADMISSION_POLICY_CHECKPOINT_CADENCE=off` to opt
+out). The only thing that ever calls out to a witness is that cadence's
+witness registration, which stays **off by default**: it sends nothing unless
+you also set `ADMISSION_POLICY_CHECKPOINT_WITNESS_URLS`; empty/unset means
+self-checkpointed only, no network. See
 [`docs/CHECKPOINT-BY-DEFAULT.md`](docs/CHECKPOINT-BY-DEFAULT.md). Nothing is
-sent anywhere unless you turn both of those on.
+sent anywhere unless you set a witness URL yourself.
 
 **To turn the plugin off**, set `enabled = false` on its `[[plugin]]` entry in
 `mesh-llm`'s config and restart the node:
@@ -220,8 +222,8 @@ current demo capsules.
   durable ledger (byte-identical on-disk shape to the Python path, so either
   side's tooling reads the other's ledger), key persistence + rotation, an
   optional Transparency-Service anchor client, and offline verification. Also
-  carries an opt-in checkpoint cadence over that same ledger
-  (`checkpoint.rs` + `admission-policy`'s `checkpoint_cadence.rs`) — the
+  carries a checkpoint cadence over that same ledger, on by default and local
+  only (`checkpoint.rs` + `admission-policy`'s `checkpoint_cadence.rs`) — the
   native-Rust alternative to running `checkpoint_daemon.py` against the
   plugin's ledger dir; see `docs/CHECKPOINT-BY-DEFAULT.md`'s "Path 1" section.
 
@@ -1011,7 +1013,7 @@ docs/TWIN-REFEREE-SELECTION.md  independence-first select_twin/select_referee: t
 
 # Path 1 — native Rust plugin (primary)
 plugins/admission-policy/       mesh-llm-plugin: Envelope-wire admission + lifecycle-hook capsule emission
-plugins/admission-policy/src/checkpoint_cadence.rs   opt-in in-process checkpoint cadence, see docs/CHECKPOINT-BY-DEFAULT.md
+plugins/admission-policy/src/checkpoint_cadence.rs   in-process checkpoint cadence, on by default (local only), see docs/CHECKPOINT-BY-DEFAULT.md
 plugins/capsule-producer/       Rust AAC producer: JCS + COSE_Sign1 + chain + ledger + anchor + verify
 plugins/capsule-producer/src/checkpoint.rs           MMR + signed checkpoint + opt-in witness over the plugin's own ledger (cll crate)
 
