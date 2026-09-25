@@ -127,6 +127,9 @@ def _receipt_grade(witness: Any) -> str | None:  # witness: capsule_emit.checkpo
 
         from scitt_cose import verify_receipt
     except ImportError:
+        # scitt_cose isn't installed here -- this is a decode-only helper, not
+        # a required dependency, so "can't decode" collapses to the documented
+        # None contract rather than raising into rendering.
         return None
     try:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -143,7 +146,11 @@ def _receipt_grade(witness: Any) -> str | None:  # witness: capsule_emit.checkpo
         )
         grade = result.protected_header_ext.get(-65537)
         return grade if isinstance(grade, str) else None
-    except Exception:  # noqa: BLE001 -- decode-only helper, never raises into rendering
+    except Exception:
+        # Broad on purpose: any malformed/garbage receipt, decode error, or
+        # unexpected shape from verify_receipt's structural probe must degrade
+        # to "this witness didn't say" (None), never raise into a rendering
+        # path. Never masks a real grade value -- only the decode itself.
         return None
 
 
