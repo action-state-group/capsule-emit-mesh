@@ -10,6 +10,7 @@ mod mesh_evidence_bridge;
 /// dependency bumps.
 #[allow(dead_code)]
 mod peer_root_ledger;
+mod share_policy;
 
 use axum::{
     extract::State,
@@ -362,6 +363,7 @@ async fn main() -> anyhow::Result<()> {
         ),
     ))
     .provide(capability("admission_policy.v1"))
+    .config_item(share_policy::share_policy_config_schema(PLUGIN_ID))
     .mesh_item(mesh_channel(OPENAI_EXCHANGE_CHANNEL))
     .mesh_item(mesh_channel(EVIDENCE_REQUEST_CHANNEL))
     .inference_item(inference::provider(ENDPOINT_ID, address))
