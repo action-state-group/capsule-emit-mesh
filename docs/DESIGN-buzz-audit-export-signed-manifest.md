@@ -133,12 +133,12 @@ before it, given the chain has already been walked and validated by `verify_chai
 witness/grade ladder (`Grade`, `StampVerdict`, `WitnessRecord.is_stub`) is also not reused as a
 Rust dependency — it is a Python module — but its *shape* motivates §4 below.
 
-**Rust implementation surface.** `ed25519-dalek = "=3.0.0-rc.0"` is already a pinned dependency
-in this workspace (`crates/buzz-relay/Cargo.toml`, `desktop/src-tauri/Cargo.toml`, used today for
+**Rust implementation surface.** `ed25519-dalek = "=3.0.0"` is already a pinned dependency in this
+workspace (`crates/buzz-mesh-smoke/Cargo.toml`, `desktop/src-tauri/Cargo.toml`, used today for
 mesh-LLM discovery-note verification in `desktop/src-tauri/src/mesh_llm/discovery.rs`). The
-export-manifest signer adds the same crate, pinned to the same version, to `buzz-admin` (or a new
-small module `buzz-audit::manifest` re-exported from there — implementation decides which, see
-§6) — no new cryptography dependency enters the workspace.
+export-manifest signer adds the same crate, pinned to the same version, as a new dependency of
+`buzz-audit` (a `buzz_audit::manifest` module — see §6) — no new cryptography dependency enters
+the workspace.
 
 ## 4. Optional witness registration — a second, independent step
 
