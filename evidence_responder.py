@@ -426,7 +426,9 @@ def _handle_served_summary_request(state: Any, request_bytes: bytes, req: Any, *
     return _refuse_served_summary(request_bytes, reason, state=state, issued_at=issued_at)
 
 
-def _handle_chain_segment_request(state: Any, request_bytes: bytes, req: Any, *, issued_at: str) -> Any:
+def _handle_chain_segment_request(
+    state: Any, request_bytes: bytes, req: Any, *, issued_at: str
+) -> Artifact | Refusal:
     """[mesh-sharing-policy-v0] ``chain_segment`` dispatched OUTSIDE
     ``answer()``, so this responder's own :func:`classify_leaf_kind` names
     leaves -- never ``capsule_emit.chain_segment``'s generic default. Honors
@@ -438,11 +440,21 @@ def _handle_chain_segment_request(state: Any, request_bytes: bytes, req: Any, *,
     from capsule_emit.chain_segment import ChainSegmentError
     from capsule_emit.chain_segment import chain_segment as _chain_segment_fn
     from capsule_emit.evidence_request import Artifact
-    from ledger_store_backend import read_all_capsules
+    from capsule_emit.ledger import read_ledger_entries
+    from ledger_store_backend import materialize_flat_view
 
     request_digest = hashlib.sha256(request_bytes).hexdigest()
     signer = _resolve_state_signer(state)
-    entries, _archived_segments = read_all_capsules(state.ledger_dir)
+    # [mesh-sharing-policy-v0] fix: chain_segment_fn needs the checkpoint's
+    # OWN in-band checkpoint_stamp entries to find any checkpoint at all --
+    # a plain read_all_capsules(state.ledger_dir) never sees them for a
+    # node using the sibling checkpoints.jsonl convention (this module's
+    # own docstring, "The plugin-ledger bridge"), so a real checkpoint
+    # produced coverage_unsatisfiable unconditionally until this fix.
+    # materialize_flat_view is the SAME bridge handle_evidence_request's own
+    # answer() leg already uses below -- read_ledger_entries (not
+    # read_ledger, which filters checkpoint_stamp out) over its output.
+    entries = read_ledger_entries(materialize_flat_view(state.ledger_dir))
     if not entries:
         return _sign_refusal(request_digest, "no_such_record", signer=signer, issued_at=issued_at)
 
@@ -499,7 +511,19 @@ def handle_evidence_request(
     ``requester_id``/``policy`` — see the module docstring's
     "[mesh-sharing-policy-v0] relationship policy" note. Both default to
     ``None``, which reproduces this function's exact pre-existing behavior
-    (every existing caller that predates this gate is unaffected).
+    for the ``not_authorized`` RELATIONSHIP GATE specifically (every
+    existing caller that predates this gate gets exactly the same
+    answer/refuse decision it always did). **Narrower than "unaffected,"
+    precisely stated:** a ``chain_segment`` request is dispatched to
+    :func:`_handle_chain_segment_request` -- and so gets this module's own
+    :func:`classify_leaf_kind` (adds the ``exchange_twin`` leaf kind) and
+    drops ``coverage.min_freshness`` handling -- UNCONDITIONALLY, regardless
+    of ``policy``. That dispatch is a separate, always-on classifier change
+    bundled in the same [mesh-sharing-policy-v0] commit as this gate, not
+    itself gated by ``policy`` -- a ``policy=None`` node's ``chain_segment``
+    answers differ from pre-this-commit ``answer()`` output in leaf kind
+    naming and in the (already-disclosed, see that function's own docstring)
+    ``min_freshness`` gap.
     """
     from datetime import datetime, timezone
 

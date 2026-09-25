@@ -21,11 +21,17 @@ process's own environment (`ADMISSION_POLICY_SHARE_RECORD_AT_COMPLETION`,
 plugin's own `config_schema` (`plugins/admission-policy/src/share_policy.rs`),
 so mesh's console renders the four switches under Configuration › Plugins with
 the host's own controls. A node that has never touched any of the four env
-vars is unaffected — the policy resolves to `None`, and every gate this
-document describes never runs at all, reproducing the node's pre-existing
-behavior byte for byte. Shipping this code does not, by itself, flip any
-node's runtime behavior; turning the documented defaults on for a real
-deployment is a separate, later release decision.
+vars gets `policy=None`, and the **relationship gate** below (the
+`not_authorized` refusal, and `record_at_completion`'s accept/decline)
+never runs at all — reproducing the node's pre-existing answer/refuse
+decision for every request it predates. **One documented exception:** a
+`chain_segment` request is always routed through this module's own leaf
+classifier (adding the `exchange_twin` kind, and — a known, disclosed gap —
+not yet honoring `coverage.min_freshness`) regardless of `policy`; that
+classifier change ships in the same commit as the gate but is not itself
+gated by it. Shipping this code does not, by itself, flip any node's
+`not_authorized`/`record_at_completion` behavior; turning the documented
+defaults on for a real deployment is a separate, later release decision.
 
 ## The relationship gate (`history_segments`)
 

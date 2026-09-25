@@ -5,9 +5,13 @@
 gate ahead of ``record``/``correlation``/``chain_segment`` requests.
 
 Acceptance / mutants that must flip (design note S1/S3):
-  - ``policy=None`` -> the gate never runs at all, reproducing this
-    function's exact pre-[mesh-sharing-policy-v0] behavior (every existing
-    caller unaffected, byte for byte).
+  - ``policy=None`` -> the ``not_authorized`` relationship gate never runs at
+    all for ``record``/``correlation`` requests, reproducing this function's
+    exact pre-[mesh-sharing-policy-v0] answer/refuse decision. NOT the same
+    claim for ``chain_segment`` -- see
+    ``test_chain_segment_uses_the_new_leaf_classifier_even_with_no_policy``
+    below: that subject kind is always routed through this module's own
+    leaf classifier, regardless of ``policy``.
   - ``history_segments: off`` -> refuses EVERYONE, including a real
     counterparty, ``not_authorized``.
   - ``history_segments: counterparties`` (the strictest ON tier) -> answers
@@ -274,3 +278,51 @@ def test_range_subject_kind_is_never_gated(node_state):
     # Design note S1: the gate applies only to record/correlation/
     # chain_segment -- "range" is deliberately out of scope.
     assert "range" not in RELATIONSHIP_GATED_SUBJECT_KINDS
+
+
+def test_range_subject_end_to_end_ignores_the_strictest_policy_and_a_stranger(node_state):
+    # Strengthens the pure check above: even the strictest ON tier
+    # (counterparties-only) + a bare stranger (no declared id) must NOT
+    # produce not_authorized for a range request -- if the gate wrongly
+    # covered "range" this would refuse instead of answering.
+    capsule = _seal_served_by(node_state, requesting_party="node-b")
+    policy = SharePolicy(history_segments="counterparties")
+    req = json.dumps(
+        {"subject": {"kind": "range", "selector": f"{capsule['capsule_id']}..{capsule['capsule_id']}"}, "coverage": {}}
+    ).encode()
+
+    result = handle_evidence_request(node_state, req, requester_id=None, policy=policy)
+
+    assert not (hasattr(result, "reason") and result.reason == REASON_NOT_AUTHORIZED)
+
+
+def test_chain_segment_uses_the_new_leaf_classifier_even_with_no_policy(node_state):
+    # [mesh-sharing-policy-v0] precisely scoped claim (see this module's
+    # own docstring above, and handle_evidence_request's docstring): the
+    # not_authorized GATE never runs when policy=None, but chain_segment's
+    # dispatch to this repo's own classify_leaf_kind is UNCONDITIONAL on
+    # policy -- a twin-bracketed leaf classifies as exchange_twin even on a
+    # node that never configured sharing policy at all.
+    from agent_action_capsule.contracts import Disposition, EffectRecord
+    from agent_action_capsule.emit import emit
+
+    effect = EffectRecord(status="confirmed", type="inference_completion", request_digest="e" * 64, response_digest="f" * 64)
+    disposition = Disposition(decision="accept", approver="policy", human_disposed=False, verdict_class="confirmed")
+    twin_capsule = emit(
+        action_type="decide",
+        operator="acme",
+        developer="mesh-node@v1",
+        compute_attestation={"x-mesh-poc-v1": {"twin_bracket_id": "br-1"}},
+        effect=effect,
+        disposition=disposition,
+        tool_name="serve_exchange",
+    )
+    node_state.log_source.append(twin_capsule)
+    node_state.checkpoint.reconnect()
+
+    req = json.dumps({"subject": {"kind": "chain_segment", "last": 1}, "coverage": {}}).encode()
+    result = handle_evidence_request(node_state, req, requester_id=None, policy=None)
+
+    assert result.subject_kind == "chain_segment"
+    leaf_counts = result.bundles[0].links[-1].leaf_counts
+    assert leaf_counts.get("exchange_twin") == 1
