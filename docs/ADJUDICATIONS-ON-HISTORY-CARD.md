@@ -1,9 +1,7 @@
 # Adjudications on the history card — three provenances, never merged
 
-> **Design of record:** `_work/mesh-sharing-policy-history-and-money-2026-09-24.md`
-> §3 (policy) and `_work/how-evidence-works-on-a-mesh-node-2026-09-24.md` §6
-> (adjudication capsule shape). This page is the implementation record for
-> `[mesh-adjudications-on-history-card-design]`: the classifier hook
+> This page is the implementation record for adjudications on the history
+> card: the classifier hook
 > (`twin_adjudicator.classify_capsule_kind`), the `deliver_to_subjects`
 > follow-up (`adjudication_delivery.seal_adjudication_ack` /
 > `.seal_adjudication_rebuttal`), and the card fields
@@ -112,7 +110,7 @@ classifies as `None`: that relation names a different actor's record of a
 different event, not a subject's response to an accepted delivery.
 
 `exchange_twin` is defined here for forward compatibility with the broader
-chain-segment leaf-count feature (`[mesh-sharing-policy-v0]`'s `history_
+chain-segment leaf-count feature (the `history_
 segments` object) — it is not yet consumed by this task's card fields, the
 same "picked up automatically, no rework here" discipline
 `adjudication_delivery._cited_capsule_ids` already uses for
@@ -196,9 +194,9 @@ byte-for-byte recompute+match (same pattern as
 ## Drill: card → adjudication card
 
 Not built here (fork-only UI, coordinated with
-`[mesh-evidence-ui-drill-paths]` — do not build a second card). The shape a
+the evidence-UI drill-paths work — do not build a second card). The shape a
 click on a delivered/authored count drills into is the adjudication capsule
-itself (`_work/how-evidence-works-on-a-mesh-node-2026-09-24.md` §6):
+itself:
 
 - the **verdict** (`corroborated` / `contradicted:<owner_id>` /
   `inconclusive`) and its **basis** (`margin`, `margin_tau`,
