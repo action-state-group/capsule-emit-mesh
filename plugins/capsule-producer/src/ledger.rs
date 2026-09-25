@@ -297,7 +297,8 @@ mod tests {
     fn sample_capsule(seed: &str, parent: Option<&str>) -> Value {
         let mut body = serde_json::Map::new();
         body.insert("spec_version".into(), json!("draft-mih-scitt-agent-action-capsule-02"));
-        body.insert("format_version".into(), json!("2"));
+        body.insert("format_version".into(), json!("4"));
+        body.insert("canonicalization_id".into(), json!("jcs"));
         body.insert("action_id".into(), json!(format!("test/{seed}")));
         body.insert("seed".into(), json!(seed));
         if let Some(p) = parent {

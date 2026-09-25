@@ -1,20 +1,28 @@
-//! Byte-for-byte cross-check of this crate's JCS implementation against the
-//! Python reference's frozen `test-vectors/canonical-*` fixtures
-//! (`agent-action-capsule/test-vectors/`, spec §2/§5.1's JSON-DIGEST — RFC 8785
-//! JCS canonicalization of an absent-field-normalized value, SHA-256, lowercase
-//! hex). Each fixture's `expected.json.capsule_id_recomputed` is exactly
-//! `json_digest(input.json)` — no capsule-shape validation involved, so it
-//! exercises the canonicalizer directly, independent of the AAC model.
+//! Byte-for-byte cross-check of this crate's JCS/capsule_id implementation
+//! against the Python reference's frozen `vectors/capsule/canonical-*`
+//! fixtures (`agent-action-capsule/vectors/capsule/`, spec §2/§5.1's
+//! JSON-DIGEST -- plain RFC 8785 JCS, SHA-256, lowercase hex; no absent-field
+//! normalization under format 4, the draft-04 reversal -- see `jcs`'s module
+//! docs). Each `canonical-*` fixture is a full format-4 capsule object (its
+//! own `capsule_id` field included) whose `expected.json.capsule_id_recomputed`
+//! is `compute_capsule_id(input.json)` -- i.e. plain JCS over the object with
+//! `capsule_id` (and the producer-envelope-only `signature`/`key_id`) removed.
+//! Re-pinned 2026-09-25 [mesh-seal-path-draft-04-golden-vectors]: the prior
+//! `test-vectors/` directory (arbitrary-JSON inputs, an `exception` field for
+//! FloatInDigestError/UnsafeIntegerError, a `"canonical"` `kind` value) no
+//! longer exists upstream -- replaced by `vectors/capsule/`, where the
+//! canonicalization-only cases are the `canonical-`-prefixed names (all
+//! `kind: "positive"`, no `exception` field; float/unsafe-int rejection is
+//! now exercised by full-capsule `neg-*` vectors outside this crate's scope).
 //!
 //! `#[ignore]`d and gated on `AAC_TEST_VECTORS_DIR` (same shape as
 //! `admission-policy`'s `tests/host_runtime_e2e.rs`): this crate's CI has no
-//! checkout of the private multi-repo workspace the vectors live in, so the
-//! test only compile-checks there (see `.github/workflows/ci.yml`). Run it for
-//! real with:
-//!   AAC_TEST_VECTORS_DIR=/path/to/agent-action-capsule/test-vectors \
+//! checkout of the private multi-repo workspace the vectors live in (see
+//! `.github/workflows/ci.yml`). Run it for real with:
+//!   AAC_TEST_VECTORS_DIR=/path/to/agent-action-capsule/vectors/capsule \
 //!     cargo test --test jcs_vectors -- --ignored
 
-use capsule_producer::jcs::{json_digest, JcsError};
+use capsule_producer::jcs::compute_capsule_id;
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -36,12 +44,12 @@ fn canonical_vectors_match_python_byte_for_byte() {
     let cases = manifest["cases"].as_array().expect("cases array");
     let canonical_cases: Vec<&str> = cases
         .iter()
-        .filter(|c| c["kind"] == "canonical")
+        .filter(|c| c["name"].as_str().is_some_and(|n| n.starts_with("canonical-")))
         .map(|c| c["name"].as_str().unwrap())
         .collect();
     assert!(
         !canonical_cases.is_empty(),
-        "expected at least one canonical-kind vector"
+        "expected at least one canonical-prefixed vector"
     );
 
     let mut checked = 0;
@@ -57,38 +65,19 @@ fn canonical_vectors_match_python_byte_for_byte() {
         )
         .expect("parse expected.json");
 
-        let actual = json_digest(&input);
-        match expected.get("exception").and_then(Value::as_str) {
-            // Python's reference rejects this input (FloatInDigestError /
-            // UnsafeIntegerError) — Rust must reject it too, with the matching
-            // error variant, not silently digest it.
-            Some("FloatInDigestError") => assert!(
-                matches!(actual, Err(JcsError::FloatInDigest)),
-                "{name}: expected FloatInDigestError, got {actual:?}"
+        let expected_digest = expected["capsule_id_recomputed"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{name}: expected.json has no capsule_id_recomputed"));
+
+        match compute_capsule_id(&input) {
+            Ok(digest) => assert_eq!(
+                digest, expected_digest,
+                "{name}: capsule_id mismatch (Rust vs Python reference)"
             ),
-            Some("UnsafeIntegerError") => assert!(
-                matches!(actual, Err(JcsError::UnsafeInteger(_))),
-                "{name}: expected UnsafeIntegerError, got {actual:?}"
+            Err(e) => panic!(
+                "{name}: Rust rejected input the Python reference digested \
+                 (expected {expected_digest}): {e}"
             ),
-            Some(other) => panic!("{name}: unhandled expected exception {other:?}"),
-            None => {
-                let expected_digest =
-                    expected["capsule_id_recomputed"]
-                        .as_str()
-                        .unwrap_or_else(|| {
-                            panic!("{name}: expected.json has no capsule_id_recomputed")
-                        });
-                match actual {
-                    Ok(digest) => assert_eq!(
-                        digest, expected_digest,
-                        "{name}: JCS digest mismatch (Rust vs Python reference)"
-                    ),
-                    Err(e) => panic!(
-                        "{name}: Rust JCS rejected input that Python's reference digested \
-                         (expected {expected_digest}): {e}"
-                    ),
-                }
-            }
         }
         checked += 1;
     }

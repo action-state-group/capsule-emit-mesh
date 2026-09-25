@@ -11,7 +11,9 @@ use crate::jcs::compute_capsule_id;
 use serde_json::{json, Map, Value};
 
 pub const SPEC_VERSION: &str = "draft-mih-scitt-agent-action-capsule-02";
-pub const FORMAT_VERSION: &str = "2";
+pub const FORMAT_VERSION: &str = "4";
+/// Format 4 requires this literal `canonicalization_id` (§5.1); see `jcs::CANONICALIZATION_JCS`.
+pub const CANONICALIZATION_ID: &str = crate::jcs::CANONICALIZATION_JCS;
 
 /// Token accounting for one exchange, sourced verbatim from the OpenAI-shaped
 /// response body's `usage` object (`openai-frontend`'s `Usage`:
@@ -337,10 +339,10 @@ fn epistemic_type_for_role(role: &str) -> Option<&'static str> {
 }
 
 /// `chain.parent_capsule_id`/`relation` (draft-mih-scitt-agent-action-capsule-02
-/// §5.1, `Chain` in `agent_action_capsule.contracts`). Excluded from the
-/// `capsule_id` digest by `jcs::CHAIN_LINKAGE_FIELDS` (mirrors
-/// `canonical.CHAIN_LINKAGE_FIELDS`), so a capsule's content-address never
-/// depends on what later chains to it.
+/// §5.1, `Chain` in `agent_action_capsule.contracts`). Under format 4's plain
+/// JCS the `chain` block IS committed into the `capsule_id` digest (the
+/// draft-04 reversal -- see `jcs`'s module docs); this is unlike the
+/// withdrawn vintage `jcs-n` profile, which excluded it.
 pub struct ChainLink {
     pub parent_capsule_id: String,
     pub relation: String,
@@ -543,6 +545,7 @@ pub fn seal(input: &CapsuleInput) -> Result<Value, crate::jcs::JcsError> {
     let mut body = Map::new();
     body.insert("spec_version".into(), json!(SPEC_VERSION));
     body.insert("format_version".into(), json!(FORMAT_VERSION));
+    body.insert("canonicalization_id".into(), json!(CANONICALIZATION_ID));
     body.insert("action_id".into(), json!(input.action_id));
     body.insert("action_type".into(), json!(input.action_type));
     body.insert("operator".into(), json!(input.operator));
@@ -1105,6 +1108,18 @@ mod tests {
         assert_ne!(requester_capsule["capsule_id"], served_capsule["capsule_id"]);
     }
 
+    /// [mesh-seal-path-draft-04-golden-vectors] the producer's own acceptance
+    /// centerpiece: every sealed capsule declares format_version "4" +
+    /// canonicalization_id "jcs" (§5.1) -- without both, the unmodified
+    /// draft-04 Python `verify()` rejects the record with
+    /// `canonicalization_id_missing` (bumping the number alone is not enough).
+    #[test]
+    fn sealed_capsule_declares_format_4_and_jcs_canonicalization() {
+        let capsule = seal(&base_input(None)).unwrap();
+        assert_eq!(capsule["format_version"], "4");
+        assert_eq!(capsule["canonicalization_id"], "jcs");
+    }
+
     #[test]
     fn standalone_capsule_has_no_chain_block_and_standalone_ledger_mode() {
         let capsule = seal(&base_input(None)).unwrap();
@@ -1126,14 +1141,14 @@ mod tests {
     }
 
     #[test]
-    fn capsule_id_is_independent_of_the_chain_blocks_content() {
-        // §5.1 / jcs::CHAIN_LINKAGE_FIELDS excludes `chain` itself from the
-        // digest -- so among capsules that are ALREADY chained (same
-        // ledger_mode), varying parent_capsule_id/relation must not perturb
-        // capsule_id. (ledger_mode itself IS digest-bearing -- see the
-        // standalone-vs-chained test above, where ledger_mode "standalone"
-        // vs "chained" correctly DOES change capsule_id; that's a different
-        // field, not the chain block's content.)
+    fn capsule_id_is_bound_to_the_chain_blocks_content() {
+        // Format 4 / plain JCS (the draft-04 reversal) commits `chain` into
+        // the `capsule_id` digest -- unlike the withdrawn vintage `jcs-n`
+        // profile, which excluded it. Among capsules that are ALREADY chained
+        // (same ledger_mode), varying parent_capsule_id/relation now DOES
+        // perturb capsule_id, closing the prior unauthenticated-chain gap: an
+        // attester can no longer splice a sealed record onto a different
+        // parent without changing its content address.
         let chained_a = seal(&base_input(Some(ChainLink {
             parent_capsule_id: "f".repeat(64),
             relation: "follows".to_string(),
@@ -1144,9 +1159,7 @@ mod tests {
             relation: "confirms".to_string(),
         })))
         .unwrap();
-        assert_eq!(chained_a["capsule_id"], chained_b["capsule_id"]);
-        // And the chain block itself is still exactly what was supplied,
-        // even though it didn't affect the digest.
+        assert_ne!(chained_a["capsule_id"], chained_b["capsule_id"]);
         assert_eq!(chained_a["chain"]["parent_capsule_id"], "f".repeat(64));
         assert_eq!(chained_b["chain"]["parent_capsule_id"], "0".repeat(64));
     }
