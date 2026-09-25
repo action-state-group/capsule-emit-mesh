@@ -36,13 +36,18 @@ if "model_identity" not in sys.modules:
 import pytest
 from agent_action_capsule.contracts import Disposition, EffectRecord
 from agent_action_capsule.emit import emit
+from capsule_emit import seal
 from capsule_emit.evidence_request import Refusal, verify_refusal_offline
 from capsule_emit.ledger import read_ledger
 
 import evidence_server as es
+from peer_keys import ENV_PEER_KEYS
 from record_push import (
     REASON_POLICY_DECLINE,
     REASON_REQUEST_MALFORMED,
+    REASON_SIGNATURE_UNVERIFIED,
+    RECEIVED_PROVENANCE_FILENAME,
+    REJECTED_PUSHES_FILENAME,
     handle_record_push,
     push_record,
     push_record_if_policy_allows,
@@ -339,3 +344,194 @@ class TestRecordPushOverHTTP:
             assert exc_info.value.code == 404
         finally:
             server.close()
+
+
+# ---------------------------------------------------------------------------
+# [mesh-closed-wiring-four-gaps] Seam A2 -- identity verification + provenance
+#
+# A push that carries a claimed sender identity (`sender_peer_id`, the same
+# `X-Mesh-Requester-Id` header the mesh bridge forwards) is held to a HIGHER
+# bar than the original unidentified mechanism: the capsule's own `key_id`
+# must match that sender's announced key AND its signature must verify. Only
+# then is a provenance sibling (`received_from`/`via:push`/`received_at`/
+# `signature_ok`) recorded -- the ONLY fact the pane's local-sibling CLOSED
+# gate trusts. A claimed identity that fails is refused `signature_unverified`
+# and recorded to the rejected file, NEVER folded into `capsules.jsonl`.
+# ---------------------------------------------------------------------------
+
+
+def _signed_capsule(key_path) -> dict:
+    """A REAL signed capsule (carries `key_id` + a verifying `signature`),
+    minted through capsule_emit's own `seal()` with `key_path` -- unlike
+    `_make_capsule`'s `emit()` builder, which is structurally valid but
+    unsigned. `seal()` is the same already-verified builder
+    `test_evidence_server.py` uses."""
+    import tempfile
+
+    scratch = tempfile.mktemp(suffix="-record-push-seal-scratch.jsonl")
+    return seal(None, action="serve-half", operator="acme", anchor=False, ledger=scratch, signing_key_path=key_path).capsule
+
+
+def _provenance_lines(ledger_dir):
+    path = ledger_dir / RECEIVED_PROVENANCE_FILENAME
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def _rejected_lines(ledger_dir):
+    path = ledger_dir / REJECTED_PUSHES_FILENAME
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+class TestRecordPushIdentityVerification:
+    def _setup(self, tmp_path):
+        key_path = _keys(tmp_path)
+        ledger_path = tmp_path / "ledger" / "capsules.jsonl"
+        ledger_path.parent.mkdir(parents=True)
+        ledger_path.write_bytes(b"")
+        capsule = _signed_capsule(key_path)
+        state = _state(ledger_path, key_path)
+        return key_path, ledger_path, capsule, state
+
+    def test_identified_push_with_matching_announced_key_is_received_and_records_provenance(
+        self, tmp_path, monkeypatch
+    ):
+        _key_path, ledger_path, capsule, state = self._setup(tmp_path)
+        monkeypatch.setenv(ENV_PEER_KEYS, json.dumps({"m3": capsule["key_id"]}))
+
+        result = handle_record_push(
+            state, json.dumps(capsule).encode("utf-8"), policy=state.share_policy, sender_peer_id="m3"
+        )
+
+        assert result == {"status": "received"}
+        assert capsule["capsule_id"] in [c["capsule_id"] for c in read_ledger(ledger_path)]
+        prov = _provenance_lines(ledger_path.parent)
+        assert len(prov) == 1
+        assert prov[0] == {
+            "capsule_id": capsule["capsule_id"],
+            "received_from": "m3",
+            "via": "push",
+            "received_at": prov[0]["received_at"],  # a real timestamp, not asserted verbatim
+            "signature_ok": True,
+        }
+        assert prov[0]["received_at"]  # non-empty
+        assert _rejected_lines(ledger_path.parent) == []
+
+    def test_identified_push_from_an_unannounced_peer_is_rejected_never_a_sibling(self, tmp_path, monkeypatch):
+        _key_path, ledger_path, capsule, state = self._setup(tmp_path)
+        # `m3`'s key is announced, but the push claims to be `m4`, who is
+        # absent from the registry -> announced_key_for("m4") is None.
+        monkeypatch.setenv(ENV_PEER_KEYS, json.dumps({"m3": capsule["key_id"]}))
+
+        result = handle_record_push(
+            state, json.dumps(capsule).encode("utf-8"), policy=state.share_policy, sender_peer_id="m4"
+        )
+
+        assert result["reason"] == REASON_SIGNATURE_UNVERIFIED
+        assert ledger_path.read_bytes() == b""  # NEVER folded into capsules.jsonl
+        assert _provenance_lines(ledger_path.parent) == []
+        rejected = _rejected_lines(ledger_path.parent)
+        assert len(rejected) == 1
+        assert rejected[0]["claimed_sender_peer_id"] == "m4"
+        assert rejected[0]["reason"] == REASON_SIGNATURE_UNVERIFIED
+
+    def test_identified_push_whose_key_id_mismatches_the_announced_key_is_rejected(self, tmp_path, monkeypatch):
+        _key_path, ledger_path, capsule, state = self._setup(tmp_path)
+        # `m3` is announced, but with a DIFFERENT key than the capsule carries.
+        monkeypatch.setenv(ENV_PEER_KEYS, json.dumps({"m3": "de" * 32}))
+
+        result = handle_record_push(
+            state, json.dumps(capsule).encode("utf-8"), policy=state.share_policy, sender_peer_id="m3"
+        )
+
+        assert result["reason"] == REASON_SIGNATURE_UNVERIFIED
+        assert ledger_path.read_bytes() == b""
+        assert _provenance_lines(ledger_path.parent) == []
+        assert len(_rejected_lines(ledger_path.parent)) == 1
+
+    def test_identified_push_with_a_tampered_body_is_refused_never_a_sibling(self, tmp_path, monkeypatch):
+        # Content changed after signing, with the sender's key correctly
+        # announced: the tampered capsule is refused (structural verify
+        # catches the tamper as `request_malformed` before the identity gate,
+        # which is itself the honest answer -- a tampered capsule IS
+        # malformed) and, either way, NEVER folded into capsules.jsonl as a
+        # sibling and NEVER granted a provenance record. The load-bearing
+        # guarantee is "a tampered push never becomes a verified sibling",
+        # not which of the two refusal reasons fires first.
+        _key_path, ledger_path, capsule, state = self._setup(tmp_path)
+        forged = dict(capsule)
+        forged["operator"] = "attacker-org"
+        monkeypatch.setenv(ENV_PEER_KEYS, json.dumps({"m3": capsule["key_id"]}))
+
+        result = handle_record_push(
+            state, json.dumps(forged).encode("utf-8"), policy=state.share_policy, sender_peer_id="m3"
+        )
+
+        assert result["reason"] in (REASON_REQUEST_MALFORMED, REASON_SIGNATURE_UNVERIFIED)
+        assert ledger_path.read_bytes() == b""
+        assert _provenance_lines(ledger_path.parent) == []
+
+    def test_identified_push_with_a_swapped_signature_fails_the_sig_term_and_is_rejected(self, tmp_path, monkeypatch):
+        # Isolates the `not verify_capsule_signature(capsule)` term: the
+        # capsule is structurally valid (passes `verify_capsule`) and its
+        # `key_id` DOES match the announced key, so the announced-key term
+        # passes -- but its `signature` is another capsule's, signed by the
+        # same key over different content, so the COSE_Sign1 verify fails.
+        # MUTANT: drop the `not verify_capsule_signature(...)` term and this
+        # push would be (wrongly) received and given a provenance sibling.
+        key_path = _keys(tmp_path)
+        ledger_path = tmp_path / "ledger" / "capsules.jsonl"
+        ledger_path.parent.mkdir(parents=True)
+        ledger_path.write_bytes(b"")
+        genuine = _signed_capsule(key_path)
+        other = _signed_capsule(key_path)  # same node key, different content
+        assert genuine["key_id"] == other["key_id"]
+        swapped = dict(genuine)
+        swapped["signature"] = other["signature"]
+        state = _state(ledger_path, key_path)
+        monkeypatch.setenv(ENV_PEER_KEYS, json.dumps({"m3": genuine["key_id"]}))
+
+        result = handle_record_push(
+            state, json.dumps(swapped).encode("utf-8"), policy=state.share_policy, sender_peer_id="m3"
+        )
+
+        assert result["reason"] == REASON_SIGNATURE_UNVERIFIED
+        assert ledger_path.read_bytes() == b""
+        assert _provenance_lines(ledger_path.parent) == []
+        assert len(_rejected_lines(ledger_path.parent)) == 1
+
+    def test_unidentified_push_is_byte_for_byte_unchanged_no_provenance_no_identity_check(self, tmp_path, monkeypatch):
+        # MUTANT: the whole identity gate must be reachable ONLY when a
+        # sender_peer_id is supplied. An unidentified push (the pre-task path)
+        # never runs it -- so a signed capsule with NO peer-key registry at
+        # all is still received, and NO provenance sibling is written (an
+        # unidentified push was never eligible for the CLOSED gate).
+        monkeypatch.delenv(ENV_PEER_KEYS, raising=False)
+        _key_path, ledger_path, capsule, state = self._setup(tmp_path)
+
+        result = handle_record_push(state, json.dumps(capsule).encode("utf-8"), policy=state.share_policy)
+
+        assert result == {"status": "received"}
+        assert capsule["capsule_id"] in [c["capsule_id"] for c in read_ledger(ledger_path)]
+        assert _provenance_lines(ledger_path.parent) == []
+        assert _rejected_lines(ledger_path.parent) == []
+
+    def test_policy_off_refuses_before_the_identity_gate_even_for_an_identified_push(self, tmp_path, monkeypatch):
+        # Ordering discipline: policy_decline wins over the identity gate, so
+        # an off node does not even evaluate (or record a rejection for) an
+        # identified push -- the symmetry rule is unchanged by Seam A2.
+        key_path = _keys(tmp_path)
+        ledger_path = tmp_path / "ledger" / "capsules.jsonl"
+        ledger_path.parent.mkdir(parents=True)
+        ledger_path.write_bytes(b"")
+        capsule = _signed_capsule(key_path)
+        state = _state(ledger_path, key_path, share_policy=SharePolicy(record_at_completion="off"))
+        monkeypatch.setenv(ENV_PEER_KEYS, json.dumps({"m3": capsule["key_id"]}))
+
+        result = handle_record_push(
+            state, json.dumps(capsule).encode("utf-8"), policy=state.share_policy, sender_peer_id="m3"
+        )
+
+        assert result["reason"] == REASON_POLICY_DECLINE
+        assert ledger_path.read_bytes() == b""
+        assert _provenance_lines(ledger_path.parent) == []
+        assert _rejected_lines(ledger_path.parent) == []

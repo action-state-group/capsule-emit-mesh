@@ -45,6 +45,45 @@ Route: ``POST /evidence/record-push``
             node's ledger is ever touched.
           * ``policy_decline`` -- structurally fine, but this node's own
             ``record_at_completion`` is ``off`` (symmetry rule above).
+          * ``signature_unverified`` -- a claimed sender identity
+            (``sender_peer_id``) whose announced key
+            (``peer_keys.announced_key_for``) does not match the capsule's
+            own ``key_id``, or whose self-attested COSE_Sign1 signature does
+            not verify (``capsule_emit.signing.verify_capsule_signature``).
+            Refused, and the attempt is recorded to
+            ``rejected-record-pushes.jsonl`` (see
+            :func:`_append_rejected_push`) -- NEVER folded into
+            ``capsules.jsonl`` as a sibling.
+
+**[mesh-closed-wiring-four-gaps] Seam A2 -- provenance + identity
+verification.** ``sender_peer_id`` (new, optional kwarg on
+:func:`handle_record_push`) is the claimed sender's mesh peer id --
+self-declared the same way ``/evidence-request``'s own
+``X-Mesh-Requester-Id`` already is (``evidence_server.py``'s "relationship
+gate" doc note), never itself mesh-authenticated. When a caller supplies it
+(the mesh-delivered path, wired via `record_push_bridge.rs` on the plugin
+side), this door holds the push to a HIGHER bar than the original
+unidentified mechanism: the capsule's ``key_id`` must match
+``sender_peer_id``'s registered :func:`peer_keys.announced_key_for` key, AND
+its self-attested signature must actually verify
+(:func:`capsule_emit.signing.verify_capsule_signature`) -- either failing
+refuses ``signature_unverified`` and records the rejection, never appending
+the capsule. On success, a provenance sibling record --
+``{capsule_id, received_from, via: "push", received_at, signature_ok:
+true}`` -- is appended to ``received-provenance.jsonl`` (see
+:func:`_append_provenance`), the ONLY fact the pane's local-sibling CLOSED
+gate (``exchange-row-state.ts``) trusts to treat a locally-held capsule as a
+verified counterparty half.
+
+**Backward compatible by construction.** When ``sender_peer_id`` is omitted
+(``None``, the default -- every caller that predates this task, including
+every existing test and a direct unidentified HTTP push), this door's
+behavior is BYTE FOR BYTE UNCHANGED from before this task: structural
+verify, policy gate, append -- no identity check, no provenance record. An
+unidentified push was never eligible for the pane's local-sibling gate
+before this task and still is not; this task only adds a HIGHER bar for
+pushes that DO carry a claimed identity, it never loosens the unidentified
+path.
 """
 from __future__ import annotations
 
@@ -56,16 +95,18 @@ from typing import Any
 
 from agent_action_capsule.verify import verify as verify_capsule
 from capsule_emit.evidence_request import Refusal
-from capsule_emit.signing import resolve_signer
+from capsule_emit.signing import resolve_signer, verify_capsule_signature
 
 from evidence_responder import status_for_refusal_reason
 from ledger_store_backend import append_capsule
+from peer_keys import announced_key_for
 from share_policy import DEFAULT_SHARE_POLICY, SharePolicy
 
 __all__ = [
     "EVIDENCE_RECORD_PUSH_PATH",
     "REASON_POLICY_DECLINE",
     "REASON_REQUEST_MALFORMED",
+    "REASON_SIGNATURE_UNVERIFIED",
     "handle_record_push",
     "push_record",
     "push_record_if_policy_allows",
@@ -77,6 +118,21 @@ EVIDENCE_RECORD_PUSH_PATH = "/evidence/record-push"
 #: same meaning, a different delivery protocol's own decline/malformed pair.
 REASON_POLICY_DECLINE = "policy_decline"
 REASON_REQUEST_MALFORMED = "request_malformed"
+#: [mesh-closed-wiring-four-gaps] Seam A2 -- a claimed sender identity whose
+#: announced key does not match, or whose signature does not verify. Only
+#: reachable when a caller supplies ``sender_peer_id`` (see module doc's
+#: "backward compatible by construction" note).
+REASON_SIGNATURE_UNVERIFIED = "signature_unverified"
+
+#: [mesh-closed-wiring-four-gaps] Seam A2 -- the provenance sibling file,
+#: co-located with ``capsules.jsonl`` (same convention as
+#: ``checkpoints.jsonl``) -- one line per successfully identity-verified
+#: received push. This is the ONLY source `exchange-row-state.ts`'s
+#: local-sibling CLOSED gate trusts.
+RECEIVED_PROVENANCE_FILENAME = "received-provenance.jsonl"
+#: A claimed-identity push that failed the signature/announced-key check --
+#: recorded, but NEVER folded into ``capsules.jsonl`` as a sibling.
+REJECTED_PUSHES_FILENAME = "rejected-record-pushes.jsonl"
 
 
 def _now_iso() -> str:
@@ -111,19 +167,89 @@ def _refuse(request_digest: str, reason: str, *, state: Any, issued_at: str) -> 
     return d
 
 
+def _append_jsonl(ledger_dir: Any, filename: str, entry: dict[str, Any]) -> None:
+    """Append one JSON line to ``filename`` beside ``capsules.jsonl`` in
+    ``ledger_dir`` -- same co-located-sibling convention as
+    ``checkpoints.jsonl`` (module doc). Not best-effort like
+    ``evidence_server._append_received_log``: a failure here means the
+    provenance/rejection record this task exists to produce was NOT written,
+    so it must surface, not be silently swallowed."""
+    from pathlib import Path
+
+    path = Path(ledger_dir) / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry) + "\n")
+
+
+def _append_provenance(state: Any, capsule: dict[str, Any], sender_peer_id: str, issued_at: str) -> None:
+    """[mesh-closed-wiring-four-gaps] Seam A2 -- record the provenance triple
+    for a successfully identity-verified received push. ``signature_ok`` is
+    always ``true`` here -- this is only ever called AFTER
+    :func:`capsule_emit.signing.verify_capsule_signature` passed; a failed
+    verify goes to :func:`_append_rejected_push` instead, never here."""
+    _append_jsonl(
+        state.ledger_dir,
+        RECEIVED_PROVENANCE_FILENAME,
+        {
+            "capsule_id": capsule["capsule_id"],
+            "received_from": sender_peer_id,
+            "via": "push",
+            "received_at": issued_at,
+            "signature_ok": True,
+        },
+    )
+
+
+def _append_rejected_push(
+    state: Any, capsule_id: str | None, sender_peer_id: str | None, reason: str, issued_at: str
+) -> None:
+    """[mesh-closed-wiring-four-gaps] Seam A2 -- record a claimed-identity
+    push that failed signature/announced-key verification. Never folded into
+    ``capsules.jsonl`` -- this file is the honest record of "someone claimed
+    to be X and pushed something that did not check out", never a sibling
+    any CLOSED gate may read."""
+    _append_jsonl(
+        state.ledger_dir,
+        REJECTED_PUSHES_FILENAME,
+        {
+            "capsule_id": capsule_id,
+            "claimed_sender_peer_id": sender_peer_id,
+            "reason": reason,
+            "rejected_at": issued_at,
+        },
+    )
+
+
 def handle_record_push(
-    state: Any, body: bytes, *, policy: SharePolicy | None = None, now: str | None = None
+    state: Any,
+    body: bytes,
+    *,
+    policy: SharePolicy | None = None,
+    now: str | None = None,
+    sender_peer_id: str | None = None,
 ) -> dict[str, Any]:
     """Handle one ``POST /evidence/record-push`` body against ``state``'s
     own ledger -- duck-typed like ``evidence_server.EvidenceServerState``
     (``ledger_dir`` + ``signing_key_path``, nothing else).
 
+    ``sender_peer_id`` [mesh-closed-wiring-four-gaps] -- the claimed sender's
+    mesh peer id (self-declared, see module doc's "provenance + identity
+    verification" section). ``None`` (the default) reproduces this
+    function's pre-task behavior exactly -- see the module doc's "backward
+    compatible by construction" note.
+
     Returns ``{"status": "received"}`` or a signed refusal dict -- never
     raises on malformed input, same discipline as
     ``adjudication_delivery.handle_delivery``. Structural refusal
-    (``request_malformed``) is always checked BEFORE the policy gate -- a
-    request this door could not even verify is never evaluated against
-    policy, mirroring ``evidence_responder``'s own ordering discipline.
+    (``request_malformed``) is always checked BEFORE the policy gate, which
+    in turn is always checked BEFORE the identity-verification gate -- a
+    request this door could not even verify structurally is never evaluated
+    against policy, and a node with ``record_at_completion: off`` refuses
+    ``policy_decline`` regardless of whether the sender's identity would
+    have checked out (mirrors ``evidence_responder``'s own ordering
+    discipline, and keeps this function's already-tested policy-off
+    behavior unchanged by the identity gate this task adds after it).
     """
     issued_at = now or _now_iso()
     request_digest = hashlib.sha256(body).hexdigest()
@@ -143,7 +269,26 @@ def handle_record_push(
     if _effective_policy(policy).record_at_completion == "off":
         return _refuse(request_digest, REASON_POLICY_DECLINE, state=state, issued_at=issued_at)
 
+    if sender_peer_id is not None:
+        # [mesh-closed-wiring-four-gaps] Seam A2 -- a CLAIMED identity is
+        # held to the higher bar: its announced key must match what the
+        # capsule itself carries, AND the capsule's self-attested signature
+        # must actually verify. Either failing is refused and recorded as
+        # REJECTED, never folded into capsules.jsonl as a sibling.
+        announced_key = announced_key_for(sender_peer_id)
+        if (
+            announced_key is None
+            or capsule.get("key_id") != announced_key
+            or not verify_capsule_signature(capsule)
+        ):
+            _append_rejected_push(
+                state, capsule.get("capsule_id"), sender_peer_id, REASON_SIGNATURE_UNVERIFIED, issued_at
+            )
+            return _refuse(request_digest, REASON_SIGNATURE_UNVERIFIED, state=state, issued_at=issued_at)
+
     append_capsule(state.ledger_dir, capsule)
+    if sender_peer_id is not None:
+        _append_provenance(state, capsule, sender_peer_id, issued_at)
     return {"status": "received"}
 
 

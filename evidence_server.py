@@ -102,7 +102,11 @@ Route:
         the full contract). 200 + ``{"status": "received"}`` or a signed
         ``Refusal`` (``request_malformed`` / ``policy_decline``, the latter
         only when this node's own ``share_policy.record_at_completion`` is
-        ``off`` -- the symmetry rule).
+        ``off`` -- the symmetry rule / ``signature_unverified``
+        [mesh-closed-wiring-four-gaps], when the caller's self-declared
+        ``X-Mesh-Requester-Id`` names a sender whose announced key or
+        signature does not check out -- see ``record_push.py``'s own
+        "provenance + identity verification" doc section).
     GET /
         200 + a one-line human status. Carries no evidence -- in
         particular, never this node's own ledger filesystem path (that is
@@ -340,14 +344,25 @@ def make_evidence_handler(state: EvidenceServerState):
                 # [mesh-sharing-policy-v0] see record_push.py for the full
                 # contract -- gated by this node's own share_policy,
                 # symmetric with the send side.
-                result = handle_record_push(state, request_bytes, policy=state.share_policy)
+                # [mesh-closed-wiring-four-gaps] Seam A2 -- the SAME
+                # self-declared-identity header `/evidence-request` already
+                # reads (see module docstring's "relationship gate" note),
+                # reused here as `sender_peer_id` so `handle_record_push` can
+                # hold an identified push to the higher (signature-verified)
+                # bar. `None` when absent, reproducing this route's pre-task
+                # behavior exactly (record_push.py's own "backward compatible
+                # by construction" note).
+                sender_peer_id = self.headers.get("X-Mesh-Requester-Id") or None
+                result = handle_record_push(
+                    state, request_bytes, policy=state.share_policy, sender_peer_id=sender_peer_id
+                )
                 outcome, reason = _outcome_and_reason(result)
                 _append_received_log(
                     state.received_log_dir,
                     {
                         "ts": _now_iso(),
                         "path": "evidence/record-push",
-                        "requester_id": None,
+                        "requester_id": sender_peer_id,
                         "subject_kind": "record_push",
                         "status": outcome,
                         "reason": reason,
