@@ -26,6 +26,25 @@ pub const HISTORY_SEGMENTS_KEY: &str = "share_history_segments";
 pub const ADJUDICATIONS_KEY: &str = "share_adjudications";
 pub const WITNESS_KEY: &str = "witness";
 
+/// This process's own runtime env var for `share_record_at_completion` --
+/// see the module doc's "declarative only" note: no live host->plugin
+/// config channel exists yet, so an operator sets this directly on the
+/// node, same as `share_policy.py`'s `ENV_RECORD_AT_COMPLETION`.
+pub const ENV_RECORD_AT_COMPLETION: &str = "ADMISSION_POLICY_SHARE_RECORD_AT_COMPLETION";
+
+/// This process's runtime `share_record_at_completion` value: `true` only
+/// when explicitly set to `"off"`; unset or any other value resolves to the
+/// documented default (`"counterparty"`, i.e. NOT off) -- mirrors
+/// `share_policy.py::_read_enum`'s default-on behavior byte for byte.
+/// [mesh-closed-wiring-four-gaps] Seam A1.
+pub fn record_at_completion_is_off() -> bool {
+    record_at_completion_is_off_for(std::env::var(ENV_RECORD_AT_COMPLETION).ok().as_deref())
+}
+
+fn record_at_completion_is_off_for(raw: Option<&str>) -> bool {
+    raw == Some("off")
+}
+
 const CATEGORY_ID: &str = "share";
 const CATEGORY_LABEL: &str = "Sharing policy";
 const CATEGORY_SUMMARY: &str = "What this node shares, with whom, by default. Every default keys \
@@ -146,5 +165,21 @@ mod tests {
     fn every_setting_is_optional_shipping_this_schema_flips_no_runtime_behavior() {
         let schema = as_config_schema(share_policy_config_schema("admission-policy"));
         assert!(schema.settings.iter().all(|s| !s.required));
+    }
+
+    #[test]
+    fn record_at_completion_is_off_only_for_the_explicit_off_value() {
+        assert!(record_at_completion_is_off_for(Some("off")));
+    }
+
+    #[test]
+    fn record_at_completion_defaults_on_when_unset() {
+        assert!(!record_at_completion_is_off_for(None));
+    }
+
+    #[test]
+    fn record_at_completion_defaults_on_for_any_other_value() {
+        assert!(!record_at_completion_is_off_for(Some("counterparty")));
+        assert!(!record_at_completion_is_off_for(Some("garbage")));
     }
 }
