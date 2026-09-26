@@ -46,6 +46,10 @@ def announced_key_for(peer_id: str | None) -> str | None:
     try:
         registry = json.loads(raw)
     except Exception:
+        # A malformed ADMISSION_POLICY_PEER_KEYS value is an operator config
+        # error, never a reason to crash the evidence door -- "cannot verify"
+        # (None) is the same honest answer this function gives for every
+        # other absent-registry case (module doc's "never a guess" note).
         return None
     if not isinstance(registry, dict):
         return None
