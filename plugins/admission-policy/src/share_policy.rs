@@ -1,4 +1,4 @@
-//! [mesh-sharing-policy-v0] This plugin's `config_schema` declaration for
+//! the sharing-policy This plugin's `config_schema` declaration for
 //! the one sharing-policy object -- four switches, one key (design note
 //! `_work/mesh-sharing-policy-history-and-money-2026-09-24.md` S1;
 //! `docs/SHARING-POLICY.md`; Python-side shape at
@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn setting_keys_match_the_python_env_var_suffix_convention() {
-        // [mesh-sharing-policy-v0] share_policy.py's ENV_* constants, minus
+        // the sharing-policy share_policy.py's ENV_* constants, minus
         // the shared ADMISSION_POLICY_ prefix -- this module's whole "no
         // re-naming exercise later" claim rests on this correspondence.
         let expected_env_suffix = [

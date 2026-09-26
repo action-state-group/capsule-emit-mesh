@@ -44,7 +44,7 @@ reason, see ``adjudication_delivery.py``) -> ``WITHHELD``;
 status, since a request this door could not even parse was never resolved
 one way or the other.
 
-**[mesh-sharing-policy-v0] relationship policy for `record`/`correlation`/
+**the sharing-policy relationship policy for `record`/`correlation`/
 `chain_segment`.** Before today, this door answered every well-formed
 request from anyone -- structurally correct (a malformed/absent subject was
 always refused), but with no OPERATOR policy at all. ``handle_evidence_request``
@@ -99,7 +99,7 @@ STATUS_NOT_FOUND = "NOT_FOUND"
 STATUS_WITHHELD = "WITHHELD"
 STATUS_NOT_COMMITTED = "NOT_COMMITTED"
 
-#: [mesh-sharing-policy-v0] NEW reason, scoped to this responder's own
+#: the sharing-policy NEW reason, scoped to this responder's own
 #: relationship gate (mirrors `adjudication_delivery.REASON_POLICY_DECLINE`'s
 #: precedent of a new reason for a NEW responder decision, not one of E14's
 #: own closed `capsule_emit.evidence_request.REFUSAL_REASONS`).
@@ -289,7 +289,7 @@ def _refuse_served_summary(request_bytes: bytes, reason: str, *, state: Any, iss
     return _sign_refusal(request_digest, reason, signer=signer, issued_at=issued_at)
 
 
-#: [mesh-sharing-policy-v0] fields a mesh capsule may name a counterparty
+#: the sharing-policy fields a mesh capsule may name a counterparty
 #: node under -- the same free-form ``compute_attestation`` extension-data
 #: convention ``ask_history.py``'s own ``_COUNTERPARTY_NAMING_KEYS`` and
 #: ``capsule_emit.evidence_request``'s ``_CORRELATION_KEY_ALIASES["counterparty"]``
@@ -298,7 +298,7 @@ def _refuse_served_summary(request_bytes: bytes, reason: str, *, state: Any, iss
 #: so importing back from it would be a cycle) rather than reached into.
 _COUNTERPARTY_NAMING_KEYS = frozenset({"requesting_party", "served_by_node_id", "counterparty_ref"})
 
-#: The subject kinds [mesh-sharing-policy-v0]'s relationship gate applies to
+#: The subject kinds the sharing-policy's relationship gate applies to
 #: -- ``range`` is deliberately excluded (out of this item's scope; the
 #: design note names only these three).
 RELATIONSHIP_GATED_SUBJECT_KINDS = frozenset({"record", "correlation", "chain_segment"})
@@ -311,7 +311,7 @@ RELATIONSHIP_STRANGER = "stranger"
 #: answers nobody via this gate (a node that wants zero exposure, even to
 #: its own past counterparties, through this door); ``peers`` answers
 #: everyone, including a caller who declared no identity at all -- today's
-#: pre-[mesh-sharing-policy-v0] behavior, restored by explicit opt-in.
+#: pre-the sharing-policy behavior, restored by explicit opt-in.
 _ALLOWED_RELATIONSHIPS_BY_TIER: dict[str, frozenset[str]] = {
     "off": frozenset(),
     "counterparties": frozenset({RELATIONSHIP_COUNTERPARTY}),
@@ -370,7 +370,7 @@ def relationship_allowed(relationship: str, history_segments_tier: str) -> bool:
 
 
 def classify_leaf_kind(entry: dict[str, Any]) -> str:
-    """[mesh-sharing-policy-v0] this repo's own ``chain_segment`` leaf
+    """the sharing-policy this repo's own ``chain_segment`` leaf
     vocabulary: everything ``capsule_emit.chain_segment``'s own
     ``_default_classify`` already names (``stamp``, ``adjudication``,
     generic ``capsule``) PLUS ``exchange_twin`` for a leaf carrying an
@@ -429,7 +429,7 @@ def _handle_served_summary_request(state: Any, request_bytes: bytes, req: Any, *
 def _handle_chain_segment_request(
     state: Any, request_bytes: bytes, req: Any, *, issued_at: str
 ) -> Artifact | Refusal:
-    """[mesh-sharing-policy-v0] ``chain_segment`` dispatched OUTSIDE
+    """the sharing-policy ``chain_segment`` dispatched OUTSIDE
     ``answer()``, so this responder's own :func:`classify_leaf_kind` names
     leaves -- never ``capsule_emit.chain_segment``'s generic default. Honors
     ``coverage.expected_pin`` (same semantics as ``answer()``'s own check);
@@ -445,7 +445,7 @@ def _handle_chain_segment_request(
 
     request_digest = hashlib.sha256(request_bytes).hexdigest()
     signer = _resolve_state_signer(state)
-    # [mesh-sharing-policy-v0] fix: chain_segment_fn needs the checkpoint's
+    # the sharing-policy fix: chain_segment_fn needs the checkpoint's
     # OWN in-band checkpoint_stamp entries to find any checkpoint at all --
     # a plain read_all_capsules(state.ledger_dir) never sees them for a
     # node using the sibling checkpoints.jsonl convention (this module's
@@ -509,7 +509,7 @@ def handle_evidence_request(
     wants one.
 
     ``requester_id``/``policy`` — see the module docstring's
-    "[mesh-sharing-policy-v0] relationship policy" note. Both default to
+    "the sharing-policy relationship policy" note. Both default to
     ``None``, which reproduces this function's exact pre-existing behavior
     for the ``not_authorized`` RELATIONSHIP GATE specifically (every
     existing caller that predates this gate gets exactly the same
@@ -519,7 +519,7 @@ def handle_evidence_request(
     :func:`classify_leaf_kind` (adds the ``exchange_twin`` leaf kind) and
     drops ``coverage.min_freshness`` handling -- UNCONDITIONALLY, regardless
     of ``policy``. That dispatch is a separate, always-on classifier change
-    bundled in the same [mesh-sharing-policy-v0] commit as this gate, not
+    bundled in the same the sharing-policy commit as this gate, not
     itself gated by ``policy`` -- a ``policy=None`` node's ``chain_segment``
     answers differ from pre-this-commit ``answer()`` output in leaf kind
     naming and in the (already-disclosed, see that function's own docstring)
