@@ -1,0 +1,151 @@
+# SPDX-License-Identifier: Apache-2.0
+# Plugin release — builds the admission-policy-plugin binary (statically
+# linking capsule-producer) for each target mesh-llm's plugin installer
+# resolves, and uploads a per-target archive to the GitHub Release.
+#
+# Archive layout and asset naming follow mesh-llm's plugin distribution
+# contract exactly (docs/plugins/README.md "GitHub Native Package Releases"
+# in Mesh-LLM/mesh-llm, verified against crates/mesh-llm-plugin-manager's
+# actual extractor/matcher, not just the prose):
+#   - asset name:      <plugin-name>-<version>-<target-triple>.<ext>
+#       (mesh-llm-plugin-manager::asset::asset_candidates)
+#   - archive root:     one directory named exactly <plugin-name>
+#   - inside that root: plugin.toml + an executable named exactly
+#       <plugin-name>[.exe]
+#       (mesh-llm-plugin-manager::archive::validate_plugin_root requires
+#       `<plugin_dir>/<plugin_name><EXE_SUFFIX>` to exist by that literal
+#       name -- NOT the crate's own binary name, `admission-policy-plugin`.
+#       Every job below stages and renames the built binary accordingly.)
+# `<plugin-name>` is `capsule-emit-mesh` throughout (matches this repo's
+# name, the GitHub owner/repo installers key off, and PLUGIN_ID declared by
+# the plugin's own manifest at src/main.rs).
+#
+# Only `plugin.toml` and the renamed executable are required by the
+# extractor; README.md, LICENSE and NOTICE ride along because the contract
+# lists them as recommended and they are already public-safe in this repo.
+# No keys, ledgers, or demo data are included (checked below with an
+# explicit file-list assertion so a future workflow edit can't silently wire
+# one of those directories in).
+#
+# Triggered on a `v*` tag push. Steven pushes the tag; this workflow does not
+# create or push one. `workflow_dispatch` is provided so a maintainer can
+# re-run the build for an existing tag (e.g. after a runner-side failure)
+# without pushing a new one.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and attach assets to (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  PLUGIN_NAME: capsule-emit-mesh
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+            archive_ext: tar.gz
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive_ext: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            archive_ext: tar.gz
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: plugins/admission-policy
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            plugins/admission-policy/target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-${{ matrix.target }}-${{ hashFiles('plugins/admission-policy/Cargo.lock') }}
+
+      - name: Build (release)
+        run: cargo build --locked --release --target ${{ matrix.target }} --bin admission-policy-plugin
+
+      - name: Resolve version from tag
+        id: version
+        shell: bash
+        run: |
+          RAW_TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "version=${RAW_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Stage archive root (rename executable to the plugin name, per the contract)
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="staging/${PLUGIN_NAME}"
+          mkdir -p "$root"
+          cp "target/${{ matrix.target }}/release/admission-policy-plugin" "$root/${PLUGIN_NAME}"
+          chmod +x "$root/${PLUGIN_NAME}"
+          cp plugin.toml "$root/plugin.toml"
+          cp README.md "$root/README.md"
+          cp ../../LICENSE "$root/LICENSE"
+          cp ../../NOTICE "$root/NOTICE"
+          # Fail closed if the staged root ever picks up anything beyond the
+          # contract's required + recommended files (never keys, ledgers, or
+          # demo data).
+          allowed="plugin.toml ${PLUGIN_NAME} README.md LICENSE NOTICE"
+          for f in "$root"/*; do
+            name="$(basename "$f")"
+            case " $allowed " in
+              *" $name "*) ;;
+              *) echo "refusing to package unexpected file: $name" >&2; exit 1 ;;
+            esac
+          done
+
+      - name: Archive
+        id: archive
+        shell: bash
+        working-directory: plugins/admission-policy/staging
+        run: |
+          set -euo pipefail
+          asset="${PLUGIN_NAME}-${{ steps.version.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}"
+          tar czf "../${asset}" "${PLUGIN_NAME}"
+          echo "asset=${asset}" >> "$GITHUB_OUTPUT"
+
+      - name: sha256
+        id: sha256
+        shell: bash
+        working-directory: plugins/admission-policy
+        run: |
+          set -euo pipefail
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ steps.archive.outputs.asset }}" > "${{ steps.archive.outputs.asset }}.sha256"
+          else
+            shasum -a 256 "${{ steps.archive.outputs.asset }}" > "${{ steps.archive.outputs.asset }}.sha256"
+          fi
+          cat "${{ steps.archive.outputs.asset }}.sha256"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            plugins/admission-policy/${{ steps.archive.outputs.asset }}
+            plugins/admission-policy/${{ steps.archive.outputs.asset }}.sha256
+          fail_on_unmatched_files: true

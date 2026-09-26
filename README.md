@@ -25,6 +25,47 @@ model (step 1) alongside it.
 > 4. [**TRUST-MODEL.md**](docs/TRUST-MODEL.md) — the full threat model, assurance
 >    classes, and per-role questions (§2.2–2.5).
 
+## Install
+
+The fastest path onto a Mesh-LLM node — one line, once you have `mesh-llm` itself:
+
+```bash
+mesh-llm plugins install action-state-group/capsule-emit-mesh@0.1.0
+```
+
+This installs the native Rust plugin (**Path 1** below): it registers as an
+`inference` provider, and every exchange it admits gets sealed into a signed,
+hash-chained Agent Action Capsule the moment the node serves it — no other
+setup. Check it's running with `mesh-llm plugins list`; the sealed ledger
+lands at `<plugin data dir>/ledger/capsules.jsonl` (`ADMISSION_POLICY_DATA_DIR`
+to change it — see "Path 1" below).
+
+**What leaves the machine by default: nothing.** Capsules are sealed and
+verified locally. The plugin's own checkpoint cadence — a local background
+clock that folds the ledger into a signed Merkle Mountain Range — is **on by
+default** (local only; set `ADMISSION_POLICY_CHECKPOINT_CADENCE=off` to opt
+out). The only thing that ever calls out to a witness is that cadence's
+witness registration, which stays **off by default**: it sends nothing unless
+you also set `ADMISSION_POLICY_CHECKPOINT_WITNESS_URLS`; empty/unset means
+self-checkpointed only, no network. See
+[`docs/CHECKPOINT-BY-DEFAULT.md`](docs/CHECKPOINT-BY-DEFAULT.md). Nothing is
+sent anywhere unless you set a witness URL yourself.
+
+**To turn the plugin off**, set `enabled = false` on its `[[plugin]]` entry in
+`mesh-llm`'s config and restart the node:
+
+```toml
+[[plugin]]
+name = "capsule-emit-mesh"
+enabled = false
+```
+
+The release workflow builds macOS/Apple Silicon (`aarch64-apple-darwin`) and
+Linux (`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`) assets; see
+[`.github/workflows/release.yml`](.github/workflows/release.yml) for the build
+matrix. The Python sidecar path below (**Path 2**) has no native binary and
+stays a `pip install` regardless of platform.
+
 Two integration paths ship here (see below): a **native Rust
 `admission-policy-plugin` + `capsule-producer`** on the serving path (primary —
 it seals the host's own `openai.exchange.v1` lifecycle event), and a **Python
@@ -181,8 +222,8 @@ current demo capsules.
   durable ledger (byte-identical on-disk shape to the Python path, so either
   side's tooling reads the other's ledger), key persistence + rotation, an
   optional Transparency-Service anchor client, and offline verification. Also
-  carries an opt-in checkpoint cadence over that same ledger
-  (`checkpoint.rs` + `admission-policy`'s `checkpoint_cadence.rs`) — the
+  carries a checkpoint cadence over that same ledger, on by default and local
+  only (`checkpoint.rs` + `admission-policy`'s `checkpoint_cadence.rs`) — the
   native-Rust alternative to running `checkpoint_daemon.py` against the
   plugin's ledger dir; see `docs/CHECKPOINT-BY-DEFAULT.md`'s "Path 1" section.
 
@@ -972,7 +1013,7 @@ docs/TWIN-REFEREE-SELECTION.md  independence-first select_twin/select_referee: t
 
 # Path 1 — native Rust plugin (primary)
 plugins/admission-policy/       mesh-llm-plugin: Envelope-wire admission + lifecycle-hook capsule emission
-plugins/admission-policy/src/checkpoint_cadence.rs   opt-in in-process checkpoint cadence, see docs/CHECKPOINT-BY-DEFAULT.md
+plugins/admission-policy/src/checkpoint_cadence.rs   in-process checkpoint cadence, on by default (local only), see docs/CHECKPOINT-BY-DEFAULT.md
 plugins/capsule-producer/       Rust AAC producer: JCS + COSE_Sign1 + chain + ledger + anchor + verify
 plugins/capsule-producer/src/checkpoint.rs           MMR + signed checkpoint + opt-in witness over the plugin's own ledger (cll crate)
 

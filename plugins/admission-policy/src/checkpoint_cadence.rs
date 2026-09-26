@@ -1,11 +1,16 @@
 //! The plugin's own checkpoint cadence: a tokio background task that runs
 //! `capsule_producer::checkpoint::CheckpointState` over this node's ledger,
-//! replacing `checkpoint_daemon.py` once a node opts in.
+//! replacing `checkpoint_daemon.py` once a node cuts over.
 //!
-//! **Off by default, node-by-node cutover (`[mesh-plugin-checkpoint-cadence]`,
-//! `docs/DESIGN-fold-sidecar-into-plugin.md`).** `checkpoint_daemon.py`
-//! keeps checkpointing a node's ledger on the same files until the operator
-//! sets [`ENV_ENABLE`] to `"on"`. The two must NEVER run against the same
+//! **On by default, local-only (`[mesh-plugin-release-checkpoint-default-flip]`,
+//! superseding `[mesh-plugin-checkpoint-cadence]`'s off-by-default launch;
+//! `docs/DESIGN-fold-sidecar-into-plugin.md`).** The cadence task now runs
+//! unless the operator opts OUT by setting [`ENV_ENABLE`] to `"off"` --
+//! "on by default" is local checkpointing only: [`ENV_WITNESS_URLS`] stays
+//! empty/unset by default, so no network call ever happens unless the
+//! operator also sets a witness URL. `checkpoint_daemon.py` keeps
+//! checkpointing a node's ledger on the same files until the operator opts
+//! OUT of the in-process cadence. The two must NEVER run against the same
 //! `ledger_dir` at once -- both would append lines to the same
 //! `checkpoints.jsonl` and race each other's chain. This is an operator
 //! choice, not something this task can detect and refuse safely (a lock
@@ -26,9 +31,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-/// `ADMISSION_POLICY_CHECKPOINT_CADENCE=on` opts this node's plugin into
-/// running its OWN checkpoint cadence in place of `checkpoint_daemon.py`.
-/// Any other value (including unset) leaves it off.
+/// On by default: the plugin runs its OWN checkpoint cadence in place of
+/// `checkpoint_daemon.py` unless the operator sets
+/// `ADMISSION_POLICY_CHECKPOINT_CADENCE=off` to opt out (e.g. because
+/// `checkpoint_daemon.py` is already checkpointing this `ledger_dir` --
+/// see the module doc's daemon-race note). Any other value, including
+/// unset, leaves it on.
 const ENV_ENABLE: &str = "ADMISSION_POLICY_CHECKPOINT_CADENCE";
 /// Age-clock override, seconds. Defaults to `CheckpointCadenceConfig`'s own
 /// 300s mesh default (`checkpoint_daemon.py`'s `DEFAULT_INTERVAL_SECONDS`).
@@ -43,9 +51,15 @@ const ENV_CADENCE_ENTRIES: &str = "ADMISSION_POLICY_CHECKPOINT_CADENCE_ENTRIES";
 const ENV_WITNESS_URLS: &str = "ADMISSION_POLICY_CHECKPOINT_WITNESS_URLS";
 
 pub fn is_enabled() -> bool {
-    std::env::var(ENV_ENABLE)
-        .map(|v| v == "on")
-        .unwrap_or(false)
+    is_enabled_for(std::env::var(ENV_ENABLE).ok().as_deref())
+}
+
+/// Pure decision logic behind [`is_enabled`], taking the raw env value (or
+/// `None` when unset) directly so the on-by-default / explicit-opt-out
+/// behavior is unit-testable without mutating process-global env state
+/// (`std::env::set_var` races across parallel `cargo test` threads).
+fn is_enabled_for(raw: Option<&str>) -> bool {
+    raw != Some("off")
 }
 
 fn config_from_env() -> CheckpointCadenceConfig {
@@ -205,5 +219,27 @@ fn report_checkpoint(
             tracing::warn!(%err, %phase, "checkpoint cadence step failed");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn on_by_default_when_unset() {
+        assert!(is_enabled_for(None));
+    }
+
+    #[test]
+    fn explicit_off_disables() {
+        assert!(!is_enabled_for(Some("off")));
+    }
+
+    #[test]
+    fn any_other_value_stays_on() {
+        assert!(is_enabled_for(Some("on")));
+        assert!(is_enabled_for(Some("")));
+        assert!(is_enabled_for(Some("OFF"))); // case-sensitive: only lowercase "off" opts out
     }
 }
