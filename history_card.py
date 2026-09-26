@@ -58,6 +58,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 from agent_action_capsule.emit import emit
@@ -69,7 +70,7 @@ from capsule_emit.account import (
     verify_account,
 )
 from capsule_emit.account import Account as CoreAccount
-from capsule_emit.checkpoint import CheckpointRecord
+from capsule_emit.checkpoint import CheckpointRecord, StampVerdict, WitnessRecord, verify_witness_stamp_tristate
 from capsule_emit.checkpoint.cose_wire import verify_checkpoint_cose_offline
 from capsule_emit.numbers import float_to_str
 
@@ -227,8 +228,9 @@ class HistoryProperties:
     #: reflect the chain as presented) but carry no independent time guarantee.
     #:
     #: ``"receipt_bounded"`` -- at least one checkpoint in the verified prefix
-    #: carries a real (non-stub) witness receipt, meaning a Transparency Service
-    #: confirmed the checkpoint's existence.  The TS registration places an
+    #: carries a witness receipt that `_witness_verified` accepts (bound to
+    #: that checkpoint, signed under a key this verifier already holds),
+    #: meaning a Transparency Service confirmed the checkpoint's existence.  The TS registration places an
     #: external upper bound on when that checkpoint could have occurred relative
     #: to the TS's own clock, partially bounding the producer's timestamp claims.
     #: Note: current receipts do not carry a TS-signed time field that this
@@ -372,6 +374,9 @@ class HistoryCard:
     properties: HistoryProperties
     #: coverage -- how many checkpoints are covered, and the latest's witness
     #: state (never the un-anchored tail beyond the latest checkpoint).
+    #: `witnesses` lists only the ts_urls whose receipt on the latest
+    #: checkpoint passes `_witness_verified`; a witness row that merely
+    #: exists in the ledger is never listed, and `witnessed` is false.
     checkpoint_count: int
     witnesses: list[str] = field(default_factory=list)
     witnessed: bool = False
@@ -601,12 +606,39 @@ def node_id_from_key_id(key_id: str) -> str:
     return f"node:{key_id[:16]}"
 
 
+def _witness_verified(
+    cp: CheckpointRecord,
+    witness: WitnessRecord,
+    witness_keys: Mapping[str, bytes | str] | None,
+) -> bool:
+    """Whether `witness`'s receipt counts as witnessing `cp` on a history card.
+
+    True only when `verify_witness_stamp_tristate` returns `WITNESSED`: the
+    stamp's `entry_hash` is bound to `cp.digest()` (a genuine receipt replayed
+    from another checkpoint fails), and the receipt's COSE signature verifies
+    under a key held HERE -- `witness_keys[witness.ts_url]` when the caller
+    pins one, otherwise the key built into `capsule_emit.checkpoint` for
+    `DEFAULT_TS_URL`. Any other `ts_url` is `UNVERIFIED` and does not count.
+
+    The `ts_url` in the ledger is only a lookup key into keys already held.
+    It is never fetched from: whoever writes the ledger writes `ts_url`, so a
+    key served there is the ledger writer's choice, and a receipt signed by it
+    proves nothing about any witness. Stubs never count.
+    """
+    if witness.is_stub:
+        return False
+    pem = (witness_keys or {}).get(witness.ts_url)
+    verdict, _errors = verify_witness_stamp_tristate(cp, witness, ts_pubkey_pem=pem)
+    return verdict is StampVerdict.WITNESSED
+
+
 def build_history_card(
     *,
     node_id: str,
     log_id: str,
     checkpoint_lines: list[dict[str, Any]],
     since_size: int = 0,
+    witness_keys: Mapping[str, bytes | str] | None = None,
 ) -> HistoryCard:
     """Build a history card over the checkpoint chain since `since_size`.
 
@@ -624,6 +656,11 @@ def build_history_card(
     `checkpoint_lines` -- that checkpoint becomes the trust anchor (`S`) the
     walk starts from; a `since_size` that names no known checkpoint is
     refused (`ValueError`), never silently rounded to the nearest one.
+
+    `witness_keys` maps a witness `ts_url` to the Transparency Service public
+    key (PEM) the caller pins for it. A witness counts toward `witnessed`,
+    `witnesses` and `temporal_provenance` only as `_witness_verified`
+    decides; see there for exactly what is trusted.
     """
     records = [CheckpointRecord.from_dict(line) for line in checkpoint_lines]
     cose_by_size = {line["mmr_size"]: line.get("checkpoint_cose") for line in checkpoint_lines if "mmr_size" in line}
@@ -653,14 +690,15 @@ def build_history_card(
 
     # [mesh-history-card-time-provenance]: determine whether the temporal
     # properties (history_depth, cadence) are bounded by external witness
-    # receipts or are purely producer-asserted.  A real (non-stub) witness
-    # receipt on ANY checkpoint in the verified prefix places an external
-    # constraint on when that checkpoint could have occurred -- the producer
-    # cannot backdate past the TS's own registration time.  Without any real
-    # receipt, the cadence and depth numbers are derived entirely from the
-    # producer's own self-written cp.timestamp fields.
+    # receipts or are purely producer-asserted.  A verified witness receipt
+    # on ANY checkpoint in the verified prefix places an external constraint
+    # on when that checkpoint could have occurred -- the producer cannot
+    # backdate past the TS's own registration time.  Without one, the cadence
+    # and depth numbers are derived entirely from the producer's own
+    # self-written cp.timestamp fields.  A non-stub witness row is not enough:
+    # the producer writes that row too.
     has_real_witnesses = any(
-        not w.is_stub
+        _witness_verified(cp, w, witness_keys)
         for cp in verified_prefix
         for w in (cp.witnesses or [])
     )
@@ -673,7 +711,11 @@ def build_history_card(
     )
 
     latest = in_range[-1] if in_range else boundary
-    witnesses = sorted({w.ts_url for w in (latest.witnesses or [])}) if latest is not None else []
+    witnesses = (
+        sorted({w.ts_url for w in (latest.witnesses or []) if _witness_verified(latest, w, witness_keys)})
+        if latest is not None
+        else []
+    )
 
     return HistoryCard(
         node_id=node_id,
@@ -702,7 +744,12 @@ class HistoryVerifyResult:
     errors: list[str] = field(default_factory=list)
 
 
-def verify_history_card(card_value: dict[str, Any], checkpoint_lines: list[dict[str, Any]]) -> HistoryVerifyResult:
+def verify_history_card(
+    card_value: dict[str, Any],
+    checkpoint_lines: list[dict[str, Any]],
+    *,
+    witness_keys: Mapping[str, bytes | str] | None = None,
+) -> HistoryVerifyResult:
     """The offline verifier: given a published card (`HistoryCard.to_value()`)
     and the RAW checkpoint lines it claims to summarize, independently
     rebuild the card from the checkpoints alone and confirm it matches
@@ -724,6 +771,12 @@ def verify_history_card(card_value: dict[str, Any], checkpoint_lines: list[dict[
     byte-for-byte recompute+match would trivially succeed because both the
     published card and the recompute would carry the same (false) label --
     the chain's own content was never consulted to check who it belongs to.
+
+    **Witnesses are re-verified, not copied.** The recompute passes
+    `witness_keys` to `build_history_card`, so a card claiming `witnessed`
+    for a receipt this verifier cannot check under a key it holds fails to
+    match. A verifier with fewer pins than the publisher gets a mismatch on
+    that witness rather than taking the publisher's word for it.
     """
     try:
         since_size = card_value["selection"]["since_size"]
@@ -761,7 +814,11 @@ def verify_history_card(card_value: dict[str, Any], checkpoint_lines: list[dict[
 
     try:
         recomputed = build_history_card(
-            node_id=node_id, log_id=log_id, checkpoint_lines=checkpoint_lines, since_size=since_size
+            node_id=node_id,
+            log_id=log_id,
+            checkpoint_lines=checkpoint_lines,
+            since_size=since_size,
+            witness_keys=witness_keys,
         )
     except ValueError as exc:
         return HistoryVerifyResult(ok=False, errors=[str(exc)])

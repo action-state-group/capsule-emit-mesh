@@ -276,15 +276,19 @@ def test_continuity_cell_flips_red_on_a_fork_and_carries_the_two_signed_checkpoi
     assert render_cell_text(cont)  # never blank
 
 
-def test_witnessed_cell_true_when_the_covered_chain_has_a_witness(tmp_path, fake_witness):
+def test_witnessed_cell_absent_when_the_witness_row_does_not_verify(tmp_path, fake_witness):
+    """fake_witness writes a witness row naming https://fake-ts.example with a
+    receipt that verifies under no key. The column must not show it: the row
+    is the producer's claim, not a witness."""
     lines = _build_chain(tmp_path, 2)
     from history_card import build_history_card
 
     card = build_history_card(node_id="node-a", log_id="log-a", checkpoint_lines=lines, since_size=0)
     cell = witnessed_cell(card)
 
-    assert cell["state"] == CELL_VERIFIED
-    assert cell["witnesses"] == ["https://fake-ts.example"]
+    assert cell["state"] == CELL_ABSENT
+    assert cell["text"] == "not witnessed"
+    assert cell["witnesses"] == []
 
 
 def test_witnessed_cell_absent_never_fabricated_with_no_checkpoints():

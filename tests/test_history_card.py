@@ -552,20 +552,19 @@ def test_temporal_provenance_is_producer_asserted_with_stub_witnesses(tmp_path, 
     assert result.ok, result.errors
 
 
-def test_temporal_provenance_is_receipt_bounded_with_real_witnesses(tmp_path, fake_witness):
-    """A card built from checkpoints with real (non-stub, is_stub=False) witnesses
-    labels its temporal properties as receipt_bounded.
-
-    The fake_witness fixture returns WitnessRecord(is_stub=False) -- these count
-    as real for labelling purposes because a real TS registration places an
-    external upper bound on when that checkpoint could have occurred."""
+def test_temporal_provenance_ignores_a_non_stub_witness_row_that_does_not_verify(tmp_path, fake_witness):
+    """A non-stub witness row is written by the producer like every other
+    field, so it cannot bound the producer's timestamps by being present.
+    The fake_witness fixture's rows are non-stub but carry an unsigned,
+    unbound receipt: the label stays producer_asserted. The receipt_bounded
+    case, with a real receipt under a pinned key, is in
+    test_history_card_witness_verification.py."""
     lines = _build_chain(tmp_path, 4)
     node_id = node_id_from_key_id(lines[0]["key_id"])
     card = build_history_card(node_id=node_id, log_id="log-a", checkpoint_lines=lines, since_size=0)
 
-    assert card.properties.temporal_provenance == "receipt_bounded", (
-        "a chain with real (non-stub) witness receipts must be labelled receipt_bounded"
-    )
+    assert card.properties.temporal_provenance == "producer_asserted"
+    assert card.witnessed is False
     result = verify_history_card(card.to_value(), lines)
     assert result.ok, result.errors
 

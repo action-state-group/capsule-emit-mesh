@@ -132,13 +132,16 @@ def _build_chain(tmp_path, n_checkpoints: int, *, log_id: str = "log-a", entries
     return [json.loads(line) for line in lines]
 
 
-def test_history_summary_reports_unbroken_witnessed_chain(tmp_path, fake_witness):
+def test_history_summary_reports_unbroken_chain_and_no_unverified_witness(tmp_path, fake_witness):
+    """fake_witness writes a witness row whose receipt verifies under no key:
+    the summary reports the chain, and does not report it witnessed."""
     lines = _build_chain(tmp_path, 3)
     summary = history_summary(node_id="node-a", log_id="log-a", checkpoint_lines=lines)
     assert summary["continuity"] == "unbroken"
     assert summary["unforked"] is True
     assert summary["checkpoint_count"] == 3
-    assert summary["witnessed"] is True
+    assert summary["witnessed"] is False
+    assert summary["witnesses"] == []
     assert summary["continuous_since"] == lines[0]["timestamp"]
     assert summary["source"] == "history_card"
 
