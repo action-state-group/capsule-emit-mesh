@@ -233,11 +233,21 @@ def test_augment_evidence_answer_dict_chain_segment_gets_no_coverage_descriptor(
 def test_augment_evidence_answer_dict_refusal_status_mapping():
     from evidence_responder import augment_evidence_answer_dict
 
-    assert augment_evidence_answer_dict({"reason": "no_such_record"})["status"] == "NOT_FOUND"
+    assert augment_evidence_answer_dict({"reason": "no_such_subject"})["status"] == "NOT_FOUND"
     assert augment_evidence_answer_dict({"reason": "coverage_unsatisfiable"})["status"] == "NOT_COMMITTED"
     assert augment_evidence_answer_dict({"reason": "policy_decline"})["status"] == "WITHHELD"
     # request_malformed stays a bare refusal reason -- no additive status.
     assert "status" not in augment_evidence_answer_dict({"reason": "request_malformed"})
+
+
+def test_augment_evidence_answer_dict_pre_alignment_spelling_no_longer_maps():
+    """The mutant this test exists to catch: reverting the mapping key to
+    the pre-alignment ``no_such_record`` spelling would silently stop
+    mapping ``capsule_emit``'s real ``no_such_subject`` refusals to
+    ``NOT_FOUND``."""
+    from evidence_responder import augment_evidence_answer_dict
+
+    assert "status" not in augment_evidence_answer_dict({"reason": "no_such_record"})
 
 
 def test_coverage_descriptor_never_claims_capture_coverage_on_a_unilateral_range():

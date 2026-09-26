@@ -544,7 +544,7 @@ def test_resolve_referee_record_door_unreachable_is_unresolved():
 def test_resolve_referee_record_door_refusal_is_unresolved():
     def _post(request_map):
         assert request_map == {"subject": {"kind": "correlation", "by": "nonce", "value": "nonce-3"}, "coverage": {}}
-        return {"reason": "no_such_record", "request_digest": "x" * 64, "issued_at": "t", "key_id": "k", "sig": "s"}
+        return {"reason": "no_such_subject", "request_digest": "x" * 64, "issued_at": "t", "key_id": "k", "sig": "s"}
 
     result = resolve_referee_record("nonce-3", expected_response_digest="digest-a", post=_post)
     assert result.status == REFEREE_RECORD_UNRESOLVED

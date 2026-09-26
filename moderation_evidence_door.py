@@ -55,6 +55,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from capsule_emit.evidence_request import REASON_NO_SUCH_SUBJECT
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
@@ -64,7 +65,7 @@ from moderation_twin import find_adjudication_for_decision
 
 __all__ = [
     "SUBJECT_KIND_MESSAGE_DIGEST",
-    "REASON_NO_SUCH_RECORD",
+    "REASON_NO_SUCH_SUBJECT",
     "REASON_POLICY_DECLINE",
     "REASON_REQUEST_MALFORMED",
     "Signer",
@@ -82,7 +83,9 @@ SUBJECT_KIND_MESSAGE_DIGEST = "message_digest"
 #: Refusal reasons -- the SAME strings `evidence_responder.
 #: status_for_refusal_reason` already maps to NOT_FOUND/WITHHELD, so this
 #: door's refusals wire-serialize identically to the generic responder's.
-REASON_NO_SUCH_RECORD = "no_such_record"
+#: `REASON_NO_SUCH_SUBJECT` is imported, not re-typed, so this door cannot
+#: drift from `capsule_emit.evidence_request`'s own registry-aligned token
+#: the way it did when both spelled the pre-alignment `no_such_record`.
 REASON_POLICY_DECLINE = "policy_decline"
 REASON_REQUEST_MALFORMED = "request_malformed"
 
@@ -215,7 +218,7 @@ def answer_redress_request(
 
     decisions = _find_decisions_for_digest(ledger, req.message_digest)
     if not decisions:
-        return _refuse(REASON_NO_SUCH_RECORD, signer=signer, request_digest=request_digest, issued_at=issued_at)
+        return _refuse(REASON_NO_SUCH_SUBJECT, signer=signer, request_digest=request_digest, issued_at=issued_at)
 
     if not _requester_controls_claimed_identity(req):
         return _refuse(REASON_POLICY_DECLINE, signer=signer, request_digest=request_digest, issued_at=issued_at)

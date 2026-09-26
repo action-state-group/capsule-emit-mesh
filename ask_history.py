@@ -457,7 +457,7 @@ def run_references(
 
         answered += 1
         if "reason" in payload:
-            # A signed refusal (incl. no_such_record) IS an answer -- counted
+            # A signed refusal (incl. no_such_subject) IS an answer -- counted
             # above, never treated as a non-response, and never inferred as
             # evidence either way.
             continue

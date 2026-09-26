@@ -37,7 +37,7 @@ dispatches to) only ever recognizes a checkpoint that arrives as an IN-BAND
 ``checkpoint_stamp``-kind leaf inside the SAME file it is bundling from
 (``capsule_emit.witness.push()``'s convention, for a self-checkpointed
 ledger) -- so pointed straight at the plugin's ``capsules.jsonl``, every
-request refuses ``coverage_unsatisfiable``/``no_such_record``, even for a
+request refuses ``coverage_unsatisfiable``/``no_such_subject``, even for a
 record long since checkpointed, because ``bundle()`` can never see a
 checkpoint that lives in a sibling file.
 
@@ -85,7 +85,7 @@ Route:
             answer, not an HTTP-level decline, so it is 200 too;
             distinguish by the presence of ``bundles`` (Artifact) vs
             ``reason`` (Refusal). A missing/empty ledger resolves to a
-            signed ``no_such_record`` refusal INSIDE ``answer()`` itself --
+            signed ``no_such_subject`` refusal INSIDE ``answer()`` itself --
             never a 500.
     POST /evidence/deliver
         [mesh-adjudication-delivery-ack] -- body = a sealed twin-adjudication
