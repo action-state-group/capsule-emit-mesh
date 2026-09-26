@@ -1743,6 +1743,46 @@ mod tests {
         assert_eq!(canonical_body_digest(body).expect("digest"), expected);
     }
 
+    /// [mesh-request-digest-normalization-drift] Cross-implementation parity
+    /// check on a body that EXERCISES the normalization difference: the same
+    /// fixture as above plus two explicit-`null` optional fields (`"stop":
+    /// null, "user": null`), which real OpenAI clients routinely send.
+    ///
+    /// `mesh-llm`'s host-side `request_body_digest` (crates/mesh-llm-host-
+    /// runtime/src/plugin/openai_exchange.rs,
+    /// `request_body_digest_does_not_normalize_absent_fields`) pins this exact
+    /// body to `ee8aeb450ccf8c8017caae0d3733d3dcd62ec88752053894118d28cea0d176fe`
+    /// — DIFFERENT from the null-free digest above, because the current (non-
+    /// vintage) `agent_action_capsule.canonical.json_digest` no longer applies
+    /// absent-field `normalize` (that step moved to `vintage_json_digest`,
+    /// verification-only, split out in agent-action-capsule commit `eea399c`).
+    ///
+    /// This plugin's `canonical_body_digest` still routes through
+    /// `capsule_producer::jcs::json_digest`, which HAS NOT been ported forward
+    /// past that split and still normalizes. Normalizing drops the two null
+    /// fields, so this body collapses to the SAME bytes (and digest) as the
+    /// null-free fixture — this assertion is expected to FAIL, and its failure
+    /// IS the drift: this plugin's digest no longer agrees with mesh-llm's for
+    /// any request body that carries an explicit null, even though both claim
+    /// to implement the same cross-implementation "canonical JSON-DIGEST"
+    /// contract pinned by the shared fixture in
+    /// `tests/test_mesh_llm_digest_parity.py`. That shared fixture is null-
+    /// free, so it cannot see this: it stays green on both sides while this
+    /// body diverges.
+    #[test]
+    fn canonical_body_digest_matches_mesh_llm_on_a_body_with_explicit_nulls() {
+        let body = br#"{"model": "hermes-2-pro-mistral-7b", "messages": [{"role": "user", "content": "hello"}], "temperature": 0.7, "top_p": 1.0, "max_tokens": 512, "stop": null, "user": null}"#;
+        let mesh_llm_expected =
+            "ee8aeb450ccf8c8017caae0d3733d3dcd62ec88752053894118d28cea0d176fe";
+        assert_eq!(
+            canonical_body_digest(body).expect("digest"),
+            mesh_llm_expected,
+            "canonical_body_digest normalizes away explicit nulls and lands on \
+             the null-free digest instead of mesh-llm's non-normalizing one — \
+             see [mesh-request-digest-normalization-drift]"
+        );
+    }
+
     /// `parse_usage` lifts REAL token counts from the response body's `usage`
     /// object — the only honest source of usage the plugin has.
     #[test]

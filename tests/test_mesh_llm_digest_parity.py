@@ -49,6 +49,25 @@ MESH_LLM_FROZEN_DIGEST = (
     "a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5"
 )
 
+# [capsule-emit-mesh-jcs-vintage-split] The same body PLUS two explicit-null
+# optional fields (`"stop": null, "user": null`), which real OpenAI clients
+# routinely send. This is the exact fixture that was missing: the body above
+# is null-free, so it cannot see a normalizing-vs-non-normalizing divergence
+# (absent-field normalize() is a no-op when there is nothing to drop). Pinned
+# to mesh-llm's own frozen constant for this body
+# (`request_body_digest_does_not_normalize_absent_fields`,
+# mesh-serving-provenance/crates/mesh-llm-host-runtime/src/plugin/
+# openai_exchange.rs) -- DIFFERENT from MESH_LLM_FROZEN_DIGEST above, because a
+# non-normalizing JSON-DIGEST does not drop the two null fields.
+MESH_LLM_REQUEST_BODY_WITH_NULLS = {
+    **MESH_LLM_REQUEST_BODY,
+    "stop": None,
+    "user": None,
+}
+MESH_LLM_FROZEN_DIGEST_WITH_NULLS = (
+    "ee8aeb450ccf8c8017caae0d3733d3dcd62ec88752053894118d28cea0d176fe"
+)
+
 
 def _stringify_floats(value):
     """Mirror mesh-llm's `stringify_floats` (and the sidecar's `_stringify_floats`):
@@ -93,6 +112,41 @@ def test_sidecar_digest_json_matches_mesh_llm_frozen_constant():
     assert digest == MESH_LLM_FROZEN_DIGEST, (
         f"sidecar digest_json diverged from mesh-llm's frozen constant: got "
         f"{digest}, mesh-llm pins {MESH_LLM_FROZEN_DIGEST}."
+    )
+
+
+def test_capsule_emit_canonical_digest_matches_mesh_llm_frozen_constant_with_explicit_nulls():
+    """[capsule-emit-mesh-jcs-vintage-split] Same cross-implementation pin as
+    `test_capsule_emit_canonical_digest_matches_mesh_llm_frozen_constant`, but
+    on a body carrying explicit nulls -- the case the null-free fixture above
+    structurally cannot see. `agent_action_capsule.canonical.json_digest` must
+    NOT normalize them away (that step moved to `vintage_json_digest`,
+    verification-only, split out at commit `eea399c`), matching mesh-llm's own
+    non-normalizing `request_body_digest`."""
+    canonical_input = _stringify_floats(MESH_LLM_REQUEST_BODY_WITH_NULLS)
+    digest = json_digest(canonical_input)
+    assert digest == MESH_LLM_FROZEN_DIGEST_WITH_NULLS, (
+        "capsule-emit canonical JSON-DIGEST diverged from mesh-llm's frozen "
+        f"request_body_digest on a null-carrying body: got {digest}, mesh-llm "
+        f"pins {MESH_LLM_FROZEN_DIGEST_WITH_NULLS}. A digest that normalizes "
+        "away explicit nulls lands on MESH_LLM_FROZEN_DIGEST instead -- the "
+        "exact drift class [capsule-emit-mesh-jcs-vintage-split] fixes."
+    )
+    assert digest != MESH_LLM_FROZEN_DIGEST, (
+        "sanity: the null-carrying body must NOT collapse to the null-free "
+        "digest -- otherwise this fixture doesn't exercise normalization at all"
+    )
+
+
+def test_sidecar_digest_json_matches_mesh_llm_frozen_constant_with_explicit_nulls():
+    """Same cross-implementation pin as
+    `test_sidecar_digest_json_matches_mesh_llm_frozen_constant`, on the
+    null-carrying body -- closes the loop for the sidecar surface too."""
+    digest = capsule_sidecar.digest_json(MESH_LLM_REQUEST_BODY_WITH_NULLS)
+    assert digest == MESH_LLM_FROZEN_DIGEST_WITH_NULLS, (
+        f"sidecar digest_json diverged from mesh-llm's frozen constant on a "
+        f"null-carrying body: got {digest}, mesh-llm pins "
+        f"{MESH_LLM_FROZEN_DIGEST_WITH_NULLS}."
     )
 
 
