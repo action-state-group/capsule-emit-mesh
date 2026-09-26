@@ -52,6 +52,7 @@ __all__ = [
     "STATE_NOT_CHECKED",
     "STATE_NOT_PRESENT",
     "STATE_PASS",
+    "assert_dependency_gates",
     "assert_map_complete",
     "chip",
     "has_issue",
@@ -208,6 +209,49 @@ def assert_map_complete(properties: dict[str, dict[str, Any]]) -> None:
     bad = {k: v.get("state") for k, v in properties.items() if v.get("state") not in CHIP_STATES}
     if bad:
         raise ValueError(f"assurance map has invalid states: {bad}")
+
+
+#: The three properties that have nothing to bind, include into, or register
+#: without a validly-signed checkpoint ([mesh-ledger-earned-pass-and-native-panes]
+#: Part A item 1). ``checkpoint_signature`` is Link 6; a checkpoint no one has
+#: verified the signature of cannot ground any of these three.
+_CHECKPOINT_DEPENDENT_PROPERTIES = (
+    PROPERTY_CONTINUITY,
+    PROPERTY_LOCAL_INCLUSION,
+    PROPERTY_EXTERNAL_REGISTRATION,
+)
+
+
+def assert_dependency_gates(properties: dict[str, dict[str, Any]]) -> None:
+    """Raise on an assurance-map combination that is structurally impossible.
+
+    The live defect this guards against ([mesh-ledger-earned-pass-and-native-panes]):
+    an Exchanges card rendered ``continuity: PASS`` while ``checkpoint_signature:
+    NOT_PRESENT`` -- a green chip with nothing behind it to bind, the exact
+    failure this product exists to prevent, in its own UI. ``continuity``,
+    ``local_inclusion``, and ``external_registration`` are all downstream of a
+    validly-signed checkpoint (Link 6): there is nothing for continuity to
+    bind, no checkpoint for a record to be included under, and no receipt to
+    register externally, until ``checkpoint_signature`` itself reads PASS.
+    None of the three may report PASS while ``checkpoint_signature`` does not.
+
+    This is a backstop, not the primary fix -- callers must still compute
+    each property honestly; this only refuses to let an honest-looking map
+    contain the impossible combination silently.
+    """
+    checkpoint_signature = properties.get(PROPERTY_CHECKPOINT_SIGNATURE, {}).get("state")
+    if checkpoint_signature == STATE_PASS:
+        return
+    offenders = [
+        key
+        for key in _CHECKPOINT_DEPENDENT_PROPERTIES
+        if properties.get(key, {}).get("state") == STATE_PASS
+    ]
+    if offenders:
+        raise ValueError(
+            f"assurance map dependency violation: {offenders} = PASS but "
+            f"checkpoint_signature = {checkpoint_signature!r}"
+        )
 
 
 def has_issue(properties: dict[str, dict[str, Any]], promise_state: str | None = None) -> bool:

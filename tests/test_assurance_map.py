@@ -56,6 +56,52 @@ def test_assert_map_complete_raises_on_an_invalid_state():
         assurance_map.assert_map_complete(properties)
 
 
+# ---------------------------------------------------------------------------
+# assert_dependency_gates -- [mesh-ledger-earned-pass-and-native-panes] Part A
+# item 1. One test per dependent pair, each red if the gate is removed: the
+# live defect was continuity=PASS next to checkpoint_signature=NOT_PRESENT.
+# ---------------------------------------------------------------------------
+
+
+def _map_with(**overrides):
+    properties = {key: assurance_map.chip(assurance_map.STATE_NOT_PRESENT) for key in assurance_map.PROPERTY_ORDER}
+    for key, state in overrides.items():
+        properties[key] = assurance_map.chip(state)
+    return properties
+
+
+def test_assert_dependency_gates_passes_a_map_with_no_checkpoint_dependent_pass():
+    assurance_map.assert_dependency_gates(_map_with())  # must not raise
+
+
+def test_assert_dependency_gates_passes_when_checkpoint_signature_is_pass_too():
+    properties = _map_with(
+        checkpoint_signature=assurance_map.STATE_PASS,
+        continuity=assurance_map.STATE_PASS,
+        local_inclusion=assurance_map.STATE_PASS,
+        external_registration=assurance_map.STATE_PASS,
+    )
+    assurance_map.assert_dependency_gates(properties)  # must not raise
+
+
+def test_assert_dependency_gates_raises_on_continuity_pass_without_checkpoint_signature_pass():
+    properties = _map_with(continuity=assurance_map.STATE_PASS)
+    with pytest.raises(ValueError):
+        assurance_map.assert_dependency_gates(properties)
+
+
+def test_assert_dependency_gates_raises_on_local_inclusion_pass_without_checkpoint_signature_pass():
+    properties = _map_with(local_inclusion=assurance_map.STATE_PASS)
+    with pytest.raises(ValueError):
+        assurance_map.assert_dependency_gates(properties)
+
+
+def test_assert_dependency_gates_raises_on_external_registration_pass_without_checkpoint_signature_pass():
+    properties = _map_with(external_registration=assurance_map.STATE_PASS)
+    with pytest.raises(ValueError):
+        assurance_map.assert_dependency_gates(properties)
+
+
 def test_has_issue_false_when_every_property_is_clean():
     properties = {
         assurance_map.PROPERTY_CONTENT_BINDING: assurance_map.chip(assurance_map.STATE_PASS),
