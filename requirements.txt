@@ -48,7 +48,7 @@ capsule-emit[mcp]>=0.8.0
 # Floor is now 0.3.0, not 0.2.2: history_card.py's `_receipt_grade` reads
 # `ReceiptResult.protected_header_ext` (the generic pass-through for private
 # protected-header labels, e.g. the anchor's grade label -65537) to render a
-# checkpoint's receipts by grade, words-not-codes ([grade-vocabulary-reconcile]).
+# checkpoint's receipts by grade, in words, not codes.
 # That field does not exist on 0.2.2; without this floor the decode always
 # degrades to "ungraded", silently.
 scitt-cose>=0.3.0
