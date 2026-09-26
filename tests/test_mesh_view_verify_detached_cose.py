@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-viewer-verify-detached-cose] regression: capsule_mesh_view's
-machine-view `verify` column must check the DETACHED
-`signed-statements/<capsule_id>.cose` Signed Statement, not just an inline
-`signature`/`key_id` field neither the Rust plugin nor the Python sidecar
-ever writes. Before the fix, every genuinely-signed mesh capsule reported
-verify=✗ in the machine view (misleading -- honest fail-closed for the
-wrong reason: the viewer never looked at the evidence that exists).
+"""capsule_mesh_view's machine-view `verify` column over the two producer
+signatures a sealed capsule carries.
 
-Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its
-mutant -- this file tampers a real .cose statement and confirms verify
-flips to False, and confirms a missing statement also reports False (never
-silently True).
+A sealed capsule carries BOTH an inline producer-signature envelope
+(`signature`/`key_id`, excluded from `capsule_id`) for peers AND a detached
+`signed-statements/<capsule_id>.cose` Signed Statement for the anchor, both
+made with the node's one signing key. These tests pin that invariant: each
+signature verifies on its own, both name the same key, and a tampered
+signature -- inline or detached -- flips verify to False (never silently
+True).
 
 MODULE-POLLUTION GUARD
     See tests/test_record_capsule_write_before_verify.py's docstring:
@@ -29,6 +27,8 @@ import sys
 from pathlib import Path
 
 import capsule_mesh_view as cmv
+from agent_action_capsule.verify import verify_store
+from capsule_emit.signing import verify_capsule_signature
 import capsule_sidecar as cs  # imported for real here so _POLLUTABLE_MODULES are registered before any stub-installing sibling file collects
 
 # agent_action_capsule.canonical/contracts/emit/verify are bound for real by
@@ -54,9 +54,9 @@ def _real_capsule_sidecar():
 
 
 def _build_recorded_capsule(tmp_path: Path):
-    """A genuine sidecar-signed capsule + ledger + detached .cose statement,
+    """A genuine sidecar-sealed capsule + ledger + detached .cose statement,
     the same shape capsule_sidecar.record_capsule() writes on the real
-    serving path -- no inline signature/key_id field."""
+    serving path -- inline producer envelope included."""
     cs = _real_capsule_sidecar()
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps({"model_id": "test-model", "source_model": {"sha256": "a" * 64}}))
@@ -86,65 +86,81 @@ def _build_recorded_capsule(tmp_path: Path):
 
 class TestVerifyResultsForDetachedStatement:
 
-    def test_validly_signed_but_detached_capsule_verifies_true(self, tmp_path: Path) -> None:
+    def test_sealed_capsule_carries_inline_envelope_excluded_from_capsule_id(self, tmp_path: Path) -> None:
         state, capsule = _build_recorded_capsule(tmp_path)
-        assert "signature" not in capsule and "key_id" not in capsule, (
-            "this repo's writers never embed an inline producer envelope -- "
-            "if this assertion ever fails the fixture stopped exercising the "
-            "detached-statement path this test targets"
-        )
+        assert "signature" in capsule and "key_id" in capsule
+        statement_path = state.statements_dir / f"{capsule['capsule_id']}.cose"
+        assert statement_path.exists()
 
         from ledger_store_backend import read_all_capsules
 
         records, _archived = read_all_capsules(state.ledger_dir)
-        results = cmv.verify_results_for(records, ledger_dir=state.ledger_dir)
+        # The envelope is outside the content hash: the same capsule_id
+        # verifies with the envelope attached and with it stripped.
+        stripped = {k: v for k, v in records[0].items() if k not in ("signature", "key_id")}
+        assert stripped["capsule_id"] == records[0]["capsule_id"]
+        assert verify_store([stripped])[0].ok is True
 
+        results = cmv.verify_results_for(records, ledger_dir=state.ledger_dir)
         assert results is not None
         assert results[0].ok is True, results[0].findings
 
-    def test_missing_detached_statement_reports_false_not_silently_true(self, tmp_path: Path) -> None:
+    def test_detached_statement_still_verifies_on_its_own(self, tmp_path: Path) -> None:
+        # With the inline envelope stripped, the viewer can only reach the
+        # detached .cose -- it must verify by itself, and a byte-flipped
+        # statement must not.
         state, capsule = _build_recorded_capsule(tmp_path)
-        statement_path = state.statements_dir / f"{capsule['capsule_id']}.cose"
-        statement_path.unlink()
 
         from ledger_store_backend import read_all_capsules
 
         records, _archived = read_all_capsules(state.ledger_dir)
-        results = cmv.verify_results_for(records, ledger_dir=state.ledger_dir)
+        stripped = [{k: v for k, v in records[0].items() if k not in ("signature", "key_id")}]
+        results = cmv.verify_results_for(stripped, ledger_dir=state.ledger_dir)
+        assert results[0].ok is True, results[0].findings
 
-        assert results[0].ok is False
-        assert any(f.code == "producer_signature_invalid" for f in results[0].findings)
-
-    def test_tampered_detached_statement_byte_flips_verify_to_false(self, tmp_path: Path) -> None:
-        # QUEUE_PROTOCOL §7 mutant: a check that can only ever pass isn't a
-        # check. Flip one byte inside the real .cose statement and confirm
-        # the machine view goes red for it.
-        state, capsule = _build_recorded_capsule(tmp_path)
         statement_path = state.statements_dir / f"{capsule['capsule_id']}.cose"
         raw = bytearray(statement_path.read_bytes())
         raw[-1] ^= 0xFF
         statement_path.write_bytes(bytes(raw))
-
-        from ledger_store_backend import read_all_capsules
-
-        records, _archived = read_all_capsules(state.ledger_dir)
-        results = cmv.verify_results_for(records, ledger_dir=state.ledger_dir)
-
+        results = cmv.verify_results_for(stripped, ledger_dir=state.ledger_dir)
         assert results[0].ok is False
         assert any(f.code == "producer_signature_invalid" for f in results[0].findings)
 
-    def test_no_ledger_dir_falls_back_to_honest_false(self, tmp_path: Path) -> None:
-        # A caller that never supplies ledger_dir has no way to find the
-        # detached statement at all -- must stay fail-closed, not silently
-        # treat "didn't look" as "passed".
+    def test_inline_envelope_verifies_against_the_detached_statement_key(self, tmp_path: Path) -> None:
+        state, capsule = _build_recorded_capsule(tmp_path)
+
+        from cryptography.hazmat.primitives import serialization
+        from ledger_store_backend import read_all_capsules
+
+        issuer_pem = state.ledger_dir.parent / "keys" / "node-key.pub.pem"
+        issuer_raw = serialization.load_pem_public_key(issuer_pem.read_bytes()).public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        )
+        assert capsule["key_id"] == issuer_raw.hex()
+
+        records, _archived = read_all_capsules(state.ledger_dir)
+        assert verify_capsule_signature(records[0]) is True
+        # No ledger_dir: the inline envelope alone carries the verdict.
+        results = cmv.verify_results_for(records)
+        assert results[0].ok is True, results[0].findings
+
+    def test_tampered_inline_signature_flips_verify_to_false(self, tmp_path: Path) -> None:
+        # Mutant: a check that can only ever pass isn't a check. Flip the
+        # last nibble of the inline COSE_Sign1 (inside the signature bytes);
+        # the detached statement is still intact on disk, and must not
+        # rescue it.
         state, _capsule = _build_recorded_capsule(tmp_path)
 
         from ledger_store_backend import read_all_capsules
 
         records, _archived = read_all_capsules(state.ledger_dir)
-        results = cmv.verify_results_for(records)
+        sig = records[0]["signature"]
+        records[0]["signature"] = sig[:-1] + ("0" if sig[-1] != "0" else "1")
+        assert verify_capsule_signature(records[0]) is False
 
+        results = cmv.verify_results_for(records, ledger_dir=state.ledger_dir)
         assert results[0].ok is False
+        assert any(f.code == "producer_signature_invalid" for f in results[0].findings)
 
     def test_content_tamper_still_fails_even_with_a_valid_detached_statement(self, tmp_path: Path) -> None:
         # The detached-statement check must never override a genuine

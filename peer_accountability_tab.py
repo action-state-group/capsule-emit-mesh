@@ -79,7 +79,7 @@ from typing import Any
 
 import assurance_map
 from capsule_accountability_tab import STATE_FAILED, STATE_VERIFIED, cross_party_grade
-from capsule_exchange_tab import digest_match_grade, exchange_id_for, half_by_role, records_for_exchange
+from capsule_exchange_tab import digest_match_grade, exchange_correlator, half_by_role, records_for_exchange
 from capsule_mesh_view import _poc_block, label_counterparty, label_role
 from history_card import HistoryCard, build_history_card
 
@@ -612,17 +612,24 @@ def role_and_count_cell(records: list[dict[str, Any]], source_log: str = "sideca
 def pair_cell(records: list[dict[str, Any]], all_records: list[dict[str, Any]], source_log: str = "sidecar") -> dict[str, Any]:
     """Pair (me<->them) column -- real. Folds
     ``capsule_exchange_tab.digest_match_grade`` (never re-derived) over
-    every ``exchange_id`` this peer's records carry -- the only cell that
+    every exchange this peer's records take part in -- the only cell that
     can say "missing", since a lone half is exactly what ``digest_match_grade``
-    grades ``absent``."""
-    exchange_ids = sorted({eid for eid in (exchange_id_for(r) for r in records) if eid and eid != "unknown"})
-    if not exchange_ids:
-        return {"state": CELL_ABSENT, "text": "no exchange_id on these records -- nothing to reconcile", "verified": 0, "failed": 0, "missing": 0}
+    grades ``absent``.
+
+    Groups through the ONE correlator (``capsule_exchange_tab.
+    exchange_correlator``, request-digest correlation): a pushed
+    foreign sibling carrying a DIFFERENT host-minted exchange_id but the SAME
+    request_digest now reconciles with its twin, instead of showing up as a
+    separate lone half. This was the third missed grouping-by-exchange_id
+    site the CI gate now forbids."""
+    correlation_keys = sorted({key for key in (exchange_correlator(r) for r in records) if key and key != "unknown"})
+    if not correlation_keys:
+        return {"state": CELL_ABSENT, "text": "no correlator on these records -- nothing to reconcile", "verified": 0, "failed": 0, "missing": 0}
 
     verified = failed = missing = 0
     details: list[dict[str, Any]] = []
-    for exchange_id in exchange_ids:
-        group = records_for_exchange(all_records, exchange_id)
+    for exchange_key in correlation_keys:
+        group = records_for_exchange(all_records, exchange_key)
         requester_half, provider_half = half_by_role(group, source_log)
         grade = digest_match_grade(requester_half[0] if requester_half else None, provider_half[0] if provider_half else None)
         if grade["state"] == STATE_VERIFIED:
@@ -631,7 +638,7 @@ def pair_cell(records: list[dict[str, Any]], all_records: list[dict[str, Any]], 
             failed += 1
         else:
             missing += 1
-        details.append({"exchange_id": exchange_id, "state": grade["state"]})
+        details.append({"exchange_id": exchange_key, "state": grade["state"]})
 
     if failed:
         state, text = CELL_FAILED, f"{failed} pair(s) digest-mismatched, {verified} reconciled"

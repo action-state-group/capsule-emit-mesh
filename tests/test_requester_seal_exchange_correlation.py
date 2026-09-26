@@ -381,3 +381,45 @@ def test_two_requesters_same_exchange_each_independently_offline_verifiable(tmp_
     # Both still carry the SAME shared correlator -- joinable later (B2), not
     # joined here: no reference to the other capsule's id in either record.
     assert sp_a["exchange_id"] == sp_b["exchange_id"] == "chatcmpl-shared-two-requesters"
+
+
+# ---------------------------------------------------------------------------
+# Inline producer-signature envelope
+# ---------------------------------------------------------------------------
+
+def test_sidecar_capsule_carries_the_inline_envelope_and_is_accepted_by_the_door(
+    tmp_path: Path,
+) -> None:
+    """The Python sidecar's seal path (build_capsule over the neutral
+    agent_action_capsule.emit) must attach the SAME inline producer-signature
+    envelope capsule_emit.seal() does, so a capsule this sidecar PUSHES verifies
+    IN ISOLATION at the record-push door -- the ONE-capsule-shape rule. Before
+    this task the sidecar left signature/key_id absent (the neutral emit never
+    adds them), so the door graded a pushed sidecar half UNCLAIMED and refused
+    signature_unverified. Grades with the door's OWN function."""
+    from capsule_emit.canonicalization import compute_capsule_id
+    from capsule_emit.signing import (
+        AuthorshipVerdict,
+        verify_capsule_signature,
+        verify_capsule_signature_tristate,
+    )
+
+    cs_mod = _real_capsule_sidecar()
+    state = _state(tmp_path, role=cs_mod.ROLE_PROVIDER, node_id="sidecar-node")
+    response = {"id": "chatcmpl-envelope", "object": "chat.completion"}
+    capsule = _seal(state, response)
+
+    # 1. The inline envelope is present, and key_id is the raw pubkey hex (64).
+    assert "signature" in capsule and "key_id" in capsule
+    assert len(capsule["key_id"]) == 64
+
+    # 2. capsule_id EXCLUDES the envelope from its preimage: recomputing over
+    #    the capsule as-is (signature/key_id present) yields the SAME id -- i.e.
+    #    attaching the envelope never moved it (compute_capsule_id already
+    #    excludes signature/key_id, so a match proves they are not folded in).
+    assert compute_capsule_id(capsule) == capsule["capsule_id"]
+
+    # 3. The door's OWN authorship check grades it AUTHORED -> accepted.
+    verdict, messages = verify_capsule_signature_tristate(capsule)
+    assert verdict is AuthorshipVerdict.AUTHORED, (verdict, messages)
+    assert verify_capsule_signature(capsule) is True

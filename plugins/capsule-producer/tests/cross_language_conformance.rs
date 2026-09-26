@@ -15,11 +15,17 @@
 //!   AAC_PYTHON=python3 \
 //!   AAC_VERIFY_SCRIPT=/path/to/tests/scripts/verify_rust_capsule.py \
 //!   AAC_GO_VERIFY_DIR=/path/to/scitt-cose/scitt-cose-go-verify \
+//!   AAC_PRODUCE_SCRIPT=/path/to/tests/scripts/produce_python_envelope.py \
 //!     cargo test --test cross_language_conformance -- --ignored --nocapture
+//!
+//! (`AAC_PRODUCE_SCRIPT` is only needed by the reverse-direction test
+//! `rust_verifies_a_python_produced_noncanonical_envelope`, which is gated on it
+//! independently — the other tests run without it.)
 
 use capsule_producer::capsule::{seal, CapsuleInput, MeshPocV1, ServingProvenance, TokenUsage};
 use capsule_producer::cose::{build_signed_statement, SignedStatementInput};
 use capsule_producer::keys::KeyPair;
+use coset::TaggedCborSerializable;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::process::Command;
@@ -136,11 +142,31 @@ struct Produced {
 
 fn produce() -> Produced {
     let input = sample_capsule_input();
-    let capsule = seal(&input).expect("seal capsule");
+    let mut capsule = seal(&input).expect("seal capsule");
     let capsule_id = capsule["capsule_id"].as_str().unwrap().to_string();
-    let payload = capsule_producer::capsule::payload_bytes(&capsule);
 
     let keys = KeyPair::generate();
+    // verifier parity for the inline signature envelope: attach the
+    // inline producer-signature envelope BEFORE serializing, so the parity
+    // oracle checks the SIGNED capsule (signature/key_id present), not just the
+    // unsigned body -- and the detached `.cose` payload IS the pushed-half
+    // bytes (one shape everywhere). Attaching does not move capsule_id.
+    //
+    // Renamed from "full-output parity" -- byte-identity is unachievable and not
+    // the goal: RFC 9052 §9 requires canonical protected-header key order
+    // (Rust/coset conforms, the Python reference emits insertion order, a §9
+    // violation). The criterion is verifier-parity -- every conforming verifier
+    // accepts the envelope because the signature is over the protected bstr as
+    // received -- plus identical capsule_id (over the JCS body).
+    capsule_producer::capsule::attach_producer_envelope(&mut capsule, &keys.signing_key)
+        .expect("attach inline producer envelope");
+    assert_eq!(
+        capsule["capsule_id"].as_str().unwrap(),
+        capsule_id,
+        "attaching the envelope must not change capsule_id"
+    );
+    let payload = capsule_producer::capsule::payload_bytes(&capsule);
+
     let statement = build_signed_statement(
         &SignedStatementInput {
             payload: &payload,
@@ -225,6 +251,16 @@ fn rust_capsule_verifies_green_python_and_go_and_rejects_mutation() {
     assert_eq!(py_result["cose_ok"], true, "{py_out}");
     assert_eq!(py_result["capsule_ok"], true, "{py_out}");
     assert_eq!(py_result["capsule_id"], produced.capsule_id, "{py_out}");
+    // verifier parity for the inline signature envelope: the INLINE
+    // producer-signature envelope on the capsule must grade AUTHORED at the
+    // Python reference (the door's own tristate function) -- not just the body.
+    // This is the assertion that would have caught the silent regression: a
+    // body-only parity check passed while the envelope was absent.
+    assert_eq!(
+        py_result["envelope_verdict"], "authored",
+        "inline producer envelope must verify AUTHORED at the Python door: {py_out}"
+    );
+    assert_eq!(py_result["envelope_ok"], true, "{py_out}");
 
     // --- (b) Independent Go COSE verifier (veraison/go-cose, clean-room vs `coset`).
     let (go_ok, go_out) = run_go_verifier(&env, &produced);
@@ -282,5 +318,79 @@ fn rust_capsule_verifies_green_python_and_go_and_rejects_mutation() {
     assert!(
         capsule_producer::cose::verify_signed_statement(&mutated, &vk).is_err(),
         "Rust's own verifier ACCEPTED a mutated statement"
+    );
+}
+
+/// REVERSE DIRECTION (inline signature envelope): the Rust door
+/// must ACCEPT a COSE_Sign1 the PYTHON reference produced with its NON-CANONICAL
+/// protected-header key order (3, 4, 1) — content_type (3), kid (4), alg (1) —
+/// which RFC 9052 §9 forbids but which the signature check must nonetheless honor
+/// because the `Sig_structure` is built over the protected bstr AS RECEIVED.
+///
+/// This is NOT `#[ignore]`d and needs NO env vars / no Python at test time: it
+/// loads a COMMITTED golden fixture
+/// (`tests/fixtures/python_produced_noncanonical_envelope.hex`, produced ONCE by
+/// `tests/scripts/produce_python_envelope.py` — the documented regenerator, not
+/// called from here). A stored insertion-order envelope that Rust verifies is a
+/// golden vector for as-received behavior; it stays valid even if the Python
+/// reference later moves to canonical order.
+#[test]
+fn rust_verifies_a_python_produced_noncanonical_envelope() {
+    // Known fixture inputs (see tests/fixtures/README.md): Ed25519 seed = 0x11*32,
+    // signed digest = 0x22*32. The verifying key is derived from the seed; the
+    // envelope's kid equals this raw public key.
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[0x11u8; 32]);
+    let vk = signing_key.verifying_key();
+
+    let hex = include_str!("fixtures/python_produced_noncanonical_envelope.hex");
+    let envelope: Vec<u8> = hex
+        .split_whitespace()
+        .collect::<String>()
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16)
+                .expect("fixture is valid hex")
+        })
+        .collect();
+
+    // Prove the fixture really carries the NON-canonical (3, 4, 1) order, so a
+    // regeneration that accidentally emitted canonical order would fail here and
+    // not silently weaken the guarantee. Read the label order straight off the
+    // PRESERVED original protected bytes (the exact bytes the signature covers),
+    // not off `coset`'s re-serialized view.
+    let sign1 = coset::CoseSign1::from_tagged_slice(&envelope)
+        .expect("fixture is a valid COSE_Sign1 (tag 18)");
+    let protected_bstr = &sign1.protected.original_data.expect(
+        "coset preserves the original protected-header bytes on parse (the as-received bstr)",
+    );
+    let protected_map: coset::cbor::value::Value =
+        coset::cbor::from_reader(&protected_bstr[..]).expect("protected bstr is a CBOR map");
+    let order: Vec<i64> = match &protected_map {
+        coset::cbor::value::Value::Map(entries) => entries
+            .iter()
+            .map(|(k, _)| match k {
+                coset::cbor::value::Value::Integer(i) => i64::try_from(*i).unwrap(),
+                other => panic!("non-integer protected-header label: {other:?}"),
+            })
+            .collect(),
+        other => panic!("protected header is not a CBOR map: {other:?}"),
+    };
+    assert_eq!(
+        order,
+        vec![3, 4, 1],
+        "fixture must carry the NON-canonical Python insertion order (3, 4, 1); \
+         regenerate if the reference changed"
+    );
+
+    // The Rust door MUST ACCEPT the Python-produced, non-canonical envelope: the
+    // signature is byte-exact over the protected bstr as received, so key order
+    // cannot matter.
+    let verified = capsule_producer::cose::verify_signed_statement(&envelope, &vk)
+        .expect("Rust must ACCEPT a Python-produced non-canonical envelope");
+    assert_eq!(
+        verified.payload,
+        vec![0x22u8; 32],
+        "verified payload must be the fixture's signed digest (0x22*32)"
     );
 }

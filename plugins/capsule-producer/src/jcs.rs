@@ -1,11 +1,19 @@
-//! Canonicalization and JSON-DIGEST (draft-mih-scitt-agent-action-capsule §2, §5.1).
+//! Canonicalization and JSON-DIGEST (draft-mih-scitt-agent-action-capsule-04 §2, §5.1).
 //!
 //! Line-for-line port of `agent-action-capsule/python/agent_action_capsule/canonical.py`:
-//! JSON-DIGEST := HEX(SHA-256(JCS(normalize(v)))), where JCS is RFC 8785's JSON
-//! Canonicalization Scheme and `normalize` is the profile's bottom-up absent-field
-//! removal (§2). Kept independent of the capsule model so it can be cross-checked
-//! against the Python reference's frozen `test-vectors/canonical-*` fixtures on
-//! arbitrary JSON, not just AAC capsules.
+//! JSON-DIGEST := HEX(SHA-256(JCS(v))), plain RFC 8785 JCS -- NO absent-field
+//! normalization under the current (format-4) profile (the draft-04 reversal,
+//! 2026-08-24: the profile default moved from `jcs-n` to plain `jcs`, so `chain`
+//! is committed into the preimage too, closing the prior unauthenticated-chain
+//! gap). Kept independent of the capsule model so it can be cross-checked
+//! against the Python reference's frozen `vectors/capsule/canonical-*` fixtures
+//! on arbitrary JSON, not just AAC capsules.
+//!
+//! `normalize()` below is retained as a compat export for the withdrawn vintage
+//! `jcs-n` canonicalization (`format_version` `"2"`: absent-field normalization
+//! before JCS, `chain` excluded from the digest) -- verify-only, never called by
+//! `json_digest`/`compute_capsule_id` below. Mirrors `canonical.normalize`'s own
+//! compat-export status.
 
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -140,21 +148,36 @@ pub fn jcs(v: &Value) -> Result<Vec<u8>, JcsError> {
     Ok(out.into_bytes())
 }
 
-/// JSON-DIGEST (§2): lowercase-hex SHA-256 of JCS(normalize(v)).
+/// JSON-DIGEST (§2): lowercase-hex SHA-256 of plain JCS(v) -- no normalization
+/// (see module docs for the draft-04 reversal).
 pub fn json_digest(v: &Value) -> Result<String, JcsError> {
-    let bytes = jcs(&normalize(v))?;
+    let bytes = jcs(v)?;
     Ok(hex::encode(Sha256::digest(&bytes)))
 }
 
-/// Fields excluded from the canonical capsule form (§5.1).
-pub const CHAIN_LINKAGE_FIELDS: &[&str] = &["capsule_id", "chain"];
+/// The only canonicalization identifier a format-4 Capsule may declare
+/// (mirrors `canonical.CANONICALIZATION_JCS`).
+pub const CANONICALIZATION_JCS: &str = "jcs";
 
-/// Recompute `capsule_id` (§5.1): the JSON-DIGEST of the canonical capsule form.
+/// Producer-envelope bookkeeping fields that are NEVER part of any
+/// `capsule_id` preimage, under any format (mirrors `canonical.LOCAL_ONLY_FIELDS`):
+/// the COSE_Sign1 producer envelope's signature/key_id are attached to a
+/// ledger line AFTER `capsule_id` is computed -- you cannot hash a signature
+/// into the id it signs.
+pub const LOCAL_ONLY_FIELDS: &[&str] = &["signature", "key_id"];
+
+/// Recompute `capsule_id` (§5.1, draft-04): the JSON-DIGEST of the capsule
+/// with `capsule_id` and the local-only producer-envelope fields removed.
+/// Under plain JCS, every other member -- including `chain` and
+/// `references` -- participates in the preimage (mirrors
+/// `canonical.compute_capsule_id`, minus its format_version/canonicalization_id
+/// gating, which is `verify()`'s job, not the digest primitive's -- see the
+/// crate's own `verify::verify_offline`).
 pub fn compute_capsule_id(capsule: &Value) -> Result<String, JcsError> {
     let obj = capsule.as_object().ok_or(JcsError::NotSerializable)?;
     let mut canonical = Map::new();
     for (k, v) in obj {
-        if !CHAIN_LINKAGE_FIELDS.contains(&k.as_str()) {
+        if k != "capsule_id" && !LOCAL_ONLY_FIELDS.contains(&k.as_str()) {
             canonical.insert(k.clone(), v.clone());
         }
     }

@@ -11,7 +11,9 @@ use crate::jcs::compute_capsule_id;
 use serde_json::{json, Map, Value};
 
 pub const SPEC_VERSION: &str = "draft-mih-scitt-agent-action-capsule-02";
-pub const FORMAT_VERSION: &str = "2";
+pub const FORMAT_VERSION: &str = "4";
+/// Format 4 requires this literal `canonicalization_id` (§5.1); see `jcs::CANONICALIZATION_JCS`.
+pub const CANONICALIZATION_ID: &str = crate::jcs::CANONICALIZATION_JCS;
 
 /// Token accounting for one exchange, sourced verbatim from the OpenAI-shaped
 /// response body's `usage` object (`openai-frontend`'s `Usage`:
@@ -337,10 +339,10 @@ fn epistemic_type_for_role(role: &str) -> Option<&'static str> {
 }
 
 /// `chain.parent_capsule_id`/`relation` (draft-mih-scitt-agent-action-capsule-02
-/// §5.1, `Chain` in `agent_action_capsule.contracts`). Excluded from the
-/// `capsule_id` digest by `jcs::CHAIN_LINKAGE_FIELDS` (mirrors
-/// `canonical.CHAIN_LINKAGE_FIELDS`), so a capsule's content-address never
-/// depends on what later chains to it.
+/// §5.1, `Chain` in `agent_action_capsule.contracts`). Under format 4's plain
+/// JCS the `chain` block IS committed into the `capsule_id` digest (the
+/// draft-04 reversal -- see `jcs`'s module docs); this is unlike the
+/// withdrawn vintage `jcs-n` profile, which excluded it.
 pub struct ChainLink {
     pub parent_capsule_id: String,
     pub relation: String,
@@ -543,6 +545,7 @@ pub fn seal(input: &CapsuleInput) -> Result<Value, crate::jcs::JcsError> {
     let mut body = Map::new();
     body.insert("spec_version".into(), json!(SPEC_VERSION));
     body.insert("format_version".into(), json!(FORMAT_VERSION));
+    body.insert("canonicalization_id".into(), json!(CANONICALIZATION_ID));
     body.insert("action_id".into(), json!(input.action_id));
     body.insert("action_type".into(), json!(input.action_type));
     body.insert("operator".into(), json!(input.operator));
@@ -743,6 +746,264 @@ pub fn seal(input: &CapsuleInput) -> Result<Value, crate::jcs::JcsError> {
     Ok(Value::Object(sealed))
 }
 
+/// Attach the **inline producer-signature envelope** to a sealed capsule,
+/// making it verify in isolation exactly as a `capsule_emit.seal()`/`emit()`
+/// capsule does. This is the ONE-capsule-shape rule: a peer that receives just
+/// this pushed half (no ledger, no detached `.cose`) can grade its authorship
+/// with `capsule_emit.signing.verify_capsule_signature` alone.
+///
+/// Mirrors `capsule_emit.core.seal`'s attach step field-for-field:
+///   - `capsule["signature"]` = the hex-encoded COSE_Sign1 producer envelope
+///     over the raw 32-byte `capsule_id` digest (see
+///     [`crate::cose::sign_producer_envelope`]);
+///   - `capsule["key_id"]` = the raw 32-byte Ed25519 public key, hex (64
+///     chars) — NOT this crate's own short SHA-256-based `keys::key_id`; the
+///     AAC producer-envelope profile and the door's announced-key registry
+///     (`peer_keys.py`) both key off the raw public key hex.
+///
+/// Both fields are added AFTER `capsule_id` is computed and are permanently
+/// excluded from any `capsule_id` preimage (see `crate::jcs` /
+/// `capsule_emit.canonicalization`'s `_LOCAL_ONLY_FIELDS`) — so attaching the
+/// envelope NEVER changes `capsule_id`. The detached SCITT `.cose` signed
+/// statement is unaffected: it comes from the SAME signing key, one signing
+/// identity, two audiences (inline envelope for peers, detached `.cose` for
+/// the anchor).
+///
+/// `capsule` MUST be a JSON object carrying a 64-lowercase-hex `capsule_id`
+/// (i.e. the output of [`seal`]); returns an error otherwise.
+pub fn attach_producer_envelope(
+    capsule: &mut Value,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> Result<(), EnvelopeError> {
+    let obj = capsule
+        .as_object_mut()
+        .ok_or(EnvelopeError::NotAnObject)?;
+    let capsule_id = obj
+        .get("capsule_id")
+        .and_then(Value::as_str)
+        .ok_or(EnvelopeError::MissingCapsuleId)?
+        .to_string();
+    let digest = hex::decode(&capsule_id).map_err(|_| EnvelopeError::CapsuleIdNotHex)?;
+    let envelope = crate::cose::sign_producer_envelope(&digest, signing_key);
+    let key_id = hex::encode(signing_key.verifying_key().to_bytes());
+    obj.insert("signature".into(), json!(hex::encode(&envelope)));
+    obj.insert("key_id".into(), json!(key_id));
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The LOCAL citing record for a
+// received counterparty half.
+// ---------------------------------------------------------------------------
+
+/// CPB Artifact Type registry value for "another Agent Action Capsule" -- the
+/// same value the Python `served_request_join.REFERENCE_TYPE_CAPSULE` and
+/// `capsule_emit`'s composition layer already use for a typed digest reference
+/// citing another capsule. One registry entry, two producers.
+pub const REFERENCE_TYPE_CAPSULE: &str = "capsule";
+/// The digest algorithm a `references[]` entry pins -- SHA-256, matching the
+/// Python `served_request_join.REFERENCE_DIGEST_ALG`. A capsule's `capsule_id`
+/// IS its SHA-256 JSON-DIGEST, so citing `digest = <foreign capsule_id>` under
+/// `SHA-256` is a self-consistent CPB typed digest reference.
+pub const REFERENCE_DIGEST_ALG: &str = "SHA-256";
+
+/// `chain.relation` for a citing record.
+///
+/// **`"follows"`, not `"cites"` (deliberate).** AAC-05
+/// normatively says a cross-stream citation is a `references[]` entry, NOT a
+/// `chain.relation` value -- the chain block only expresses this producer's
+/// own stream order, so the citing record chains with the bare non-terminal
+/// next-link relation `"follows"` like every other local record. What makes
+/// it a citing record is its `references[]` entry alone:
+/// `citation_purpose == "counterparty_half"` ([`CITATION_PURPOSE_COUNTERPARTY_HALF`]).
+/// A reader identifying this record KIND must key on that citation purpose
+/// and NEVER on matching a relation string (legacy ledgers may still carry
+/// pre-ruling records with `relation: "cites"`; they are the same kind).
+pub const CHAIN_RELATION_FOLLOWS: &str = "follows";
+
+/// `references[].citation_purpose` for a citing record's reference to the
+/// foreign half. PROVISIONAL: the
+/// ruling names `"counterparty_half"`; it is not among the AAC-05 registered
+/// `citation_purpose` values, so this is a clearly-flagged provisional value
+/// hard-coded ahead of registry promotion. This citation purpose ALONE
+/// identifies the counterparty-half citing record kind --
+/// never the `chain.relation` string.
+pub const CITATION_PURPOSE_COUNTERPARTY_HALF: &str = "counterparty_half";
+
+/// The provenance facts a citing record carries about the received half it
+/// cites -- the door-verified triple plus the structural `digest_match` grade
+/// (the pane's CLOSED-gate input). Every field is a real value the door
+/// established or the responder computed; nothing is fabricated.
+pub struct ReceivedHalfProvenance<'a> {
+    /// The foreign half's own `capsule_id` -- the citation target
+    /// (`references[0].digest`) AND the key it is stored under in the
+    /// held-artifact store `received-capsules.jsonl`.
+    pub foreign_capsule_id: &'a str,
+    /// The claimed sender's mesh peer id, as the door verified it against the
+    /// announced key (`record_push.py`'s `sender_peer_id`).
+    pub received_from: &'a str,
+    /// The carrier the half arrived over -- `"push"` for record-push.
+    pub via: &'a str,
+    /// When this node received the half (the door's `received_at`).
+    pub received_at: &'a str,
+    /// The door's recorded signature verdict -- always `true` here, since the
+    /// door refuses (and this seal never runs) when the signature did not
+    /// verify.
+    pub signature_ok: bool,
+    /// The structural `digest_match` grade the responder computed between the
+    /// foreign half and this node's own correlated half, if one was found:
+    /// `"verified"` / `"failed"` / `"present-unverified"`. `None` when this
+    /// node held no correlated half to compare against (a received half with
+    /// no local counterpart) -- honest absence, never a fabricated match.
+    pub digest_match: Option<&'a str>,
+    /// The foreign half's own `agent_input_digest`, carried so the pane's
+    /// `exchange_key_for` correlator (digest-first) can group this citing
+    /// record with our own half of the same exchange. `None` when the foreign
+    /// half carried none.
+    pub foreign_agent_input_digest: Option<&'a str>,
+    /// The foreign half's own `agent_output_digest`, carried for the same
+    /// correlation/`digest_match` reason. `None` when absent.
+    pub foreign_agent_output_digest: Option<&'a str>,
+}
+
+/// Seal the LOCAL CITING record for a
+/// received counterparty half: OUR OWN record of the RECEIVING event, chained
+/// onto `chain_head` (`chain.relation = "follows"` -- the citation is the
+/// `references[]` entry, never a relation value) with a
+/// top-level `references` entry citing the foreign `capsule_id` by CPB typed
+/// digest (`citation_purpose = "counterparty_half"`), and the inline producer
+/// envelope attached under `signing_key`. Returns the fully sealed +
+/// enveloped capsule; the caller appends it (and its detached `.cose`) through
+/// `Ledger::append`, the SAME single-writer path every other local capsule
+/// uses. The foreign body itself NEVER enters the chain -- it stays in the
+/// held-artifact store `received-capsules.jsonl`. "cite, never mutate."
+///
+/// The reference participates in the citing record's `capsule_id` exactly as
+/// the Python `served_request_join._with_references` does: `references` is part
+/// of the body `compute_capsule_id` digests (see `jcs.rs`).
+pub fn seal_citing_record(
+    prov: &ReceivedHalfProvenance,
+    chain_head: Option<&str>,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> Result<Value, crate::jcs::JcsError> {
+    let chain = chain_head.map(|parent| ChainLink {
+        parent_capsule_id: parent.to_string(),
+        relation: CHAIN_RELATION_FOLLOWS.to_string(),
+    });
+
+    // The citing record's own compute_attestation. It carries NO x-mesh-poc-v1
+    // serving block (this node served nothing here -- it RECEIVED a half),
+    // only the honest facts of the receiving event: the door's provenance
+    // triple + verdict, the structural digest_match grade, and the foreign
+    // half's own digests (so the pane's digest-first `exchange_key_for`
+    // correlates this citing record with our own half of the same exchange).
+    // Absent facts are omitted, never fabricated.
+    let mut received_half = Map::new();
+    received_half.insert("cited_capsule_id".into(), json!(prov.foreign_capsule_id));
+    received_half.insert("received_from".into(), json!(prov.received_from));
+    received_half.insert("via".into(), json!(prov.via));
+    received_half.insert("received_at".into(), json!(prov.received_at));
+    received_half.insert("signature_ok".into(), json!(prov.signature_ok));
+    if let Some(dm) = prov.digest_match {
+        received_half.insert("digest_match".into(), json!(dm));
+    }
+    if let Some(rd) = prov.foreign_agent_input_digest {
+        received_half.insert("agent_input_digest".into(), json!(rd));
+    }
+    if let Some(rd) = prov.foreign_agent_output_digest {
+        received_half.insert("agent_output_digest".into(), json!(rd));
+    }
+
+    // Build the citing capsule body directly (this is a capsule KIND with no
+    // served exchange, so it does not route through the exchange-shaped
+    // `CapsuleInput`/`seal`). Header fields mirror `seal`'s so the record is a
+    // well-formed format-4 capsule; `compute_capsule_id` then computes the id
+    // over the whole body INCLUDING `chain` and `references`.
+    let mut body = Map::new();
+    body.insert("spec_version".into(), json!(SPEC_VERSION));
+    body.insert("format_version".into(), json!(FORMAT_VERSION));
+    body.insert("canonicalization_id".into(), json!(CANONICALIZATION_ID));
+    body.insert(
+        "action_id".into(),
+        json!(format!("mesh-poc/received-half-citation/{}", prov.foreign_capsule_id)),
+    );
+    body.insert("action_type".into(), json!("fyi"));
+    body.insert("operator".into(), json!("capsule-emit-mesh-poc-rust"));
+    body.insert("developer".into(), json!("capsule-producer/0.2.0"));
+    body.insert("timestamp".into(), json!(crate::timestamp::utc_now_iso8601()));
+    body.insert("domain".into(), json!("action"));
+    body.insert("provenance".into(), json!("collector"));
+
+    let mut compute_attestation = Map::new();
+    compute_attestation.insert("received_half".into(), Value::Object(received_half));
+    body.insert(
+        "model_attestation".into(),
+        json!({
+            "model_id": "n/a-received-half-citation",
+            "provider": "mesh-llm",
+            "compute_attestation": Value::Object(compute_attestation),
+        }),
+    );
+    body.insert(
+        "assurance".into(),
+        json!({
+            "attestation_mode": "self_attested",
+            "effect_mode": "not_applicable",
+            "ledger_mode": if chain.is_some() { "chained" } else { "standalone" },
+        }),
+    );
+    body.insert(
+        "disposition".into(),
+        json!({
+            "decision": "accept",
+            "approver": "policy",
+            "human_disposed": false,
+            "verdict_class": "executed",
+        }),
+    );
+    if let Some(chain) = &chain {
+        body.insert("chain".into(), chain.to_value());
+    }
+    // The top-level CPB typed digest reference citing the foreign half.
+    body.insert(
+        "references".into(),
+        json!([{
+            "type": REFERENCE_TYPE_CAPSULE,
+            "digest_alg": REFERENCE_DIGEST_ALG,
+            "digest": prov.foreign_capsule_id,
+            "citation_purpose": CITATION_PURPOSE_COUNTERPARTY_HALF,
+        }]),
+    );
+
+    let capsule_id = compute_capsule_id(&Value::Object(body.clone()))?;
+    let mut sealed = Map::new();
+    sealed.insert("capsule_id".into(), json!(capsule_id));
+    for (k, v) in body {
+        sealed.entry(k).or_insert(v);
+    }
+    let mut capsule = Value::Object(sealed);
+    // Same one-capsule-shape rule as every other local capsule: inline
+    // producer envelope (excluded from capsule_id) + a detached `.cose` the
+    // caller builds. `attach_producer_envelope` only fails on a non-hex
+    // capsule_id, which `compute_capsule_id` never produces.
+    attach_producer_envelope(&mut capsule, signing_key)
+        .expect("citing record always carries a hex capsule_id");
+    Ok(capsule)
+}
+
+/// Why [`attach_producer_envelope`] could not attach an inline signature — all
+/// three are caller mistakes (a non-sealed value), never a signing failure
+/// (signing itself is infallible for a valid key).
+#[derive(Debug, thiserror::Error)]
+pub enum EnvelopeError {
+    #[error("capsule must be a JSON object")]
+    NotAnObject,
+    #[error("capsule must carry a string capsule_id (seal it first)")]
+    MissingCapsuleId,
+    #[error("capsule_id must be lowercase hex")]
+    CapsuleIdNotHex,
+}
+
 /// The bytes signed by COSE_Sign1 and carried as the COSE payload. The Python
 /// sidecar signs `json.dumps(capsule, sort_keys=True, separators=(",", ":"))` —
 /// deterministic but NOT JCS (`capsule_id` is what's JCS-canonicalized; this is
@@ -830,6 +1091,68 @@ mod tests {
             disposition_verdict_class: "executed".to_string(),
             chain,
         }
+    }
+
+    /// CAPSULE_ID INVARIANCE PIN (inline signature envelope):
+    /// the `capsule_id` for a FIXED input MUST NOT change when the inline
+    /// producer-signature envelope is added. `signature`/`key_id` are excluded
+    /// from the `capsule_id` preimage (see `crate::jcs` /
+    /// `capsule_emit.canonicalization._LOCAL_ONLY_FIELDS`), so attaching the
+    /// envelope leaves the id byte-for-byte unchanged and the tour-fixture
+    /// capsule ids stay stable. These two literals were captured from
+    /// `seal()`'s output BEFORE this task's envelope work (the `seal()`
+    /// function body is byte-identical to that commit); if either changes, the
+    /// preimage was perturbed and the fix is wrong.
+    #[test]
+    fn capsule_id_is_unchanged_by_attaching_the_producer_envelope() {
+        const STANDALONE_ID: &str =
+            "f22a917852446fe83865ad3a247bad9471d3b1bc464c1e193401804e07c44550";
+        const CHAINED_ID: &str =
+            "050b194efccf9e000d19f3d7f965b82861a7217389ed5e91888f3f5f9c04f8e3";
+
+        // 1. The pinned fixture ids are what `seal()` computes today.
+        let mut standalone = seal(&base_input(None)).unwrap();
+        assert_eq!(standalone["capsule_id"], STANDALONE_ID);
+        let mut chained = seal(&base_input(Some(ChainLink {
+            parent_capsule_id: "f".repeat(64),
+            relation: "confirms".to_string(),
+        })))
+        .unwrap();
+        assert_eq!(chained["capsule_id"], CHAINED_ID);
+
+        // 2. Attaching the inline envelope adds signature/key_id but does NOT
+        //    move capsule_id -- with two DIFFERENT keys, to prove the id is
+        //    signer-independent.
+        let key_a = crate::keys::KeyPair::generate();
+        let key_b = crate::keys::KeyPair::generate();
+        attach_producer_envelope(&mut standalone, &key_a.signing_key).unwrap();
+        attach_producer_envelope(&mut chained, &key_b.signing_key).unwrap();
+        assert_eq!(
+            standalone["capsule_id"], STANDALONE_ID,
+            "attaching the envelope must never change capsule_id"
+        );
+        assert_eq!(chained["capsule_id"], CHAINED_ID);
+        assert!(standalone.get("signature").is_some());
+        assert!(standalone.get("key_id").is_some());
+    }
+
+    /// The inline `key_id` is the RAW 32-byte Ed25519 public key, hex (64
+    /// chars) -- exactly `capsule_emit.seal()`'s `capsule["key_id"]` and what
+    /// the door's announced-key registry (`peer_keys.py` /
+    /// `ADMISSION_POLICY_PEER_KEYS`) keys off. NOT this crate's own short
+    /// SHA-256-based `keys::key_id` (16 chars).
+    #[test]
+    fn attached_key_id_is_the_raw_public_key_hex_not_the_short_key_id() {
+        let key = crate::keys::KeyPair::generate();
+        let mut capsule = seal(&base_input(None)).unwrap();
+        attach_producer_envelope(&mut capsule, &key.signing_key).unwrap();
+        let key_id = capsule["key_id"].as_str().unwrap();
+        assert_eq!(key_id.len(), 64, "key_id must be the raw 32-byte pubkey hex");
+        assert_eq!(
+            key_id,
+            hex::encode(key.signing_key.verifying_key().to_bytes())
+        );
+        assert_ne!(key_id, key.key_id(), "must NOT be the short SHA-256 key_id");
     }
 
     /// The `x-mesh-poc-v1` extension's serving-provenance sub-object of one
@@ -1105,6 +1428,18 @@ mod tests {
         assert_ne!(requester_capsule["capsule_id"], served_capsule["capsule_id"]);
     }
 
+    /// the producer's own acceptance
+    /// centerpiece: every sealed capsule declares format_version "4" +
+    /// canonicalization_id "jcs" (§5.1) -- without both, the unmodified
+    /// draft-04 Python `verify()` rejects the record with
+    /// `canonicalization_id_missing` (bumping the number alone is not enough).
+    #[test]
+    fn sealed_capsule_declares_format_4_and_jcs_canonicalization() {
+        let capsule = seal(&base_input(None)).unwrap();
+        assert_eq!(capsule["format_version"], "4");
+        assert_eq!(capsule["canonicalization_id"], "jcs");
+    }
+
     #[test]
     fn standalone_capsule_has_no_chain_block_and_standalone_ledger_mode() {
         let capsule = seal(&base_input(None)).unwrap();
@@ -1126,14 +1461,14 @@ mod tests {
     }
 
     #[test]
-    fn capsule_id_is_independent_of_the_chain_blocks_content() {
-        // §5.1 / jcs::CHAIN_LINKAGE_FIELDS excludes `chain` itself from the
-        // digest -- so among capsules that are ALREADY chained (same
-        // ledger_mode), varying parent_capsule_id/relation must not perturb
-        // capsule_id. (ledger_mode itself IS digest-bearing -- see the
-        // standalone-vs-chained test above, where ledger_mode "standalone"
-        // vs "chained" correctly DOES change capsule_id; that's a different
-        // field, not the chain block's content.)
+    fn capsule_id_is_bound_to_the_chain_blocks_content() {
+        // Format 4 / plain JCS (the draft-04 reversal) commits `chain` into
+        // the `capsule_id` digest -- unlike the withdrawn vintage `jcs-n`
+        // profile, which excluded it. Among capsules that are ALREADY chained
+        // (same ledger_mode), varying parent_capsule_id/relation now DOES
+        // perturb capsule_id, closing the prior unauthenticated-chain gap: an
+        // attester can no longer splice a sealed record onto a different
+        // parent without changing its content address.
         let chained_a = seal(&base_input(Some(ChainLink {
             parent_capsule_id: "f".repeat(64),
             relation: "follows".to_string(),
@@ -1144,9 +1479,7 @@ mod tests {
             relation: "confirms".to_string(),
         })))
         .unwrap();
-        assert_eq!(chained_a["capsule_id"], chained_b["capsule_id"]);
-        // And the chain block itself is still exactly what was supplied,
-        // even though it didn't affect the digest.
+        assert_ne!(chained_a["capsule_id"], chained_b["capsule_id"]);
         assert_eq!(chained_a["chain"]["parent_capsule_id"], "f".repeat(64));
         assert_eq!(chained_b["chain"]["parent_capsule_id"], "0".repeat(64));
     }
@@ -1312,5 +1645,88 @@ mod tests {
             ));
         }
         Ok(())
+    }
+
+    // -------------------------------------------------------------------
+    // seal_citing_record
+    // -------------------------------------------------------------------
+
+    fn sample_prov<'a>(foreign_capsule_id: &'a str) -> ReceivedHalfProvenance<'a> {
+        ReceivedHalfProvenance {
+            foreign_capsule_id,
+            received_from: "m4",
+            via: "push",
+            received_at: "2026-09-25T00:00:00Z",
+            signature_ok: true,
+            digest_match: None,
+            foreign_agent_input_digest: Some("a".repeat(64).leak()),
+            foreign_agent_output_digest: Some("b".repeat(64).leak()),
+        }
+    }
+
+    /// A citing record is a well-formed format-4 capsule whose recomputed
+    /// `capsule_id` covers the `references` array (so a reader who tampers the
+    /// cited digest is caught), carries `chain.relation == "follows"` onto the
+    /// supplied head (the citation is the `references[]` entry, never a
+    /// relation value), and cites the foreign half by CPB
+    /// typed digest with `citation_purpose == "counterparty_half"`.
+    #[test]
+    fn seal_citing_record_is_well_formed_and_cites_the_foreign_half() {
+        let key = crate::keys::KeyPair::generate();
+        let head = "c".repeat(64);
+        let foreign = "d".repeat(64);
+        let prov = sample_prov(&foreign);
+        let capsule = seal_citing_record(&prov, Some(&head), &key.signing_key).unwrap();
+
+        // capsule_id recomputes over the whole body (incl. chain + references).
+        let stored = capsule["capsule_id"].as_str().unwrap();
+        assert_eq!(stored, compute_capsule_id(&capsule).unwrap());
+
+        assert_eq!(capsule["chain"]["parent_capsule_id"], json!(head));
+        assert_eq!(capsule["chain"]["relation"], json!(CHAIN_RELATION_FOLLOWS));
+        assert_eq!(capsule["chain"]["relation"], json!("follows"));
+        let reference = &capsule["references"][0];
+        assert_eq!(reference["type"], json!(REFERENCE_TYPE_CAPSULE));
+        assert_eq!(reference["digest_alg"], json!(REFERENCE_DIGEST_ALG));
+        assert_eq!(reference["digest"], json!(foreign));
+        assert_eq!(
+            reference["citation_purpose"],
+            json!(CITATION_PURPOSE_COUNTERPARTY_HALF)
+        );
+        // The receiving-event facts ride in compute_attestation.received_half.
+        let rh = &capsule["model_attestation"]["compute_attestation"]["received_half"];
+        assert_eq!(rh["received_from"], json!("m4"));
+        assert_eq!(rh["signature_ok"], json!(true));
+        assert_eq!(rh["cited_capsule_id"], json!(foreign));
+        // Inline producer envelope attached (one-capsule-shape), excluded from id.
+        assert!(capsule.get("signature").is_some());
+        assert!(capsule.get("key_id").is_some());
+    }
+
+    /// The FIRST record in a chain: a citing record with no head is standalone
+    /// (no `chain` block) and still cites the foreign half.
+    #[test]
+    fn seal_citing_record_standalone_when_no_head() {
+        let key = crate::keys::KeyPair::generate();
+        let foreign = "e".repeat(64);
+        let prov = sample_prov(&foreign);
+        let capsule = seal_citing_record(&prov, None, &key.signing_key).unwrap();
+        assert!(capsule.get("chain").is_none());
+        assert_eq!(capsule["assurance"]["ledger_mode"], json!("standalone"));
+        assert_eq!(capsule["references"][0]["digest"], json!(foreign));
+        assert_eq!(capsule["capsule_id"].as_str().unwrap(), compute_capsule_id(&capsule).unwrap());
+    }
+
+    /// Tampering the cited digest post-seal breaks the recomputed capsule_id --
+    /// the reference genuinely participates in the id (the {{xref}} rule).
+    #[test]
+    fn tampering_the_cited_digest_breaks_the_capsule_id() {
+        let key = crate::keys::KeyPair::generate();
+        let foreign = "f".repeat(64);
+        let prov = sample_prov(&foreign);
+        let mut capsule = seal_citing_record(&prov, None, &key.signing_key).unwrap();
+        let stored = capsule["capsule_id"].as_str().unwrap().to_string();
+        capsule["references"][0]["digest"] = json!("0".repeat(64));
+        assert_ne!(stored, compute_capsule_id(&capsule).unwrap());
     }
 }

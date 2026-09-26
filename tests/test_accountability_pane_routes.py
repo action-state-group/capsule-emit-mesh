@@ -31,6 +31,7 @@ import pytest
 
 import accountability_pane_routes as routes
 import capsule_sidecar as cs
+from capsule_exchange_tab import exchange_correlator
 from self_accountability import RatingFieldError
 
 
@@ -53,7 +54,16 @@ def node_state(tmp_path):
     return state
 
 
-def _mesh_capsule(*, capsule_id: str, exchange_id: str, timestamp: str, served_by: str = "node-self") -> dict:
+def _mesh_capsule(*, capsule_id: str, exchange_id: str, timestamp: str, served_by: str = "node-self", request_digest: str | None = None) -> dict:
+    # Distinct exchanges carry DISTINCT request_digests (both real halves of
+    # one exchange share one, but two DIFFERENT exchanges never do). The ONE
+    # correlator (capsule_exchange_tab.exchange_correlator) is digest-first, so
+    # a single hardcoded digest across all seeds would collapse every exchange
+    # into one row -- derive a per-exchange digest instead.
+    import hashlib
+
+    if request_digest is None:
+        request_digest = hashlib.sha256(exchange_id.encode()).hexdigest()
     return {
         "spec_version": "draft-mih-scitt-agent-action-capsule-02",
         "format_version": "2",
@@ -76,7 +86,7 @@ def _mesh_capsule(*, capsule_id: str, exchange_id: str, timestamp: str, served_b
                 }
             },
         },
-        "effect": {"request_digest": "1" * 64, "response_digest": "2" * 64, "effect_attestation": "gate_executed"},
+        "effect": {"request_digest": request_digest, "response_digest": "2" * 64, "effect_attestation": "gate_executed"},
         "disposition": {"decision": "accept", "verdict_class": "executed"},
     }
 
@@ -223,15 +233,18 @@ def test_pane_c_list_respects_cap_and_pages_through_everything(node_state):
         if payload["next_after_seq"] is None:
             break
         after_seq = payload["next_after_seq"]
-    assert seen_keys == {f"exch-{i:03d}" for i in range(len(capsules))}
+    # Rows are keyed by the ONE correlator (digest-first), one per exchange.
+    assert seen_keys == {exchange_correlator(c) for c in capsules}
 
 
 def test_pane_c_drilldown_finds_a_seeded_exchange(node_state):
     capsules = _seed(node_state, 3)
     target = capsules[1]
-    exchange_id = target["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["serving_provenance"]["exchange_id"]
+    # Drilldown takes an exchange_key (the correlator key every list row
+    # already carries), not a raw host-minted exchange_id.
+    exchange_key = exchange_correlator(target)
 
-    payload = routes.build_pane_c_json(node_state, exchange_id=exchange_id)
+    payload = routes.build_pane_c_json(node_state, exchange_id=exchange_key)
 
     assert payload["found"] is True
     assert payload["view"]["capsule_id"] == target["capsule_id"]
@@ -249,12 +262,12 @@ def test_pane_c_drilldown_never_relies_on_the_page_cap(node_state):
     capped page (see the module docstring's reasoning)."""
     capsules = _seed(node_state, 10)
     last = capsules[-1]
-    exchange_id = last["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["serving_provenance"]["exchange_id"]
+    exchange_key = exchange_correlator(last)
 
     # limit/after_seq are list-mode-only kwargs; drilldown ignores them
     # entirely once exchange_id is supplied (asserted by still finding a
     # record that a limit=1 page would never include).
-    payload = routes.build_pane_c_json(node_state, exchange_id=exchange_id, limit=1, after_seq=0)
+    payload = routes.build_pane_c_json(node_state, exchange_id=exchange_key, limit=1, after_seq=0)
 
     assert payload["found"] is True
     assert payload["view"]["capsule_id"] == last["capsule_id"]
@@ -304,7 +317,7 @@ def test_pane_c_list_json_never_carries_retired_rung_vocabulary(node_state):
 
 def test_pane_c_drilldown_json_never_carries_retired_rung_vocabulary(node_state):
     capsules = _seed(node_state, 3)
-    exchange_id = capsules[0]["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["serving_provenance"]["exchange_id"]
-    payload = routes.build_pane_c_json(node_state, exchange_id=exchange_id)
+    exchange_key = exchange_correlator(capsules[0])
+    payload = routes.build_pane_c_json(node_state, exchange_id=exchange_key)
     assert payload["found"] is True
     _assert_no_retired_vocabulary(payload)

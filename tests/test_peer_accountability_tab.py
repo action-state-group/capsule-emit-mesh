@@ -394,10 +394,29 @@ def test_served_cell_carries_mine_for_reference_when_own_summary_supplied():
 # ---------------------------------------------------------------------------
 
 
-def test_pair_cell_absent_when_records_carry_no_exchange_id():
-    records = [_capsule(capsule_id="c1", timestamp="t")]
+def test_pair_cell_absent_when_records_carry_no_correlator_at_all():
+    """A record with neither an exchange_id NOR a request_digest has no
+    correlation key at all -- nothing to reconcile. (A record with only a
+    request_digest DOES correlate now, via the ONE correlator's
+    request_digest fallback -- see the test below.)"""
+    bare = _capsule(capsule_id="c1", timestamp="t")
+    bare["effect"] = {"effect_attestation": "gate_executed"}  # no request_digest, no exchange_id
+    records = [bare]
     cell = pair_cell(records, records)
     assert cell["state"] == CELL_ABSENT
+    assert cell["verified"] == 0
+
+
+def test_pair_cell_correlates_by_request_digest_when_exchange_id_absent():
+    """The ONE correlator's fallback: a
+    record with NO exchange_id but a request_digest still groups (by
+    request_digest). Here a lone such half reconciles as 'missing' (its
+    counterpart isn't in this view), NOT 'absent' -- absent would wrongly say
+    'nothing to reconcile' when there plainly is a correlatable exchange."""
+    lone = _capsule(capsule_id="c1", timestamp="t")  # request_digest set, no serving_provenance/exchange_id
+    cell = pair_cell([lone], [lone])
+    assert cell["state"] != CELL_ABSENT
+    assert cell["missing"] == 1
     assert cell["verified"] == 0
 
 

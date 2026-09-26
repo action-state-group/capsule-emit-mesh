@@ -3,6 +3,7 @@ mod checkpoint_cadence;
 mod decision;
 mod lifecycle_channel;
 mod mesh_evidence_bridge;
+mod record_push_bridge;
 /// Not wired into `on_mesh_event` yet -- see the module doc for why
 /// (`mesh-llm-plugin = "0.75"` predates the `checkpoint` field this needs to
 /// read off `event.peer`). Exercised entirely by its own unit tests today;
@@ -10,6 +11,7 @@ mod mesh_evidence_bridge;
 /// dependency bumps.
 #[allow(dead_code)]
 mod peer_root_ledger;
+mod share_policy;
 
 use axum::{
     extract::State,
@@ -68,6 +70,44 @@ fn data_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("./admission-policy-data"))
 }
 
+/// This node's own mesh peer id, as the OPERATOR configured it at launch.
+/// `mesh-llm-plugin` 0.76.2 gives a plugin no way to learn its own peer id
+/// at runtime (`PluginContext` exposes an outbound channel + pending-
+/// response map only -- verified against the vendored crate source), so
+/// record-push's self-declared sender identity (`record_push_bridge`'s wire
+/// shape) is operator-supplied config, same pattern as
+/// `ADMISSION_POLICY_DATA_DIR`/`ADMISSION_POLICY_BLOCKED_MODELS`. `None`
+/// when unset -- record-push then cannot self-declare an identity and does
+/// not fire (never an empty/fabricated peer id on the wire).
+/// Seam A1.
+fn self_peer_id() -> Option<String> {
+    std::env::var("ADMISSION_POLICY_SELF_PEER_ID")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+}
+
+/// The counterparty peer id for a push-at-completion, when this node can
+/// truthfully name one. Only a `RemoteMesh` terminal (this node routed the
+/// exchange TO a peer) carries a real peer id today -- the host's serving-
+/// provenance `served_by_node_id`, i.e. who actually served it. A host-
+/// served terminal (this node served a peer's request) carries no
+/// requesting-party field on this channel at all (see
+/// `OpenAiExchangeEnvelope`'s own field list) -- the SAME gap the closed-state
+/// wiring diagnosis names "gap 3". Returning
+/// `None` here rather than guessing is the honest behavior this task's own
+/// "never fabricate" discipline requires, not a bug this task fixes.
+/// Seam A1.
+fn push_counterparty(envelope: &OpenAiExchangeEnvelope) -> Option<&str> {
+    if envelope.dispatch_path != lifecycle_channel::DispatchPath::RemoteMesh {
+        return None;
+    }
+    envelope
+        .serving_provenance
+        .as_ref()
+        .and_then(|sp| sp.served_by_node_id.as_deref())
+        .filter(|id| !id.is_empty() && *id != "unknown")
+}
+
 #[derive(Clone)]
 struct AppState {
     models: Arc<Vec<String>>,
@@ -124,7 +164,13 @@ fn token_usage_from(usage: MirrorUsage) -> TokenUsage {
 /// observe-path failure must not disturb the host). The three real facts —
 /// serving provenance, usage, request digest — come straight off the terminal
 /// event; nothing is fabricated.
-fn seal_observed_host_exchange(capsules: &CapsuleState, envelope: &OpenAiExchangeEnvelope) {
+///
+/// Returns the emitted capsule's own JSON on success, `None` on a producer
+/// error -- Seam A1's push-at-completion call
+/// site needs the just-sealed capsule's bytes to push; every other existing
+/// caller of this function predates that need and only used the side effect,
+/// so returning the value here is additive, not a behavior change for them.
+fn seal_observed_host_exchange(capsules: &CapsuleState, envelope: &OpenAiExchangeEnvelope) -> Option<Value> {
     let host_provenance = envelope
         .serving_provenance
         .clone()
@@ -159,9 +205,60 @@ fn seal_observed_host_exchange(capsules: &CapsuleState, envelope: &OpenAiExchang
                 model = %envelope.model,
                 "SEALED AAC for host-served (observed) exchange"
             );
+            Some(emitted.capsule)
         }
         Err(error) => {
             tracing::warn!(%error, "failed to seal capsule for observed host-served exchange");
+            None
+        }
+    }
+}
+
+/// Seam A1's pure eligibility decision,
+/// isolated from the network call so "policy off -> no push" is a real,
+/// directly testable mutant, not just a structural early-return no test
+/// exercises. `Some((peer_id, self_id))` only when EVERY condition holds:
+/// pushing is not turned off, a counterparty is knowable, and this node has
+/// a configured self peer id to self-declare. Any missing condition is an
+/// honest no-push, never a guess.
+fn push_eligibility<'a>(
+    envelope: &'a OpenAiExchangeEnvelope,
+    record_at_completion_off: bool,
+    self_peer_id: Option<&'a str>,
+) -> Option<(&'a str, &'a str)> {
+    if record_at_completion_off {
+        return None;
+    }
+    let peer_id = push_counterparty(envelope)?;
+    let self_id = self_peer_id?;
+    Some((peer_id, self_id))
+}
+
+/// Seam A1 -- push `capsule_json` (this
+/// node's own just-sealed capsule) to `envelope`'s counterparty, when
+/// `push_eligibility` says to. Best-effort: logs success/failure, never
+/// propagates -- a push failure must not disturb sealing or channel-message
+/// processing, same discipline as `seal_observed_host_exchange`'s own
+/// producer-error handling.
+async fn push_at_completion_if_configured(
+    context: &mut mesh_llm_plugin::PluginContext<'_>,
+    envelope: &OpenAiExchangeEnvelope,
+    capsule_json: Value,
+) {
+    let self_id = self_peer_id();
+    let Some((peer_id, self_id)) = push_eligibility(
+        envelope,
+        share_policy::record_at_completion_is_off(),
+        self_id.as_deref(),
+    ) else {
+        return;
+    };
+    match record_push_bridge::push_capsule_to_peer(context, peer_id, self_id, &capsule_json).await {
+        Ok(()) => {
+            tracing::info!(%peer_id, "pushed sealed capsule to counterparty at completion");
+        }
+        Err(error) => {
+            tracing::warn!(%error, %peer_id, "record-push at completion failed");
         }
     }
 }
@@ -226,28 +323,48 @@ async fn chat_completions(
                 .latest_provenance_for_model(&model)
                 .map(host_provenance_from);
 
-            match state.capsules.emit_for_exchange(&capsule_emit::ExchangeRecord {
-                model: &model,
-                client_nonce: client_nonce.as_deref(),
-                request_bytes: &body,
-                response_bytes: &response_bytes,
-                latency_ms,
-                exchange_id: Some(&exchange_id),
-                // The requesting party beyond the client nonce is not carried on
-                // this direct-serve path — recorded as "unknown", not invented.
-                requesting_party: None,
-                host_provenance,
-            }) {
-                Ok(emitted) => {
+            // Seal on `spawn_blocking`: `emit_for_exchange` holds the std
+            // ledger mutex across two `sync_all()`s -- real disk waits that
+            // must not stall a tokio worker thread (and, transitively, every
+            // other task scheduled on it). The mutex stays std (the
+            // sync-fn-holds-lock design is sound); only the CALL moves onto
+            // the blocking pool.
+            let capsules = state.capsules.clone();
+            let model_for_seal = model.clone();
+            let exchange_id_for_seal = exchange_id.clone();
+            let body_for_seal = body.clone();
+            let emit_result = tokio::task::spawn_blocking(move || {
+                capsules.emit_for_exchange(&capsule_emit::ExchangeRecord {
+                    model: &model_for_seal,
+                    client_nonce: client_nonce.as_deref(),
+                    request_bytes: &body_for_seal,
+                    response_bytes: &response_bytes,
+                    latency_ms,
+                    exchange_id: Some(&exchange_id_for_seal),
+                    // The requesting party beyond the client nonce is not
+                    // carried on this direct-serve path — recorded as
+                    // "unknown", not invented.
+                    requesting_party: None,
+                    host_provenance,
+                })
+            })
+            .await;
+            match emit_result {
+                Ok(Ok(emitted)) => {
                     tracing::info!(capsule_id = %emitted.capsule_id, %model, "emitted AAC for admitted exchange");
                     response["admission_policy"]["capsule_id"] = json!(emitted.capsule_id);
                     response["admission_policy"]["capsule"] = emitted.capsule;
                 }
-                Err(error) => {
+                Ok(Err(error)) => {
                     // Capsule production is best-effort observability, not a
                     // gate: never let a producer bug turn an admitted
                     // exchange into a denied one.
                     tracing::warn!(%error, "failed to emit capsule for admitted exchange");
+                }
+                Err(join_error) => {
+                    // Same best-effort discipline for a panicked/cancelled
+                    // seal task: log, never deny the admitted exchange.
+                    tracing::warn!(%join_error, "capsule seal task did not complete");
                 }
             }
             (StatusCode::OK, Json(response))
@@ -329,6 +446,10 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let capsules_for_handler = capsules.clone();
+    // the record-push responder's
+    // citing-record seal writes to the SAME single-writer ledger -- one
+    // `CapsuleState`, shared by Arc, never a second writer.
+    let capsules_for_stream = capsules.clone();
     let app_state = AppState {
         models: Arc::new(models),
         capsules,
@@ -362,11 +483,13 @@ async fn main() -> anyhow::Result<()> {
         ),
     ))
     .provide(capability("admission_policy.v1"))
+    .config_item(share_policy::share_policy_config_schema(PLUGIN_ID))
     .mesh_item(mesh_channel(OPENAI_EXCHANGE_CHANNEL))
     .mesh_item(mesh_channel(EVIDENCE_REQUEST_CHANNEL))
+    .mesh_item(mesh_channel(record_push_bridge::RECORD_PUSH_CHANNEL))
     .inference_item(inference::provider(ENDPOINT_ID, address))
     .customize(move |plugin| {
-        plugin.on_channel_message(move |message, _context| {
+        plugin.on_channel_message(move |message, context| {
             let lifecycle_events = lifecycle_events_for_handler.clone();
             let capsules = capsules_for_handler.clone();
             Box::pin(async move {
@@ -394,9 +517,44 @@ async fn main() -> anyhow::Result<()> {
                             if ObservedLifecycleEvents::is_sealable_host_served(&envelope)
                                 || ObservedLifecycleEvents::is_sealable_requester_side(&envelope)
                             {
-                                seal_observed_host_exchange(&capsules, &envelope);
+                                // Seal on `spawn_blocking`: the emit path
+                                // holds the std ledger mutex across two
+                                // `sync_all()`s, which must not stall this
+                                // tokio worker (the envelope moves into the
+                                // closure and back out, so no clone of the
+                                // whole event is needed).
+                                let capsules_for_seal = capsules.clone();
+                                match tokio::task::spawn_blocking(move || {
+                                    let sealed =
+                                        seal_observed_host_exchange(&capsules_for_seal, &envelope);
+                                    (envelope, sealed)
+                                })
+                                .await
+                                {
+                                    Ok((envelope, sealed)) => {
+                                        if let Some(capsule_json) = sealed {
+                                            // Seam A1:
+                                            // push this node's own just-sealed capsule
+                                            // to the counterparty at completion, when
+                                            // one is knowable and pushing is configured
+                                            // on. See `push_at_completion_if_configured`'s
+                                            // own doc for the honest-absence rules.
+                                            push_at_completion_if_configured(context, &envelope, capsule_json).await;
+                                        }
+                                        lifecycle_events.record(envelope);
+                                    }
+                                    Err(join_error) => {
+                                        // Best-effort observability: a
+                                        // panicked/cancelled seal task is
+                                        // logged, never propagated (the
+                                        // envelope was consumed by the task,
+                                        // so there is nothing left to record).
+                                        tracing::warn!(%join_error, "observed-exchange seal task did not complete");
+                                    }
+                                }
+                            } else {
+                                lifecycle_events.record(envelope);
                             }
-                            lifecycle_events.record(envelope);
                         }
                         Err(error) => {
                             tracing::warn!(%error, "unparseable openai.exchange.v1 envelope");
@@ -407,13 +565,122 @@ async fn main() -> anyhow::Result<()> {
             })
         })
     })
-    .customize(|plugin| {
-        plugin.on_open_stream(|request, context| {
-            Box::pin(mesh_evidence_bridge::handle_open_stream(request, context))
+    .customize(move |plugin| {
+        // the record-push responder
+        // seals a LOCAL citing record onto THIS node's own chain after the
+        // door confirms a received half -- so it needs the SAME single-writer
+        // `CapsuleState` every other local seal uses. Cloned into the handler
+        // closure (an `Arc`, so this is a refcount bump, one ledger).
+        let capsules_for_stream = capsules_for_stream.clone();
+        plugin.on_open_stream(move |request, context| {
+            let capsules = capsules_for_stream.clone();
+            Box::pin(async move {
+                // Seam A1: `OpenStreamRequest`
+                // carries no channel name (see `record_push_bridge`'s module
+                // doc), so the single `on_open_stream` slot dispatches on
+                // `content_type`, the one field both carriers set to a
+                // distinct, stable value for exactly this purpose.
+                if request.content_type.as_deref() == Some(record_push_bridge::RECORD_PUSH_CONTENT_TYPE) {
+                    record_push_bridge::handle_open_stream(request, context, capsules).await
+                } else {
+                    mesh_evidence_bridge::handle_open_stream(request, context).await
+                }
+            })
         })
     })
     .customize(|plugin| plugin.with_operation_router(evidence_operations))
     .build();
 
     PluginRuntime::run(plugin).await
+}
+
+#[cfg(test)]
+mod push_eligibility_tests {
+    use super::*;
+    use lifecycle_channel::{DispatchPath, HostServingProvenance, Phase};
+
+    fn remote_mesh_envelope(served_by_node_id: Option<&str>) -> OpenAiExchangeEnvelope {
+        OpenAiExchangeEnvelope {
+            exchange_id: None,
+            dispatch_path: DispatchPath::RemoteMesh,
+            phase: Phase::Terminal,
+            model: "some-model".to_string(),
+            status: Some(200),
+            capsule_id: None,
+            capsule_id_provenance: None,
+            nonce: None,
+            serving_provenance: served_by_node_id.map(|id| HostServingProvenance {
+                served_by_node_id: Some(id.to_string()),
+                hostname: None,
+                quantization: None,
+                architecture: None,
+                context_length: None,
+                parameter_size: None,
+                layer_count: None,
+                model_identity_hash: None,
+                weights_digest: None,
+                model_canonical_ref: None,
+                model_revision: None,
+                gpu: None,
+                vram_bytes: None,
+                is_soc: None,
+            }),
+            usage: None,
+            request_digest: None,
+            response_digest: None,
+            tool_calls_digest: None,
+            reasoning_digest: None,
+            twin_bracket_id: None,
+        }
+    }
+
+    fn host_served_envelope() -> OpenAiExchangeEnvelope {
+        let mut envelope = remote_mesh_envelope(Some("irrelevant-self-id"));
+        envelope.dispatch_path = DispatchPath::TypedFrontend;
+        envelope
+    }
+
+    // MUTANT: delete `push_eligibility`'s `if record_at_completion_off {
+    // return None; }` early return and this goes red -- the required
+    // "policy off -> no push" behavior.
+    #[test]
+    fn policy_off_never_pushes_even_with_a_known_counterparty_and_self_id() {
+        let envelope = remote_mesh_envelope(Some("peer-m3"));
+        assert_eq!(push_eligibility(&envelope, true, Some("self-m4")), None);
+    }
+
+    #[test]
+    fn policy_on_pushes_when_counterparty_and_self_id_are_both_known() {
+        let envelope = remote_mesh_envelope(Some("peer-m3"));
+        assert_eq!(
+            push_eligibility(&envelope, false, Some("self-m4")),
+            Some(("peer-m3", "self-m4"))
+        );
+    }
+
+    #[test]
+    fn no_self_peer_id_configured_never_pushes() {
+        let envelope = remote_mesh_envelope(Some("peer-m3"));
+        assert_eq!(push_eligibility(&envelope, false, None), None);
+    }
+
+    // Host-served terminals carry no requesting-party field on this channel
+    // (see `push_counterparty`'s own doc) -- never fabricated, never pushed.
+    #[test]
+    fn host_served_terminal_has_no_knowable_counterparty_so_never_pushes() {
+        let envelope = host_served_envelope();
+        assert_eq!(push_eligibility(&envelope, false, Some("self-m3")), None);
+    }
+
+    #[test]
+    fn remote_mesh_with_no_served_by_node_id_has_no_knowable_counterparty() {
+        let envelope = remote_mesh_envelope(None);
+        assert_eq!(push_eligibility(&envelope, false, Some("self-m4")), None);
+    }
+
+    #[test]
+    fn remote_mesh_with_unknown_served_by_node_id_has_no_knowable_counterparty() {
+        let envelope = remote_mesh_envelope(Some("unknown"));
+        assert_eq!(push_eligibility(&envelope, false, Some("self-m4")), None);
+    }
 }

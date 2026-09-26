@@ -149,7 +149,7 @@ def build_pane_c_json(
     """
     if exchange_id:
         records, _archived_segments = ledger_store_backend.read_all_capsules(state.ledger_dir)
-        group = [r for r in records if capsule_exchange_tab.exchange_key_for(r) == exchange_id]
+        group = [r for r in records if capsule_exchange_tab.exchange_correlator(r) == exchange_id]
         group.sort(key=lambda r: (r.get("timestamp") or "", r.get("capsule_id") or ""))
         if not group:
             payload: dict[str, Any] = {"exchange_key": exchange_id, "found": False}

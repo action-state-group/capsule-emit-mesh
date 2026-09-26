@@ -9,7 +9,23 @@ Usage:
     verify_rust_capsule.py <capsule.json> <statement.cose> <pubkey.pem>
 
 Prints one JSON line: {"ok": bool, "cose_ok": bool, "capsule_ok": bool,
-"capsule_id": str, "findings": [...], "error": str|null}. Exit 0 iff ok.
+"envelope_ok": bool, "envelope_verdict": str, "capsule_id": str,
+"findings": [...], "error": str|null}. Exit 0 iff ok.
+
+verifier parity for the inline signature envelope: this oracle now
+also grades the INLINE producer-signature envelope carried ON the capsule
+(``capsule["signature"]``/``["key_id"]``) with the SAME function the record-push
+door uses (``capsule_emit.signing.verify_capsule_signature_tristate``) -- so a
+Rust producer that seals a body correctly but leaves the inline envelope
+absent/divergent (the exact silent regression this task fixes) FAILS here,
+instead of passing on body-only parity.
+
+Renamed from "full-output parity" -- byte-identity is unachievable and not the
+goal: RFC 9052 §9 requires canonical protected-header key order (Rust/coset
+conforms, the Python reference emits insertion order, a §9 violation). The
+criterion is verifier-parity -- every conforming verifier accepts the envelope
+because the signature is over the protected bstr as received -- plus identical
+capsule_id (over the JCS body).
 """
 from __future__ import annotations
 
@@ -18,6 +34,7 @@ import sys
 
 import scitt_cose
 from agent_action_capsule.verify import verify as verify_capsule
+from capsule_emit.signing import AuthorshipVerdict, verify_capsule_signature_tristate
 
 
 def main() -> int:
@@ -27,6 +44,8 @@ def main() -> int:
         "ok": False,
         "cose_ok": False,
         "capsule_ok": False,
+        "envelope_ok": False,
+        "envelope_verdict": None,
         "capsule_id": None,
         "findings": [],
         "error": None,
@@ -76,7 +95,17 @@ def main() -> int:
             for f in result.findings
         ]
 
-        out["ok"] = out["cose_ok"] and out["capsule_ok"]
+        # 3. verifier-parity: the INLINE producer-signature envelope on the
+        #    capsule, graded by the door's own tristate function. AUTHORED means
+        #    signature+key_id are present and the COSE_Sign1 producer envelope
+        #    verifies against capsule_id under key_id -- exactly what the door
+        #    requires to accept a pushed half. UNCLAIMED (the pre-fix state:
+        #    envelope absent) or INVALID both fail.
+        verdict, _ = verify_capsule_signature_tristate(capsule)
+        out["envelope_verdict"] = verdict.value
+        out["envelope_ok"] = verdict is AuthorshipVerdict.AUTHORED
+
+        out["ok"] = out["cose_ok"] and out["capsule_ok"] and out["envelope_ok"]
     except scitt_cose.CoseError as exc:
         out["error"] = f"CoseError: {exc}"
     except Exception as exc:  # noqa: BLE001 - report, don't crash the oracle

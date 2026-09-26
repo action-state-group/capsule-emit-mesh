@@ -70,6 +70,7 @@ from agent_action_capsule.canonical import FloatInDigestError, UnsafeIntegerErro
 from agent_action_capsule.contracts import Disposition, EffectRecord
 from agent_action_capsule.emit import emit
 from agent_action_capsule.verify import verify as verify_capsule
+from capsule_emit.signing import resolve_signer, sign_producer_envelope
 
 import scitt_cose
 
@@ -1423,7 +1424,32 @@ def build_capsule(
         domain="action",
         provenance="collector",  # sidecar observes passively at the wire, not at mesh-llm's own gate
     )
+    _attach_producer_envelope(state, capsule)
     return capsule
+
+
+def _attach_producer_envelope(state: NodeState, capsule: dict[str, Any]) -> None:
+    """Attach the inline producer-signature envelope to a capsule the neutral
+    ``agent_action_capsule.emit.emit`` minted, making the Python sidecar's
+    output byte-shape-identical to ``capsule_emit.seal()`` -- so a capsule this
+    sidecar pushes verifies IN ISOLATION at the record-push door
+    (the ONE-capsule-shape rule).
+
+    ``emit`` is the NEUTRAL spec library and deliberately never adds the
+    producer envelope (a ``capsule_emit`` concept, not part of the neutral
+    spec -- see ``capsule_emit.signing.verify_store_signed``'s docstring), so
+    this mirrors ``capsule_emit.core.seal``'s own attach step exactly: after
+    ``capsule_id`` is computed, add ``capsule["signature"]`` (the hex COSE_Sign1
+    producer envelope over the raw ``capsule_id`` digest) and
+    ``capsule["key_id"]`` (the raw Ed25519 public key hex). Both are excluded
+    from the ``capsule_id`` preimage, so ``capsule_id`` is unchanged. The
+    detached ``.cose`` (``sign_capsule``) is untouched -- one key, two
+    audiences (inline envelope for peers, detached statement for the anchor).
+    """
+    signer = resolve_signer(state.ledger_dir, key_path=state.signing_key_path)
+    capsule["signature"], capsule["key_id"] = sign_producer_envelope(
+        signer, capsule["capsule_id"]
+    )
 
 
 def sign_capsule(state: NodeState, capsule: dict[str, Any]) -> bytes:

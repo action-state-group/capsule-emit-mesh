@@ -93,6 +93,7 @@ fn run(
         "capsule_id_ok": report.capsule_id_ok,
         "cose_ok": report.cose_ok,
         "payload_matches_capsule": report.payload_matches_capsule,
+        "subject_matches_capsule_id": report.subject_matches_capsule_id,
         "chain_ok": report.chain_ok,
         "capsule_id": report.capsule_id,
         "findings": report.findings,

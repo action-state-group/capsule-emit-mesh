@@ -42,6 +42,7 @@
 //! genuinely does not know stays `None` here rather than being fabricated.
 
 use serde::Deserialize;
+use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -303,13 +304,23 @@ pub struct HostServingProvenance {
     pub is_soc: Option<bool>,
 }
 
-/// Every lifecycle envelope this plugin has observed on the mesh channel,
-/// most-recent-last -- inspectable by the e2e test (a separate process) via
-/// the JSONL file this also appends to under `data_dir`, so cross-process
-/// correlation against the capsule this plugin's own handler produced for
-/// the same exchange doesn't depend on shared memory.
+/// Cap on the in-memory lifecycle-event mirror: a long-lived plugin on a
+/// busy node observes an unbounded stream of envelopes, and the old
+/// unbounded `Vec` grew for the life of the process (a slow memory leak by
+/// design). The COMPLETE record is the on-disk JSONL log this module also
+/// appends; in memory only the most recent window is needed (its one reader,
+/// `latest_provenance_for_model`, scans most-recent-first anyway).
+const MAX_IN_MEMORY_EVENTS: usize = 1024;
+
+/// The lifecycle envelopes this plugin has recently observed on the mesh
+/// channel, most-recent-last, bounded to [`MAX_IN_MEMORY_EVENTS`] (older
+/// entries are dropped from memory; the JSONL log keeps everything) --
+/// inspectable by the e2e test (a separate process) via the JSONL file this
+/// also appends to under `data_dir`, so cross-process correlation against
+/// the capsule this plugin's own handler produced for the same exchange
+/// doesn't depend on shared memory.
 pub struct ObservedLifecycleEvents {
-    events: Mutex<Vec<OpenAiExchangeEnvelope>>,
+    events: Mutex<VecDeque<OpenAiExchangeEnvelope>>,
     log_path: PathBuf,
 }
 
@@ -317,7 +328,7 @@ impl ObservedLifecycleEvents {
     pub fn open(data_dir: &Path) -> std::io::Result<Self> {
         std::fs::create_dir_all(data_dir)?;
         Ok(Self {
-            events: Mutex::new(Vec::new()),
+            events: Mutex::new(VecDeque::new()),
             log_path: data_dir.join("lifecycle-events.jsonl"),
         })
     }
@@ -357,7 +368,29 @@ impl ObservedLifecycleEvents {
         }
         match envelope.serving_provenance.as_ref() {
             Some(prov) => {
-                prov.architecture.is_some() || prov.model_identity_hash.is_some()
+                // This is a DISCRIMINATOR against double-sealing, not a
+                // "worth sealing" test: it separates a real host-served
+                // exchange from this plugin's OWN synthetic plugin-served stub
+                // (already sealed by the HTTP handler). It keys on real
+                // served-MODEL IDENTITY, which only a real loaded model has.
+                // `weights_digest` IS such identity -- the digest of the bytes
+                // actually loaded -- and the strongest of the three: on a local
+                // `--gguf` serve the host leaves `architecture` and
+                // `model_identity_hash` null but still reports `weights_digest`.
+                // Accepting it is a refinement of the same criterion, not a
+                // loosening. Safety rests on the invariant that a plugin-served
+                // stub (no loaded GGUF) never carries a `weights_digest`; the
+                // `plugin_served_stub_*` tests below are the guard that goes red
+                // if that invariant is ever violated.
+                //
+                // NEVER widen this to non-identity fields. `served_by_node_id`,
+                // `hostname`, `dispatch_path` are WHO/WHERE served, not WHAT
+                // model; they must never qualify an exchange on their own, or
+                // the stub discriminator breaks. If the stub ever *can* carry a
+                // digest, this needs a different discriminator, not a 4th field.
+                prov.architecture.is_some()
+                    || prov.model_identity_hash.is_some()
+                    || prov.weights_digest.is_some()
             }
             None => false,
         }
@@ -404,22 +437,30 @@ impl ObservedLifecycleEvents {
                 let _ = writeln!(file, "{line}");
             }
         }
-        self.events
+        let mut events = self
+            .events
             .lock()
-            .expect("lifecycle events mutex poisoned")
-            .push(envelope);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        events.push_back(envelope);
+        // Ring-buffer semantics: drop the oldest once past the cap.
+        while events.len() > MAX_IN_MEMORY_EVENTS {
+            events.pop_front();
+        }
     }
 
     /// In-process accessor; the e2e test instead reads the JSONL log this
     /// also writes (it runs the plugin as a separate process, so in-memory
     /// state isn't visible to it) -- kept for a same-process caller (e.g. a
-    /// future unit test of the handler itself).
+    /// future unit test of the handler itself). Returns at most the
+    /// in-memory window ([`MAX_IN_MEMORY_EVENTS`]).
     #[allow(dead_code)]
     pub fn snapshot(&self) -> Vec<OpenAiExchangeEnvelope> {
         self.events
             .lock()
-            .expect("lifecycle events mutex poisoned")
-            .clone()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// The most recently observed host serving-provenance for `model` (from a
@@ -440,7 +481,7 @@ impl ObservedLifecycleEvents {
     pub fn latest_provenance_for_model(&self, model: &str) -> Option<HostServingProvenance> {
         self.events
             .lock()
-            .expect("lifecycle events mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .rev()
             .find(|e| e.model == model && e.serving_provenance.is_some())
@@ -515,14 +556,14 @@ mod tests {
     /// metadata) stay `None`, never fabricated.
     #[test]
     fn real_host_terminal_event_deserializes_serving_provenance() {
-        let wire = r#"{"dispatch_path":"raw_proxy","phase":"terminal","model":"allowed-test-model","status":200,"capsule_id":null,"nonce":null,"serving_provenance":{"served_by_node_id":"fa28d0dfe5f0b2c4a8f0fcb15838075e4e5f0b32d6dd5df029588e8992fad5ac","hostname":"Stevens-MacBook-Pro.local","quantization":null,"architecture":null,"context_length":null,"parameter_size":null,"layer_count":null,"model_identity_hash":null,"model_canonical_ref":null,"model_revision":null,"gpu":"Apple M4 Max","vram_bytes":28991029248,"is_soc":true}}"#;
+        let wire = r#"{"dispatch_path":"raw_proxy","phase":"terminal","model":"allowed-test-model","status":200,"capsule_id":null,"nonce":null,"serving_provenance":{"served_by_node_id":"fa28d0dfe5f0b2c4a8f0fcb15838075e4e5f0b32d6dd5df029588e8992fad5ac","hostname":"node-a.local","quantization":null,"architecture":null,"context_length":null,"parameter_size":null,"layer_count":null,"model_identity_hash":null,"model_canonical_ref":null,"model_revision":null,"gpu":"Apple M4 Max","vram_bytes":28991029248,"is_soc":true}}"#;
         let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse real event");
         let prov = env.serving_provenance.expect("provenance present");
         // Real hardware facts the host survey knows.
         assert_eq!(prov.gpu.as_deref(), Some("Apple M4 Max"));
         assert_eq!(prov.vram_bytes, Some(28_991_029_248));
         assert_eq!(prov.is_soc, Some(true));
-        assert_eq!(prov.hostname.as_deref(), Some("Stevens-MacBook-Pro.local"));
+        assert_eq!(prov.hostname.as_deref(), Some("node-a.local"));
         assert_eq!(
             prov.served_by_node_id.as_deref(),
             Some("fa28d0dfe5f0b2c4a8f0fcb15838075e4e5f0b32d6dd5df029588e8992fad5ac")
@@ -542,7 +583,7 @@ mod tests {
     /// distinct facts intact -- neither collapses into or replaces the other.
     #[test]
     fn serving_provenance_carries_weights_digest_alongside_model_identity_hash() {
-        let wire = r#"{"dispatch_path":"raw_proxy","phase":"terminal","model":"local-gguf/sha256-4ff195f73917d9c2","status":200,"capsule_id":null,"nonce":null,"serving_provenance":{"served_by_node_id":"143f4d9f8cd9a9","hostname":"Stevens-MacBook-Pro.local","architecture":"llama","model_identity_hash":null,"weights_digest":"904548955b8a6478df029588e8992fad5ac4ff195f73917d9c2e5f0b32d6dd5","gpu":"Apple M4 Max","vram_bytes":28991029248,"is_soc":true}}"#;
+        let wire = r#"{"dispatch_path":"raw_proxy","phase":"terminal","model":"local-gguf/sha256-4ff195f73917d9c2","status":200,"capsule_id":null,"nonce":null,"serving_provenance":{"served_by_node_id":"143f4d9f8cd9a9","hostname":"node-a.local","architecture":"llama","model_identity_hash":null,"weights_digest":"904548955b8a6478df029588e8992fad5ac4ff195f73917d9c2e5f0b32d6dd5","gpu":"Apple M4 Max","vram_bytes":28991029248,"is_soc":true}}"#;
         let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
         assert!(ObservedLifecycleEvents::is_sealable_host_served(&env));
         let prov = env.serving_provenance.expect("provenance present");
@@ -561,7 +602,7 @@ mod tests {
     /// as a sealable host-served exchange (real model identity present).
     #[test]
     fn real_host_served_terminal_carries_usage_and_request_digest_and_is_sealable() {
-        let wire = r#"{"exchange_id":"exch-7","dispatch_path":"raw_proxy","phase":"terminal","model":"local-gguf/sha256-4ff195f73917d9c2","status":200,"capsule_id":null,"nonce":null,"usage":{"prompt_tokens":41,"completion_tokens":2,"total_tokens":43},"request_digest":"a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5","response_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tool_calls_digest":"f294be8a53bb9c29cd94472721f0857591f34b23fe010882de79b9fb210b1395","serving_provenance":{"served_by_node_id":"143f4d9f8cd9a9","hostname":"Stevens-MacBook-Pro.local","architecture":"llama","context_length":131072,"parameter_size":"3B","layer_count":28,"model_identity_hash":"904548955b8a6478","gpu":"Apple M4 Max","vram_bytes":28991029248,"is_soc":true}}"#;
+        let wire = r#"{"exchange_id":"exch-7","dispatch_path":"raw_proxy","phase":"terminal","model":"local-gguf/sha256-4ff195f73917d9c2","status":200,"capsule_id":null,"nonce":null,"usage":{"prompt_tokens":41,"completion_tokens":2,"total_tokens":43},"request_digest":"a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5","response_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tool_calls_digest":"f294be8a53bb9c29cd94472721f0857591f34b23fe010882de79b9fb210b1395","serving_provenance":{"served_by_node_id":"143f4d9f8cd9a9","hostname":"node-a.local","architecture":"llama","context_length":131072,"parameter_size":"3B","layer_count":28,"model_identity_hash":"904548955b8a6478","gpu":"Apple M4 Max","vram_bytes":28991029248,"is_soc":true}}"#;
         let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
         let usage = env.usage.expect("real usage carried through");
         assert_eq!(usage.prompt_tokens, 41);
@@ -611,6 +652,39 @@ mod tests {
         let wire = r#"{"dispatch_path":"raw_proxy","phase":"terminal","model":"allowed-test-model","status":200,"capsule_id":null,"nonce":null,"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0},"serving_provenance":{"served_by_node_id":"node","hostname":"h","architecture":null,"model_identity_hash":null,"gpu":"Apple M4 Max","vram_bytes":28991029248,"is_soc":true}}"#;
         let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
         assert!(!ObservedLifecycleEvents::is_sealable_host_served(&env));
+    }
+
+    /// A real local-`--gguf` host-served terminal event: the host leaves
+    /// `architecture`/`model_identity_hash` null but reports `served_by_node_id`
+    /// + `weights_digest` (the raw served-weights hash). That IS real
+    /// served-model identity, so the exchange is sealable -- otherwise a
+    /// single-node `--gguf` serve seals nothing and the Evidence ledger stays
+    /// empty despite honest provenance being present.
+    #[test]
+    fn host_served_gguf_terminal_with_weights_digest_only_is_sealable() {
+        let wire = r#"{"dispatch_path":"raw_proxy","phase":"terminal","model":"local-gguf/sha256-6c1a2b41","status":200,"capsule_id":null,"nonce":null,"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12},"serving_provenance":{"served_by_node_id":"e988a4a64c","hostname":"node-a.local","architecture":null,"model_identity_hash":null,"weights_digest":"6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff","gpu":"Apple M4 Max","vram_bytes":28991029248,"is_soc":true}}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
+        assert!(ObservedLifecycleEvents::is_sealable_host_served(&env));
+    }
+
+    /// MUTANT / hazard documentation for the `weights_digest` disjunction.
+    /// A plugin-served STUB shape (`allowed-test-model`, no loaded GGUF, so
+    /// `architecture`/`model_identity_hash` null) that is mutated to ALSO carry
+    /// a `weights_digest` DOES evaluate sealable -- a double-seal hazard, since
+    /// the HTTP handler already sealed the plugin-served exchange. This is safe
+    /// in production ONLY because a real plugin-served stub has no loaded
+    /// weights and therefore never carries a `weights_digest`; that invariant is
+    /// guarded by `plugin_served_stub_terminal_is_not_sealed_on_observe` (which
+    /// goes red the moment a stub gains one). If a stub ever legitimately grows
+    /// a digest, fix the discriminator (e.g. gate on `dispatch_path`/served-role
+    /// too) -- do NOT paper over it by removing this field.
+    #[test]
+    fn mutant_stub_with_weights_digest_seals_documenting_the_double_seal_hazard() {
+        let wire = r#"{"dispatch_path":"raw_proxy","phase":"terminal","model":"allowed-test-model","status":200,"capsule_id":null,"nonce":null,"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0},"serving_provenance":{"served_by_node_id":"node","hostname":"h","architecture":null,"model_identity_hash":null,"weights_digest":"deadbeef","gpu":"Apple M4 Max","vram_bytes":28991029248,"is_soc":true}}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(wire).expect("parse");
+        // Passes today only because real stubs never reach this shape -- see the
+        // guard test above, which is what actually protects the invariant.
+        assert!(ObservedLifecycleEvents::is_sealable_host_served(&env));
     }
 
     /// An effective-request (non-terminal) envelope is never sealed on observe.

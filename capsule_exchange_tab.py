@@ -112,6 +112,7 @@ __all__ = [
     "build_exchange_view",
     "build_verify_map",
     "digest_match_grade",
+    "exchange_correlator",
     "exchange_id_for",
     "exchange_key_for",
     "filter_exchange_rows",
@@ -173,19 +174,93 @@ def _effect_block(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def exchange_id_for(record: dict[str, Any]) -> str | None:
-    """The shared correlator both halves of one exchange record identically
+    """The record's raw host-minted ``exchange_id`` field
     ([b6a-requester-seal]/[mesh-b1-requestor-capsule-ledger]), or ``None``/
-    ``"unknown"`` when the record carries none."""
+    ``"unknown"`` when the record carries none.
+
+    NOTE: this reads the bare field and is NOT a grouping key -- host-minted
+    exchange_ids differ per node for the same real exchange, so grouping two
+    cross-node halves by this value never correlates them. The ONE grouping
+    key is :func:`exchange_correlator`; this helper stays only for reading
+    the field itself (role identity, the drill-down header, the Finder's
+    exchange-id lookup) and for the digest-role split, never to group halves.
+    The CI gate (``test_one_correlator.py``) enforces that no other site uses
+    ``exchange_id`` as a grouping/correlation key.
+    """
     return serving_provenance(record).get("exchange_id")
 
 
-def records_for_exchange(records: list[dict[str, Any]], exchange_id: str | None) -> list[dict[str, Any]]:
-    """Every record in *records* sharing *exchange_id*, sorted by timestamp
-    (capsule_id as a stable tiebreak). Empty for a falsy/"unknown" id --
-    "unknown" never groups records that merely failed to correlate."""
-    if not exchange_id or exchange_id == "unknown":
+def exchange_correlator(record: dict[str, Any]) -> str | None:
+    """THE ONE correlator -- the single grouping key every exchange-half
+    grouping site in this codebase (Python) routes through (the "one
+    code path, no second join key" rule, request-digest correlation).
+    Byte-for-byte the same logic as the ONE Rust correlation point
+    (``capsule_panes_native.rs::exchange_key_for``, fixed in mesh-closed
+    ``2fe4e30f3``) -- a grouped pair must mean the same thing in both panes.
+
+    Join order (``request_digest`` -> ``exchange_id`` -> ``twin_bracket_id``),
+    the SAME correlators ``served_request_join.join_served_request``'s
+    CORRELATION FALLBACK names, but ordered for GROUPING (a single key per
+    record) rather than pairwise comparison:
+
+      1. ``effect.request_digest`` -- PREFERRED whenever present. It is the
+         canonical digest of the request body, computed INDEPENDENTLY by both
+         producers over the same wire bytes, so BOTH halves of one exchange
+         carry the SAME value even across nodes. Namespaced ``digest:`` so it
+         can never collide with a raw exchange_id.
+
+         WHY digest FIRST, not exchange_id (the empirical CLOSED-tour "6 rows
+         not 3 pairs" finding, mesh-closed ``2fe4e30f3``): ``exchange_id`` is
+         HOST-MINTED -- each host mints its OWN id for the same real exchange,
+         so two cross-node halves routinely carry DIFFERENT exchange_ids.
+         Keying a GROUPING bucket on exchange_id therefore SPLITS the two
+         halves of one cross-node exchange into two rows that can never
+         reconcile -- exactly the bug this task fixes. (``served_request_join``
+         can afford to try exchange_id first only because it does a PAIRWISE
+         comparison of two named capsules with a fallback, not a bucket-by-key;
+         a single grouping key has no "else try the other key" per record.)
+         Digest-first subsumes the same-node case (both halves share a digest
+         too) and correctly keeps the CONFLICTING case apart (equal host-minted
+         exchange_id but different request_digest -> different digest keys ->
+         never wrongly merged, matching the ConflictingCorrelationError the
+         pairwise join raises).
+      2. ``serving_provenance.exchange_id`` -- fallback ONLY when a record
+         carries no ``request_digest`` at all (e.g. a plugin-served stub with
+         no digested body); ``"unknown"``/empty never groups.
+      3. ``serving_provenance.twin_bracket_id`` -- terminal fallback,
+         namespaced ``twin:``, so a twin-duel half with neither a digest nor
+         an exchange_id still groups with its bracket rather than orphaning.
+
+    ``None`` when a record carries none of the three (nothing to group it by).
+    """
+    digest = (record.get("effect") or {}).get("request_digest")
+    if digest:
+        return f"digest:{digest}"
+    eid = serving_provenance(record).get("exchange_id")
+    if eid and eid != "unknown":
+        return eid
+    twin = serving_provenance(record).get("twin_bracket_id")
+    if twin:
+        return f"twin:{twin}"
+    return None
+
+
+def records_for_exchange(records: list[dict[str, Any]], exchange_key: str | None) -> list[dict[str, Any]]:
+    """Every record in *records* sharing the correlation key *exchange_key*
+    (an :func:`exchange_correlator` value, NOT a raw ``exchange_id`` --
+    though a plain host-native ``exchange_id`` is one such value, so callers
+    that pass one still match, unchanged), sorted by timestamp (capsule_id as
+    a stable tiebreak). Empty for a falsy/"unknown" key -- "unknown" never
+    groups records that merely failed to correlate.
+
+    Groups through :func:`exchange_correlator`, so a pushed foreign sibling
+    that carries a DIFFERENT host-minted ``exchange_id`` but the SAME
+    ``request_digest`` now correlates with its twin (the bug this task fixes:
+    the old body grouped by ``exchange_id_for`` and never matched such a
+    sibling)."""
+    if not exchange_key or exchange_key == "unknown":
         return []
-    matches = [r for r in records if exchange_id_for(r) == exchange_id]
+    matches = [r for r in records if exchange_correlator(r) == exchange_key]
     matches.sort(key=lambda r: (r.get("timestamp") or "", r.get("capsule_id") or ""))
     return matches
 
@@ -463,7 +538,7 @@ def build_exchange_view(
         verify_ok = bool(verify_result.ok)
 
     exchange_id = exchange_id_for(record)
-    group = records_for_exchange(all_records, exchange_id)
+    group = records_for_exchange(all_records, exchange_correlator(record))
     if not any(r.get("capsule_id") == record.get("capsule_id") for r in group):
         group = sorted(group + [record], key=lambda r: (r.get("timestamp") or "", r.get("capsule_id") or ""))
 
@@ -595,15 +670,12 @@ def worst_state(view: dict[str, Any]) -> str:
 
 
 def exchange_key_for(record: dict[str, Any]) -> str | None:
-    """The exchange correlator, with the doc's fallback: `exchange_id`, or
-    (when absent/"unknown") `effect.request_digest` -- never both mixed
-    silently, and `None` when neither is present (nothing to group this
-    record by)."""
-    eid = exchange_id_for(record)
-    if eid and eid != "unknown":
-        return eid
-    digest = (record.get("effect") or {}).get("request_digest")
-    return f"digest:{digest}" if digest else None
+    """Backward-compatible alias for :func:`exchange_correlator` -- the ONE
+    correlator. Kept so existing callers/tests that import ``exchange_key_for``
+    keep working; it adds no second grouping logic of its own (it MUST route
+    through ``exchange_correlator`` -- the CI gate enforces that no site other
+    than ``exchange_correlator`` derives a grouping key from ``exchange_id``)."""
+    return exchange_correlator(record)
 
 
 def build_exchange_row(
@@ -687,14 +759,14 @@ def group_exchanges(
     keys: list[str] = []
     seen: set[str] = set()
     for record in all_records:
-        key = exchange_key_for(record)
+        key = exchange_correlator(record)
         if key is not None and key not in seen:
             seen.add(key)
             keys.append(key)
 
     rows = []
     for key in keys:
-        group = [r for r in all_records if exchange_key_for(r) == key]
+        group = [r for r in all_records if exchange_correlator(r) == key]
         mine_records = [r for r in group if r.get("capsule_id") in my_ids]
         theirs_records = [r for r in group if r.get("capsule_id") not in my_ids]
         rows.append(build_exchange_row(key, mine_records, theirs_records, group, source_log, verify_map=verify_map))

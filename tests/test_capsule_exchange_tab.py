@@ -28,6 +28,7 @@ from capsule_exchange_tab import (
     build_exchange_row,
     build_exchange_view,
     digest_match_grade,
+    exchange_correlator,
     exchange_id_for,
     exchange_key_for,
     filter_exchange_rows,
@@ -99,8 +100,11 @@ def _pair(exchange_id="ex-1", request_digest="a" * 64, response_digest="b" * 64)
         role="served",
         exchange_id=exchange_id,
         timestamp="2026-09-03T00:00:01Z",
-        request_digest="a" * 64,
-        response_digest="b" * 64,
+        # Both halves of one real exchange observe + seal the SAME request_digest
+        # (the correlator the ONE grouping key uses); mirror the arg here so a
+        # _pair() is a correlatable pair regardless of exchange_id.
+        request_digest=request_digest,
+        response_digest=response_digest,
     )
     return requester, provider
 
@@ -117,8 +121,24 @@ def test_exchange_id_for_reads_serving_provenance():
 
 def test_records_for_exchange_groups_and_sorts_by_timestamp():
     requester, provider = _pair()
-    group = records_for_exchange([provider, requester], "ex-1")
+    # Group by the ONE correlator's key (digest-first) -- both halves share
+    # request_digest, so both land in the same group even if their exchange_ids
+    # differed.
+    key = exchange_correlator(requester)
+    group = records_for_exchange([provider, requester], key)
     assert [r["capsule_id"] for r in group] == [requester["capsule_id"], provider["capsule_id"]]
+
+
+def test_records_for_exchange_correlates_cross_node_halves_by_request_digest():
+    """The core fix: two halves with
+    DIFFERENT host-minted exchange_ids but the SAME request_digest correlate
+    into ONE group (the old exchange_id keying split them into two)."""
+    requester = _capsule(capsule_id="r" * 64, role="requested", exchange_id="host-A", request_digest="d" * 64)
+    provider = _capsule(capsule_id="p" * 64, role="served", exchange_id="host-B", request_digest="d" * 64, timestamp="2026-09-03T00:00:01Z")
+    key = exchange_correlator(requester)
+    assert key == exchange_correlator(provider)  # same key despite different exchange_ids
+    group = records_for_exchange([provider, requester], key)
+    assert {r["capsule_id"] for r in group} == {requester["capsule_id"], provider["capsule_id"]}
 
 
 def test_records_for_exchange_empty_for_falsy_or_unknown_id():
@@ -162,8 +182,8 @@ def test_digest_match_absent_when_neither_half_present():
 def test_digest_match_mutant_one_disagreeing_field_fails_the_whole_pair():
     """MUTANT: response_digest disagrees between halves while request_digest
     still matches -- the pair must fail, not average to a partial pass."""
-    requester, provider = _pair(response_digest="c" * 64)
-    # provider still carries the original response_digest, requester was mutated
+    requester = _capsule(capsule_id="r" * 64, role="requested", request_digest="a" * 64, response_digest="b" * 64)
+    provider = _capsule(capsule_id="p" * 64, role="served", request_digest="a" * 64, response_digest="c" * 64)
     grade = digest_match_grade(requester, provider)
     assert grade["state"] == STATE_FAILED
     assert grade["fields"]["response_digest"]["state"] == STATE_FAILED
@@ -171,7 +191,8 @@ def test_digest_match_mutant_one_disagreeing_field_fails_the_whole_pair():
 
 
 def test_digest_match_mutant_request_digest_disagrees_too():
-    requester, provider = _pair(request_digest="d" * 64)
+    requester = _capsule(capsule_id="r" * 64, role="requested", request_digest="d" * 64, response_digest="b" * 64)
+    provider = _capsule(capsule_id="p" * 64, role="served", request_digest="a" * 64, response_digest="b" * 64)
     grade = digest_match_grade(requester, provider)
     assert grade["state"] == STATE_FAILED
 
@@ -191,7 +212,7 @@ def test_digest_match_present_unverified_when_one_field_missing_but_none_disagre
 
 def test_sequence_position_orders_by_timestamp():
     requester, provider = _pair()
-    group = records_for_exchange([provider, requester], "ex-1")
+    group = records_for_exchange([provider, requester], exchange_correlator(requester))
     seq_r = sequence_position(group, requester)
     seq_p = sequence_position(group, provider)
     assert seq_r["position"] == 1
@@ -201,7 +222,7 @@ def test_sequence_position_orders_by_timestamp():
 
 def test_sequence_position_caveat_disclaims_the_cross_signed_guarantee():
     requester, provider = _pair()
-    group = records_for_exchange([requester, provider], "ex-1")
+    group = records_for_exchange([requester, provider], exchange_correlator(requester))
     seq = sequence_position(group, requester)
     assert "not" in seq["caveat"].lower()
     assert seq["source"] == "local_derivation"
@@ -209,8 +230,8 @@ def test_sequence_position_caveat_disclaims_the_cross_signed_guarantee():
 
 def test_sequence_position_raises_for_a_record_outside_the_group():
     requester, provider = _pair()
-    stray = _capsule(capsule_id="s" * 64, role="requested", exchange_id="ex-1")
-    group = records_for_exchange([requester, provider], "ex-1")
+    stray = _capsule(capsule_id="s" * 64, role="requested", exchange_id="ex-1", request_digest="z" * 64)
+    group = records_for_exchange([requester, provider], exchange_correlator(requester))
     with pytest.raises(ValueError):
         sequence_position(group, stray)
 
@@ -401,24 +422,35 @@ def test_worst_state_a_real_bad_witness_verdict_still_forces_failed_even_while_p
 
 
 # ---------------------------------------------------------------------------
-# exchange_key_for -- exchange_id, falling back to request_digest
+# exchange_key_for / exchange_correlator -- request_digest first (the
+# correlator that survives a cross-node exchange), exchange_id only as the
+# no-digest fallback, then twin_bracket_id. exchange_key_for is a thin alias
+# for exchange_correlator (the ONE correlator).
 # ---------------------------------------------------------------------------
 
 
-def test_exchange_key_for_uses_exchange_id_when_present():
+def test_exchange_key_for_is_an_alias_for_exchange_correlator():
     requester, _ = _pair(exchange_id="ex-42")
-    assert exchange_key_for(requester) == "ex-42"
+    assert exchange_key_for(requester) == exchange_correlator(requester)
 
 
-def test_exchange_key_for_falls_back_to_request_digest_when_exchange_id_absent():
-    record = _capsule(capsule_id="c" * 64, role="requested", exchange_id="unknown", request_digest="f" * 64)
-    assert exchange_key_for(record) == f"digest:{'f' * 64}"
+def test_exchange_correlator_prefers_request_digest_over_host_minted_exchange_id():
+    # A record carrying BOTH keys groups by digest -- the host-minted
+    # exchange_id is deliberately NOT the grouping key (it differs per node).
+    requester, _ = _pair(exchange_id="ex-42", request_digest="f" * 64)
+    assert exchange_correlator(requester) == f"digest:{'f' * 64}"
 
 
-def test_exchange_key_for_none_when_neither_is_present():
+def test_exchange_correlator_falls_back_to_exchange_id_when_no_digest():
+    record = _capsule(capsule_id="c" * 64, role="requested", exchange_id="ex-99")
+    del record["effect"]["request_digest"]
+    assert exchange_correlator(record) == "ex-99"
+
+
+def test_exchange_correlator_none_when_neither_is_present():
     record = _capsule(capsule_id="c" * 64, role="requested", exchange_id="unknown")
     del record["effect"]["request_digest"]
-    assert exchange_key_for(record) is None
+    assert exchange_correlator(record) is None
 
 
 # ---------------------------------------------------------------------------
@@ -427,11 +459,13 @@ def test_exchange_key_for_none_when_neither_is_present():
 # ---------------------------------------------------------------------------
 
 
-def test_group_exchanges_one_row_per_exchange_id():
-    requester, provider = _pair(exchange_id="ex-1")
+def test_group_exchanges_one_row_per_exchange():
+    requester, provider = _pair(exchange_id="ex-1", request_digest="d" * 64)
     rows = group_exchanges([requester, provider])
     assert len(rows) == 1
-    assert rows[0]["exchange_key"] == "ex-1"
+    # The row is keyed by the ONE correlator (digest-first), NOT the
+    # host-minted exchange_id.
+    assert rows[0]["exchange_key"] == exchange_correlator(requester) == f"digest:{'d' * 64}"
 
 
 def test_group_exchanges_role_tag_served_when_this_node_served():
@@ -476,7 +510,8 @@ def test_group_exchanges_default_sort_is_most_recent_first():
 
     rows = group_exchanges([older_r, older_p, newer_r, newer_p])
 
-    assert [r["exchange_key"] for r in rows] == ["ex-new", "ex-old"]
+    # Two rows, newest first -- keyed by the ONE correlator (digest-first).
+    assert [r["exchange_key"] for r in rows] == [f"digest:{'3' * 64}", f"digest:{'1' * 64}"]
 
 
 def test_group_exchanges_fallback_key_never_mixes_two_different_exchanges():

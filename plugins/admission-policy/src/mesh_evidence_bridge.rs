@@ -94,6 +94,38 @@ fn next_stream_id(prefix: &str) -> String {
     )
 }
 
+/// Cap on every peer-controlled side-stream read this plugin performs (both
+/// bridges, both roles). The SDK's 16 MiB frame cap does NOT apply to raw
+/// side-stream bytes and `expected_bytes` is never enforced, so an unbounded
+/// `read_to_end` here was a remote OOM: a peer could stream gigabytes into
+/// this process's memory. A capsule / E14 request / E15 answer is a few KB
+/// -- 1 MiB is generous headroom, not a constraint anyone legitimate hits.
+pub(crate) const MAX_SIDE_STREAM_BYTES: u64 = 1024 * 1024;
+
+/// Bounded replacement for `read_to_end` on a side-stream: reads at most
+/// [`MAX_SIDE_STREAM_BYTES`] and errors -- naming `what` -- when the peer
+/// sends more, instead of buffering an attacker-chosen amount of memory.
+pub(crate) async fn read_to_end_bounded<R>(reader: R, what: &str) -> std::io::Result<Vec<u8>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut bytes = Vec::new();
+    // Read ONE byte past the cap so "exactly at the cap" and "over the cap"
+    // are distinguishable without trusting the peer to half-close honestly.
+    let mut bounded = reader.take(MAX_SIDE_STREAM_BYTES + 1);
+    bounded.read_to_end(&mut bytes).await?;
+    if bytes.len() as u64 > MAX_SIDE_STREAM_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{what} exceeded the {MAX_SIDE_STREAM_BYTES}-byte side-stream cap -- refusing \
+                 an unbounded peer-controlled read"
+            ),
+        ));
+    }
+    Ok(bytes)
+}
+
 /// Where this node's own `evidence_server.py` (E15) is listening. Defaults to
 /// `evidence_server.py`'s own default port (`--listen-port 8091`) so a manual
 /// run needs no extra wiring; the e2e test points this at an isolated port.
@@ -137,10 +169,11 @@ async fn bridge_inbound_evidence_stream(
 
     // The remote requester writes the whole E14 request map then half-closes
     // (mirrors mesh-llm's own streamed-http-binding convention: a full write
-    // followed by `shutdown()`, never a length prefix) -- read to EOF to get
-    // exactly the request bytes, nothing more.
-    let mut request_bytes = Vec::new();
-    read_half.read_to_end(&mut request_bytes).await?;
+    // followed by `shutdown()`, never a length prefix) -- read to EOF, but
+    // BOUNDED (see `read_to_end_bounded`): the requester controls these
+    // bytes and must never control this process's memory.
+    let request_bytes =
+        read_to_end_bounded(&mut read_half, "mesh-inbound evidence request").await?;
 
     let client = reqwest::Client::builder()
         .timeout(responder_http_timeout())
@@ -212,9 +245,8 @@ pub async fn handle_mesh_evidence_request(
     let write_and_read = async {
         write_half.write_all(&request_bytes).await?;
         write_half.shutdown().await?;
-        let mut response_bytes = Vec::new();
-        read_half.read_to_end(&mut response_bytes).await?;
-        Ok::<Vec<u8>, std::io::Error>(response_bytes)
+        // Bounded: the peer's answer is peer-controlled bytes too.
+        read_to_end_bounded(&mut read_half, "peer evidence-request response").await
     };
 
     let response_bytes = tokio::time::timeout(
@@ -227,4 +259,27 @@ pub async fn handle_mesh_evidence_request(
 
     serde_json::from_slice(&response_bytes)
         .map_err(|error| PluginError::internal(format!("peer returned malformed response: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The remote-OOM bound: bytes up to the cap pass through untouched; one
+    /// byte over is a descriptive error, never an unbounded buffer.
+    #[tokio::test]
+    async fn read_to_end_bounded_accepts_at_cap_and_refuses_over_cap() {
+        let at_cap = vec![7u8; MAX_SIDE_STREAM_BYTES as usize];
+        let ok = read_to_end_bounded(at_cap.as_slice(), "test bytes")
+            .await
+            .expect("exactly-at-cap must be accepted");
+        assert_eq!(ok.len() as u64, MAX_SIDE_STREAM_BYTES);
+
+        let over_cap = vec![7u8; MAX_SIDE_STREAM_BYTES as usize + 1];
+        let err = read_to_end_bounded(over_cap.as_slice(), "test bytes")
+            .await
+            .expect_err("over-cap must be refused");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("side-stream cap"), "{err}");
+    }
 }

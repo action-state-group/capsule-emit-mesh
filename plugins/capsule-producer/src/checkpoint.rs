@@ -47,8 +47,8 @@ use cll::checkpoint::{
     SignerError, WitnessRecord as CheckpointWitness,
 };
 use cll::mmr::{
-    add_leaf, consistency_proof, leaf_count as mmr_leaf_count, leaf_hash, peaks, root_from_peaks,
-    ConsistencyProof, Hash, MmrError, NodeReader, DIGEST_LEN,
+    add_leaf, consistency_proof, leaf_count as mmr_leaf_count, leaf_hash, leaf_index_to_pos,
+    peaks, root_from_peaks, ConsistencyProof, Hash, MmrError, NodeReader, DIGEST_LEN,
 };
 use cll::node_store::{FileNodeStore, NodeStoreError, OpenReport};
 use cll::store::{append_checkpoint, read_last_checkpoint, CheckpointLine, StoreError};
@@ -80,6 +80,18 @@ pub enum CheckpointStateError {
         path: String,
         stored_leaves: u64,
         ledger_leaves: u64,
+    },
+    #[error(
+        "durable node store leaf {leaf_index} is {stored_leaf} but capsules.jsonl's capsule_id at \
+         that index ({capsule_id}) leaf-hashes to {expected_leaf} -- the chain has been REWRITTEN \
+         under the node store (e.g. a migration/backfill that edited capsules.jsonl without \
+         rebuilding mmr_nodes.dat); refusing to checkpoint a commitment over superseded leaves"
+    )]
+    NodeStoreDivergedFromLedger {
+        leaf_index: u64,
+        capsule_id: String,
+        stored_leaf: String,
+        expected_leaf: String,
     },
     #[error("capsules.jsonl line {line}: not valid JSON: {source}")]
     MalformedLine {
@@ -200,6 +212,53 @@ fn leaf_positions_and_hashes(
     Ok(peaks(size)?.iter().map(|&p| reader.node(p)).collect())
 }
 
+/// Divergence guard: verify the
+/// durable node store still commits to the SAME leaves `capsules.jsonl`
+/// holds -- not just to the same COUNT of leaves. The count-only trust was
+/// the hole the received-half backfill incident exposed: a migration rewrote
+/// the chain (same length, different capsule_ids at the tail) under an
+/// existing `mmr_nodes.dat`, the count-based sync saw "nothing new to fold",
+/// and the next tick would have emitted a checkpoint whose root committed to
+/// the PRE-migration leaves. Sibling of `NodeStoreAheadOfLedger`/the
+/// Rollback guards: a hard, descriptive error, never a silent stale
+/// commitment.
+///
+/// `full = true` checks every stored leaf against the chain (used once, at
+/// `load` -- one 32-byte read + one leaf hash per entry, cheap for a plugin
+/// ledger and the only chance to catch a mid-chain rewrite that preserves
+/// the tail). `full = false` checks only the LAST stored leaf (used on
+/// every `sync`, so the per-tick cost is one node read + one hash).
+fn verify_stored_leaves_match_chain(
+    store: &impl NodeReader,
+    stored_leaf_count: u64,
+    capsule_ids: &[String],
+    full: bool,
+) -> Result<(), CheckpointStateError> {
+    if stored_leaf_count == 0 {
+        return Ok(());
+    }
+    debug_assert!(stored_leaf_count as usize <= capsule_ids.len());
+    let first = if full { 0 } else { stored_leaf_count - 1 };
+    for leaf_index in first..stored_leaf_count {
+        let capsule_id = &capsule_ids[leaf_index as usize];
+        // read_capsule_ids already validated every id as DIGEST_LEN bytes
+        // of hex; this cannot fail.
+        let body_digest =
+            hex_to_digest(capsule_id).expect("read_capsule_ids validates capsule_id hex");
+        let expected_leaf = leaf_hash(&body_digest);
+        let stored_leaf = store.node(leaf_index_to_pos(leaf_index)?);
+        if stored_leaf != expected_leaf {
+            return Err(CheckpointStateError::NodeStoreDivergedFromLedger {
+                leaf_index,
+                capsule_id: capsule_id.clone(),
+                stored_leaf: hex::encode(stored_leaf),
+                expected_leaf: hex::encode(expected_leaf),
+            });
+        }
+    }
+    Ok(())
+}
+
 impl CheckpointState {
     /// Load (or create) checkpoint state for `ledger_dir`: opens the durable
     /// node store at `<ledger_dir>/mmr_nodes.dat`, catches it up to
@@ -226,6 +285,11 @@ impl CheckpointState {
                 ledger_leaves: capsule_ids.len() as u64,
             });
         }
+        // Full prefix check, once per process start: every leaf the durable
+        // store already holds must still be the chain's capsule_id at that
+        // index (see verify_stored_leaves_match_chain's doc for the incident
+        // this guards against).
+        verify_stored_leaves_match_chain(&node_store, stored_leaf_count, &capsule_ids, true)?;
 
         let mut leaves_indexed_this_load = 0u64;
         for capsule_id in &capsule_ids[stored_leaf_count as usize..] {
@@ -292,6 +356,10 @@ impl CheckpointState {
                 ledger_leaves: capsule_ids.len() as u64,
             });
         }
+        // Cheap per-tick divergence check (last stored leaf only -- `load`
+        // did the full prefix): a chain rewritten in place under a live
+        // state must be a hard error, never a silently stale checkpoint.
+        verify_stored_leaves_match_chain(&self.node_store, self.leaf_count, &capsule_ids, false)?;
         let mut added = 0u64;
         for capsule_id in &capsule_ids[self.leaf_count as usize..] {
             // read_capsule_ids already validated every id as DIGEST_LEN
@@ -317,12 +385,37 @@ impl CheckpointState {
     /// interval (never on the serving path). Checkpoints if either cadence
     /// leg is due; otherwise retries any witness registration left pending
     /// by a prior outage. Mirrors `checkpointing.py`'s `CheckpointState.tick`.
+    ///
+    /// **`NodeStoreAheadOfLedger` is retryable-soft HERE, and only here.**
+    /// The cadence task reads `capsules.jsonl` with no lock shared with the
+    /// plugin's `Ledger::append`, so a tick racing an in-flight append can
+    /// observe a transiently-short chain (a torn tail the reader tolerates by
+    /// dropping the partial line) and momentarily see the durable node store
+    /// "ahead" of the file. That is a read artifact, not divergence -- the
+    /// next tick re-reads the settled file and recovers -- so this leg logs
+    /// and returns `Ok(None)` (retry next tick) instead of wedging the
+    /// cadence on a sticky error. It stays a HARD error on [`Self::load`]
+    /// (an ahead-state that persists across a process start is a really
+    /// truncated ledger, never a torn read), and
+    /// [`CheckpointStateError::NodeStoreDivergedFromLedger`] stays hard
+    /// everywhere -- a rewritten chain must never be soft-retried into a
+    /// stale commitment.
     pub fn tick(
         &mut self,
         signer: &dyn CheckpointSigner,
         anchor: &AnchorClient,
     ) -> Result<Option<CheckpointRecord>, CheckpointStateError> {
-        self.sync()?;
+        match self.sync() {
+            Ok(_) => {}
+            Err(err @ CheckpointStateError::NodeStoreAheadOfLedger { .. }) => {
+                eprintln!(
+                    "[checkpoint] transiently-short capsules.jsonl read on tick ({err}) -- \
+                     treating as a torn-tail read racing an append, retrying next tick"
+                );
+                return Ok(None);
+            }
+            Err(err) => return Err(err),
+        }
         let seconds_since = self.pending_since.map(|t| t.elapsed().as_secs_f64());
         if due_for_checkpoint(&self.cfg, self.entries_since_checkpoint, seconds_since) {
             return Ok(Some(self.checkpoint_now(signer, anchor)?));
@@ -857,6 +950,141 @@ mod tests {
             err,
             CheckpointStateError::NodeStoreAheadOfLedger { .. }
         ));
+    }
+
+    /// The backfill-incident shape,
+    /// live-state leg: a chain REWRITTEN in place (same leaf count,
+    /// different tail capsule_id) under an already-synced state must make
+    /// `tick` error -- never emit a checkpoint whose root commits to the
+    /// superseded leaves.
+    #[test]
+    fn rewritten_chain_under_live_state_errors_on_sync_instead_of_emitting() {
+        let dir = tempfile::tempdir().unwrap();
+        write_capsule(dir.path(), "one");
+        write_capsule(dir.path(), "two");
+        let (mut state, _) =
+            CheckpointState::load(dir.path(), "test-log", CheckpointCadenceConfig::default())
+                .unwrap();
+        assert_eq!(state.leaf_count(), 2);
+
+        // Rewrite the chain: keep entry one, replace entry two with a
+        // DIFFERENT capsule -- same count, different leaf set (exactly what
+        // the received-half backfill did to the run-5 ledger).
+        let ids = read_capsule_ids(&dir.path().join("capsules.jsonl")).unwrap();
+        let keep = json!({"capsule_id": ids[0], "seed": "one"});
+        std::fs::write(
+            dir.path().join("capsules.jsonl"),
+            format!("{}\n", serde_json::to_string(&keep).unwrap()),
+        )
+        .unwrap();
+        write_capsule(dir.path(), "two-rewritten");
+
+        // `reconnect` (not `tick`): it checkpoints unconditionally on a
+        // backlog, so WITHOUT the guard this call would emit a checkpoint
+        // whose root commits to the pre-rewrite leaves -- the exact silent
+        // wrong commitment the incident produced.
+        let anchor = AnchorClient::new("http://127.0.0.1:1");
+        let err = state.reconnect(&signer(), &anchor).unwrap_err();
+        assert!(
+            matches!(err, CheckpointStateError::NodeStoreDivergedFromLedger { leaf_index: 1, .. }),
+            "expected NodeStoreDivergedFromLedger, got: {err}"
+        );
+        assert!(
+            !dir.path().join("checkpoints.jsonl").exists(),
+            "a diverged store must never have emitted a checkpoint"
+        );
+    }
+
+    /// Restart leg: the same rewrite
+    /// discovered at `load` time -- including a MID-chain rewrite that
+    /// preserves the tail, which only the full prefix check can see.
+    #[test]
+    fn rewritten_chain_under_existing_node_store_errors_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        write_capsule(dir.path(), "one");
+        write_capsule(dir.path(), "two");
+        write_capsule(dir.path(), "three");
+        {
+            let (_state, _) =
+                CheckpointState::load(dir.path(), "test-log", CheckpointCadenceConfig::default())
+                    .unwrap();
+        }
+        // Rewrite the MIDDLE entry only -- first and last leaves unchanged,
+        // so a last-leaf-only check would miss it.
+        let ids = read_capsule_ids(&dir.path().join("capsules.jsonl")).unwrap();
+        std::fs::write(dir.path().join("capsules.jsonl"), "").unwrap();
+        let first = json!({"capsule_id": ids[0], "seed": "one"});
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("capsules.jsonl"))
+            .unwrap();
+        writeln!(f, "{}", serde_json::to_string(&first).unwrap()).unwrap();
+        drop(f);
+        write_capsule(dir.path(), "two-rewritten");
+        let last = json!({"capsule_id": ids[2], "seed": "three"});
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("capsules.jsonl"))
+            .unwrap();
+        writeln!(f, "{}", serde_json::to_string(&last).unwrap()).unwrap();
+        drop(f);
+
+        let err =
+            match CheckpointState::load(dir.path(), "test-log", CheckpointCadenceConfig::default())
+            {
+                Err(e) => e,
+                Ok(_) => panic!("expected NodeStoreDivergedFromLedger, load succeeded"),
+            };
+        assert!(
+            matches!(err, CheckpointStateError::NodeStoreDivergedFromLedger { leaf_index: 1, .. }),
+            "expected NodeStoreDivergedFromLedger at leaf 1, got: {err}"
+        );
+    }
+
+    /// The tick leg's torn-tail tolerance: a transiently-short chain read
+    /// (the cadence racing `Ledger::append` with no shared lock) makes
+    /// `tick` return `Ok(None)` -- a soft skip, never a wedge -- and the
+    /// very next tick over the settled file recovers and checkpoints. The
+    /// SAME state at `load` stays hard
+    /// (`node_store_ahead_of_ledger_is_a_hard_error` above), and a rewritten
+    /// chain stays hard on tick
+    /// (`rewritten_chain_under_live_state_errors_on_sync_instead_of_emitting`).
+    #[test]
+    fn transiently_short_chain_read_is_soft_on_tick_and_recovers_next_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        write_capsule(dir.path(), "one");
+        write_capsule(dir.path(), "two");
+        let cfg = CheckpointCadenceConfig {
+            cadence_entries: 1, // due immediately once sync succeeds
+            cadence_seconds: 300,
+            witness_urls: Vec::new(),
+        };
+        let (mut state, _) = CheckpointState::load(dir.path(), "test-log", cfg).unwrap();
+        assert_eq!(state.leaf_count(), 2);
+
+        // Simulate the torn-tail read: the reader observes only the first
+        // line while the second append is in flight.
+        let capsules_path = dir.path().join("capsules.jsonl");
+        let settled = std::fs::read_to_string(&capsules_path).unwrap();
+        let first_line = settled.lines().next().unwrap();
+        std::fs::write(&capsules_path, format!("{first_line}\n")).unwrap();
+
+        let anchor = AnchorClient::new("http://127.0.0.1:1");
+        let soft = state.tick(&signer(), &anchor).unwrap();
+        assert!(soft.is_none(), "a transiently-short read must soft-skip the tick");
+        assert!(
+            !dir.path().join("checkpoints.jsonl").exists(),
+            "the soft-skipped tick must not have emitted a checkpoint"
+        );
+
+        // The write settles; the next tick recovers and checkpoints.
+        std::fs::write(&capsules_path, settled).unwrap();
+        let cp = state
+            .tick(&signer(), &anchor)
+            .unwrap()
+            .expect("the next tick over the settled chain must checkpoint");
+        assert_eq!(mmr_leaf_count(cp.mmr_size).unwrap(), 2);
     }
 
     #[test]

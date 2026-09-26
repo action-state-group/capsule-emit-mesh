@@ -24,7 +24,7 @@
 
 use crate::jcs::compute_capsule_id;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -58,6 +58,15 @@ pub enum LedgerError {
         line: usize,
         capsule_id: String,
         path: String,
+    },
+    #[error(
+        "ledger line {line} corrupt: signed statement for capsule_id {capsule_id} does not check \
+         out on reload ({detail}) -- refusing to trust this entry"
+    )]
+    StatementInvalid {
+        line: usize,
+        capsule_id: String,
+        detail: String,
     },
     #[error("refusing to append: capsule's chain.parent_capsule_id {parent:?} does not match ledger head {head:?}")]
     AppendChainMismatch {
@@ -93,15 +102,109 @@ pub struct Ledger {
     /// capsule_id -> byte offset of the start of its line in capsules.jsonl.
     index: HashMap<String, u64>,
     chain_head: Option<String>,
+    /// Foreign `capsule_id`s a counterparty-half CITING record in this ledger
+    /// already cites -- rebuilt on `open`, maintained on `append`. A citing
+    /// record is identified by `references[].citation_purpose ==
+    /// "counterparty_half"` ALONE (never by
+    /// matching a `chain.relation` string, so legacy `relation: "cites"`
+    /// records count the same as post-ruling `"follows"` ones). The live
+    /// record-push seal path reads this to dedup re-pushed foreign halves.
+    cited_counterparty_halves: HashSet<String>,
 }
 
 fn statement_path(statements_dir: &Path, capsule_id: &str) -> PathBuf {
     statements_dir.join(format!("{capsule_id}.cose"))
 }
 
+/// Collect into `out` every foreign `capsule_id` this capsule cites as a
+/// counterparty half (see `Ledger::cited_counterparty_halves`).
+fn collect_counterparty_half_citations(capsule: &Value, out: &mut HashSet<String>) {
+    let Some(references) = capsule.get("references").and_then(Value::as_array) else {
+        return;
+    };
+    for reference in references {
+        if reference.get("citation_purpose").and_then(Value::as_str)
+            == Some(crate::capsule::CITATION_PURPOSE_COUNTERPARTY_HALF)
+        {
+            if let Some(digest) = reference.get("digest").and_then(Value::as_str) {
+                out.insert(digest.to_string());
+            }
+        }
+    }
+}
+
+/// The reload check behind [`LedgerError::StatementInvalid`]: the `.cose`
+/// beside a ledger line must be a parseable COSE_Sign1 whose payload names
+/// this line's `capsule_id` -- and, when the capsule carries its inline
+/// producer `key_id` (the hex Ed25519 public key `attach_producer_envelope`
+/// writes), the COSE signature must actually verify against that key, through
+/// the same `cose::verify_signed_statement` path `verify::verify_offline`
+/// gates on. Returns the human-readable failure detail on mismatch.
+fn check_statement_matches(
+    capsule: &Value,
+    capsule_id: &str,
+    statement: &[u8],
+) -> Result<(), String> {
+    let payload = match producer_verifying_key(capsule) {
+        Some(Ok(key)) => {
+            crate::cose::verify_signed_statement(statement, &key)
+                .map_err(|e| {
+                    format!("COSE verification against the capsule's own key_id failed: {e}")
+                })?
+                .payload
+        }
+        Some(Err(detail)) => return Err(detail),
+        // No inline key_id (e.g. a pre-envelope capsule): signature
+        // verification is impossible without a key, but a garbage or
+        // swapped statement file is still caught by parsing the COSE and
+        // checking whose capsule its payload names.
+        None => crate::cose::statement_payload(statement)
+            .map_err(|e| format!("not a parseable COSE_Sign1: {e}"))?,
+    };
+    let payload_json: Value = serde_json::from_slice(&payload)
+        .map_err(|e| format!("COSE payload is not valid JSON: {e}"))?;
+    match payload_json.get("capsule_id").and_then(Value::as_str) {
+        Some(id) if id == capsule_id => Ok(()),
+        other => Err(format!(
+            "COSE payload names capsule_id {other:?}, expected {capsule_id:?}"
+        )),
+    }
+}
+
+/// The Ed25519 verifying key a capsule's inline `key_id` names, when it
+/// carries one. `None` when the capsule has no `key_id`; `Some(Err(..))` when
+/// it has one that is not a valid hex-encoded Ed25519 public key (a corrupt
+/// claim -- surfaced, never skipped).
+fn producer_verifying_key(
+    capsule: &Value,
+) -> Option<Result<ed25519_dalek::VerifyingKey, String>> {
+    let key_hex = capsule.get("key_id").and_then(Value::as_str)?;
+    Some(
+        hex::decode(key_hex)
+            .ok()
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+            .and_then(|bytes| ed25519_dalek::VerifyingKey::from_bytes(&bytes).ok())
+            .ok_or_else(|| {
+                format!("capsule key_id {key_hex:?} is not a valid Ed25519 public key")
+            }),
+    )
+}
+
 impl Ledger {
     /// Open (creating if absent) a ledger rooted at `ledger_dir`, replaying
     /// `capsules.jsonl` to recover the chain head + receipt index.
+    ///
+    /// Reload verifies each entry's `.cose` signed statement by CONTENT, not
+    /// just existence: the statement must parse as COSE_Sign1, its payload
+    /// must name the line's `capsule_id`, and where the capsule carries its
+    /// inline producer `key_id` the signature is verified against it (see
+    /// [`check_statement_matches`]). A garbage or swapped statement file is a
+    /// hard [`LedgerError::StatementInvalid`], same spirit as
+    /// [`LedgerError::CapsuleIdMismatch`]. Startup cost: one read + COSE
+    /// parse (+ one Ed25519 verify where a key_id is present) per entry per
+    /// open -- linear in ledger length, fine at this plugin's demo scale; a
+    /// much larger ledger would want a verified index instead of dropping
+    /// this check.
     pub fn open(ledger_dir: &Path) -> Result<(Self, RecoveryReport), LedgerError> {
         fs::create_dir_all(ledger_dir)?;
         let statements_dir = ledger_dir.join("signed-statements");
@@ -118,6 +221,7 @@ impl Ledger {
         let mut chain_head: Option<String> = None;
         let mut offset: u64 = 0;
         let mut report = RecoveryReport::default();
+        let mut cited_counterparty_halves = HashSet::new();
 
         // Split on '\n', keeping track of whether the buffer ends with one.
         // A missing trailing newline on the final chunk means a torn write:
@@ -185,7 +289,18 @@ impl Ledger {
                     path: stmt_path.display().to_string(),
                 });
             }
+            // Existence is not enough: a garbage/swapped statement file must
+            // not reload clean (see this method's doc comment).
+            let statement_bytes = fs::read(&stmt_path)?;
+            check_statement_matches(&parsed, &stored_id, &statement_bytes).map_err(|detail| {
+                LedgerError::StatementInvalid {
+                    line: line_no,
+                    capsule_id: stored_id.clone(),
+                    detail,
+                }
+            })?;
 
+            collect_counterparty_half_citations(&parsed, &mut cited_counterparty_halves);
             index.insert(stored_id.clone(), offset);
             chain_head = Some(stored_id);
             report.valid_entries += 1;
@@ -201,6 +316,7 @@ impl Ledger {
                 append_handle,
                 index,
                 chain_head,
+                cited_counterparty_halves,
             },
             report,
         ))
@@ -219,6 +335,16 @@ impl Ledger {
     /// chain-parent-membership checking.
     pub fn known_capsule_ids(&self) -> std::collections::HashSet<String> {
         self.index.keys().cloned().collect()
+    }
+
+    /// Whether this ledger already holds a counterparty-half CITING record
+    /// for `foreign_capsule_id` -- the live record-push dedup gate: a
+    /// re-pushed foreign half must not seal a second citing record (fsync +
+    /// disk amplification by an authorized peer). Identified by
+    /// `references[].citation_purpose == "counterparty_half"` alone, never a
+    /// `chain.relation` match.
+    pub fn cites_counterparty_half(&self, foreign_capsule_id: &str) -> bool {
+        self.cited_counterparty_halves.contains(foreign_capsule_id)
     }
 
     /// Append a sealed capsule + its signed statement. The statement file is
@@ -256,6 +382,7 @@ impl Ledger {
         self.append_handle.write_all(line.as_bytes())?;
         self.append_handle.sync_all()?;
 
+        collect_counterparty_half_citations(capsule, &mut self.cited_counterparty_halves);
         self.index.insert(capsule_id.clone(), offset);
         self.chain_head = Some(capsule_id);
         Ok(())
@@ -297,7 +424,8 @@ mod tests {
     fn sample_capsule(seed: &str, parent: Option<&str>) -> Value {
         let mut body = serde_json::Map::new();
         body.insert("spec_version".into(), json!("draft-mih-scitt-agent-action-capsule-02"));
-        body.insert("format_version".into(), json!("2"));
+        body.insert("format_version".into(), json!("4"));
+        body.insert("canonicalization_id".into(), json!("jcs"));
         body.insert("action_id".into(), json!(format!("test/{seed}")));
         body.insert("seed".into(), json!(seed));
         if let Some(p) = parent {
@@ -313,8 +441,21 @@ mod tests {
         Value::Object(body)
     }
 
-    fn statement_for(seed: &str) -> Vec<u8> {
-        format!("fake-cose-statement-{seed}").into_bytes()
+    /// A REAL COSE_Sign1 signed statement over the capsule's own JSON bytes
+    /// -- reload now verifies statement CONTENT, so a fake byte-blob would
+    /// (rightly) fail `Ledger::open`. Deterministic key + deterministic
+    /// Ed25519 => reproducible bytes, so equality assertions still hold.
+    fn statement_for(capsule: &Value) -> Vec<u8> {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
+        crate::cose::build_signed_statement(
+            &crate::cose::SignedStatementInput {
+                payload: &serde_json::to_vec(capsule).unwrap(),
+                issuer: "ledger-test",
+                subject: capsule["capsule_id"].as_str().unwrap(),
+                content_type: "application/vnd.agent-action-capsule+json",
+            },
+            &signing_key,
+        )
     }
 
     #[test]
@@ -326,12 +467,12 @@ mod tests {
 
         let c1 = sample_capsule("one", None);
         let id1 = c1["capsule_id"].as_str().unwrap().to_string();
-        ledger.append(&c1, &statement_for("one")).unwrap();
+        ledger.append(&c1, &statement_for(&c1)).unwrap();
         assert_eq!(ledger.chain_head(), Some(id1.as_str()));
 
         let c2 = sample_capsule("two", Some(&id1));
         let id2 = c2["capsule_id"].as_str().unwrap().to_string();
-        ledger.append(&c2, &statement_for("two")).unwrap();
+        ledger.append(&c2, &statement_for(&c2)).unwrap();
         assert_eq!(ledger.chain_head(), Some(id2.as_str()));
         drop(ledger);
 
@@ -349,17 +490,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mut ledger, _) = Ledger::open(dir.path()).unwrap();
         let c1 = sample_capsule("one", None);
-        ledger.append(&c1, &statement_for("one")).unwrap();
+        ledger.append(&c1, &statement_for(&c1)).unwrap();
 
         // A capsule chaining to the WRONG parent (or no parent, when one is
         // expected) must be refused, not silently appended.
         let bad = sample_capsule("bogus", Some(&"f".repeat(64)));
-        let err = ledger.append(&bad, &statement_for("bogus")).unwrap_err();
+        let err = ledger.append(&bad, &statement_for(&bad)).unwrap_err();
         assert!(matches!(err, LedgerError::AppendChainMismatch { .. }));
 
         let bad_no_parent = sample_capsule("no-parent", None);
         let err2 = ledger
-            .append(&bad_no_parent, &statement_for("no-parent"))
+            .append(&bad_no_parent, &statement_for(&bad_no_parent))
             .unwrap_err();
         assert!(matches!(err2, LedgerError::AppendChainMismatch { .. }));
     }
@@ -370,11 +511,11 @@ mod tests {
         let (mut ledger, _) = Ledger::open(dir.path()).unwrap();
         let c1 = sample_capsule("one", None);
         let id1 = c1["capsule_id"].as_str().unwrap().to_string();
-        ledger.append(&c1, &statement_for("one")).unwrap();
+        ledger.append(&c1, &statement_for(&c1)).unwrap();
 
         let entry = ledger.lookup(&id1).unwrap().expect("entry present");
         assert_eq!(entry.capsule, c1);
-        assert_eq!(entry.signed_statement, statement_for("one"));
+        assert_eq!(entry.signed_statement, statement_for(&c1));
 
         assert!(ledger.lookup(&"0".repeat(64)).unwrap().is_none());
     }
@@ -385,7 +526,7 @@ mod tests {
         let (mut ledger, _) = Ledger::open(dir.path()).unwrap();
         let c1 = sample_capsule("one", None);
         let id1 = c1["capsule_id"].as_str().unwrap().to_string();
-        ledger.append(&c1, &statement_for("one")).unwrap();
+        ledger.append(&c1, &statement_for(&c1)).unwrap();
         drop(ledger);
 
         // Simulate a crash mid-write: append a syntactically-truncated
@@ -409,12 +550,72 @@ mod tests {
         assert!(!contents.contains("deadbee"));
     }
 
+    /// A capsule carrying a top-level `references` array (a
+    /// CITING record) whose id was
+    /// computed WITH `references` in the preimage. Proves the ledger's own
+    /// recomputation covers `references` (`compute_capsule_id` includes it),
+    /// so a chain of citing records cold-reloads clean.
+    fn citing_capsule(seed: &str, parent: Option<&str>, cited: &str) -> Value {
+        let mut body = serde_json::Map::new();
+        body.insert("spec_version".into(), json!("draft-mih-scitt-agent-action-capsule-02"));
+        body.insert("format_version".into(), json!("4"));
+        body.insert("canonicalization_id".into(), json!("jcs"));
+        body.insert("action_id".into(), json!(format!("cite/{seed}")));
+        body.insert("seed".into(), json!(seed));
+        if let Some(p) = parent {
+            body.insert(
+                "chain".into(),
+                json!({"parent_capsule_id": p, "relation": "follows"}),
+            );
+        }
+        body.insert(
+            "references".into(),
+            json!([{"type": "capsule", "digest_alg": "SHA-256", "digest": cited, "citation_purpose": "counterparty_half"}]),
+        );
+        let capsule_id = compute_capsule_id(&Value::Object(body.clone())).unwrap();
+        body.insert("capsule_id".into(), json!(capsule_id));
+        Value::Object(body)
+    }
+
+    /// A ledger holding citing records
+    /// (each with a top-level `references` array committed into its
+    /// `capsule_id`) recovers its chain head cleanly on cold reopen -- no
+    /// `Ledger::open` change is needed for the new record shape, since
+    /// `compute_capsule_id` already commits `references` into the preimage.
+    #[test]
+    fn ledger_with_citing_records_cold_reloads_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ledger, _) = Ledger::open(dir.path()).unwrap();
+
+        // A normal local record, then a citing record chained onto it, then a
+        // second citing record -- the real shape after a received-half seal.
+        let local = sample_capsule("local", None);
+        let local_id = local["capsule_id"].as_str().unwrap().to_string();
+        ledger.append(&local, &statement_for(&local)).unwrap();
+
+        let cite1 = citing_capsule("cite1", Some(&local_id), &"a".repeat(64));
+        let cite1_id = cite1["capsule_id"].as_str().unwrap().to_string();
+        ledger.append(&cite1, &statement_for(&cite1)).unwrap();
+
+        let cite2 = citing_capsule("cite2", Some(&cite1_id), &"b".repeat(64));
+        let cite2_id = cite2["capsule_id"].as_str().unwrap().to_string();
+        ledger.append(&cite2, &statement_for(&cite2)).unwrap();
+        drop(ledger);
+
+        let (ledger2, report) = Ledger::open(dir.path()).unwrap();
+        assert_eq!(report.valid_entries, 3);
+        assert_eq!(ledger2.chain_head(), Some(cite2_id.as_str()));
+        assert!(ledger2.contains(&local_id));
+        assert!(ledger2.contains(&cite1_id));
+        assert!(ledger2.contains(&cite2_id));
+    }
+
     #[test]
     fn tampered_terminated_line_is_a_hard_error_not_a_silent_drop() {
         let dir = tempfile::tempdir().unwrap();
         let (mut ledger, _) = Ledger::open(dir.path()).unwrap();
         let c1 = sample_capsule("one", None);
-        ledger.append(&c1, &statement_for("one")).unwrap();
+        ledger.append(&c1, &statement_for(&c1)).unwrap();
         drop(ledger);
 
         // Tamper the capsule_id field in a fully-terminated (newline-ended)
@@ -431,5 +632,166 @@ mod tests {
 
         let err = Ledger::open(dir.path()).unwrap_err();
         assert!(matches!(err, LedgerError::CapsuleIdMismatch { .. }));
+    }
+
+    /// Reload verifies statement CONTENT, not just existence: a garbage
+    /// `.cose` file (not COSE_Sign1 at all) must be a hard error on reopen,
+    /// never a clean reload.
+    #[test]
+    fn garbage_statement_file_is_a_hard_error_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ledger, _) = Ledger::open(dir.path()).unwrap();
+        let c1 = sample_capsule("one", None);
+        let id1 = c1["capsule_id"].as_str().unwrap().to_string();
+        ledger.append(&c1, &statement_for(&c1)).unwrap();
+        drop(ledger);
+
+        let stmt_path = dir
+            .path()
+            .join("signed-statements")
+            .join(format!("{id1}.cose"));
+        fs::write(&stmt_path, b"not a cose statement at all").unwrap();
+
+        let err = Ledger::open(dir.path()).unwrap_err();
+        assert!(
+            matches!(err, LedgerError::StatementInvalid { .. }),
+            "expected StatementInvalid, got: {err}"
+        );
+    }
+
+    /// A statement file SWAPPED with another entry's (each one a perfectly
+    /// valid COSE_Sign1 -- just over the wrong capsule) must be caught: the
+    /// payload names a different capsule_id than the ledger line it sits
+    /// beside.
+    #[test]
+    fn swapped_statement_files_are_a_hard_error_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ledger, _) = Ledger::open(dir.path()).unwrap();
+        let c1 = sample_capsule("one", None);
+        let id1 = c1["capsule_id"].as_str().unwrap().to_string();
+        ledger.append(&c1, &statement_for(&c1)).unwrap();
+        let c2 = sample_capsule("two", Some(&id1));
+        let id2 = c2["capsule_id"].as_str().unwrap().to_string();
+        ledger.append(&c2, &statement_for(&c2)).unwrap();
+        drop(ledger);
+
+        let statements_dir = dir.path().join("signed-statements");
+        let p1 = statements_dir.join(format!("{id1}.cose"));
+        let p2 = statements_dir.join(format!("{id2}.cose"));
+        let b1 = fs::read(&p1).unwrap();
+        let b2 = fs::read(&p2).unwrap();
+        fs::write(&p1, &b2).unwrap();
+        fs::write(&p2, &b1).unwrap();
+
+        let err = Ledger::open(dir.path()).unwrap_err();
+        assert!(
+            matches!(err, LedgerError::StatementInvalid { .. }),
+            "expected StatementInvalid, got: {err}"
+        );
+    }
+
+    /// Where the capsule names its producer key inline (`key_id`), reload
+    /// verifies the COSE signature against it -- a statement re-signed by a
+    /// DIFFERENT key (payload intact, so the payload check alone would pass)
+    /// must be a hard error.
+    #[test]
+    fn statement_signed_by_a_different_key_is_a_hard_error_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ledger, _) = Ledger::open(dir.path()).unwrap();
+
+        let node_key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let mut c1 = sample_capsule("one", None);
+        crate::capsule::attach_producer_envelope(&mut c1, &node_key).unwrap();
+        let id1 = c1["capsule_id"].as_str().unwrap().to_string();
+        // Genuine statement, signed by the SAME key the capsule names.
+        let good = crate::cose::build_signed_statement(
+            &crate::cose::SignedStatementInput {
+                payload: &serde_json::to_vec(&c1).unwrap(),
+                issuer: "ledger-test",
+                subject: &id1,
+                content_type: "application/vnd.agent-action-capsule+json",
+            },
+            &node_key,
+        );
+        ledger.append(&c1, &good).unwrap();
+        drop(ledger);
+        // Reload of the genuine state is clean (signature verifies).
+        {
+            let (_ledger, report) = Ledger::open(dir.path()).unwrap();
+            assert_eq!(report.valid_entries, 1);
+        }
+
+        // Swap in a statement over the same payload signed by an IMPOSTOR key.
+        let impostor = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
+        let forged = crate::cose::build_signed_statement(
+            &crate::cose::SignedStatementInput {
+                payload: &serde_json::to_vec(&c1).unwrap(),
+                issuer: "ledger-test",
+                subject: &id1,
+                content_type: "application/vnd.agent-action-capsule+json",
+            },
+            &impostor,
+        );
+        let stmt_path = dir
+            .path()
+            .join("signed-statements")
+            .join(format!("{id1}.cose"));
+        fs::write(&stmt_path, &forged).unwrap();
+
+        let err = Ledger::open(dir.path()).unwrap_err();
+        assert!(
+            matches!(err, LedgerError::StatementInvalid { .. }),
+            "expected StatementInvalid, got: {err}"
+        );
+    }
+
+    /// The counterparty-half citation set survives append AND reopen, and is
+    /// keyed on `citation_purpose` alone -- a legacy `relation: "cites"`
+    /// citing record counts exactly like a post-ruling `"follows"` one
+    /// (the record kind is the citation purpose, never the
+    /// relation string).
+    #[test]
+    fn cited_counterparty_halves_tracked_on_append_and_rebuilt_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut ledger, _) = Ledger::open(dir.path()).unwrap();
+
+        let local = sample_capsule("local", None);
+        let local_id = local["capsule_id"].as_str().unwrap().to_string();
+        ledger.append(&local, &statement_for(&local)).unwrap();
+        assert!(!ledger.cites_counterparty_half(&"a".repeat(64)));
+
+        // A post-ruling citing record (relation "follows").
+        let cite1 = citing_capsule("cite1", Some(&local_id), &"a".repeat(64));
+        let cite1_id = cite1["capsule_id"].as_str().unwrap().to_string();
+        ledger.append(&cite1, &statement_for(&cite1)).unwrap();
+        assert!(ledger.cites_counterparty_half(&"a".repeat(64)));
+
+        // A LEGACY citing record (relation "cites") -- same kind, same set.
+        let mut body = serde_json::Map::new();
+        body.insert("spec_version".into(), json!("draft-mih-scitt-agent-action-capsule-02"));
+        body.insert("format_version".into(), json!("4"));
+        body.insert("canonicalization_id".into(), json!("jcs"));
+        body.insert("action_id".into(), json!("cite/legacy"));
+        body.insert(
+            "chain".into(),
+            json!({"parent_capsule_id": cite1_id, "relation": "cites"}),
+        );
+        body.insert(
+            "references".into(),
+            json!([{"type": "capsule", "digest_alg": "SHA-256", "digest": "b".repeat(64), "citation_purpose": "counterparty_half"}]),
+        );
+        let legacy_id = compute_capsule_id(&Value::Object(body.clone())).unwrap();
+        body.insert("capsule_id".into(), json!(legacy_id));
+        let legacy = Value::Object(body);
+        ledger.append(&legacy, &statement_for(&legacy)).unwrap();
+        assert!(ledger.cites_counterparty_half(&"b".repeat(64)));
+        drop(ledger);
+
+        // Rebuilt from disk on reopen -- both the follows and the legacy
+        // cites records land in the set.
+        let (reopened, _) = Ledger::open(dir.path()).unwrap();
+        assert!(reopened.cites_counterparty_half(&"a".repeat(64)));
+        assert!(reopened.cites_counterparty_half(&"b".repeat(64)));
+        assert!(!reopened.cites_counterparty_half(&"c".repeat(64)));
     }
 }

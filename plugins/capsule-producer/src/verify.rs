@@ -23,6 +23,11 @@ pub struct VerifyReport {
     pub capsule_id_ok: bool,
     pub cose_ok: bool,
     pub payload_matches_capsule: bool,
+    /// The COSE protected header's CWT `sub` claim equals the recomputed
+    /// `capsule_id`. GATED by [`ok`](Self::ok): a receipt whose subject was
+    /// spliced from another capsule must not verify green -- previously this
+    /// mismatch only landed in `findings` and `ok()` still passed.
+    pub subject_matches_capsule_id: bool,
     pub chain_ok: bool,
     pub capsule_id: Option<String>,
     pub findings: Vec<String>,
@@ -30,7 +35,11 @@ pub struct VerifyReport {
 
 impl VerifyReport {
     pub fn ok(&self) -> bool {
-        self.capsule_id_ok && self.cose_ok && self.payload_matches_capsule && self.chain_ok
+        self.capsule_id_ok
+            && self.cose_ok
+            && self.payload_matches_capsule
+            && self.subject_matches_capsule_id
+            && self.chain_ok
     }
 }
 
@@ -61,6 +70,7 @@ pub fn verify_offline(
 
     let mut cose_ok = false;
     let mut payload_matches_capsule = false;
+    let mut subject_matches_capsule_id = false;
     match verify_signed_statement(signed_statement, verifying_key) {
         Ok(verified) => {
             cose_ok = true;
@@ -70,7 +80,13 @@ pub fn verify_offline(
                     .push("COSE payload does not match the supplied capsule JSON".to_string()),
                 Err(e) => findings.push(format!("COSE payload is not valid JSON: {e}")),
             }
-            if verified.subject.as_deref() != capsule_id.as_deref() {
+            // Gated (not merely a finding): a spliced CWT subject must fail
+            // the overall verdict, matching what the subject claim is FOR --
+            // binding the receipt to exactly this capsule_id.
+            if verified.subject.is_some() && verified.subject.as_deref() == capsule_id.as_deref()
+            {
+                subject_matches_capsule_id = true;
+            } else {
                 findings.push(format!(
                     "COSE subject {:?} does not match recomputed capsule_id {:?}",
                     verified.subject, capsule_id
@@ -111,8 +127,81 @@ pub fn verify_offline(
         capsule_id_ok,
         cose_ok,
         payload_matches_capsule,
+        subject_matches_capsule_id,
         chain_ok,
         capsule_id,
         findings,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cose::{build_signed_statement, SignedStatementInput};
+    use crate::jcs::compute_capsule_id;
+    use serde_json::{json, Map};
+
+    fn sample_capsule(seed: &str) -> Value {
+        let mut body = Map::new();
+        body.insert(
+            "spec_version".into(),
+            json!("draft-mih-scitt-agent-action-capsule-02"),
+        );
+        body.insert("format_version".into(), json!("4"));
+        body.insert("canonicalization_id".into(), json!("jcs"));
+        body.insert("action_id".into(), json!(format!("verify-test/{seed}")));
+        body.insert("seed".into(), json!(seed));
+        let capsule_id = compute_capsule_id(&Value::Object(body.clone())).unwrap();
+        body.insert("capsule_id".into(), json!(capsule_id));
+        Value::Object(body)
+    }
+
+    fn statement_with_subject(capsule: &Value, subject: &str, key: &ed25519_dalek::SigningKey) -> Vec<u8> {
+        build_signed_statement(
+            &SignedStatementInput {
+                payload: &serde_json::to_vec(capsule).unwrap(),
+                issuer: "verify-test",
+                subject,
+                content_type: "application/vnd.agent-action-capsule+json",
+            },
+            key,
+        )
+    }
+
+    #[test]
+    fn genuine_statement_verifies_green_with_subject_gated() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[5u8; 32]);
+        let capsule = sample_capsule("one");
+        let capsule_id = capsule["capsule_id"].as_str().unwrap();
+        let statement = statement_with_subject(&capsule, capsule_id, &key);
+
+        let report = verify_offline(&capsule, &statement, &key.verifying_key(), None);
+        assert!(report.subject_matches_capsule_id, "{:?}", report.findings);
+        assert!(report.ok(), "{:?}", report.findings);
+    }
+
+    /// The spliced-subject receipt: signature and payload are genuine, but
+    /// the CWT `sub` claim names ANOTHER capsule -- `ok()` must gate on it,
+    /// not just note it in findings.
+    #[test]
+    fn spliced_cwt_subject_fails_the_overall_verdict() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[5u8; 32]);
+        let capsule = sample_capsule("one");
+        let other_id = "f".repeat(64);
+        let statement = statement_with_subject(&capsule, &other_id, &key);
+
+        let report = verify_offline(&capsule, &statement, &key.verifying_key(), None);
+        // The splice's whole point: every previously-gated boolean passes...
+        assert!(report.capsule_id_ok);
+        assert!(report.cose_ok);
+        assert!(report.payload_matches_capsule);
+        assert!(report.chain_ok);
+        // ...and only the subject gate stands between it and a green verdict.
+        assert!(!report.subject_matches_capsule_id);
+        assert!(!report.ok(), "a spliced subject must not verify green");
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.contains("COSE subject")));
     }
 }

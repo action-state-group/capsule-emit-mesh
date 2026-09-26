@@ -335,6 +335,14 @@ impl LearnedSelfNodeId {
     }
 }
 
+/// LOCK POISONING NOTE: every mutex here is taken with
+/// `unwrap_or_else(PoisonError::into_inner)` rather than a panicking
+/// `expect` -- capsule production is best-effort OBSERVABILITY on the
+/// serving path, so one panicked seal (its own exchange already failed) must
+/// not poison the lock and turn every later seal into a panic cascade. The
+/// guarded state stays consistent across a mid-seal panic: `Ledger::append`
+/// orders its writes (statement fsync before the jsonl line) exactly so a
+/// torn stop is recoverable, and reload re-validates everything on open.
 pub struct CapsuleState {
     keys: KeyPair,
     ledger: Mutex<Ledger>,
@@ -436,7 +444,7 @@ impl CapsuleState {
     fn learned_self_node_id(&self) -> Option<String> {
         self.learned_self_node_id
             .lock()
-            .expect("learned self node id mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get()
             .map(str::to_string)
     }
@@ -462,7 +470,7 @@ impl CapsuleState {
     pub fn chain_head(&self) -> Option<String> {
         self.ledger
             .lock()
-            .expect("capsule ledger mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .chain_head()
             .map(str::to_string)
     }
@@ -493,7 +501,10 @@ impl CapsuleState {
         // model emitted none). Real digests over the real served response.
         let (tool_calls_digest, reasoning_digest) = output_sub_digests(response_bytes);
 
-        let mut ledger = self.ledger.lock().expect("capsule ledger mutex poisoned");
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let chain = ledger.chain_head().map(|parent| ChainLink {
             parent_capsule_id: parent.to_string(),
             relation: "follows".to_string(),
@@ -524,7 +535,7 @@ impl CapsuleState {
         let sequence = self
             .sequence_counters
             .lock()
-            .expect("sequence counter mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .next_seq(&self.node_id, &requesting_party_id)?;
 
         let input = CapsuleInput {
@@ -649,11 +660,19 @@ impl CapsuleState {
             chain,
         };
 
-        let capsule = seal(&input)?;
+        let mut capsule = seal(&input)?;
         let capsule_id = capsule["capsule_id"]
             .as_str()
             .expect("seal() always sets capsule_id")
             .to_string();
+        // Attach the inline producer-signature envelope BEFORE building the
+        // detached `.cose` statement, so the ledgered capsule, the `.cose`
+        // payload, and any pushed half are ONE shape (`signature`/`key_id`
+        // present) -- a peer that receives just the pushed half verifies it in
+        // isolation, exactly as a `capsule_emit.seal()` capsule does. Excluded
+        // from the `capsule_id` preimage, so `capsule_id` is unchanged.
+        capsule_producer::capsule::attach_producer_envelope(&mut capsule, &self.keys.signing_key)
+            .expect("seal() always sets a hex capsule_id");
         let payload = capsule_producer::capsule::payload_bytes(&capsule);
         let statement = build_signed_statement(
             &SignedStatementInput {
@@ -848,7 +867,7 @@ impl CapsuleState {
             if let Some(served_by) = host.served_by_node_id.as_deref() {
                 self.learned_self_node_id
                     .lock()
-                    .expect("learned self node id mutex poisoned")
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .observe(served_by);
             }
         }
@@ -906,7 +925,10 @@ impl CapsuleState {
             }
         };
 
-        let mut ledger = self.ledger.lock().expect("capsule ledger mutex poisoned");
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let chain = ledger.chain_head().map(|parent| ChainLink {
             parent_capsule_id: parent.to_string(),
             relation: "follows".to_string(),
@@ -941,7 +963,7 @@ impl CapsuleState {
         let sequence = self
             .sequence_counters
             .lock()
-            .expect("sequence counter mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .next_seq(&self.node_id, "unknown")?;
 
         let input = CapsuleInput {
@@ -1065,11 +1087,19 @@ impl CapsuleState {
             chain,
         };
 
-        let capsule = seal(&input)?;
+        let mut capsule = seal(&input)?;
         let capsule_id = capsule["capsule_id"]
             .as_str()
             .expect("seal() always sets capsule_id")
             .to_string();
+        // Attach the inline producer-signature envelope BEFORE building the
+        // detached `.cose` statement, so the ledgered capsule, the `.cose`
+        // payload, and any pushed half are ONE shape (`signature`/`key_id`
+        // present) -- a peer that receives just the pushed half verifies it in
+        // isolation, exactly as a `capsule_emit.seal()` capsule does. Excluded
+        // from the `capsule_id` preimage, so `capsule_id` is unchanged.
+        capsule_producer::capsule::attach_producer_envelope(&mut capsule, &self.keys.signing_key)
+            .expect("seal() always sets a hex capsule_id");
         let payload = capsule_producer::capsule::payload_bytes(&capsule);
         let statement = build_signed_statement(
             &SignedStatementInput {
@@ -1086,6 +1116,72 @@ impl CapsuleState {
             capsule_id,
             capsule,
         })
+    }
+}
+
+/// The provenance a received counterparty half carries into its citing record
+/// -- re-exported from `capsule_producer` so `main.rs`/`record_push_bridge.rs`
+/// name ONE type. See `capsule_producer::capsule::ReceivedHalfProvenance`.
+pub use capsule_producer::capsule::ReceivedHalfProvenance;
+
+impl CapsuleState {
+    /// Seal, chain, and ledger the
+    /// LOCAL CITING record for a received counterparty half, through the SAME
+    /// single-writer path (`seal` -> `attach_producer_envelope` ->
+    /// `Ledger::append`) every other local capsule uses -- so the received
+    /// half produces a chained, checkpoint-covered record OF OURS without the
+    /// foreign body ever entering `capsules.jsonl`. The Python door has
+    /// already verified the half and stored its bytes in the held-artifact
+    /// store `received-capsules.jsonl`; this is the chained citation of it.
+    /// "cite, never mutate."
+    ///
+    /// One writer: this locks the SAME ledger mutex `emit_for_exchange` /
+    /// `emit_for_observed_host_exchange` lock, reads the current head, and
+    /// appends -- so a citing record chains cleanly onto whatever this node
+    /// last sealed, and no second process ever writes `capsules.jsonl`.
+    ///
+    /// DEDUP by foreign `capsule_id` (live-path sibling of the backfill's
+    /// `already_cited`): a RE-pushed foreign half -- an authorized peer can
+    /// re-push the same capsule any number of times -- must not seal a
+    /// duplicate citing record every time (two fsyncs + a chain line per
+    /// push: disk amplification). The ledger itself tracks which foreign ids
+    /// its citing records already cite (`Ledger::cites_counterparty_half`,
+    /// rebuilt on open, keyed on `citation_purpose == "counterparty_half"`
+    /// alone); a duplicate returns `Ok(None)` --
+    /// the half IS still received/held (the door stored it), there is just
+    /// nothing new to cite.
+    pub fn emit_citing_record(
+        &self,
+        prov: &ReceivedHalfProvenance,
+    ) -> anyhow::Result<Option<EmittedCapsule>> {
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ledger.cites_counterparty_half(prov.foreign_capsule_id) {
+            return Ok(None);
+        }
+        let capsule = capsule_producer::capsule::seal_citing_record(
+            prov,
+            ledger.chain_head(),
+            &self.keys.signing_key,
+        )?;
+        let capsule_id = capsule["capsule_id"]
+            .as_str()
+            .expect("seal_citing_record always sets capsule_id")
+            .to_string();
+        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let statement = build_signed_statement(
+            &SignedStatementInput {
+                payload: &payload,
+                issuer: &self.node_id,
+                subject: &capsule_id,
+                content_type: CAPSULE_CONTENT_TYPE,
+            },
+            &self.keys.signing_key,
+        );
+        ledger.append(&capsule, &statement)?;
+        Ok(Some(EmittedCapsule { capsule_id, capsule }))
     }
 }
 
@@ -1112,6 +1208,98 @@ mod tests {
             reasoning_digest.is_none(),
             "a non-reasoning model must yield an absent reasoning digest, not a fabricated one"
         );
+    }
+
+    /// `emit_citing_record` seals a
+    /// citing record onto the SAME single-writer chain, chained onto whatever
+    /// this node last sealed (`chain.relation == "follows"` -- the citation is
+    /// the `references[]` entry), citing the foreign
+    /// half by CPB typed digest -- and it reopens clean (proving the ledger
+    /// accepts the new record shape without any `Ledger::open` change).
+    #[test]
+    fn emit_citing_record_chains_onto_the_local_head_and_reopens_clean() {
+        let dir = std::env::temp_dir().join(format!("cap-cite-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+
+        // First seal one of THIS node's own exchanges, so the citing record has
+        // a real head to chain onto (the single-writer invariant in action).
+        let exchange = ExchangeRecord {
+            model: "m",
+            client_nonce: Some("n"),
+            request_bytes: br#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#,
+            response_bytes: br#"{"id":"x","choices":[{"message":{"role":"assistant","content":"y"}}]}"#,
+            latency_ms: 1.0,
+            exchange_id: Some("e-1"),
+            requesting_party: Some("party-1"),
+            host_provenance: None,
+        };
+        let local = state.emit_for_exchange(&exchange).expect("seal local");
+
+        let foreign_id = "d".repeat(64);
+        let prov = ReceivedHalfProvenance {
+            foreign_capsule_id: &foreign_id,
+            received_from: "m4",
+            via: "push",
+            received_at: "2026-09-25T00:00:00Z",
+            signature_ok: true,
+            digest_match: None,
+            foreign_agent_input_digest: Some("a".repeat(64).leak()),
+            foreign_agent_output_digest: None,
+        };
+        let citing = state
+            .emit_citing_record(&prov)
+            .expect("seal citing record")
+            .expect("first citation of this half must seal a record");
+
+        // Chained onto the local head with the bare "follows" relation (the
+        // citation is the references[] entry, never a relation value), citing
+        // the foreign half.
+        assert_eq!(
+            citing.capsule["chain"]["parent_capsule_id"].as_str(),
+            Some(local.capsule_id.as_str())
+        );
+        assert_eq!(citing.capsule["chain"]["relation"], Value::from("follows"));
+        assert_eq!(
+            citing.capsule["references"][0]["digest"],
+            Value::from(foreign_id.as_str())
+        );
+        assert_eq!(
+            citing.capsule["references"][0]["citation_purpose"],
+            Value::from("counterparty_half")
+        );
+        // The chain head advanced to the citing record.
+        assert_eq!(state.chain_head().as_deref(), Some(citing.capsule_id.as_str()));
+
+        // LIVE-PATH DEDUP: a re-pushed foreign half (same capsule_id) seals
+        // NOTHING new -- Ok(None), head unchanged, no duplicate chain line.
+        let dup = state
+            .emit_citing_record(&prov)
+            .expect("dedup path must not error");
+        assert!(
+            dup.is_none(),
+            "a re-pushed half must not seal a duplicate citing record"
+        );
+        assert_eq!(state.chain_head().as_deref(), Some(citing.capsule_id.as_str()));
+
+        // Cold reopen: a ledger with a local + a citing record recovers clean,
+        // AND the dedup set is rebuilt from disk -- a re-push is still a
+        // no-op after a restart.
+        drop(state);
+        let reopened = CapsuleState::open(&dir, "node-under-test").expect("reopen state");
+        assert_eq!(reopened.chain_head().as_deref(), Some(citing.capsule_id.as_str()));
+        let dup_after_restart = reopened
+            .emit_citing_record(&prov)
+            .expect("dedup path must not error after reopen");
+        assert!(
+            dup_after_restart.is_none(),
+            "the dedup set must be rebuilt from the ledger on open"
+        );
+        assert_eq!(
+            reopened.chain_head().as_deref(),
+            Some(citing.capsule_id.as_str())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A response with no tool call yields an absent tool_calls digest — never a
