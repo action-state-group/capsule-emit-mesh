@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-sharing-policy-v0] Record-push-at-completion (design note
+"""the sharing-policy Record-push-at-completion (design note
 ``_work/mesh-sharing-policy-history-and-money-2026-09-24.md`` S2;
 ``docs/SHARING-POLICY.md``).
 

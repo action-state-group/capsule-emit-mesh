@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for [mesh-sharing-policy-v0] record-push-at-completion --
+"""Tests for the sharing-policy record-push-at-completion --
 ``record_push.py`` and its ``POST /evidence/record-push`` door on
 ``evidence_server.py``.
 
@@ -269,7 +269,7 @@ class TestRecordPushOverHTTP:
         assert capsule["capsule_id"] in [c["capsule_id"] for c in read_ledger(ledger_path)]
 
     def test_record_push_without_received_log_dir_writes_no_log_file(self, tmp_path):
-        # [mesh-sharing-policy-v0] regression guard: received_log_dir
+        # the sharing-policy regression guard: received_log_dir
         # defaults to None (opt-in), and MUST NEVER fall back to writing
         # into ledger_dir -- ledger_dir may be the Rust plugin's OWNED
         # directory (see EvidenceServerState.received_log_dir's own
@@ -313,7 +313,7 @@ class TestRecordPushOverHTTP:
         key_path = _keys(tmp_path)
         ledger_path = tmp_path / "ledger" / "capsules.jsonl"
         ledger_path.parent.mkdir(parents=True)
-        # [mesh-sharing-policy-v0] received_log_dir is deliberately NOT
+        # the sharing-policy received_log_dir is deliberately NOT
         # ledger_dir -- see EvidenceServerState.received_log_dir's own
         # docstring (the plugin-ledger bridge's "never a second writer"
         # invariant, pinned by TestPluginLedgerBridge in test_evidence_server.py).

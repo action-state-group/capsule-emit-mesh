@@ -97,7 +97,7 @@ Route:
         SAME ledger + node key ``EvidenceServerState`` already names; this
         route never opens a second ledger.
     POST /evidence/record-push
-        [mesh-sharing-policy-v0] -- body = a counterparty's own sealed
+        the sharing-policy -- body = a counterparty's own sealed
         exchange record, pushed at completion (see ``record_push.py`` for
         the full contract). 200 + ``{"status": "received"}`` or a signed
         ``Refusal`` (``request_malformed`` / ``policy_decline``, the latter
@@ -115,7 +115,7 @@ Route:
         neutral witness has no reason to make).
     anything else -> 404.
 
-**[mesh-sharing-policy-v0] the relationship gate + "Asked of you" log.**
+**the sharing-policy the relationship gate + "Asked of you" log.**
 ``EvidenceServerState.share_policy`` (``share_policy.SharePolicy | None``,
 resolved once at server start from ``share_policy.share_policy_from_env()``
 -- ``None`` when this node has never touched any of the four env vars,
@@ -178,12 +178,12 @@ class EvidenceServerState:
     attribute names) without requiring everything else that dataclass needs
     to construct (a model manifest, a runtime label/digest, ...).
 
-    ``share_policy`` [mesh-sharing-policy-v0] -- ``None`` (the default) when
+    ``share_policy`` the sharing-policy -- ``None`` (the default) when
     this node has never configured any of the four ``ADMISSION_POLICY_SHARE_*``
     / ``ADMISSION_POLICY_WITNESS`` env vars; see the module docstring's
     "relationship gate" note for how it's threaded into each route.
 
-    ``received_log_dir`` [mesh-sharing-policy-v0] -- ``None`` (the default,
+    ``received_log_dir`` the sharing-policy -- ``None`` (the default,
     no logging at all) or a directory to append ``received_log.jsonl`` into.
     Deliberately NEVER ``ledger_dir`` itself, and never defaulted to one --
     ``ledger_dir`` may be the Rust plugin's OWNED directory
@@ -238,7 +238,7 @@ def _outcome_and_reason(result: dict[str, Any]) -> tuple[str, str | None]:
 
 
 class ReceivedLogEntry(TypedDict):
-    """[mesh-sharing-policy-v0] the ``received_log.jsonl`` line shape -- a
+    """the sharing-policy the ``received_log.jsonl`` line shape -- a
     shape this module OWNS (unlike the capsule/Refusal wire dicts elsewhere
     in this file, which stay ``dict[str, Any]`` because their keys are
     producer-defined per the AAC spec, not a fixed internal shape)."""
@@ -252,7 +252,7 @@ class ReceivedLogEntry(TypedDict):
 
 
 def _append_received_log(received_log_dir: Path | None, entry: ReceivedLogEntry) -> None:
-    """[mesh-sharing-policy-v0] best-effort append to ``received_log.jsonl``
+    """the sharing-policy best-effort append to ``received_log.jsonl``
     in ``received_log_dir`` -- the provider's own half of the double entry
     (module docstring's "Asked of you" note), symmetric with
     ``peer_evidence_client.py``'s own ``send_log.jsonl`` for the OUTBOUND
@@ -294,10 +294,10 @@ def make_evidence_handler(state: EvidenceServerState):
             request_bytes = self.rfile.read(length) if length else b""
 
             if path == "evidence-request":
-                # [mesh-sharing-policy-v0] the caller's self-declared
+                # the sharing-policy the caller's self-declared
                 # identity for the relationship gate -- see module
                 # docstring's "relationship gate" note. `None` when absent,
-                # reproducing pre-[mesh-sharing-policy-v0] behavior exactly
+                # reproducing pre-the sharing-policy behavior exactly
                 # (`policy` gates on it only when BOTH are supplied).
                 requester_id = self.headers.get("X-Mesh-Requester-Id") or None
                 # [mesh-ledger-store-migration] handle_evidence_request's
@@ -341,7 +341,7 @@ def make_evidence_handler(state: EvidenceServerState):
                 return
 
             if path == "evidence/record-push":
-                # [mesh-sharing-policy-v0] see record_push.py for the full
+                # the sharing-policy see record_push.py for the full
                 # contract -- gated by this node's own share_policy,
                 # symmetric with the send side.
                 # [mesh-closed-wiring-four-gaps] Seam A2 -- the SAME
@@ -415,7 +415,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--received-log-dir",
         default=None,
-        help="[mesh-sharing-policy-v0] opt-in: append received_log.jsonl (the 'Asked of you' "
+        help="the sharing-policy opt-in: append received_log.jsonl (the 'Asked of you' "
         "data -- every inbound evidence-request/record-push decision, with outcome and reason) "
         "into this directory. Off (no logging) unless set. Deliberately NEVER --ledger-dir -- "
         "point this at a directory this process actually owns, e.g. beside (never inside) the "
@@ -427,7 +427,7 @@ def main(argv: list[str] | None = None) -> int:
         ledger_dir=Path(args.ledger_dir),
         ledger_path=Path(args.ledger_dir) / "capsules.jsonl",
         signing_key_path=Path(args.node_key),
-        # [mesh-sharing-policy-v0] None when this node has never touched
+        # the sharing-policy None when this node has never touched
         # any of the four env vars -- see share_policy.py's own
         # "backward-compatible by construction" note.
         share_policy=share_policy_from_env(),

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-sharing-policy-v0] The one sharing-policy object -- four switches,
+"""the sharing-policy The one sharing-policy object -- four switches,
 one key. See ``docs/SHARING-POLICY.md`` (moved from the design note,
 ``_work/mesh-sharing-policy-history-and-money-2026-09-24.md`` §1) for the
 full rationale; this module owns the SHAPE and the process-local env-var
@@ -30,7 +30,7 @@ and an invalid enum value is a loud ``ValueError`` naming the offending
 var, never a silent coercion to a default the operator did not ask for.
 Whether/when a real deployment actually sets these vars -- i.e. whether the
 documented defaults go live -- is the release decision the gate note on
-[mesh-sharing-policy-v0] reserves for Steven; shipping this module does not
+the sharing-policy reserves for Steven; shipping this module does not
 by itself flip anyone's runtime behavior.
 """
 from __future__ import annotations

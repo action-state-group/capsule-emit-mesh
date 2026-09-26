@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for [mesh-sharing-policy-v0] the relationship gate --
+"""Tests for the sharing-policy the relationship gate --
 ``evidence_responder.classify_relationship``/``relationship_allowed``/
 ``classify_leaf_kind``, and ``handle_evidence_request``'s own wiring of the
 gate ahead of ``record``/``correlation``/``chain_segment`` requests.
@@ -7,7 +7,7 @@ gate ahead of ``record``/``correlation``/``chain_segment`` requests.
 Acceptance / mutants that must flip (design note S1/S3):
   - ``policy=None`` -> the ``not_authorized`` relationship gate never runs at
     all for ``record``/``correlation`` requests, reproducing this function's
-    exact pre-[mesh-sharing-policy-v0] answer/refuse decision. NOT the same
+    exact pre-the sharing-policy answer/refuse decision. NOT the same
     claim for ``chain_segment`` -- see
     ``test_chain_segment_uses_the_new_leaf_classifier_even_with_no_policy``
     below: that subject kind is always routed through this module's own
@@ -297,7 +297,7 @@ def test_range_subject_end_to_end_ignores_the_strictest_policy_and_a_stranger(no
 
 
 def test_chain_segment_uses_the_new_leaf_classifier_even_with_no_policy(node_state):
-    # [mesh-sharing-policy-v0] precisely scoped claim (see this module's
+    # the sharing-policy precisely scoped claim (see this module's
     # own docstring above, and handle_evidence_request's docstring): the
     # not_authorized GATE never runs when policy=None, but chain_segment's
     # dispatch to this repo's own classify_leaf_kind is UNCONDITIONAL on
