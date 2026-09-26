@@ -715,44 +715,10 @@ def test_witness_words_never_renders_existence_and_time_as_consistency_verified(
     `countersigned-observed` (existence + time, e.g. Rekor's hashedrekord)
     must render as `existence-and-time` in words, and a checkpoint with one
     of each grade lists both beside the derived `witnessed` state -- never
-    collapses to a single consistency-verified claim."""
-    import base64
-
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
-    from scitt_cose import merkle
-    from scitt_cose.cose_sign1 import sign_sign1
-    from scitt_cose.receipt import HDR_VDP, HDR_VDS, VDP_INCLUSION_PROOFS, VDS_RFC9162_SHA256, _encode_inclusion_proof
-
-    from history_card import HistoryCard, _receipt_grade
-
-    priv_pem = Ed25519PrivateKey.generate().private_bytes(
-        Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()
-    )
-    tree = ["aa" * 32, "bb" * 32]
-
-    def make_receipt(leaf_index: int, grade: str) -> str:
-        root_hex = merkle.merkle_root(tree)
-        audit_path = merkle.inclusion_proof(tree, leaf_index)
-        blob = _encode_inclusion_proof(len(tree), leaf_index, audit_path)
-        protected = {HDR_VDS: VDS_RFC9162_SHA256, -65537: grade}
-        unprotected = {HDR_VDP: {VDP_INCLUSION_PROOFS: [blob]}}
-        receipt = sign_sign1(
-            bytes.fromhex(root_hex), alg="EdDSA", private_key_pem=priv_pem,
-            protected=protected, unprotected=unprotected, detached=True,
-        )
-        return base64.b64encode(receipt).decode()
-
-    anchor_witness = WitnessRecord(
-        ts_url="https://anchor.example", entry_hash=tree[0],
-        receipt_b64=make_receipt(0, "mmr-verified"), leaf_index=0, tree_size=2,
-    )
-    rekor_witness = WitnessRecord(
-        ts_url="https://rekor.example", entry_hash=tree[1],
-        receipt_b64=make_receipt(1, "countersigned-observed"), leaf_index=1, tree_size=2,
-    )
-    assert _receipt_grade(anchor_witness) == "mmr-verified"
-    assert _receipt_grade(rekor_witness) == "countersigned-observed"
+    collapses to a single consistency-verified claim. Rendering only: the
+    grade codes are given directly here -- which receipts earn a grade is
+    `_receipt_grade`'s job, tested in test_history_card_receipt_grade.py."""
+    from history_card import HistoryCard
 
     both = HistoryCard(
         node_id="node-a", log_id="log-a", since_size=0,
@@ -761,8 +727,8 @@ def test_witness_words_never_renders_existence_and_time_as_consistency_verified(
         witnesses=["https://anchor.example", "https://rekor.example"],
         witnessed=True,
         receipt_grades={
-            "https://anchor.example": _receipt_grade(anchor_witness),
-            "https://rekor.example": _receipt_grade(rekor_witness),
+            "https://anchor.example": "mmr-verified",
+            "https://rekor.example": "countersigned-observed",
         },
     )
     words = both.witness_words()
