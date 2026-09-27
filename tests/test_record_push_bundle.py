@@ -253,7 +253,7 @@ def test_unknown_bundle_version_is_malformed(tmp_path, monkeypatch):
     s = _Setup(tmp_path, monkeypatch)
     bundle = _bundle(s.capsule, s.private_key)
     bundle["record_push_bundle"] = 2
-    assert s.push(bundle)["reason"] == REASON_REQUEST_MALFORMED
+    assert s.push(bundle)["reason"] == "bundle_malformed"
     assert s.nothing_stored()
 
 
@@ -261,7 +261,7 @@ def test_bundle_with_no_capsule_is_malformed(tmp_path, monkeypatch):
     s = _Setup(tmp_path, monkeypatch)
     bundle = _bundle(s.capsule, s.private_key)
     del bundle["capsule"]
-    assert s.push(bundle)["reason"] == REASON_REQUEST_MALFORMED
+    assert s.push(bundle)["reason"] == "bundle_malformed"
 
 
 def test_the_rust_plugins_own_bundle_verifies_at_this_door(tmp_path, monkeypatch):
@@ -585,3 +585,35 @@ def test_s3_a_burst_sharing_one_checkpoint_is_accepted(tmp_path, monkeypatch):
     ids = _ids("a", 3) + [a["capsule_id"], b["capsule_id"]]
     assert s.push(_log_bundle(a, s.private_key, ids))["status"] == "received"
     assert s.push(_log_bundle(b, s.private_key, ids))["status"] == "received"
+
+
+# ---------------------------------------------------------------------------
+# N4 (EM review): a door that reads bundles never answers one with
+# request_malformed -- that reason, in reply to a bundle, then only ever
+# means "this door predates bundles", the one signal the sender falls back on.
+# ---------------------------------------------------------------------------
+
+
+def test_n4_every_malformed_bundle_is_refused_bundle_malformed(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    cases = []
+    bad_version = _bundle(s.capsule, s.private_key)
+    bad_version["record_push_bundle"] = 2
+    cases.append(bad_version)
+    extra = _bundle(s.capsule, s.private_key)
+    extra["x"] = 1
+    cases.append(extra)
+    no_capsule = _bundle(s.capsule, s.private_key)
+    no_capsule["capsule"] = {}
+    cases.append(no_capsule)
+    forged_half = _bundle(s.capsule, s.private_key)
+    forged_half["capsule"] = {**s.capsule, "operator": "someone-else"}
+    cases.append(forged_half)
+    for bundle in cases:
+        assert s.push(bundle)["reason"] == "bundle_malformed"
+    assert s.nothing_stored()
+
+
+def test_n4_a_malformed_bare_push_is_still_request_malformed(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    assert s.push({**s.capsule, "operator": "someone-else"})["reason"] == REASON_REQUEST_MALFORMED

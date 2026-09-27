@@ -157,6 +157,7 @@ __all__ = [
     "EVIDENCE_RECORD_PUSH_PATH",
     "REASON_POLICY_DECLINE",
     "REASON_REQUEST_MALFORMED",
+    "REASON_BUNDLE_MALFORMED",
     "REASON_CHECKPOINT_EQUIVOCATION",
     "REASON_CHECKPOINT_STALE",
     "REASON_INCLUSION_UNVERIFIED",
@@ -180,6 +181,10 @@ REASON_SIGNATURE_UNVERIFIED = "signature_unverified"
 #: A bundle push whose checkpoint signature or inclusion proof does not
 #: verify against the half it carries (see the module doc's bundle note).
 REASON_INCLUSION_UNVERIFIED = "inclusion_unverified"
+#: A bundle that is structurally malformed (see ``handle_record_push``: kept
+#: distinct from ``request_malformed`` so a sender can tell a door that reads
+#: bundles from one that predates them).
+REASON_BUNDLE_MALFORMED = "bundle_malformed"
 #: A bundle whose checkpoint is older than the newest one held for the same
 #: sender key + log, at a size this node has no record of.
 REASON_CHECKPOINT_STALE = "checkpoint_stale"
@@ -641,24 +646,29 @@ def handle_record_push(
         return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at)
 
     # A bundle carries the half under "capsule"; every check below runs on
-    # the half exactly as for a bare push, then the bundle's own checks.
+    # the half exactly as for a bare push, then the bundle's own checks. A
+    # malformed bundle is refused bundle_malformed, never request_malformed:
+    # that reason in reply to a bundle is the sender's "door predates
+    # bundles" signal, its one trigger for re-pushing the bare record.
     bundle: dict[str, Any] | None = None
+    malformed = REASON_REQUEST_MALFORMED
     if isinstance(capsule, dict) and BUNDLE_MARKER in capsule:
+        malformed = REASON_BUNDLE_MALFORMED
         if (
             capsule.get(BUNDLE_MARKER) != BUNDLE_VERSION
             or not _bundle_members_exact(capsule)
             or not _bundle_types_exact(capsule)
         ):
-            return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at)
+            return _refuse(request_digest, malformed, state=state, issued_at=issued_at)
         bundle = capsule
         capsule = bundle.get("capsule")
 
     if not isinstance(capsule, dict) or not capsule.get("capsule_id"):
-        return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at)
+        return _refuse(request_digest, malformed, state=state, issued_at=issued_at)
 
     result = verify_capsule(capsule)
     if not result.ok:
-        return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at)
+        return _refuse(request_digest, malformed, state=state, issued_at=issued_at)
 
     if _effective_policy(policy).record_at_completion == "off":
         return _refuse(request_digest, REASON_POLICY_DECLINE, state=state, issued_at=issued_at)

@@ -322,7 +322,7 @@ async fn seal_citing_records_for_push(
     let half = pushed_half(&body);
     let half_bytes = serde_json::to_vec(half)?;
     seal_citing_record_for_push(capsules, sender_peer_id, &half_bytes).await?;
-    if let Some(inclusion) = door_inclusion(door_reply) {
+    if let Some(inclusion) = door_inclusion(door_reply)? {
         let half_id = half
             .get("capsule_id")
             .and_then(|v| v.as_str())
@@ -400,8 +400,11 @@ async fn seal_citing_record_for_push(
 }
 
 /// The door's verified inclusion facts for a bundle push, lifted from its
-/// success reply (`record_push.py`'s `inclusion` member). `None` for a bare
-/// push. The door is the one authority on whether the proof and checkpoint
+/// success reply (`record_push.py`'s `inclusion` member). `Ok(None)` when the
+/// reply has no `inclusion` (a bare push); an `inclusion` member that is
+/// present but incomplete or mistyped is an ERROR, never a silent downgrade
+/// to "half only" -- the caller then refuses to ack, and the push is retried.
+/// The door is the one authority on whether the proof and checkpoint
 /// verified -- this reads its verdict, same as `signature_ok`.
 #[derive(Debug, PartialEq, Eq)]
 struct DoorInclusion {
@@ -413,18 +416,31 @@ struct DoorInclusion {
     received_at: String,
 }
 
-fn door_inclusion(reply: &serde_json::Value) -> Option<DoorInclusion> {
-    let inclusion = reply.get("inclusion")?;
-    let text = |k: &str| inclusion.get(k).and_then(|v| v.as_str()).map(str::to_string);
-    let num = |k: &str| inclusion.get(k).and_then(|v| v.as_u64());
-    Some(DoorInclusion {
+fn door_inclusion(reply: &serde_json::Value) -> anyhow::Result<Option<DoorInclusion>> {
+    let Some(inclusion) = reply.get("inclusion") else {
+        return Ok(None);
+    };
+    let text = |k: &str| {
+        inclusion
+            .get(k)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("door reply inclusion.{k} missing or not a string"))
+    };
+    let num = |k: &str| {
+        inclusion
+            .get(k)
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("door reply inclusion.{k} missing or not a count"))
+    };
+    Ok(Some(DoorInclusion {
         half_capsule_id: text("half_capsule_id")?,
         leaf_index: num("leaf_index")?,
         mmr_size: num("mmr_size")?,
         checkpoint_digest: text("checkpoint_digest")?,
         inclusion_proof_digest: text("inclusion_proof_digest")?,
         received_at: text("received_at")?,
-    })
+    }))
 }
 
 /// After the half's own citing record: seal the `counterparty_inclusion`
@@ -508,7 +524,10 @@ pub async fn push_capsule_to_peer(
 }
 
 /// A bundle refused `request_malformed` came from a door that reads the body
-/// as a bare capsule and found no `capsule_id` at its top level.
+/// as a bare capsule and found no `capsule_id` at its top level. A door that
+/// reads bundles refuses a malformed one `bundle_malformed` instead
+/// (`record_push.py`), so that reason -- like every other refusal -- is
+/// final, never a trigger to re-push the bare record.
 fn refused_as_older_door(response: &serde_json::Value) -> bool {
     response.get("reason").and_then(|r| r.as_str()) == Some("request_malformed")
 }
@@ -636,6 +655,9 @@ mod tests {
     fn only_request_malformed_reads_as_an_older_door() {
         assert!(refused_as_older_door(&serde_json::json!({"reason": "request_malformed"})));
         assert!(!refused_as_older_door(&serde_json::json!({"reason": "inclusion_unverified"})));
+        assert!(!refused_as_older_door(&serde_json::json!({"reason": "bundle_malformed"})));
+        assert!(!refused_as_older_door(&serde_json::json!({"reason": "checkpoint_stale"})));
+        assert!(!refused_as_older_door(&serde_json::json!({"reason": "checkpoint_equivocation"})));
         assert!(!refused_as_older_door(&serde_json::json!({"reason": "signature_unverified"})));
         assert!(!refused_as_older_door(&serde_json::json!({"status": "received"})));
     }
@@ -650,13 +672,21 @@ mod tests {
                 "received_at": "2026-09-27T00:00:00Z"
             }
         });
-        let inclusion = door_inclusion(&reply).expect("complete inclusion facts");
+        let inclusion = door_inclusion(&reply).unwrap().expect("complete inclusion facts");
         assert_eq!(inclusion.leaf_index, 4);
         assert_eq!(inclusion.mmr_size, 8);
-        assert!(door_inclusion(&serde_json::json!({"status": "received"})).is_none());
+        assert!(door_inclusion(&serde_json::json!({"status": "received"})).unwrap().is_none());
+        // N1 (EM review): a present-but-broken inclusion is an error (no ack,
+        // the sender retries), never a silent "half only".
         let mut partial = reply.clone();
         partial["inclusion"].as_object_mut().unwrap().remove("checkpoint_digest");
-        assert!(door_inclusion(&partial).is_none(), "a partial verdict is never cited");
+        assert!(door_inclusion(&partial).is_err(), "a partial verdict is an error");
+        let mut mistyped = reply.clone();
+        mistyped["inclusion"]["leaf_index"] = serde_json::json!("4");
+        assert!(door_inclusion(&mistyped).is_err());
+        let mut not_an_object = reply;
+        not_an_object["inclusion"] = serde_json::json!("verified");
+        assert!(door_inclusion(&not_an_object).is_err());
     }
 
     /// The whole sender flow over a REAL sealed half: seal through
