@@ -959,6 +959,16 @@ async fn main() -> anyhow::Result<()> {
                             tracing::warn!(%error, "unparseable openai.exchange.v1 envelope");
                         }
                     }
+                } else if message.channel == settlement_channel::PAYMENT_LIFECYCLE_CHANNEL
+                    && !settlement_channel::is_local_host_broadcast(
+                        &message.source_peer_id,
+                        &message.target_peer_id,
+                    )
+                {
+                    // Payment lifecycle events are this node's own
+                    // observations; a frame relayed from a peer is refused
+                    // before it is parsed (see `is_local_host_broadcast`).
+                    tracing::warn!("refused payment.lifecycle.v1 message not from the local host");
                 } else if message.channel == settlement_channel::PAYMENT_LIFECYCLE_CHANNEL {
                     // One settlement record per checked payment lifecycle
                     // event, sealed on `spawn_blocking` like the exchange seal

@@ -232,6 +232,24 @@ fn check_combination(event: &PaymentLifecycleEvent) -> Result<(), SettlementEven
 /// Build a checked event body the way the host does: blank `event_ref`,
 /// digest the JCS, fill it in. Shared by this module's tests and the
 /// capsule_emit tests/fixture generator.
+/// Whether a channel message is the host's own local broadcast, never a frame
+/// relayed from a mesh peer.
+///
+/// The host's local broadcast (`PluginManager::broadcast_channel_message`,
+/// `plugin/channel_broadcast.rs`) sends with an empty `source_peer_id` and
+/// `target_peer_id` set to the receiving plugin's name. A frame from a peer is
+/// delivered to local plugins only when its `target_peer_id` is empty or this
+/// node's own peer id, a 64-hex endpoint id (`handle_plugin_channel_stream`,
+/// `mesh/plugin_mesh.rs`), and its `source_peer_id` is whatever the sender
+/// wrote. So a message with an empty source and a non-empty target that is not
+/// a peer id can only be the local broadcast. Payment lifecycle events are
+/// this node's own observations; anything else is refused before parsing.
+pub(crate) fn is_local_host_broadcast(source_peer_id: &str, target_peer_id: &str) -> bool {
+    let target_is_peer_id =
+        target_peer_id.len() == 64 && target_peer_id.bytes().all(|b| b.is_ascii_hexdigit());
+    source_peer_id.is_empty() && !target_peer_id.is_empty() && !target_is_peer_id
+}
+
 #[cfg(test)]
 pub(crate) fn host_shaped_event(
     exchange_id: &str,
@@ -263,6 +281,20 @@ pub(crate) fn host_shaped_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_hosts_local_broadcast_is_accepted() {
+        // The host's local broadcast: empty source, target = plugin name.
+        assert!(is_local_host_broadcast("", "admission-policy"));
+        assert!(is_local_host_broadcast("", "capsule-emit-mesh"));
+        // A peer's frame delivered here: target empty or our own peer id.
+        let our_peer_id = "ab".repeat(32);
+        assert!(!is_local_host_broadcast("", ""));
+        assert!(!is_local_host_broadcast("", &our_peer_id));
+        assert!(!is_local_host_broadcast("", &our_peer_id.to_uppercase()));
+        // A named sender is never the local broadcast.
+        assert!(!is_local_host_broadcast(&"cd".repeat(32), "admission-policy"));
+    }
     use serde_json::json;
 
     fn bytes(v: &Value) -> Vec<u8> {
