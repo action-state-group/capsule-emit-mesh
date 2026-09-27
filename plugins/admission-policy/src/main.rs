@@ -240,6 +240,20 @@ fn push_eligibility<'a>(
     Some((peer_id, self_id))
 }
 
+/// The counterparty a push would have gone to, when the only thing stopping
+/// it is an unset `ADMISSION_POLICY_SELF_PEER_ID` -- so the caller can say so
+/// instead of skipping silently.
+fn skipped_for_missing_self_id<'a>(
+    envelope: &'a OpenAiExchangeEnvelope,
+    record_at_completion_off: bool,
+    self_peer_id: Option<&str>,
+) -> Option<&'a str> {
+    if record_at_completion_off || self_peer_id.is_some() {
+        return None;
+    }
+    push_counterparty(envelope)
+}
+
 /// Seam A1 -- push `capsule_json` (this
 /// node's own just-sealed capsule) to `envelope`'s counterparty, when
 /// `push_eligibility` says to. Best-effort: logs success/failure, never
@@ -259,11 +273,19 @@ async fn push_at_completion_if_configured(
     checkpoints: Option<&checkpoint_cadence::CheckpointHandle>,
 ) {
     let self_id = self_peer_id();
-    let Some((peer_id, self_id)) = push_eligibility(
-        envelope,
-        share_policy::record_at_completion_is_off(),
-        self_id.as_deref(),
-    ) else {
+    let record_at_completion_off = share_policy::record_at_completion_is_off();
+    if let Some(peer_id) =
+        skipped_for_missing_self_id(envelope, record_at_completion_off, self_id.as_deref())
+    {
+        tracing::warn!(
+            %peer_id,
+            "record-push at completion skipped: ADMISSION_POLICY_SELF_PEER_ID is unset, so this node cannot name itself to the counterparty"
+        );
+        return;
+    }
+    let Some((peer_id, self_id)) =
+        push_eligibility(envelope, record_at_completion_off, self_id.as_deref())
+    else {
         return;
     };
     let coverage = match (checkpoints, capsule_json.get("capsule_id").and_then(Value::as_str)) {
@@ -719,6 +741,26 @@ mod push_eligibility_tests {
     fn no_self_peer_id_configured_never_pushes() {
         let envelope = remote_mesh_envelope(Some("peer-m3"));
         assert_eq!(push_eligibility(&envelope, false, None), None);
+    }
+
+    // MUTANT: make `skipped_for_missing_self_id` return None unconditionally
+    // (the old silent skip) and the first assertion goes red.
+    #[test]
+    fn a_push_skipped_only_for_a_missing_self_id_is_reported() {
+        let envelope = remote_mesh_envelope(Some("peer-m3"));
+        assert_eq!(
+            skipped_for_missing_self_id(&envelope, false, None),
+            Some("peer-m3")
+        );
+        // Not reported when the push goes ahead, when policy is off, or when
+        // there is no counterparty to push to anyway.
+        assert_eq!(
+            skipped_for_missing_self_id(&envelope, false, Some("self-m4")),
+            None
+        );
+        assert_eq!(skipped_for_missing_self_id(&envelope, true, None), None);
+        let nobody = remote_mesh_envelope(None);
+        assert_eq!(skipped_for_missing_self_id(&nobody, false, None), None);
     }
 
     // Option A: the provider pushes its
