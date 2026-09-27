@@ -380,6 +380,8 @@ pub struct CapsuleState {
     /// label used for the ledger issuer / sequence-counter key), which is
     /// NEVER used as a stand-in for the mesh node id domain.
     learned_self_node_id: Mutex<LearnedSelfNodeId>,
+    /// See [`CapsuleState::observed_not_sealed`].
+    observed_not_sealed: std::sync::atomic::AtomicU64,
 }
 
 pub struct EmittedCapsule {
@@ -458,7 +460,14 @@ impl CapsuleState {
             node_id: node_id.into(),
             sequence_counters: Mutex::new(sequence_counters),
             learned_self_node_id: Mutex::new(learned_self_node_id),
+            observed_not_sealed: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    /// Observed host-served exchanges this node failed to seal since start.
+    /// A refusal is counted and logged, never dropped silently.
+    pub fn observed_not_sealed(&self) -> u64 {
+        self.observed_not_sealed.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// This node's own mesh identity as LEARNED so far (see
@@ -555,11 +564,13 @@ impl CapsuleState {
         // from a forwarded identity header when present, else the honest
         // "unknown" bucket -- never invented.
         let requesting_party_id = requesting_party.unwrap_or("unknown").to_string();
-        let sequence = self
+        // Peeked, not consumed: committed only after the ledger write, so a
+        // record that fails to seal leaves no `seq` gap.
+        let mut sequence_counters = self
             .sequence_counters
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .next_seq(&self.node_id, &requesting_party_id)?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let sequence = sequence_counters.peek(&self.node_id, &requesting_party_id);
 
         let input = CapsuleInput {
             action_id: format!("mesh-poc/capsule-emit-mesh-integration/{agent_input_digest}"),
@@ -707,12 +718,21 @@ impl CapsuleState {
             &self.keys.signing_key,
         );
         ledger.append(&capsule, &statement)?;
+        sequence_counters.commit(&self.node_id, &requesting_party_id, sequence)?;
 
         Ok(EmittedCapsule {
             capsule_id,
             capsule,
         })
     }
+}
+
+/// A host-forwarded digest as a 64-lowercase-hex JSON-DIGEST: lowercased,
+/// with a `sha256:` prefix stripped; `None` for anything else.
+fn normalise_host_digest(raw: Option<&str>) -> Option<String> {
+    let raw = raw?;
+    let hex = raw.strip_prefix("sha256:").unwrap_or(raw).to_ascii_lowercase();
+    (hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit())).then_some(hex)
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {
@@ -850,6 +870,21 @@ impl CapsuleState {
         &self,
         observed: &ObservedHostExchange,
     ) -> anyhow::Result<EmittedCapsule> {
+        let result = self.seal_observed_host_exchange(observed);
+        if let Err(error) = &result {
+            let count = self
+                .observed_not_sealed
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
+            tracing::warn!(%error, observed_not_sealed = count, "observed exchange NOT sealed");
+        }
+        result
+    }
+
+    fn seal_observed_host_exchange(
+        &self,
+        observed: &ObservedHostExchange,
+    ) -> anyhow::Result<EmittedCapsule> {
         let ObservedHostExchange {
             model,
             exchange_id,
@@ -879,6 +914,12 @@ impl CapsuleState {
             *twin_bracket_id,
         );
         let host = host_provenance.clone();
+        // Host digests in a recoverable spelling are normalised; anything
+        // else is treated as absent -- never passed on to be refused at seal.
+        let request_digest_owned = normalise_host_digest(request_digest);
+        let response_digest_owned = normalise_host_digest(response_digest);
+        let request_digest = request_digest_owned.as_deref();
+        let response_digest = response_digest_owned.as_deref();
 
         // LEARN (or confirm, or rotate) this node's own mesh identity: a
         // locally-served event (`TypedFrontend`/`RawProxy`) that carries the
@@ -982,11 +1023,11 @@ impl CapsuleState {
         // Observe path carries no requester identity (see the honest
         // "unknown" requesting_party below) -- the pair is keyed on that same
         // "unknown" bucket, never a fabricated counterparty.
-        let sequence = self
+        let mut sequence_counters = self
             .sequence_counters
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .next_seq(&self.node_id, "unknown")?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let sequence = sequence_counters.peek(&self.node_id, "unknown");
 
         let input = CapsuleInput {
             action_id: format!("mesh-poc/capsule-emit-mesh-host-served/{agent_input_digest}"),
@@ -1138,6 +1179,7 @@ impl CapsuleState {
             &self.keys.signing_key,
         );
         ledger.append(&capsule, &statement)?;
+        sequence_counters.commit(&self.node_id, "unknown", sequence)?;
 
         Ok(EmittedCapsule {
             capsule_id,
@@ -2292,6 +2334,67 @@ mod tests {
         let poc = &c["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"];
         assert_eq!(poc["client_nonce"], "plugin_generated");
         assert_eq!(poc["client_nonce_source"], "plugin_generated_fallback");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// EM review #1: host digests in a recoverable spelling (uppercase hex,
+    /// a `sha256:` prefix) are normalised, not refused -- a refusal drops
+    /// the record.
+    #[test]
+    fn observe_path_normalises_host_digests_instead_of_refusing() {
+        let dir = std::env::temp_dir().join(format!("cap-norm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let req = format!("sha256:{}", "1".repeat(64));
+        let resp = "A".repeat(64);
+        let mut observed = observed_with(DispatchPath::RawProxy, None);
+        observed.request_digest = Some(&req);
+        observed.response_digest = Some(&resp);
+        let c = state.emit_for_observed_host_exchange(&observed).expect("seal").capsule;
+        assert_eq!(c["effect"]["status"], "confirmed");
+        assert_eq!(c["effect"]["request_digest"], "1".repeat(64));
+        assert_eq!(c["effect"]["response_digest"], "a".repeat(64));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An unusable host digest is treated as absent: the record still seals,
+    /// `dispatched` with no response digest.
+    #[test]
+    fn observe_path_treats_an_unusable_host_digest_as_absent() {
+        let dir = std::env::temp_dir().join(format!("cap-bad-dig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let mut observed = observed_with(DispatchPath::RawProxy, None);
+        observed.request_digest = Some("md5:abc");
+        observed.response_digest = Some("not-a-digest");
+        let c = state.emit_for_observed_host_exchange(&observed).expect("seal").capsule;
+        assert_eq!(c["effect"]["status"], "dispatched");
+        assert!(c["effect"].get("request_digest").is_none());
+        assert!(c["effect"].get("response_digest").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// EM review #1: a seal that fails must not consume a `seq` (the next
+    /// good record would chain `prev_seq` to a record never written, which
+    /// reads as withholding) and must be counted, never dropped silently.
+    #[test]
+    fn a_refused_seal_consumes_no_seq_and_is_counted() {
+        let dir = std::env::temp_dir().join(format!("cap-noseq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        // Make the ledger write fail: the statements directory becomes a file.
+        let statements = dir.join("ledger").join("signed-statements");
+        std::fs::remove_dir_all(&statements).expect("statements dir exists");
+        std::fs::write(&statements, b"not a directory").unwrap();
+        let observed = observed_with(DispatchPath::RawProxy, None);
+        assert!(state.emit_for_observed_host_exchange(&observed).is_err());
+        assert_eq!(state.observed_not_sealed(), 1);
+
+        std::fs::remove_file(&statements).unwrap();
+        std::fs::create_dir_all(&statements).unwrap();
+        let c = state.emit_for_observed_host_exchange(&observed).expect("seal").capsule;
+        assert_eq!(seq_of(&c), (1, None), "the refused attempt consumed no seq");
+        assert_eq!(state.observed_not_sealed(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

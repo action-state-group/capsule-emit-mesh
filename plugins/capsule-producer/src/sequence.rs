@@ -87,6 +87,25 @@ impl SequenceCounterStore {
         Ok(SequenceAssignment { seq, prev_seq })
     }
 
+    /// The assignment [`Self::next_seq`] would issue, WITHOUT consuming it.
+    /// Pair with [`Self::commit`] once the record carrying it is durably
+    /// written, so a record that fails to seal never leaves a `seq` gap.
+    pub fn peek(&self, self_id: &str, counterparty_id: &str) -> SequenceAssignment {
+        let prev_seq = self.state.get(&pair_key(self_id, counterparty_id)).copied();
+        SequenceAssignment { seq: prev_seq.unwrap_or(0) + 1, prev_seq }
+    }
+
+    /// Consume a [`Self::peek`]ed assignment after its record was written.
+    pub fn commit(
+        &mut self,
+        self_id: &str,
+        counterparty_id: &str,
+        assignment: SequenceAssignment,
+    ) -> Result<(), SequenceError> {
+        self.state.insert(pair_key(self_id, counterparty_id), assignment.seq);
+        self.save()
+    }
+
     fn save(&self) -> Result<(), SequenceError> {
         let tmp = self.path.with_extension("tmp");
         fs::write(&tmp, serde_json::to_vec(&self.state).expect("counters serialize"))?;
