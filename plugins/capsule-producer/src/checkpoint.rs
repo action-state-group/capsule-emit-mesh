@@ -56,8 +56,9 @@ use cll::mmr::{
 pub use cll::mmr::{verify_inclusion, InclusionProof};
 use cll::node_store::{FileNodeStore, NodeStoreError, OpenReport};
 use cll::store::{append_checkpoint, read_last_checkpoint, CheckpointLine, StoreError};
+use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -222,6 +223,15 @@ pub struct CheckpointState {
     checkpoints_path: PathBuf,
     node_store: FileNodeStore,
     leaf_count: u64,
+    /// Byte offset just past the last `capsules.jsonl` line folded into the
+    /// MMR: `sync` reads only from here on, never the whole file again.
+    consumed_bytes: u64,
+    /// Byte offset where that last folded line starts -- re-read on every
+    /// `sync` to catch a chain rewritten in place under the live state.
+    last_line_start: u64,
+    /// `capsule_id` -> leaf index for every folded leaf (the last occurrence
+    /// wins), so locating a pushed half is a lookup, not a file scan.
+    leaf_index_by_id: HashMap<String, u64>,
     log_id: String,
     cfg: CheckpointCadenceConfig,
     last_checkpoint: Option<CheckpointRecord>,
@@ -316,7 +326,8 @@ impl CheckpointState {
         let (mut node_store, open_report) = FileNodeStore::open(&node_store_path)?;
         let stored_leaf_count = mmr_leaf_count(node_store.size())?;
 
-        let capsule_ids = read_capsule_ids(&capsules_path)?;
+        let lines = read_complete_lines(&capsules_path, 0, 0)?;
+        let capsule_ids: Vec<String> = lines.iter().map(|l| l.capsule_id.clone()).collect();
         if stored_leaf_count > capsule_ids.len() as u64 {
             return Err(CheckpointStateError::NodeStoreAheadOfLedger {
                 path: node_store_path.display().to_string(),
@@ -340,6 +351,13 @@ impl CheckpointState {
             leaves_indexed_this_load += 1;
         }
         let leaf_count = capsule_ids.len() as u64;
+        let leaf_index_by_id = capsule_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.clone(), i as u64))
+            .collect();
+        let (consumed_bytes, last_line_start) =
+            lines.last().map_or((0, 0), |l| (l.end, l.start));
 
         let last_line = read_last_checkpoint(&checkpoints_path)?;
         let last_checkpoint = last_line.as_ref().map(|l| l.record.clone());
@@ -358,6 +376,9 @@ impl CheckpointState {
             checkpoints_path,
             node_store,
             leaf_count,
+            consumed_bytes,
+            last_line_start,
+            leaf_index_by_id,
             log_id: log_id.into(),
             cfg,
             last_checkpoint,
@@ -384,40 +405,90 @@ impl CheckpointState {
 
     /// Fold any `capsules.jsonl` lines not yet indexed into the MMR.
     /// Idempotent -- safe to call with nothing new to add. Mirrors
-    /// `checkpointing.py`'s `MmrLedger.sync()`, but only re-reads/re-hashes
-    /// the NEW tail (the durable node store already holds every prior
-    /// leaf's hash).
+    /// `checkpointing.py`'s `MmrLedger.sync()`, but reads only the NEW tail
+    /// (from `consumed_bytes`) and re-hashes only new leaves -- O(new lines),
+    /// never a re-parse of the whole ledger, since the push path calls this
+    /// on every push.
+    ///
+    /// Divergence guards, per call: a file shorter than what was folded is
+    /// `NodeStoreAheadOfLedger` (soft on `tick`, as before), and the last
+    /// folded line is re-read and must still name the last stored leaf --
+    /// a chain rewritten in place is `NodeStoreDivergedFromLedger` (`load`
+    /// does the full prefix check). Only newline-terminated lines are
+    /// folded: a line still being written is picked up by a later call.
     fn sync(&mut self) -> Result<u64, CheckpointStateError> {
-        self.sync_returning_ids().map(|(added, _)| added)
-    }
-
-    /// [`Self::sync`], also handing back the `capsule_id`s it read (in leaf
-    /// order), so a caller locating one leaf does not re-read the file.
-    fn sync_returning_ids(&mut self) -> Result<(u64, Vec<String>), CheckpointStateError> {
-        let capsule_ids = read_capsule_ids(&self.capsules_path)?;
-        if self.leaf_count > capsule_ids.len() as u64 {
-            return Err(CheckpointStateError::NodeStoreAheadOfLedger {
-                path: self.capsules_path.display().to_string(),
-                stored_leaves: self.leaf_count,
-                ledger_leaves: capsule_ids.len() as u64,
-            });
+        let file_len = match std::fs::metadata(&self.capsules_path) {
+            Ok(meta) => meta.len(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(err) => return Err(err.into()),
+        };
+        if file_len < self.consumed_bytes {
+            return Err(self.ahead_of_ledger());
         }
-        // Cheap per-tick divergence check (last stored leaf only -- `load`
-        // did the full prefix): a chain rewritten in place under a live
-        // state must be a hard error, never a silently stale checkpoint.
-        verify_stored_leaves_match_chain(&self.node_store, self.leaf_count, &capsule_ids, false)?;
+        if self.leaf_count > 0 {
+            self.check_last_folded_line()?;
+        }
+        let lines = read_complete_lines(
+            &self.capsules_path,
+            self.consumed_bytes,
+            self.leaf_count as usize,
+        )?;
         let mut added = 0u64;
-        for capsule_id in &capsule_ids[self.leaf_count as usize..] {
-            // read_capsule_ids already validated every id as DIGEST_LEN
+        for line in lines {
+            // read_complete_lines already validated every id as DIGEST_LEN
             // bytes of hex; this cannot fail.
             let body_digest =
-                hex_to_digest(capsule_id).expect("read_capsule_ids validates capsule_id hex");
+                hex_to_digest(&line.capsule_id).expect("read_complete_lines validates capsule_id hex");
             add_leaf(&mut self.node_store, leaf_hash(&body_digest))?;
+            self.leaf_index_by_id
+                .insert(line.capsule_id, self.leaf_count + added);
+            self.consumed_bytes = line.end;
+            self.last_line_start = line.start;
             added += 1;
         }
         self.leaf_count += added;
         self.note_pending(added);
-        Ok((added, capsule_ids))
+        Ok(added)
+    }
+
+    fn ahead_of_ledger(&self) -> CheckpointStateError {
+        CheckpointStateError::NodeStoreAheadOfLedger {
+            path: self.capsules_path.display().to_string(),
+            stored_leaves: self.leaf_count,
+            ledger_leaves: self.leaf_count.saturating_sub(1),
+        }
+    }
+
+    /// The per-sync divergence check: the line at `last_line_start` must
+    /// still be a complete line naming the last stored leaf. A missing or
+    /// torn line there reads as the ledger being short (soft on tick); a
+    /// different capsule_id is a rewritten chain (hard).
+    fn check_last_folded_line(&mut self) -> Result<(), CheckpointStateError> {
+        let leaf_index = self.leaf_count - 1;
+        let line = read_complete_lines_limit(
+            &self.capsules_path,
+            self.last_line_start,
+            leaf_index as usize,
+            1,
+        )?
+        .into_iter()
+        .next()
+        .ok_or_else(|| self.ahead_of_ledger())?;
+        let expected_leaf = leaf_hash(
+            &hex_to_digest(&line.capsule_id).expect("read_complete_lines validates capsule_id hex"),
+        );
+        let stored_leaf = self.node_store.node(leaf_index_to_pos(leaf_index)?);
+        if stored_leaf != expected_leaf {
+            return Err(CheckpointStateError::NodeStoreDivergedFromLedger {
+                leaf_index,
+                capsule_id: line.capsule_id,
+                stored_leaf: hex::encode(stored_leaf),
+                expected_leaf: hex::encode(expected_leaf),
+            });
+        }
+        // Same leaf; if the line's bytes changed length, resume after it.
+        self.consumed_bytes = line.end;
+        Ok(())
     }
 
     /// Checkpoint at push: return a signed checkpoint covering `capsule_id`
@@ -454,13 +525,12 @@ impl CheckpointState {
         &mut self,
         capsule_id: &str,
     ) -> Result<Option<Coverage>, CheckpointStateError> {
-        let (_, capsule_ids) = self.sync_returning_ids()?;
-        let leaf_index = capsule_ids
-            .iter()
-            .rposition(|id| id == capsule_id)
-            .ok_or_else(|| CheckpointStateError::CapsuleNotInLedger {
+        self.sync()?;
+        let leaf_index = *self.leaf_index_by_id.get(capsule_id).ok_or_else(|| {
+            CheckpointStateError::CapsuleNotInLedger {
                 capsule_id: capsule_id.to_string(),
-            })? as u64;
+            }
+        })?;
         let Some(checkpoint) = self.last_checkpoint.clone() else {
             return Ok(None);
         };
@@ -783,6 +853,80 @@ fn hex_to_digest(s: &str) -> Option<Hash> {
     bytes.try_into().ok()
 }
 
+/// One newline-terminated `capsules.jsonl` line: its byte span and id.
+struct LedgerLine {
+    start: u64,
+    end: u64,
+    capsule_id: String,
+}
+
+/// Every complete (newline-terminated) line of `path` from byte `from` on.
+/// See [`read_complete_lines_limit`].
+fn read_complete_lines(
+    path: &Path,
+    from: u64,
+    lines_before: usize,
+) -> Result<Vec<LedgerLine>, CheckpointStateError> {
+    read_complete_lines_limit(path, from, lines_before, usize::MAX)
+}
+
+/// Up to `limit` complete lines of `path` from byte `from` on, with their
+/// byte spans. A trailing line with no newline yet is an append still in
+/// flight: not returned, not an error. Blank lines are skipped. A complete
+/// line that is not a JSON object with a hex `capsule_id` is a hard error
+/// (`lines_before` only numbers the error message).
+fn read_complete_lines_limit(
+    path: &Path,
+    from: u64,
+    lines_before: usize,
+    limit: usize,
+) -> Result<Vec<LedgerLine>, CheckpointStateError> {
+    let mut out = Vec::new();
+    let mut file = match File::open(path) {
+        Ok(f) => f,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(err) => return Err(err.into()),
+    };
+    file.seek(SeekFrom::Start(from))?;
+    let mut reader = BufReader::new(file);
+    let mut offset = from;
+    let mut buf = Vec::new();
+    let mut line_no = lines_before;
+    while out.len() < limit {
+        buf.clear();
+        let n = reader.read_until(b'\n', &mut buf)?;
+        if n == 0 || buf.last() != Some(&b'\n') {
+            break;
+        }
+        let start = offset;
+        offset += n as u64;
+        line_no += 1;
+        let text = &buf[..n - 1];
+        if text.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_slice(text)
+            .map_err(|source| CheckpointStateError::MalformedLine { line: line_no, source })?;
+        let capsule_id = value
+            .get("capsule_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CheckpointStateError::MissingCapsuleId { line: line_no })?
+            .to_string();
+        if hex_to_digest(&capsule_id).is_none() {
+            return Err(CheckpointStateError::BadCapsuleId {
+                line: line_no,
+                capsule_id,
+            });
+        }
+        out.push(LedgerLine {
+            start,
+            end: offset,
+            capsule_id,
+        });
+    }
+    Ok(out)
+}
+
 /// Read every `capsule_id` in `path`, in file order. Tolerates a torn
 /// trailing line (the Rust plugin's own `Ledger::append` writes+fsyncs a
 /// whole line before returning, but a reader racing a still-in-progress
@@ -790,6 +934,9 @@ fn hex_to_digest(s: &str) -> Option<Hash> {
 /// this tolerance, matching `checkpointing.py`'s `JsonlLogSource.scan()`
 /// doc comment -- real corruption anywhere else in the file is NOT this
 /// case and is still a hard error, never silently dropped.
+/// Test-only since the incremental sync: the whole-file reader the tests use
+/// to inspect a ledger.
+#[cfg(test)]
 fn read_capsule_ids(path: &Path) -> Result<Vec<String>, CheckpointStateError> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -1420,5 +1567,53 @@ mod tests {
         assert!(!coverage.cut_new);
         assert_covers(&coverage, &one);
         assert_eq!(checkpoint_lines(dir.path()), 1);
+    }
+
+    /// S4 (EM review): a push must not re-parse the whole ledger. Proof by
+    /// behavior: after the first sync, the already-folded prefix is never
+    /// read again -- so an in-place change to an early line (which a full
+    /// re-parse would trip over) does not stop covering a NEW leaf.
+    #[test]
+    fn s4_covering_a_new_leaf_reads_only_the_new_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..50 {
+            write_capsule(dir.path(), &format!("early-{i}"));
+        }
+        let (mut state, _) =
+            CheckpointState::load(dir.path(), "test-log", CheckpointCadenceConfig::default())
+                .unwrap();
+        // Garble the FIRST line's bytes in place (same length, no longer JSON).
+        let path = dir.path().join("capsules.jsonl");
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[0] = b'#';
+        std::fs::write(&path, &bytes).unwrap();
+
+        let fresh = write_capsule(dir.path(), "fresh");
+        let anchor = AnchorClient::new("http://127.0.0.1:1");
+        let coverage = state.checkpoint_covering(&fresh, &signer(), &anchor).unwrap();
+        assert_eq!(coverage.leaf_index, 50);
+        assert_covers(&coverage, &fresh);
+    }
+
+    #[test]
+    fn s4_a_line_still_being_written_is_folded_once_its_newline_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        write_capsule(dir.path(), "one");
+        let (mut state, _) =
+            CheckpointState::load(dir.path(), "test-log", CheckpointCadenceConfig::default())
+                .unwrap();
+        use sha2::{Digest, Sha256};
+        use std::io::Write;
+        let id = hex::encode(Sha256::digest(b"two"));
+        let line = serde_json::to_string(&json!({"capsule_id": id})).unwrap();
+        let path = dir.path().join("capsules.jsonl");
+        let (head, tail) = line.split_at(10);
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        write!(f, "{head}").unwrap();
+        assert_eq!(state.sync().unwrap(), 0, "a torn tail is not folded");
+        writeln!(f, "{tail}").unwrap();
+        assert_eq!(state.sync().unwrap(), 1);
+        assert_eq!(state.leaf_count(), 2);
+        assert_eq!(state.leaf_index_by_id.get(&id), Some(&1));
     }
 }
