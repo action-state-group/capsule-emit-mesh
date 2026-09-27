@@ -146,20 +146,29 @@ def _receipt_grade(
     not in the capsule-emit release this repo pins (``>=0.8.0``), while
     ``verify_witness_stamp_tristate`` is exported from that release.
 
-    The label itself is read by a further ``scitt_cose.verify_receipt`` pass
-    driven by a throwaway probe key: ``verify_receipt`` fills
-    ``protected_header_ext`` during its structural decode, before the
-    signature check, and ``verify_witness_stamp_tristate`` does not return
-    that field. The probe pass's own verdict is ignored -- it decodes the
-    same ``witness.receipt_b64`` bytes the ``WITNESSED`` check
-    authenticated, and the COSE_Sign1 signature covers the protected header.
+    The label itself is read from a further ``scitt_cose.verify_receipt``
+    call under the SAME key the ``WITNESSED`` check used -- ``ts_pubkey_pem``
+    when pinned, else capsule-emit's ``DEFAULT_TS_PUBLIC_KEY_PEM`` for a
+    witness at ``DEFAULT_TS_URL`` (the auto-pin
+    ``verify_witness_stamp_tristate`` applies) -- and only when that call's
+    own ``ok`` is ``True``. ``verify_witness_stamp_tristate`` returns only a
+    verdict, not the decoded header, hence the second call. Requiring its
+    ``ok`` means the grade is never read from a result whose signature did
+    not verify, whatever ``scitt_cose`` version fills that field (from
+    scitt-cose#53 on, header claims are left empty on any failed verify, so
+    a read from a failed probe would also always come back empty).
     """
     if getattr(witness, "is_stub", False):
         return None
     try:
         import base64
 
-        from capsule_emit.checkpoint import StampVerdict, verify_witness_stamp_tristate
+        from capsule_emit.checkpoint import (
+            DEFAULT_TS_PUBLIC_KEY_PEM,
+            DEFAULT_TS_URL,
+            StampVerdict,
+            verify_witness_stamp_tristate,
+        )
         from scitt_cose import verify_receipt
     except ImportError:
         # scitt_cose isn't installed here -- it is not a required dependency,
@@ -168,23 +177,31 @@ def _receipt_grade(
     verdict, _errors = verify_witness_stamp_tristate(checkpoint, witness, ts_pubkey_pem=ts_pubkey_pem)
     if verdict is not StampVerdict.WITNESSED:
         return None
+    # The key the WITNESSED verdict was reached under -- the same selection
+    # verify_witness_stamp_tristate makes: the caller's pin, else the
+    # built-in default key auto-pinned for the default ts_url only.
+    trusted_pem = ts_pubkey_pem
+    if trusted_pem is None and witness.ts_url == DEFAULT_TS_URL:
+        trusted_pem = DEFAULT_TS_PUBLIC_KEY_PEM
+    if trusted_pem is None:
+        # Unreachable while WITNESSED implies one of the two keys above; kept
+        # so a future change there degrades to "no grade", not to a read
+        # under no key at all.
+        return None
     try:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-
-        probe_pem = Ed25519PrivateKey.generate().public_key().public_bytes(
-            Encoding.PEM, PublicFormat.SubjectPublicKeyInfo
-        )
         result = verify_receipt(
-            base64.b64decode(witness.receipt_b64),
+            base64.b64decode(witness.receipt_b64, validate=True),
             leaf_entry_hex=witness.entry_hash,
-            log_public_key_pem=probe_pem,
+            log_public_key_pem=trusted_pem,
         )
     except Exception:
-        # Broad on purpose: the bytes already verified above, so a failure
-        # here is an unexpected shape from the probe decode, and it must
-        # degrade to "no verified grade" (None), never raise into a
-        # rendering path. It cannot turn a missing grade into a present one.
+        # Broad on purpose: a failure here must degrade to "no verified
+        # grade" (None), never raise into a rendering path. It cannot turn a
+        # missing grade into a present one.
+        return None
+    if not result.ok:
+        # Header claims from a receipt whose signature did not verify are
+        # attacker-chosen; never read them, even if this scitt_cose fills them.
         return None
     grade = result.protected_header_ext.get(-65537)
     return grade if grade in _RECEIPT_GRADES else None

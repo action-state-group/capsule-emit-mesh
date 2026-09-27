@@ -221,6 +221,23 @@ def test_genuine_receipt_replayed_from_another_checkpoint_has_no_grade_under_pin
     assert _receipt_grade(CHECKPOINT, replayed, ts_pubkey_pem=WITNESS_PUB) is None
 
 
+def test_grade_read_is_gated_on_its_own_verify_ok_not_only_on_the_verdict(monkeypatch) -> None:
+    # Force the WITNESSED verdict for an attacker-signed receipt, as a drift
+    # between the verdict's key choice and this function's would. The grade
+    # must still be None: it is read only from a verify_receipt result whose
+    # own ``ok`` is True under the trusted key, never from a failed verify
+    # (scitt-cose releases before #53 fill ``protected_header_ext`` on one).
+    import capsule_emit.checkpoint as checkpoint_mod
+
+    monkeypatch.setattr(
+        checkpoint_mod,
+        "verify_witness_stamp_tristate",
+        lambda *_a, **_k: (checkpoint_mod.StampVerdict.WITNESSED, []),
+    )
+    forged = _witness("https://anchor.example", ATTACKER_PRIV, "mmr-verified")
+    assert _receipt_grade(CHECKPOINT, forged, ts_pubkey_pem=WITNESS_PUB) is None
+
+
 def test_genuine_receipt_without_label_has_no_grade() -> None:
     unlabeled = _witness("https://anchor.example", WITNESS_PRIV, None)
     assert _receipt_grade(CHECKPOINT, unlabeled, ts_pubkey_pem=WITNESS_PUB) is None
