@@ -281,3 +281,82 @@ def test_the_rust_plugins_own_bundle_verifies_at_this_door(tmp_path, monkeypatch
     assert result["status"] == "received", result
     assert result["inclusion"]["half_capsule_id"] == fixture["capsule"]["capsule_id"]
     assert result["inclusion"]["mmr_size"] == fixture["checkpoint"]["mmr_size"]
+
+
+# ---------------------------------------------------------------------------
+# S1 (EM review): the door must refuse, BEFORE writing anything, every body the
+# Rust plugin's serde_json would reject or that carries unsigned extra members
+# -- otherwise the door stores what our chain can never cite.
+# ---------------------------------------------------------------------------
+
+MALFORMED_REASONS = {REASON_REQUEST_MALFORMED, "bundle_malformed"}
+
+
+def _raw_push(s: _Setup, raw: bytes) -> dict:
+    return handle_record_push(s.state, raw, sender_peer_id="m3")
+
+
+def _assert_refused_malformed_nothing_stored(s: _Setup, result: dict) -> None:
+    assert result.get("reason") in MALFORMED_REASONS, result
+    assert s.nothing_stored()
+
+
+def test_s1_nan_injected_at_bundle_top_level_is_refused_before_storing(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    bundle = _bundle(s.capsule, s.private_key)
+    raw = json.dumps(bundle)[:-1] + ', "x": NaN}'
+    _assert_refused_malformed_nothing_stored(s, _raw_push(s, raw.encode()))
+
+
+def test_s1_unknown_member_at_top_level_is_refused(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    bundle = _bundle(s.capsule, s.private_key)
+    bundle["x"] = 1
+    _assert_refused_malformed_nothing_stored(s, s.push(bundle))
+
+
+def test_s1_unknown_member_inside_inclusion_is_refused(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    bundle = _bundle(s.capsule, s.private_key)
+    bundle["inclusion"]["x"] = 1
+    _assert_refused_malformed_nothing_stored(s, s.push(bundle))
+
+
+def test_s1_unknown_member_inside_proof_is_refused(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    bundle = _bundle(s.capsule, s.private_key)
+    bundle["inclusion"]["proof"]["x"] = 1
+    _assert_refused_malformed_nothing_stored(s, s.push(bundle))
+
+
+def test_s1_unknown_member_inside_checkpoint_is_refused(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    bundle = _bundle(s.capsule, s.private_key)
+    bundle["checkpoint"]["x"] = "unsigned"
+    _assert_refused_malformed_nothing_stored(s, s.push(bundle))
+
+
+def test_s1_infinity_and_out_of_range_numbers_are_refused(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    raw = json.dumps(_bundle(s.capsule, s.private_key))
+    for token in ("Infinity", "-Infinity", "1e400"):
+        _assert_refused_malformed_nothing_stored(s, _raw_push(s, (raw[:-1] + f', "x": {token}}}').encode()))
+
+
+def test_s1_lone_surrogate_is_refused(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    raw = json.dumps(_bundle(s.capsule, s.private_key))
+    _assert_refused_malformed_nothing_stored(s, _raw_push(s, (raw[:-1] + ', "x": "\\ud800"}').encode()))
+
+
+def test_s1_nesting_deeper_than_serde_json_accepts_is_refused(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    raw = json.dumps(_bundle(s.capsule, s.private_key))
+    deep = "[" * 200 + "]" * 200
+    _assert_refused_malformed_nothing_stored(s, _raw_push(s, (raw[:-1] + f', "x": {deep}}}').encode()))
+
+
+def test_s1_nan_in_a_bare_push_is_refused_before_storing(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    raw = json.dumps(s.capsule)[:-1] + ', "x": NaN}'
+    _assert_refused_malformed_nothing_stored(s, _raw_push(s, raw.encode()))

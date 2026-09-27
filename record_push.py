@@ -140,6 +140,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import urllib.request
 from datetime import datetime, timezone
 from typing import Any
@@ -215,6 +216,17 @@ REJECTED_PUSHES_FILENAME = "rejected-record-pushes.jsonl"
 RECEIVED_INCLUSION_FILENAME = "received-inclusion.jsonl"
 
 _PROOF_FIELDS = ("v", "kind", "size", "leaf_index", "witness", "peaks_left", "peaks_right")
+#: The exact member sets of a bundle and its parts. Nothing unsigned rides
+#: along: an extra member is refused, never stored.
+_BUNDLE_FIELDS = frozenset({BUNDLE_MARKER, "capsule", "inclusion", "checkpoint"})
+_INCLUSION_FIELDS = frozenset({"leaf_index", "proof"})
+_CHECKPOINT_FIELDS = frozenset(
+    {"v", "kind", "log_id", "mmr_size", "root", "prev_size", "prev_root", "key_id", "timestamp", "signature"}
+)
+
+#: serde_json's default recursion limit: the Rust plugin parses at most this
+#: many nested arrays/objects (measured: 127 parses, 128 does not).
+MAX_JSON_DEPTH = 127
 
 
 def _now_iso() -> str:
@@ -234,6 +246,69 @@ def _object_pairs_reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, A
             raise ValueError(f"duplicate JSON key: {key!r}")
         obj[key] = value
     return obj
+
+
+def _reject_constant(name: str) -> Any:
+    """``json.loads`` parse_constant hook: NaN / Infinity / -Infinity are not
+    JSON, and serde_json refuses them."""
+    raise ValueError(f"non-JSON constant {name}")
+
+
+def _check_rust_parseable(value: Any, depth: int = 0) -> None:
+    """Raise ``ValueError`` for anything the Rust plugin's serde_json would
+    refuse, so the door never stores bytes our chain cannot cite: nesting
+    deeper than :data:`MAX_JSON_DEPTH`, a non-finite float (``1e400`` parses
+    to ``inf`` here), an integer outside 64 bits (stricter than serde_json,
+    which degrades it to a float), or a string holding a lone surrogate."""
+    if isinstance(value, (dict, list)):
+        depth += 1
+        if depth > MAX_JSON_DEPTH:
+            raise ValueError("JSON nested too deeply")
+        if isinstance(value, dict):
+            for key, item in value.items():
+                _check_rust_parseable(key, depth)
+                _check_rust_parseable(item, depth)
+        else:
+            for item in value:
+                _check_rust_parseable(item, depth)
+    elif isinstance(value, bool):
+        return
+    elif isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("non-finite number")
+    elif isinstance(value, int):
+        if not -(2**63) <= value < 2**64:
+            raise ValueError("integer outside 64 bits")
+    elif isinstance(value, str):
+        value.encode("utf-8")  # UnicodeEncodeError (a ValueError) on a lone surrogate
+
+
+def _strict_loads(body: bytes) -> Any:
+    """Parse a push body under the rules the Rust side will apply to the same
+    bytes -- duplicate keys, non-JSON constants, and everything
+    :func:`_check_rust_parseable` refuses raise ``ValueError``. Python's
+    recursion guard covers nesting far past the limit."""
+    value = json.loads(
+        body, object_pairs_hook=_object_pairs_reject_duplicates, parse_constant=_reject_constant
+    )
+    _check_rust_parseable(value)
+    return value
+
+
+def _bundle_members_exact(bundle: dict[str, Any]) -> bool:
+    """A bundle, its ``inclusion`` and ``proof``, and its ``checkpoint`` carry
+    exactly their known members -- no unsigned extras anywhere."""
+    inclusion = bundle.get("inclusion")
+    checkpoint = bundle.get("checkpoint")
+    return (
+        set(bundle) == _BUNDLE_FIELDS
+        and isinstance(inclusion, dict)
+        and set(inclusion) == _INCLUSION_FIELDS
+        and isinstance(inclusion["proof"], dict)
+        and set(inclusion["proof"]) == set(_PROOF_FIELDS)
+        and isinstance(checkpoint, dict)
+        and set(checkpoint) == _CHECKPOINT_FIELDS
+    )
 
 
 def _effective_policy(policy: SharePolicy | None) -> SharePolicy:
@@ -413,7 +488,7 @@ def handle_record_push(
         # object_pairs_hook: a duplicate JSON key anywhere in the body is
         # malformed (cross-implementation id-collision hazard -- see
         # :func:`_object_pairs_reject_duplicates`).
-        capsule = json.loads(body, object_pairs_hook=_object_pairs_reject_duplicates)
+        capsule = _strict_loads(body)
     except Exception:
         return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at)
 
@@ -421,7 +496,7 @@ def handle_record_push(
     # the half exactly as for a bare push, then the bundle's own checks.
     bundle: dict[str, Any] | None = None
     if isinstance(capsule, dict) and BUNDLE_MARKER in capsule:
-        if capsule.get(BUNDLE_MARKER) != BUNDLE_VERSION:
+        if capsule.get(BUNDLE_MARKER) != BUNDLE_VERSION or not _bundle_members_exact(capsule):
             return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at)
         bundle = capsule
         capsule = bundle.get("capsule")
