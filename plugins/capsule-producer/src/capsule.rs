@@ -491,7 +491,10 @@ pub struct CapsuleInput {
     pub model_id: String,
     pub provider: String,
     pub agent_input_digest: String,
-    pub agent_output_digest: String,
+    /// JSON-DIGEST of the output the agent produced. `None` omits the member
+    /// when the producer never saw the output body -- never a digest of
+    /// something else that would read as one.
+    pub agent_output_digest: Option<String>,
     /// OPTIONAL labeled sub-digest over the flattened `tool_calls` the model
     /// emitted for this exchange, mirroring the Python reference
     /// `capsule_ledger/conversation/exchange.py`'s `digest_conversation_exchange`
@@ -618,10 +621,9 @@ pub fn seal(input: &CapsuleInput) -> Result<Value, SealError> {
     // prompt/reasoning, because each is committed under its own label.
     let mut compute_attestation = Map::new();
     compute_attestation.insert("agent_input_digest".into(), json!(input.agent_input_digest));
-    compute_attestation.insert(
-        "agent_output_digest".into(),
-        json!(input.agent_output_digest),
-    );
+    if let Some(output) = &input.agent_output_digest {
+        compute_attestation.insert("agent_output_digest".into(), json!(output));
+    }
     if let Some(tcd) = &input.tool_calls_digest {
         compute_attestation.insert("tool_calls_digest".into(), json!(tcd));
     }
@@ -1192,7 +1194,7 @@ mod tests {
             model_id: "m".to_string(),
             provider: "p".to_string(),
             agent_input_digest: "a".repeat(64),
-            agent_output_digest: "b".repeat(64),
+            agent_output_digest: Some("b".repeat(64)),
             tool_calls_digest: None,
             reasoning_digest: None,
             host_binding: None,

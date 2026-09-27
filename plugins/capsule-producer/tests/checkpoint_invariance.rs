@@ -57,7 +57,7 @@ fn capsule_input(n: usize, parent: Option<&str>) -> CapsuleInput {
         model_id: "hermes-2-pro-mistral-7b".to_string(),
         provider: "mesh-llm".to_string(),
         agent_input_digest: format!("{n:064x}"),
-        agent_output_digest: format!("{:064x}", n + 1),
+        agent_output_digest: Some(format!("{:064x}", n + 1)),
         tool_calls_digest: None,
         reasoning_digest: None,
         host_binding: None,

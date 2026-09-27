@@ -28,7 +28,7 @@ fn sample_input(seed: &str, chain: Option<ChainLink>) -> CapsuleInput {
         model_id: "m".to_string(),
         provider: "p".to_string(),
         agent_input_digest: "a".repeat(64),
-        agent_output_digest: "b".repeat(64),
+        agent_output_digest: Some("b".repeat(64)),
         tool_calls_digest: None,
         reasoning_digest: None,
         host_binding: None,

@@ -583,7 +583,7 @@ impl CapsuleState {
             model_id: model.to_string(),
             provider: "mesh-llm".to_string(),
             agent_input_digest: agent_input_digest.clone(),
-            agent_output_digest: agent_output_digest.clone(),
+            agent_output_digest: Some(agent_output_digest.clone()),
             // OPTIONAL labeled sub-digests over the served response body; absent
             // when the model emitted none (never fabricated).
             tool_calls_digest,
@@ -857,14 +857,12 @@ impl CapsuleState {
     ///     the same way this plugin's `canonical_body_digest` does). When the
     ///     host forwarded none, an explicit `unknown-request:<model>` sentinel.
     ///   * `agent_output_digest` = the host-forwarded response-body digest, or
-    ///     when absent the canonical JSON-DIGEST of the observed TERMINAL FACTS
-    ///     (model + real usage) -- documented as NOT a response-body digest.
+    ///     absent when the host forwarded none.
     ///   * `effect` (AAC-05 §5.2) carries ONLY digests of real bodies:
     ///     `request_digest` is the host-forwarded request digest or absent;
     ///     `status` is `confirmed` with `response_digest` = the host-forwarded
     ///     response-body digest, and `dispatched` with no `response_digest`
-    ///     when the host forwarded none. The sentinel and the terminal-facts
-    ///     digest never enter the effect.
+    ///     when the host forwarded none. The sentinel never enters the effect.
     ///   * `action_type` is `fyi`: the plugin decided nothing on this path.
     pub fn emit_for_observed_host_exchange(
         &self,
@@ -964,29 +962,11 @@ impl CapsuleState {
             purpose: capsule_producer::capsule::HOST_LOG_JOIN.to_string(),
         });
 
-        // agent_output_digest: PREFER the host-forwarded canonical digest of the
-        // REAL response body (computed host-side at its JSON-relay delivery
-        // point, the same plain-JCS `json_digest` a verifier recomputes) -- this
-        // binds the capsule to what the model actually produced. When the host
-        // forwarded none (older host, or a streamed body it could not buffer),
-        // fall back to the canonical digest of the observed TERMINAL FACTS
-        // (model + real usage) -- a real digest of real observed output-
-        // accounting, documented as NOT a response-body digest, never fabricated.
-        let agent_output_digest = match response_digest {
-            Some(rd) => rd.to_string(),
-            None => {
-                let mut output_facts = Map::new();
-                output_facts.insert("model".into(), Value::String(model.to_string()));
-                if let Some(u) = usage.as_ref() {
-                    let mut usage_obj = Map::new();
-                    usage_obj.insert("prompt_tokens".into(), Value::from(u.prompt_tokens));
-                    usage_obj.insert("completion_tokens".into(), Value::from(u.completion_tokens));
-                    usage_obj.insert("total_tokens".into(), Value::from(u.total_tokens));
-                    output_facts.insert("usage".into(), Value::Object(usage_obj));
-                }
-                jcs::json_digest(&Value::Object(output_facts))?
-            }
-        };
+        // agent_output_digest: the host-forwarded canonical digest of the REAL
+        // response body, or ABSENT when the host forwarded none (older host, or
+        // a streamed body it could not buffer). Never a digest of the terminal
+        // facts in its place: a bare 64-hex there reads as a body digest.
+        let agent_output_digest = response_digest.map(str::to_string);
 
         let mut ledger = self
             .ledger
@@ -1857,9 +1837,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// When the host forwarded NO response digest, `agent_output_digest` falls
-    /// back to the observed-terminal-facts digest (documented as such), and a
-    /// tool_calls_digest is still absent when none was forwarded.
+    /// When the host forwarded NO response digest, `agent_output_digest` is
+    /// OMITTED (EM review #2): a digest of the terminal facts (model + usage)
+    /// sealed as a bare 64-hex reads as a body digest and gets compared as
+    /// one. tool_calls_digest is likewise absent when none was forwarded.
     #[test]
     fn observed_host_exchange_falls_back_when_no_response_digest_forwarded() {
         let dir = std::env::temp_dir().join(format!("cap-fb-{}", std::process::id()));
@@ -1888,8 +1869,9 @@ mod tests {
             .expect("seal");
         let ca = &emitted.capsule["model_attestation"]["compute_attestation"];
         assert!(ca.get("tool_calls_digest").is_none());
-        // Fallback output digest is a real 64-hex digest of the terminal facts.
-        assert_eq!(ca["agent_output_digest"].as_str().unwrap().len(), 64);
+        assert!(ca.get("agent_output_digest").is_none(), "no body digest, no output digest");
+        // The request side is unaffected.
+        assert_eq!(ca["agent_input_digest"], "a".repeat(64));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

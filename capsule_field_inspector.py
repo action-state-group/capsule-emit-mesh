@@ -114,7 +114,7 @@ def render_report(
         f"  token usage (prompt/completion/total): "
         f"{_fmt(usage.get('prompt_tokens'))}/{_fmt(usage.get('completion_tokens'))}/{_fmt(usage.get('total_tokens'))}",
         f"  agent_input_digest        : {_fmt(capsule['model_attestation']['compute_attestation']['agent_input_digest'])}",
-        f"  agent_output_digest       : {_fmt(capsule['model_attestation']['compute_attestation']['agent_output_digest'])}",
+        f"  agent_output_digest       : {_fmt(capsule['model_attestation']['compute_attestation'].get('agent_output_digest'))}",
         f"  client_nonce              : {_fmt(poc['client_nonce'])}",
         f"  client_nonce_source       : {_fmt(poc['client_nonce_source'])}",
         "",

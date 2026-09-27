@@ -48,7 +48,7 @@ fn sample_input(seed: &str, chain: Option<ChainLink>) -> CapsuleInput {
         model_id: "hermes-2-pro-mistral-7b".to_string(),
         provider: "mesh-llm".to_string(),
         agent_input_digest: "a".repeat(64),
-        agent_output_digest: "b".repeat(64),
+        agent_output_digest: Some("b".repeat(64)),
         tool_calls_digest: None,
         reasoning_digest: None,
         host_binding: None,

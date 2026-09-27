@@ -38,7 +38,7 @@ fn local_input(seed: &str, chain: Option<ChainLink>) -> CapsuleInput {
         model_id: "m".to_string(),
         provider: "mesh-llm".to_string(),
         agent_input_digest: "1".repeat(64),
-        agent_output_digest: "2".repeat(64),
+        agent_output_digest: Some("2".repeat(64)),
         tool_calls_digest: None,
         reasoning_digest: None,
         host_binding: None,
@@ -102,7 +102,7 @@ fn foreign_body(seed: &str) -> Value {
     // half), which is enough: the point is it is NOT one of our chained lines.
     let mut input = local_input(seed, None);
     input.agent_input_digest = "a".repeat(64);
-    input.agent_output_digest = "b".repeat(64);
+    input.agent_output_digest = Some("b".repeat(64));
     input.effect_request_digest = Some("a".repeat(64));
     input.effect_response_digest = Some("b".repeat(64));
     input.mesh_poc.serving_provenance.served_by_node_id = "peer-node".to_string();
