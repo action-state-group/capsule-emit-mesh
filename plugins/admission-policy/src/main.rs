@@ -4,6 +4,7 @@ mod decision;
 mod lifecycle_channel;
 mod mesh_evidence_bridge;
 mod record_push_bridge;
+mod self_peer;
 /// Not wired into `on_mesh_event` yet -- see the module doc for why
 /// (`mesh-llm-plugin = "0.75"` predates the `checkpoint` field this needs to
 /// read off `event.peer`). Exercised entirely by its own unit tests today;
@@ -30,7 +31,7 @@ use mesh_evidence_bridge::{
     MeshEvidenceRequestArgs, EVIDENCE_REQUEST_CHANNEL, EVIDENCE_REQUEST_OPERATION,
 };
 use mesh_llm_plugin::{
-    capability, inference, json_schema_operation, mesh_channel, plugin_server_info,
+    capability, events, inference, json_schema_operation, mesh_channel, plugin_server_info,
     DeclarativePluginBuilder, OperationRouter, PluginMetadata, PluginRuntime,
 };
 use serde_json::{json, Value};
@@ -68,22 +69,6 @@ fn data_dir() -> PathBuf {
     std::env::var("ADMISSION_POLICY_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("./admission-policy-data"))
-}
-
-/// This node's own mesh peer id, as the OPERATOR configured it at launch.
-/// `mesh-llm-plugin` 0.76.2 gives a plugin no way to learn its own peer id
-/// at runtime (`PluginContext` exposes an outbound channel + pending-
-/// response map only -- verified against the vendored crate source), so
-/// record-push's self-declared sender identity (`record_push_bridge`'s wire
-/// shape) is operator-supplied config, same pattern as
-/// `ADMISSION_POLICY_DATA_DIR`/`ADMISSION_POLICY_BLOCKED_MODELS`. `None`
-/// when unset -- record-push then cannot self-declare an identity and does
-/// not fire (never an empty/fabricated peer id on the wire).
-/// Seam A1.
-fn self_peer_id() -> Option<String> {
-    std::env::var("ADMISSION_POLICY_SELF_PEER_ID")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
 }
 
 /// The counterparty peer id for a push-at-completion, when this node can
@@ -241,8 +226,8 @@ fn push_eligibility<'a>(
 }
 
 /// The counterparty a push would have gone to, when the only thing stopping
-/// it is an unset `ADMISSION_POLICY_SELF_PEER_ID` -- so the caller can say so
-/// instead of skipping silently.
+/// it is an unknown own peer id -- so the caller can say so instead of
+/// skipping silently.
 fn skipped_for_missing_self_id<'a>(
     envelope: &'a OpenAiExchangeEnvelope,
     record_at_completion_off: bool,
@@ -271,15 +256,18 @@ async fn push_at_completion_if_configured(
     envelope: &OpenAiExchangeEnvelope,
     capsule_json: Value,
     checkpoints: Option<&checkpoint_cadence::CheckpointHandle>,
+    self_peer: &self_peer::SelfPeer,
 ) {
-    let self_id = self_peer_id();
+    // Learned from the host's mesh events (see `self_peer`), unless the
+    // operator overrides it. `None` means the host has not reported it yet.
+    let self_id = self_peer.current();
     let record_at_completion_off = share_policy::record_at_completion_is_off();
     if let Some(peer_id) =
         skipped_for_missing_self_id(envelope, record_at_completion_off, self_id.as_deref())
     {
         tracing::warn!(
             %peer_id,
-            "record-push at completion skipped: ADMISSION_POLICY_SELF_PEER_ID is unset, so this node cannot name itself to the counterparty"
+            "record-push at completion skipped: this node's own peer id is unknown (the host has not reported it on a mesh event yet and ADMISSION_POLICY_SELF_PEER_ID is unset)"
         );
         return;
     }
@@ -474,6 +462,8 @@ async fn main() -> anyhow::Result<()> {
         "capsule-producer ready"
     );
     let lifecycle_events = Arc::new(ObservedLifecycleEvents::open(&data_dir)?);
+    let self_peer = self_peer::SelfPeer::new(&data_dir);
+    let self_peer_for_events = self_peer.clone();
 
     // Checkpoint cadence: off by default, node-by-node cutover away from
     // checkpoint_daemon.py -- see checkpoint_cadence.rs's module doc and
@@ -542,12 +532,19 @@ async fn main() -> anyhow::Result<()> {
     .mesh_item(mesh_channel(OPENAI_EXCHANGE_CHANNEL))
     .mesh_item(mesh_channel(EVIDENCE_REQUEST_CHANNEL))
     .mesh_item(mesh_channel(record_push_bridge::RECORD_PUSH_CHANNEL))
+    // Any mesh event carries this node's own peer id; the host sends these
+    // kinds as a snapshot right after the plugin loads (see `self_peer`).
+    .event_item(events::local_accepting())
+    .event_item(events::local_standby())
+    .event_item(events::mesh_id_updated())
+    .event_item(events::peer_up())
     .inference_item(inference::provider(ENDPOINT_ID, address))
     .customize(move |plugin| {
         plugin.on_channel_message(move |message, context| {
             let lifecycle_events = lifecycle_events_for_handler.clone();
             let capsules = capsules_for_handler.clone();
             let checkpoints = checkpoints_for_handler.clone();
+            let self_peer = self_peer.clone();
             Box::pin(async move {
                 if message.channel == OPENAI_EXCHANGE_CHANNEL {
                     match serde_json::from_slice::<OpenAiExchangeEnvelope>(&message.body) {
@@ -600,6 +597,7 @@ async fn main() -> anyhow::Result<()> {
                                                 &envelope,
                                                 capsule_json,
                                                 checkpoints.as_ref(),
+                                                &self_peer,
                                             )
                                             .await;
                                         }
@@ -647,6 +645,17 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     mesh_evidence_bridge::handle_open_stream(request, context).await
                 }
+            })
+        })
+    })
+    .customize(move |plugin| {
+        plugin.on_mesh_event(move |event, _context| {
+            let self_peer = self_peer_for_events.clone();
+            Box::pin(async move {
+                if self_peer.learn(&event.local_peer_id) {
+                    tracing::info!(peer_id = %event.local_peer_id, "own mesh peer id reported by the host");
+                }
+                Ok(())
             })
         })
     })
