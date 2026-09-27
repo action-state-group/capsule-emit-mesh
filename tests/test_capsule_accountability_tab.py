@@ -146,7 +146,7 @@ def test_freshness_grade_replay_is_an_explicit_failure_not_amber():
     assert grade["state"] == STATE_FAILED
 
 
-@pytest.mark.parametrize("source", ["sidecar_generated_fallback", "local_ingress"])
+@pytest.mark.parametrize("source", ["sidecar_generated_fallback", "local_ingress", "plugin_generated_fallback"])
 def test_freshness_grade_node_side_sources_are_not_checked(source):
     """[mesh-live-tab-pane-proxy] L2: a node-minted nonce source carries no
     client-supplied freshness claim to verify -- assurance_map.STATE_NOT_CHECKED,

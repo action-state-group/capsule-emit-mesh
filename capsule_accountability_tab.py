@@ -135,7 +135,8 @@ def freshness_grade(client_nonce_source: str | None) -> dict[str, Any]:
 
     [mesh-live-tab-pane-proxy] L2 (§7 ruling, "pending/present-unverified in
     the freshness-rung ... now in scope"): a node-generated nonce source
-    (``sidecar_generated_fallback``/``local_ingress``) carries no
+    (``sidecar_generated_fallback``/``local_ingress``, or the Rust plugin's
+    ``plugin_generated_fallback``) carries no
     client-supplied freshness claim to independently verify in the first
     place -- that is exactly ``assurance_map.STATE_NOT_CHECKED``'s
     definition, not the old ladder's ``present-unverified`` word (which read
@@ -148,7 +149,11 @@ def freshness_grade(client_nonce_source: str | None) -> dict[str, Any]:
         state = STATE_VERIFIED
     elif client_nonce_source == "client_supplied_replayed":
         state = STATE_FAILED
-    elif client_nonce_source in ("sidecar_generated_fallback", "local_ingress"):
+    elif client_nonce_source in (
+        "sidecar_generated_fallback",
+        "local_ingress",
+        "plugin_generated_fallback",
+    ):
         state = assurance_map.STATE_NOT_CHECKED
     else:
         state = STATE_ABSENT
