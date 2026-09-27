@@ -87,25 +87,27 @@ fn self_peer_id() -> Option<String> {
 }
 
 /// The counterparty peer id for a push-at-completion, when this node can
-/// truthfully name one. Only a `RemoteMesh` terminal (this node routed the
-/// exchange TO a peer) carries a real peer id today -- the host's serving-
-/// provenance `served_by_node_id`, i.e. who actually served it. A host-
-/// served terminal (this node served a peer's request) carries no
-/// requesting-party field on this channel at all (see
-/// `OpenAiExchangeEnvelope`'s own field list) -- the SAME gap the closed-state
-/// wiring diagnosis names "gap 3". Returning
-/// `None` here rather than guessing is the honest behavior this task's own
-/// "never fabricate" discipline requires, not a bug this task fixes.
-/// Seam A1.
+/// truthfully name one -- whoever sealed the other half of this exchange:
+///
+/// - A `RemoteMesh` terminal (this node routed the exchange TO a peer): the
+///   node that served it, the host's `served_by_node_id`.
+/// - A host-served terminal (this node SERVED a peer's request): the node that
+///   asked, `requested_by_node_id` -- set by the host only for a request that
+///   came over the mesh tunnel, from the tunnel's authenticated remote id.
+///   A request that reached this node's local API has no requesting mesh
+///   node, so nothing is pushed.
+///
+/// `None` rather than a guess whenever the host did not name one.
 fn push_counterparty(envelope: &OpenAiExchangeEnvelope) -> Option<&str> {
-    if envelope.dispatch_path != lifecycle_channel::DispatchPath::RemoteMesh {
-        return None;
-    }
-    envelope
-        .serving_provenance
-        .as_ref()
-        .and_then(|sp| sp.served_by_node_id.as_deref())
-        .filter(|id| !id.is_empty() && *id != "unknown")
+    let provenance = envelope.serving_provenance.as_ref()?;
+    let counterparty = if envelope.dispatch_path == lifecycle_channel::DispatchPath::RemoteMesh {
+        provenance.served_by_node_id.as_deref()
+    } else if ObservedLifecycleEvents::is_sealable_host_served(envelope) {
+        provenance.requested_by_node_id.as_deref()
+    } else {
+        None
+    };
+    counterparty.filter(|id| !id.is_empty() && *id != "unknown")
 }
 
 #[derive(Clone)]
@@ -624,6 +626,7 @@ mod push_eligibility_tests {
                 gpu: None,
                 vram_bytes: None,
                 is_soc: None,
+                requested_by_node_id: None,
             }),
             usage: None,
             request_digest: None,
@@ -637,6 +640,22 @@ mod push_eligibility_tests {
     fn host_served_envelope() -> OpenAiExchangeEnvelope {
         let mut envelope = remote_mesh_envelope(Some("irrelevant-self-id"));
         envelope.dispatch_path = DispatchPath::TypedFrontend;
+        envelope
+    }
+
+    /// A real host-served terminal as the fork host publishes it for a request
+    /// that arrived over the mesh tunnel: raw-proxy path, 2xx, this node's own
+    /// loaded model (a `weights_digest`), and `requested_by_node_id` naming the
+    /// node that asked.
+    fn tunneled_host_served_envelope(requested_by: Option<&str>) -> OpenAiExchangeEnvelope {
+        let mut envelope = remote_mesh_envelope(Some("self-m3"));
+        envelope.dispatch_path = DispatchPath::RawProxy;
+        let provenance = envelope
+            .serving_provenance
+            .as_mut()
+            .expect("fixture has provenance");
+        provenance.weights_digest = Some("sha256:loaded-weights".to_string());
+        provenance.requested_by_node_id = requested_by.map(str::to_string);
         envelope
     }
 
@@ -664,12 +683,72 @@ mod push_eligibility_tests {
         assert_eq!(push_eligibility(&envelope, false, None), None);
     }
 
-    // Host-served terminals carry no requesting-party field on this channel
-    // (see `push_counterparty`'s own doc) -- never fabricated, never pushed.
+    // Option A: the provider pushes its
+    // sealed half to the node that asked -- the other direction of the same
+    // exchange. MUTANT: return `None` from `push_counterparty`'s host-served
+    // arm and this goes red.
     #[test]
-    fn host_served_terminal_has_no_knowable_counterparty_so_never_pushes() {
-        let envelope = host_served_envelope();
+    fn host_served_terminal_pushes_to_the_node_that_asked() {
+        let envelope = tunneled_host_served_envelope(Some("peer-m4"));
+        assert_eq!(
+            push_eligibility(&envelope, false, Some("self-m3")),
+            Some(("peer-m4", "self-m3"))
+        );
+    }
+
+    // Never to itself: the served-by id (this node) is not a counterparty.
+    #[test]
+    fn host_served_terminal_never_pushes_to_its_own_served_by_id() {
+        let envelope = tunneled_host_served_envelope(Some("peer-m4"));
+        assert_ne!(push_counterparty(&envelope), Some("self-m3"));
+    }
+
+    // A request on this node's local API has no requesting mesh node; the host
+    // sends none, so nothing is pushed -- never fabricated.
+    #[test]
+    fn host_served_terminal_from_the_local_api_never_pushes() {
+        let envelope = tunneled_host_served_envelope(None);
         assert_eq!(push_eligibility(&envelope, false, Some("self-m3")), None);
+    }
+
+    #[test]
+    fn host_served_terminal_with_unknown_requester_never_pushes() {
+        let envelope = tunneled_host_served_envelope(Some("unknown"));
+        assert_eq!(push_eligibility(&envelope, false, Some("self-m3")), None);
+    }
+
+    // Policy off wins on the provider side too.
+    #[test]
+    fn host_served_terminal_with_policy_off_never_pushes() {
+        let envelope = tunneled_host_served_envelope(Some("peer-m4"));
+        assert_eq!(push_eligibility(&envelope, true, Some("self-m3")), None);
+    }
+
+    // Not a real served exchange (no loaded-model identity: the plugin's own
+    // stub shape), so it is not a sealable host-served terminal -- a requester
+    // id on it is never used.
+    #[test]
+    fn a_non_sealable_host_served_shape_never_pushes_even_with_a_requester() {
+        let mut envelope = host_served_envelope();
+        envelope
+            .serving_provenance
+            .as_mut()
+            .unwrap()
+            .requested_by_node_id = Some("peer-m4".to_string());
+        assert_eq!(push_eligibility(&envelope, false, Some("self-m3")), None);
+    }
+
+    // The host's JSON field lands in the mirror (and is optional on the wire).
+    #[test]
+    fn requested_by_node_id_deserializes_from_the_host_envelope_and_defaults_absent() {
+        let with: HostServingProvenance = serde_json::from_value(
+            serde_json::json!({"served_by_node_id": "m3", "requested_by_node_id": "m4"}),
+        )
+        .expect("parse");
+        assert_eq!(with.requested_by_node_id.as_deref(), Some("m4"));
+        let without: HostServingProvenance =
+            serde_json::from_value(serde_json::json!({"served_by_node_id": "m3"})).expect("parse");
+        assert_eq!(without.requested_by_node_id, None);
     }
 
     #[test]

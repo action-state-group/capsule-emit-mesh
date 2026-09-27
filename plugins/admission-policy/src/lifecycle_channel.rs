@@ -302,6 +302,13 @@ pub struct HostServingProvenance {
     pub vram_bytes: Option<u64>,
     #[serde(default)]
     pub is_soc: Option<bool>,
+    /// The mesh node that asked this host to serve the exchange -- set by the
+    /// host only on a host-served exchange that arrived over the mesh HTTP
+    /// tunnel, from the tunnel's QUIC-authenticated remote id (never from the
+    /// request). `#[serde(default)]` so a host that predates it reads as
+    /// "requester unknown", and nothing is pushed.
+    #[serde(default)]
+    pub requested_by_node_id: Option<String>,
 }
 
 /// Cap on the in-memory lifecycle-event mirror: a long-lived plugin on a
@@ -959,6 +966,7 @@ mod tests {
                 gpu: Some(g.to_string()),
                 vram_bytes: None,
                 is_soc: None,
+                requested_by_node_id: None,
             }),
             twin_bracket_id: None,
         };
