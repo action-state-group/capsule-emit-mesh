@@ -60,6 +60,7 @@ from datetime import datetime
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import urlsplit
 
 from agent_action_capsule.emit import emit
 from capsule_emit.account import (
@@ -100,6 +101,121 @@ __all__ = [
     "with_peer_reconciliation",
     "with_references",
 ]
+
+#: The two receipt grades register row 5 defines. A label value outside this
+#: set is not reported as a grade, even from a receipt that verifies.
+_RECEIPT_GRADES = frozenset({"countersigned-observed", "mmr-verified"})
+
+
+def _receipt_grade(
+    checkpoint: CheckpointRecord,
+    witness: Any,  # capsule_emit.checkpoint.WitnessRecord
+    *,
+    ts_pubkey_pem: bytes | str | None = None,
+) -> str | None:
+    """The RECEIPT grade one witness put on its stamp for ``checkpoint`` --
+    decoded from the COSE Receipt's protected header, private-use label
+    ``-65537`` (register row 5: ``countersigned-observed`` = existence +
+    time, ``mmr-verified`` = consistency checked). NOT
+    :attr:`HistoryCard.witnessed` -- that is the CLIENT state (derived: does
+    at least one receipt verify), never a claim about what was checked. See
+    :meth:`HistoryCard.witness_words`.
+
+    Label ``-65537`` is read only from a stamp that
+    ``capsule_emit.checkpoint.verify_witness_stamp_tristate`` grades
+    ``WITNESSED``, because anyone can mint a COSE_Sign1 with their own key
+    and write ``"mmr-verified"`` into its protected header. ``WITNESSED``
+    means:
+
+    1. **Bound to this checkpoint.** ``witness.entry_hash`` equals the hash
+       of ``checkpoint.digest()``, so a genuine receipt replayed from
+       another checkpoint fails.
+    2. **Signed by a key this process already trusts.** With
+       ``ts_pubkey_pem`` the receipt must verify under that pinned key.
+       Without it, only a witness at capsule-emit's default ``ts_url`` can
+       pass, under the public key built into capsule-emit. No key is ever
+       fetched: a ``ts_url`` is written by whoever writes the ledger, so a
+       key served there proves nothing about who signed the receipt.
+
+    ``None`` -- "no verified grade" -- for a stub stamp, a stamp that is not
+    ``WITNESSED``, ``scitt_cose`` not installed, or a ``WITNESSED`` stamp
+    with no label or a value outside the two grades above. ``None`` is never
+    presented as either grade string.
+
+    The same rule as ``capsule_emit.witness._receipt_grade`` (capsule-emit
+    f6cb34356). Ported rather than imported: that function is private and
+    not in the capsule-emit release this repo pins (``>=0.8.0``), while
+    ``verify_witness_stamp_tristate`` is exported from that release.
+
+    The label itself is read from a further ``scitt_cose.verify_receipt``
+    call under the SAME key the ``WITNESSED`` check used -- ``ts_pubkey_pem``
+    when pinned, else capsule-emit's ``DEFAULT_TS_PUBLIC_KEY_PEM`` for a
+    witness at ``DEFAULT_TS_URL`` (the auto-pin
+    ``verify_witness_stamp_tristate`` applies) -- and only when that call's
+    own ``ok`` is ``True``. ``verify_witness_stamp_tristate`` returns only a
+    verdict, not the decoded header, hence the second call. Requiring its
+    ``ok`` means the grade is never read from a result whose signature did
+    not verify, whatever ``scitt_cose`` version fills that field (from
+    scitt-cose#53 on, header claims are left empty on any failed verify, so
+    a read from a failed probe would also always come back empty).
+    """
+    if getattr(witness, "is_stub", False):
+        return None
+    try:
+        import base64
+
+        from capsule_emit.checkpoint import (
+            DEFAULT_TS_PUBLIC_KEY_PEM,
+            DEFAULT_TS_URL,
+            StampVerdict,
+            verify_witness_stamp_tristate,
+        )
+        from scitt_cose import verify_receipt
+    except ImportError:
+        # scitt_cose isn't installed here -- it is not a required dependency,
+        # and without it nothing can be verified, so the documented None.
+        return None
+    verdict, _errors = verify_witness_stamp_tristate(checkpoint, witness, ts_pubkey_pem=ts_pubkey_pem)
+    if verdict is not StampVerdict.WITNESSED:
+        return None
+    # The key the WITNESSED verdict was reached under -- the same selection
+    # verify_witness_stamp_tristate makes: the caller's pin, else the
+    # built-in default key auto-pinned for the default ts_url only.
+    trusted_pem = ts_pubkey_pem
+    if trusted_pem is None and witness.ts_url == DEFAULT_TS_URL:
+        trusted_pem = DEFAULT_TS_PUBLIC_KEY_PEM
+    if trusted_pem is None:
+        # Unreachable while WITNESSED implies one of the two keys above; kept
+        # so a future change there degrades to "no grade", not to a read
+        # under no key at all.
+        return None
+    try:
+        result = verify_receipt(
+            base64.b64decode(witness.receipt_b64, validate=True),
+            leaf_entry_hex=witness.entry_hash,
+            log_public_key_pem=trusted_pem,
+        )
+    except Exception:
+        # Broad on purpose: a failure here must degrade to "no verified
+        # grade" (None), never raise into a rendering path. It cannot turn a
+        # missing grade into a present one.
+        return None
+    if not result.ok:
+        # Header claims from a receipt whose signature did not verify are
+        # attacker-chosen; never read them, even if this scitt_cose fills them.
+        return None
+    grade = result.protected_header_ext.get(-65537)
+    return grade if grade in _RECEIPT_GRADES else None
+
+
+#: RECEIPT grade -> its rendered word, for :meth:`HistoryCard.witness_words`.
+#: Anything not in this map (unknown label value, or ``None``) renders as
+#: "ungraded" -- never silently treated as either known grade.
+_RECEIPT_GRADE_WORDS = {
+    "mmr-verified": "consistency-verified",
+    "countersigned-observed": "existence-and-time",
+}
+
 
 #: forks_state values -- distinguish honest absence from unreadable/tampered state.
 #: "absent": file not present; plugin never ran; zero is an honest default.
@@ -380,6 +496,16 @@ class HistoryCard:
     checkpoint_count: int
     witnesses: list[str] = field(default_factory=list)
     witnessed: bool = False
+    #: Each `witnesses` entry's OWN receipt grade (ts_url -> `_receipt_grade`
+    #: result), keyed by exactly the ts_urls in `witnesses` -- the
+    #: per-witness fact, never conflated with `witnessed` (the derived
+    #: client state: "at least one receipt verifies"). A value of `None`
+    #: means the receipt verified but carries no defined grade. A
+    #: checkpoint whose only receipt grades `countersigned-observed` is
+    #: still `witnessed=True` here -- correctly -- but a renderer must show
+    #: this dict beside `witnessed`, never render `witnessed` alone as
+    #: consistency-verified. See `witness_words()`.
+    receipt_grades: dict[str, str | None] = field(default_factory=dict)
     #: peer checkpoint-root reconciliation ([mesh-peer-root-exchange]) --
     #: OUTSIDE `properties`/`core_account()` deliberately: these come from a
     #: separate observation store (the mesh plugin's gossip-fed reconciliation
@@ -447,6 +573,31 @@ class HistoryCard:
         )
         return result.ok
 
+    def witness_words(self) -> str:
+        """Human words for `witnessed` + `receipt_grades` -- words, not
+        codes, for a UI card; `to_value()` carries the codes. Renders BOTH
+        the derived client state and each receipt's own grade beside it, so
+        a checkpoint whose only receipt is `countersigned-observed`
+        (existence + time) is never read as consistency-verified just
+        because `witnessed` is true.
+
+        Examples:
+          "self-attested -- no receipt yet"
+          "witnessed -- 1 receipt: consistency-verified (anchor.example)"
+          "witnessed -- 2 receipts: consistency-verified (anchor.example), "
+          "existence-and-time (rekor.example)"
+        """
+        if not self.witnessed or not self.receipt_grades:
+            return "self-attested -- no receipt yet"
+        n = len(self.receipt_grades)
+        parts = []
+        for ts_url in sorted(self.receipt_grades):
+            grade = self.receipt_grades[ts_url]
+            word = _RECEIPT_GRADE_WORDS.get(grade, "ungraded")
+            host = urlsplit(ts_url).hostname or ts_url
+            parts.append(f"{word} ({host})")
+        return f"witnessed -- {n} receipt{'s' if n != 1 else ''}: " + ", ".join(parts)
+
     def to_value(self) -> dict[str, Any]:
         return {
             "schema": HISTORY_CARD_SCHEMA,
@@ -475,6 +626,10 @@ class HistoryCard:
                 "checkpoint_count": self.checkpoint_count,
                 "witnesses": list(self.witnesses),
                 "witnessed": self.witnessed,
+                # RECEIPT grades (codes, register row 5) -- the derived client
+                # state above (`witnessed`) is never a substitute for these;
+                # see `witness_words()` for the words-not-codes rendering.
+                "receipt_grades": dict(self.receipt_grades),
             },
             "peer_reconciliation": {
                 "reconciled_with": self.reconciled_with,
@@ -660,7 +815,10 @@ def build_history_card(
     `witness_keys` maps a witness `ts_url` to the Transparency Service public
     key (PEM) the caller pins for it. A witness counts toward `witnessed`,
     `witnesses` and `temporal_provenance` only as `_witness_verified`
-    decides; see there for exactly what is trusted.
+    decides; see there for exactly what is trusted. `receipt_grades` has
+    one entry per witness in `witnesses` -- never for a row that did not
+    verify -- graded by `_receipt_grade` under that witness's own key from
+    the same map. Nothing is fetched.
     """
     records = [CheckpointRecord.from_dict(line) for line in checkpoint_lines]
     cose_by_size = {line["mmr_size"]: line.get("checkpoint_cose") for line in checkpoint_lines if "mmr_size" in line}
@@ -711,11 +869,19 @@ def build_history_card(
     )
 
     latest = in_range[-1] if in_range else boundary
-    witnesses = (
-        sorted({w.ts_url for w in (latest.witnesses or []) if _witness_verified(latest, w, witness_keys)})
+    keys = witness_keys or {}
+    verified_records = (
+        [w for w in (latest.witnesses or []) if _witness_verified(latest, w, witness_keys)]
         if latest is not None
         else []
     )
+    witnesses = sorted({w.ts_url for w in verified_records})
+    # One grade per verified ts_url -- last writer wins on a duplicate URL,
+    # same dedup unit as `witnesses` above. Each witness is graded under its
+    # own pinned key, the key `_witness_verified` just accepted it under.
+    receipt_grades = {
+        w.ts_url: _receipt_grade(latest, w, ts_pubkey_pem=keys.get(w.ts_url)) for w in verified_records
+    }
 
     return HistoryCard(
         node_id=node_id,
@@ -733,6 +899,7 @@ def build_history_card(
         checkpoint_count=len(in_range),
         witnesses=witnesses,
         witnessed=bool(witnesses),
+        receipt_grades=receipt_grades,
     )
 
 
@@ -775,8 +942,10 @@ def verify_history_card(
     **Witnesses are re-verified, not copied.** The recompute passes
     `witness_keys` to `build_history_card`, so a card claiming `witnessed`
     for a receipt this verifier cannot check under a key it holds fails to
-    match. A verifier with fewer pins than the publisher gets a mismatch on
-    that witness rather than taking the publisher's word for it.
+    match, and so does a card whose `coverage.receipt_grades` came from a
+    pin the verifier does not hold. A verifier with fewer pins than the
+    publisher gets a mismatch on that witness rather than taking the
+    publisher's word for it.
     """
     try:
         since_size = card_value["selection"]["since_size"]

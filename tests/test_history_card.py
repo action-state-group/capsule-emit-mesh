@@ -691,3 +691,56 @@ def test_both_enrichment_paths_combined_verify(tmp_path, fake_witness):
     assert result.ok, (
         f"doubly-enriched card must verify offline: {result.errors}"
     )
+
+
+def test_receipt_grades_empty_for_a_receipt_that_does_not_verify(tmp_path, fake_witness):
+    """`fake_witness`'s receipt is garbage bytes (not a real COSE Receipt) --
+    it is not a witness, so it gets no `receipt_grades` entry (never crash,
+    never guess) and `witness_words()` says self-attested, never either
+    real grade word. A verified receipt with no defined grade is the
+    "ungraded" case, in test_history_card_receipt_grade.py."""
+    lines = _build_chain(tmp_path, 2)
+    node_id = node_id_from_key_id(lines[0]["key_id"])
+    card = build_history_card(node_id=node_id, log_id="log-a", checkpoint_lines=lines, since_size=0)
+
+    assert not card.witnessed
+    assert card.receipt_grades == {}
+    assert card.witness_words() == "self-attested -- no receipt yet"
+    assert card.to_value()["coverage"]["receipt_grades"] == {}
+
+
+def test_witness_words_never_renders_existence_and_time_as_consistency_verified():
+    """The gate item: a checkpoint whose only receipt grades
+    `countersigned-observed` (existence + time, e.g. Rekor's hashedrekord)
+    must render as `existence-and-time` in words, and a checkpoint with one
+    of each grade lists both beside the derived `witnessed` state -- never
+    collapses to a single consistency-verified claim. Rendering only: the
+    grade codes are given directly here -- which receipts earn a grade is
+    `_receipt_grade`'s job, tested in test_history_card_receipt_grade.py."""
+    from history_card import HistoryCard
+
+    both = HistoryCard(
+        node_id="node-a", log_id="log-a", since_size=0,
+        from_checkpoint=None, to_checkpoint=None,
+        properties=None, checkpoint_count=1,
+        witnesses=["https://anchor.example", "https://rekor.example"],
+        witnessed=True,
+        receipt_grades={
+            "https://anchor.example": "mmr-verified",
+            "https://rekor.example": "countersigned-observed",
+        },
+    )
+    words = both.witness_words()
+    assert words == (
+        "witnessed -- 2 receipts: consistency-verified (anchor.example), "
+        "existence-and-time (rekor.example)"
+    ), words
+
+    rekor_only = replace(
+        both,
+        witnesses=["https://rekor.example"],
+        receipt_grades={"https://rekor.example": "countersigned-observed"},
+    )
+    rekor_words = rekor_only.witness_words()
+    assert "consistency-verified" not in rekor_words
+    assert rekor_words == "witnessed -- 1 receipt: existence-and-time (rekor.example)"
