@@ -311,6 +311,54 @@ def _bundle_members_exact(bundle: dict[str, Any]) -> bool:
     )
 
 
+def _is_count(value: Any) -> bool:
+    """An exact non-negative integer -- never a bool, a float, or a string
+    that ``int()`` would coerce."""
+    return type(value) is int and value >= 0
+
+
+def _is_hex(value: Any, length: int) -> bool:
+    return (
+        type(value) is str
+        and len(value) == length
+        and all(c in "0123456789abcdef" for c in value)
+    )
+
+
+def _bundle_types_exact(bundle: dict[str, Any]) -> bool:
+    """Every bundle field has its exact type and canonical spelling: counts
+    are non-bool ints, hashes and keys are lowercase hex of their length,
+    versions and kinds are the one value this door reads. Assumes
+    :func:`_bundle_members_exact` already held."""
+    inclusion = bundle["inclusion"]
+    proof = inclusion["proof"]
+    cp = bundle["checkpoint"]
+    hashes = [*proof["witness"], *proof["peaks_left"], *proof["peaks_right"]] if all(
+        type(proof[k]) is list for k in ("witness", "peaks_left", "peaks_right")
+    ) else None
+    return (
+        _is_count(inclusion["leaf_index"])
+        and type(proof["v"]) is int
+        and proof["v"] == 1
+        and proof["kind"] == "inclusion"
+        and _is_count(proof["size"])
+        and _is_count(proof["leaf_index"])
+        and hashes is not None
+        and all(_is_hex(h, 64) for h in hashes)
+        and type(cp["v"]) is int
+        and cp["v"] == 1
+        and cp["kind"] == "mmr_checkpoint"
+        and type(cp["log_id"]) is str
+        and _is_count(cp["mmr_size"])
+        and _is_hex(cp["root"], 64)
+        and _is_count(cp["prev_size"])
+        and (cp["prev_root"] == "" if cp["prev_size"] == 0 else _is_hex(cp["prev_root"], 64))
+        and _is_hex(cp["key_id"], 64)
+        and type(cp["timestamp"]) is str
+        and _is_hex(cp["signature"], 128)
+    )
+
+
 def _effective_policy(policy: SharePolicy | None) -> SharePolicy:
     """An unset policy resolves to the documented default (S1:
     ``record_at_completion: counterparty``) -- see the module docstring's
@@ -421,13 +469,12 @@ def _verify_bundle_inclusion(capsule: dict[str, Any], bundle: dict[str, Any]) ->
     from scitt_cose import cll
 
     try:
-        checkpoint_dict = bundle["checkpoint"]
         inclusion = bundle["inclusion"]
         # A leaf_index that disagrees with the proof's own fails
         # verify_inclusion below; no separate check.
         leaf_index = inclusion["leaf_index"]
         proof_dict = {k: inclusion["proof"][k] for k in _PROOF_FIELDS}
-        checkpoint = cll.Checkpoint.from_dict(checkpoint_dict)
+        checkpoint = cll.Checkpoint.from_dict(bundle["checkpoint"])
         proof = cll.InclusionProof.from_dict(proof_dict)
         body_digest = bytes.fromhex(capsule["capsule_id"])
     except Exception:  # noqa: BLE001 -- malformed bundle parts fail the check
@@ -439,13 +486,36 @@ def _verify_bundle_inclusion(capsule: dict[str, Any], bundle: dict[str, Any]) ->
     )
     if not result.ok:
         return None
+    # Held and digested: the canonical forms rebuilt from the parsed values,
+    # never the caller's dicts.
+    held_checkpoint = {
+        "v": checkpoint.v,
+        "kind": checkpoint.kind,
+        "log_id": checkpoint.log_id,
+        "mmr_size": checkpoint.mmr_size,
+        "root": checkpoint.root,
+        "prev_size": checkpoint.prev_size,
+        "prev_root": checkpoint.prev_root,
+        "key_id": checkpoint.key_id,
+        "timestamp": checkpoint.timestamp,
+        "signature": checkpoint.signature,
+    }
+    held_proof = {
+        "v": proof.v,
+        "kind": proof.kind,
+        "size": proof.size,
+        "leaf_index": proof.leaf_index,
+        "witness": list(proof.witness),
+        "peaks_left": list(proof.peaks_left),
+        "peaks_right": list(proof.peaks_right),
+    }
     return {
         "leaf_index": leaf_index,
         "mmr_size": checkpoint.mmr_size,
-        "checkpoint": checkpoint_dict,
+        "checkpoint": held_checkpoint,
         "checkpoint_digest": checkpoint.digest(),
-        "inclusion_proof": proof_dict,
-        "inclusion_proof_digest": _canonical_digest(proof_dict),
+        "inclusion_proof": held_proof,
+        "inclusion_proof_digest": _canonical_digest(held_proof),
     }
 
 
@@ -496,7 +566,11 @@ def handle_record_push(
     # the half exactly as for a bare push, then the bundle's own checks.
     bundle: dict[str, Any] | None = None
     if isinstance(capsule, dict) and BUNDLE_MARKER in capsule:
-        if capsule.get(BUNDLE_MARKER) != BUNDLE_VERSION or not _bundle_members_exact(capsule):
+        if (
+            capsule.get(BUNDLE_MARKER) != BUNDLE_VERSION
+            or not _bundle_members_exact(capsule)
+            or not _bundle_types_exact(capsule)
+        ):
             return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at)
         bundle = capsule
         capsule = bundle.get("capsule")

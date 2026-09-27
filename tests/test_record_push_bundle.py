@@ -360,3 +360,87 @@ def test_s1_nan_in_a_bare_push_is_refused_before_storing(tmp_path, monkeypatch):
     s = _Setup(tmp_path, monkeypatch)
     raw = json.dumps(s.capsule)[:-1] + ', "x": NaN}'
     _assert_refused_malformed_nothing_stored(s, _raw_push(s, raw.encode()))
+
+
+# ---------------------------------------------------------------------------
+# S2 (EM review): exact types only -- no int() coercion of strings, floats or
+# bools, lowercase hex for hashes -- and what is stored and digested is the
+# canonical form, rebuilt from the parsed values, never the caller's dict.
+# ---------------------------------------------------------------------------
+
+
+def _resigned(s: _Setup, bundle: dict, **checkpoint_changes) -> dict:
+    bundle["checkpoint"] = _sign_checkpoint(
+        {k: v for k, v in {**bundle["checkpoint"], **checkpoint_changes}.items() if k != "signature"},
+        s.private_key,
+    )
+    return bundle
+
+
+def test_s2_string_proof_size_is_refused(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    bundle = _bundle(s.capsule, s.private_key)
+    bundle["inclusion"]["proof"]["size"] = str(bundle["inclusion"]["proof"]["size"])
+    _assert_refused_malformed_nothing_stored(s, s.push(bundle))
+
+
+def test_s2_float_leaf_index_is_refused(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    bundle = _bundle(s.capsule, s.private_key)
+    bundle["inclusion"]["leaf_index"] = 4.9
+    bundle["inclusion"]["proof"]["leaf_index"] = 4.9
+    _assert_refused_malformed_nothing_stored(s, s.push(bundle))
+
+
+def test_s2_bool_version_is_refused(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    bundle = _bundle(s.capsule, s.private_key)
+    bundle["inclusion"]["proof"]["v"] = True
+    _assert_refused_malformed_nothing_stored(s, s.push(bundle))
+
+
+def test_s2_string_checkpoint_size_is_refused_even_when_signed(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    bundle = _bundle(s.capsule, s.private_key)
+    # int("10 ") == 10, so the signing body -- and the signature -- still match.
+    bundle["checkpoint"]["mmr_size"] = f'{bundle["checkpoint"]["mmr_size"]} '
+    _assert_refused_malformed_nothing_stored(s, s.push(bundle))
+
+
+def test_s2_uppercase_hex_root_is_refused_even_when_signed(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    bundle = _bundle(s.capsule, s.private_key)
+    bundle = _resigned(s, bundle, root=bundle["checkpoint"]["root"].upper())
+    _assert_refused_malformed_nothing_stored(s, s.push(bundle))
+
+
+def test_s2_wrong_checkpoint_kind_or_version_is_refused(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    for change in ({"kind": "something_else"}, {"v": 2}):
+        bundle = _resigned(s, _bundle(s.capsule, s.private_key), **change)
+        _assert_refused_malformed_nothing_stored(s, s.push(bundle))
+
+
+def test_s2_held_artifacts_are_the_canonical_forms(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    bundle = _bundle(s.capsule, s.private_key)
+    result = s.push(bundle)
+    held = _lines(s.ledger_dir, RECEIVED_INCLUSION_FILENAME)[0]
+    checkpoint = cll.Checkpoint.from_dict(bundle["checkpoint"])
+    canonical_checkpoint = {
+        "v": checkpoint.v, "kind": checkpoint.kind, "log_id": checkpoint.log_id,
+        "mmr_size": checkpoint.mmr_size, "root": checkpoint.root, "prev_size": checkpoint.prev_size,
+        "prev_root": checkpoint.prev_root, "key_id": checkpoint.key_id,
+        "timestamp": checkpoint.timestamp, "signature": checkpoint.signature,
+    }
+    assert held["checkpoint"] == canonical_checkpoint
+    proof = cll.InclusionProof.from_dict(bundle["inclusion"]["proof"])
+    canonical_proof = {
+        "v": proof.v, "kind": proof.kind, "size": proof.size, "leaf_index": proof.leaf_index,
+        "witness": list(proof.witness), "peaks_left": list(proof.peaks_left),
+        "peaks_right": list(proof.peaks_right),
+    }
+    assert held["inclusion_proof"] == canonical_proof
+    assert result["inclusion"]["inclusion_proof_digest"] == hashlib.sha256(
+        json.dumps(canonical_proof, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
