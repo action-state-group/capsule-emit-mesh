@@ -210,7 +210,11 @@ fn seal_observed_host_exchange(capsules: &CapsuleState, envelope: &OpenAiExchang
             Some(emitted.capsule)
         }
         Err(error) => {
-            tracing::warn!(%error, "failed to seal capsule for observed host-served exchange");
+            tracing::warn!(
+                %error,
+                observed_not_sealed = capsules.observed_not_sealed(),
+                "failed to seal capsule for observed host-served exchange"
+            );
             None
         }
     }
