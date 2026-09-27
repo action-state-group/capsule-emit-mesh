@@ -968,6 +968,36 @@ pub fn seal_citing_record(
         received_half.insert("agent_output_digest".into(), json!(rd));
     }
 
+    seal_local_citation(
+        format!("mesh-poc/received-half-citation/{}", prov.foreign_capsule_id),
+        "n/a-received-half-citation",
+        "received_half",
+        received_half,
+        json!([{
+            "type": REFERENCE_TYPE_CAPSULE,
+            "digest_alg": REFERENCE_DIGEST_ALG,
+            "digest": prov.foreign_capsule_id,
+            "citation_purpose": CITATION_PURPOSE_COUNTERPARTY_HALF,
+        }]),
+        chain,
+        signing_key,
+    )
+}
+
+/// The shared body of every LOCAL citing record kind (a received half, a
+/// received half's inclusion evidence): an `fyi` capsule with no served
+/// exchange, carrying one `compute_attestation.<block_name>` block of the
+/// receiving event's facts and the given top-level `references[]`, chained
+/// onto this node's own head with `follows`, sealed, and enveloped.
+fn seal_local_citation(
+    action_id: String,
+    model_id: &str,
+    block_name: &str,
+    block: Map<String, Value>,
+    references: Value,
+    chain: Option<ChainLink>,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> Result<Value, crate::jcs::JcsError> {
     // Build the citing capsule body directly (this is a capsule KIND with no
     // served exchange, so it does not route through the exchange-shaped
     // `CapsuleInput`/`seal`). Header fields mirror `seal`'s so the record is a
@@ -977,10 +1007,7 @@ pub fn seal_citing_record(
     body.insert("spec_version".into(), json!(SPEC_VERSION));
     body.insert("format_version".into(), json!(FORMAT_VERSION));
     body.insert("canonicalization_id".into(), json!(CANONICALIZATION_ID));
-    body.insert(
-        "action_id".into(),
-        json!(format!("mesh-poc/received-half-citation/{}", prov.foreign_capsule_id)),
-    );
+    body.insert("action_id".into(), json!(action_id));
     body.insert("action_type".into(), json!("fyi"));
     body.insert("operator".into(), json!("capsule-emit-mesh-poc-rust"));
     body.insert("developer".into(), json!("capsule-producer/0.2.0"));
@@ -989,11 +1016,11 @@ pub fn seal_citing_record(
     body.insert("provenance".into(), json!("collector"));
 
     let mut compute_attestation = Map::new();
-    compute_attestation.insert("received_half".into(), Value::Object(received_half));
+    compute_attestation.insert(block_name.into(), Value::Object(block));
     body.insert(
         "model_attestation".into(),
         json!({
-            "model_id": "n/a-received-half-citation",
+            "model_id": model_id,
             "provider": "mesh-llm",
             "compute_attestation": Value::Object(compute_attestation),
         }),
@@ -1018,16 +1045,7 @@ pub fn seal_citing_record(
     if let Some(chain) = &chain {
         body.insert("chain".into(), chain.to_value());
     }
-    // The top-level CPB typed digest reference citing the foreign half.
-    body.insert(
-        "references".into(),
-        json!([{
-            "type": REFERENCE_TYPE_CAPSULE,
-            "digest_alg": REFERENCE_DIGEST_ALG,
-            "digest": prov.foreign_capsule_id,
-            "citation_purpose": CITATION_PURPOSE_COUNTERPARTY_HALF,
-        }]),
-    );
+    body.insert("references".into(), references);
 
     let capsule_id = compute_capsule_id(&Value::Object(body.clone()))?;
     let mut sealed = Map::new();
@@ -1043,6 +1061,92 @@ pub fn seal_citing_record(
     attach_producer_envelope(&mut capsule, signing_key)
         .expect("citing record always carries a hex capsule_id");
     Ok(capsule)
+}
+
+// ---------------------------------------------------------------------------
+// The LOCAL citing record for a received half's inclusion evidence
+// (`counterparty_inclusion`, AAC-05 `citation_purpose` registry).
+// ---------------------------------------------------------------------------
+
+/// `references[].citation_purpose` for the record citing a counterparty's
+/// inclusion proof + covering checkpoint. Registered (AAC-05 §11,
+/// agent-action-capsule#126), not provisional.
+pub const CITATION_PURPOSE_COUNTERPARTY_INCLUSION: &str = "counterparty_inclusion";
+/// `references[].type` for a cited inclusion proof. PROVISIONAL: no CPB
+/// Artifact Type is registered for a CLL inclusion proof yet; hard-coded
+/// ahead of registration, like `REFERENCE_TYPE_CAPSULE`.
+pub const REFERENCE_TYPE_INCLUSION_PROOF: &str = "cll-inclusion-proof";
+/// `references[].type` for a cited checkpoint. PROVISIONAL, same reason; the
+/// token is the CLL checkpoint wire kind.
+pub const REFERENCE_TYPE_CHECKPOINT: &str = "cll-checkpoint";
+
+/// The facts a `counterparty_inclusion` citing record carries: which held
+/// half the evidence is about, where it came from, the leaf position and
+/// covering size, and the digests of the two held artifacts it cites. Every
+/// value is what the door verified and stored; nothing is fabricated.
+pub struct InclusionCitation<'a> {
+    /// The held half the proof is for -- already cited by this node's earlier
+    /// `counterparty_half` record, never re-cited here.
+    pub half_capsule_id: &'a str,
+    pub received_from: &'a str,
+    pub via: &'a str,
+    pub received_at: &'a str,
+    /// The half's leaf index in the counterparty's log.
+    pub leaf_index: u64,
+    /// The covering checkpoint's `mmr_size`.
+    pub mmr_size: u64,
+    /// SHA-256 of the checkpoint's signing body (`CheckpointRecord::digest`)
+    /// -- the checkpoint's own identity, recomputable from the held copy.
+    pub checkpoint_digest: &'a str,
+    /// SHA-256 of the inclusion proof's sorted-key compact JSON (its JCS form:
+    /// the proof holds only integers and strings).
+    pub inclusion_proof_digest: &'a str,
+}
+
+/// Seal the LOCAL citing record for a received half's inclusion evidence:
+/// one `references[]` entry per cited artifact (the inclusion proof, the
+/// covering checkpoint), `citation_purpose = "counterparty_inclusion"`,
+/// chained onto `chain_head` with `follows`. The earlier `counterparty_half`
+/// record is never touched -- later evidence is a later record (AAC-05).
+/// The cited artifacts stay in the held-artifact store, never in the chain.
+pub fn seal_inclusion_citing_record(
+    citation: &InclusionCitation,
+    chain_head: Option<&str>,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> Result<Value, crate::jcs::JcsError> {
+    let chain = chain_head.map(|parent| ChainLink {
+        parent_capsule_id: parent.to_string(),
+        relation: CHAIN_RELATION_FOLLOWS.to_string(),
+    });
+    let mut block = Map::new();
+    block.insert("half_capsule_id".into(), json!(citation.half_capsule_id));
+    block.insert("received_from".into(), json!(citation.received_from));
+    block.insert("via".into(), json!(citation.via));
+    block.insert("received_at".into(), json!(citation.received_at));
+    block.insert("leaf_index".into(), json!(citation.leaf_index));
+    block.insert("mmr_size".into(), json!(citation.mmr_size));
+    seal_local_citation(
+        format!("mesh-poc/counterparty-inclusion-citation/{}", citation.half_capsule_id),
+        "n/a-counterparty-inclusion-citation",
+        "counterparty_inclusion",
+        block,
+        json!([
+            {
+                "type": REFERENCE_TYPE_INCLUSION_PROOF,
+                "digest_alg": REFERENCE_DIGEST_ALG,
+                "digest": citation.inclusion_proof_digest,
+                "citation_purpose": CITATION_PURPOSE_COUNTERPARTY_INCLUSION,
+            },
+            {
+                "type": REFERENCE_TYPE_CHECKPOINT,
+                "digest_alg": REFERENCE_DIGEST_ALG,
+                "digest": citation.checkpoint_digest,
+                "citation_purpose": CITATION_PURPOSE_COUNTERPARTY_INCLUSION,
+            },
+        ]),
+        chain,
+        signing_key,
+    )
 }
 
 /// Why [`attach_producer_envelope`] could not attach an inline signature — all
@@ -1842,5 +1946,66 @@ mod tests {
         let stored = capsule["capsule_id"].as_str().unwrap().to_string();
         capsule["references"][0]["digest"] = json!("0".repeat(64));
         assert_ne!(stored, compute_capsule_id(&capsule).unwrap());
+    }
+
+    fn sample_inclusion<'a>(half: &'a str) -> InclusionCitation<'a> {
+        InclusionCitation {
+            half_capsule_id: half,
+            received_from: "m4",
+            via: "push",
+            received_at: "2026-09-27T00:00:00Z",
+            leaf_index: 6,
+            mmr_size: 11,
+            checkpoint_digest: "1".repeat(64).leak(),
+            inclusion_proof_digest: "2".repeat(64).leak(),
+        }
+    }
+
+    /// The inclusion citing record: one `references[]` entry per cited
+    /// artifact (proof, checkpoint), both `counterparty_inclusion`, chained
+    /// with `follows`, and it names the held half in its own block -- never
+    /// by re-citing the half (that is the earlier `counterparty_half` record).
+    #[test]
+    fn seal_inclusion_citing_record_cites_proof_and_checkpoint() {
+        let key = crate::keys::KeyPair::generate();
+        let head = "c".repeat(64);
+        let half = "d".repeat(64);
+        let capsule =
+            seal_inclusion_citing_record(&sample_inclusion(&half), Some(&head), &key.signing_key)
+                .unwrap();
+
+        assert_eq!(capsule["capsule_id"].as_str().unwrap(), compute_capsule_id(&capsule).unwrap());
+        assert_eq!(capsule["chain"]["parent_capsule_id"], json!(head));
+        assert_eq!(capsule["chain"]["relation"], json!("follows"));
+        let refs = capsule["references"].as_array().unwrap();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0]["type"], json!(REFERENCE_TYPE_INCLUSION_PROOF));
+        assert_eq!(refs[0]["digest"], json!("2".repeat(64)));
+        assert_eq!(refs[1]["type"], json!(REFERENCE_TYPE_CHECKPOINT));
+        assert_eq!(refs[1]["digest"], json!("1".repeat(64)));
+        for reference in refs {
+            assert_eq!(reference["citation_purpose"], json!("counterparty_inclusion"));
+            assert_ne!(reference["digest"], json!(half), "the half itself is never re-cited");
+        }
+        let block = &capsule["model_attestation"]["compute_attestation"]["counterparty_inclusion"];
+        assert_eq!(block["half_capsule_id"], json!(half));
+        assert_eq!(block["leaf_index"], json!(6));
+        assert_eq!(block["mmr_size"], json!(11));
+        assert_eq!(capsule["action_type"], json!("fyi"));
+    }
+
+    /// The half-citation refactor onto `seal_local_citation` kept the
+    /// `counterparty_half` record's shape: same keys at every level.
+    #[test]
+    fn half_and_inclusion_citations_share_one_header_shape() {
+        let key = crate::keys::KeyPair::generate();
+        let half = "d".repeat(64);
+        let a = seal_citing_record(&sample_prov(&half), None, &key.signing_key).unwrap();
+        let b = seal_inclusion_citing_record(&sample_inclusion(&half), None, &key.signing_key)
+            .unwrap();
+        let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        assert_eq!(keys(&a), keys(&b));
+        assert_eq!(a["assurance"], b["assurance"]);
+        assert_eq!(a["disposition"], b["disposition"]);
     }
 }

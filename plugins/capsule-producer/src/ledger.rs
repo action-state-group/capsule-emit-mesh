@@ -110,6 +110,11 @@ pub struct Ledger {
     /// records count the same as post-ruling `"follows"` ones). The live
     /// record-push seal path reads this to dedup re-pushed foreign halves.
     cited_counterparty_halves: HashSet<String>,
+    /// Held halves (by their foreign `capsule_id`) a `counterparty_inclusion`
+    /// citing record in this ledger already covers -- the dedup gate for a
+    /// re-pushed bundle, same rebuild-on-open / maintain-on-append discipline
+    /// as `cited_counterparty_halves`.
+    inclusion_cited_halves: HashSet<String>,
 }
 
 fn statement_path(statements_dir: &Path, capsule_id: &str) -> PathBuf {
@@ -130,6 +135,29 @@ fn collect_counterparty_half_citations(capsule: &Value, out: &mut HashSet<String
                 out.insert(digest.to_string());
             }
         }
+    }
+}
+
+/// Collect into `out` the held half a `counterparty_inclusion` citing record
+/// covers. The record's `references[]` cite the proof and the checkpoint (one
+/// entry per artifact); the half they are about is named in the record's own
+/// `compute_attestation.counterparty_inclusion.half_capsule_id`.
+fn collect_counterparty_inclusion_citations(capsule: &Value, out: &mut HashSet<String>) {
+    let Some(references) = capsule.get("references").and_then(Value::as_array) else {
+        return;
+    };
+    let is_inclusion_citation = references.iter().any(|reference| {
+        reference.get("citation_purpose").and_then(Value::as_str)
+            == Some(crate::capsule::CITATION_PURPOSE_COUNTERPARTY_INCLUSION)
+    });
+    if !is_inclusion_citation {
+        return;
+    }
+    if let Some(half) = capsule
+        .pointer("/model_attestation/compute_attestation/counterparty_inclusion/half_capsule_id")
+        .and_then(Value::as_str)
+    {
+        out.insert(half.to_string());
     }
 }
 
@@ -222,6 +250,7 @@ impl Ledger {
         let mut offset: u64 = 0;
         let mut report = RecoveryReport::default();
         let mut cited_counterparty_halves = HashSet::new();
+        let mut inclusion_cited_halves = HashSet::new();
 
         // Split on '\n', keeping track of whether the buffer ends with one.
         // A missing trailing newline on the final chunk means a torn write:
@@ -301,6 +330,7 @@ impl Ledger {
             })?;
 
             collect_counterparty_half_citations(&parsed, &mut cited_counterparty_halves);
+            collect_counterparty_inclusion_citations(&parsed, &mut inclusion_cited_halves);
             index.insert(stored_id.clone(), offset);
             chain_head = Some(stored_id);
             report.valid_entries += 1;
@@ -317,6 +347,7 @@ impl Ledger {
                 index,
                 chain_head,
                 cited_counterparty_halves,
+                inclusion_cited_halves,
             },
             report,
         ))
@@ -345,6 +376,13 @@ impl Ledger {
     /// `chain.relation` match.
     pub fn cites_counterparty_half(&self, foreign_capsule_id: &str) -> bool {
         self.cited_counterparty_halves.contains(foreign_capsule_id)
+    }
+
+    /// Whether this ledger already holds a `counterparty_inclusion` citing
+    /// record for the held half `foreign_capsule_id` -- the dedup gate for a
+    /// re-pushed bundle.
+    pub fn cites_counterparty_inclusion(&self, foreign_capsule_id: &str) -> bool {
+        self.inclusion_cited_halves.contains(foreign_capsule_id)
     }
 
     /// Append a sealed capsule + its signed statement. The statement file is
@@ -383,6 +421,7 @@ impl Ledger {
         self.append_handle.sync_all()?;
 
         collect_counterparty_half_citations(capsule, &mut self.cited_counterparty_halves);
+        collect_counterparty_inclusion_citations(capsule, &mut self.inclusion_cited_halves);
         self.index.insert(capsule_id.clone(), offset);
         self.chain_head = Some(capsule_id);
         Ok(())

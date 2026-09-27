@@ -58,9 +58,12 @@ pub fn share_policy_config_schema(plugin_id: &str) -> ManifestEntry {
                 .default_value(&"counterparty")
                 .description(
                     "Push this node's own sealed record of a completed exchange to the \
-                     counterparty (counterparty), or don't (off). Symmetric: a node with this \
-                     off also does not receive the other side's push -- fetch-on-request still \
-                     works either way.",
+                     counterparty (counterparty), or don't (off). With checkpointing on, the \
+                     push also carries a signed checkpoint of this node's log and the record's \
+                     inclusion proof -- the checkpoint reveals the log's total size (records \
+                     across all peers) and its time, never any other record's content. \
+                     Symmetric: a node with this off also does not receive the other side's \
+                     push -- fetch-on-request still works either way.",
                 )
                 .label("Record at completion")
                 .category(CATEGORY_ID, CATEGORY_LABEL, CATEGORY_SUMMARY, 0),

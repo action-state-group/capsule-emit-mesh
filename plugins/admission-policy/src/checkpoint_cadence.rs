@@ -23,13 +23,29 @@
 //! is purely the tokio scheduling shell: an interval loop plus a shutdown
 //! signal, exactly the shape `checkpoint_daemon.py`'s own `run_daemon`
 //! background loop has.
+//!
+//! **Checkpoint at push (`[mesh-closed-then-in-their-log]`).** The same
+//! `CheckpointState` is shared (one lock, one writer of `checkpoints.jsonl`)
+//! with the record-push sender, which asks [`CheckpointHandle::coverage_for`]
+//! for a checkpoint covering the half it is about to push. Cuts are paced to
+//! at most one per [`PUSH_COALESCE_WINDOW`]: a push whose record the latest
+//! checkpoint already covers reuses it; otherwise it waits out the window
+//! and the first push through cuts one checkpoint covering the whole burst.
+//! Push cuts are local only -- the interval tick offers the latest one to the
+//! witnesses, once per window (`CheckpointState::tick`).
 
 use capsule_producer::anchor::AnchorClient;
-use capsule_producer::checkpoint::{CheckpointCadenceConfig, CheckpointRecord, CheckpointState};
+use capsule_producer::checkpoint::{
+    CheckpointCadenceConfig, CheckpointRecord, CheckpointState, Coverage,
+};
 use ed25519_dalek::SigningKey;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::time::{Duration, Instant};
+
+/// At most one push-time checkpoint per this window; halves sealed inside
+/// it share the next cut.
+pub const PUSH_COALESCE_WINDOW: Duration = Duration::from_millis(100);
 
 /// On by default: the plugin runs its OWN checkpoint cadence in place of
 /// `checkpoint_daemon.py` unless the operator sets
@@ -108,17 +124,103 @@ impl LatestHead {
     }
 
     fn set(&self, cp: CheckpointRecord) {
-        *self
+        // A push cut and a tick can both publish; keep the larger head so a
+        // late writer never moves the head backwards.
+        let mut head = self
             .0
             .write()
-            .expect("latest checkpoint head lock poisoned") = Some(cp);
+            .expect("latest checkpoint head lock poisoned");
+        if head.as_ref().is_some_and(|current| current.mmr_size >= cp.mmr_size) {
+            return;
+        }
+        *head = Some(cp);
+    }
+}
+
+/// The shared checkpoint state: the interval task and the record-push
+/// sender both go through this, so there is one writer of
+/// `checkpoints.jsonl` per ledger.
+#[derive(Clone)]
+pub struct CheckpointHandle {
+    state: Arc<Mutex<CheckpointState>>,
+    signer: SigningKey,
+    anchor: Arc<AnchorClient>,
+    latest_head: LatestHead,
+    last_push_cut: Arc<Mutex<Option<Instant>>>,
+}
+
+/// One pass of the pacing loop in [`CheckpointHandle::coverage_for`].
+enum PushStep {
+    Covered(Box<Coverage>),
+    WaitFor(Duration),
+}
+
+/// How long a push must still wait before it may cut, given when the last
+/// push cut happened. Zero when it may cut now.
+fn remaining_window(last_cut: Option<Instant>, now: Instant) -> Duration {
+    match last_cut {
+        Some(at) => PUSH_COALESCE_WINDOW.saturating_sub(now.saturating_duration_since(at)),
+        None => Duration::ZERO,
+    }
+}
+
+impl CheckpointHandle {
+    fn new(state: CheckpointState, signer: SigningKey) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(state)),
+            signer,
+            anchor: Arc::new(AnchorClient::default()),
+            latest_head: LatestHead::default(),
+            last_push_cut: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub fn latest_head(&self) -> LatestHead {
+        self.latest_head.clone()
+    }
+
+    /// A signed checkpoint covering `capsule_id` (this node's own
+    /// just-sealed half) plus its inclusion proof -- see the module doc's
+    /// "checkpoint at push" note for the reuse/pacing rules.
+    pub async fn coverage_for(&self, capsule_id: &str) -> anyhow::Result<Coverage> {
+        loop {
+            let this = self.clone();
+            let id = capsule_id.to_string();
+            let step = tokio::task::spawn_blocking(move || this.step(&id))
+                .await
+                .map_err(|e| anyhow::anyhow!("push checkpoint task did not complete: {e}"))??;
+            match step {
+                PushStep::Covered(coverage) => return Ok(*coverage),
+                PushStep::WaitFor(wait) => tokio::time::sleep(wait).await,
+            }
+        }
+    }
+
+    /// Under the state lock: reuse the latest checkpoint if it covers the
+    /// leaf; otherwise cut one now if the window allows, else say how long
+    /// to wait. Holding the lock across the check and the cut is what makes
+    /// "at most one cut per window" hold under concurrent pushes.
+    fn step(&self, capsule_id: &str) -> anyhow::Result<PushStep> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(coverage) = state.existing_coverage(capsule_id)? {
+            return Ok(PushStep::Covered(Box::new(coverage)));
+        }
+        let mut last_cut = self.last_push_cut.lock().unwrap_or_else(PoisonError::into_inner);
+        let wait = remaining_window(*last_cut, Instant::now());
+        if !wait.is_zero() {
+            return Ok(PushStep::WaitFor(wait));
+        }
+        let coverage = state.checkpoint_covering(capsule_id, &self.signer, &self.anchor)?;
+        *last_cut = Some(Instant::now());
+        self.latest_head.set(coverage.checkpoint.clone());
+        Ok(PushStep::Covered(Box::new(coverage)))
     }
 }
 
 /// Spawn the background cadence task over `ledger_dir`, using `signer` for
 /// every checkpoint this task ever signs (always through the
 /// `CheckpointSigner` trait -- see `checkpoint.rs`'s module doc). Returns
-/// the `LatestHead` handle immediately; the task itself runs until
+/// the shared [`CheckpointHandle`] immediately; the task itself runs until
 /// `shutdown` fires, performing a final flush before returning.
 ///
 /// Startup catch-up (`reconnect`) runs before the interval loop starts, one
@@ -130,10 +232,10 @@ pub fn spawn(
     log_id: String,
     signer: SigningKey,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
-) -> anyhow::Result<LatestHead> {
+) -> anyhow::Result<CheckpointHandle> {
     let cfg = config_from_env();
     let interval = Duration::from_secs(cfg.cadence_seconds);
-    let (mut state, report) = CheckpointState::load(&ledger_dir, log_id, cfg).map_err(|e| {
+    let (state, report) = CheckpointState::load(&ledger_dir, log_id, cfg).map_err(|e| {
         anyhow::anyhow!(
             "failed to load checkpoint state at {}: {e}",
             ledger_dir.display()
@@ -153,15 +255,29 @@ pub fn spawn(
         "checkpoint cadence task starting"
     );
 
-    let latest_head = LatestHead::default();
-    let latest_head_for_task = latest_head.clone();
-    let anchor = AnchorClient::default();
+    let handle = CheckpointHandle::new(state, signer);
+    let task = handle.clone();
 
     tokio::spawn(async move {
-        if let Some(cp) = report_checkpoint(state.reconnect(&signer, &anchor), "startup reconnect")
-        {
-            latest_head_for_task.set(cp);
-        }
+        let run = |phase: &'static str,
+                   f: fn(
+            &mut CheckpointState,
+            &SigningKey,
+            &AnchorClient,
+        ) -> Result<
+            Option<CheckpointRecord>,
+            capsule_producer::checkpoint::CheckpointStateError,
+        >| {
+            let result = {
+                let mut state = task.state.lock().unwrap_or_else(PoisonError::into_inner);
+                f(&mut state, &task.signer, &task.anchor)
+            };
+            if let Some(cp) = report_checkpoint(result, phase) {
+                task.latest_head.set(cp);
+            }
+        };
+
+        run("startup reconnect", |s, k, a| s.reconnect(k, a));
 
         let mut ticker = tokio::time::interval(interval);
         // The first tick fires immediately; the startup reconnect above
@@ -170,11 +286,7 @@ pub fn spawn(
 
         loop {
             tokio::select! {
-                _ = ticker.tick() => {
-                    if let Some(cp) = report_checkpoint(state.tick(&signer, &anchor), "tick") {
-                        latest_head_for_task.set(cp);
-                    }
-                }
+                _ = ticker.tick() => run("tick", |s, k, a| s.tick(k, a)),
                 _ = shutdown.changed() => {
                     if *shutdown.borrow() {
                         break;
@@ -183,16 +295,11 @@ pub fn spawn(
             }
         }
 
-        if let Some(cp) = report_checkpoint(
-            state.checkpoint_on_shutdown(&signer, &anchor),
-            "shutdown flush",
-        ) {
-            latest_head_for_task.set(cp);
-        }
+        run("shutdown flush", |s, k, a| s.checkpoint_on_shutdown(k, a));
         tracing::info!("checkpoint cadence task stopped");
     });
 
-    Ok(latest_head)
+    Ok(handle)
 }
 
 fn report_checkpoint(
@@ -241,5 +348,112 @@ mod tests {
         assert!(is_enabled_for(Some("on")));
         assert!(is_enabled_for(Some("")));
         assert!(is_enabled_for(Some("OFF"))); // case-sensitive: only lowercase "off" opts out
+    }
+
+    #[test]
+    fn remaining_window_is_zero_with_no_prior_cut_or_after_the_window() {
+        let now = Instant::now();
+        assert_eq!(remaining_window(None, now), Duration::ZERO);
+        assert_eq!(
+            remaining_window(Some(now), now + PUSH_COALESCE_WINDOW),
+            Duration::ZERO
+        );
+        assert_eq!(
+            remaining_window(Some(now), now + Duration::from_millis(30)),
+            Duration::from_millis(70)
+        );
+    }
+
+    fn append_capsule(dir: &std::path::Path, seed: &str) -> String {
+        use sha2::{Digest, Sha256};
+        use std::io::Write;
+        let capsule_id = hex::encode(Sha256::digest(seed.as_bytes()));
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("capsules.jsonl"))
+            .unwrap();
+        writeln!(f, "{}", serde_json::json!({ "capsule_id": capsule_id })).unwrap();
+        capsule_id
+    }
+
+    fn handle_over(dir: &std::path::Path) -> CheckpointHandle {
+        let (state, _) =
+            CheckpointState::load(dir, "test-log", CheckpointCadenceConfig::default()).unwrap();
+        CheckpointHandle::new(state, SigningKey::from_bytes(&[9u8; 32]))
+    }
+
+    struct TempDir(std::path::PathBuf);
+    impl TempDir {
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn checkpoint_lines(dir: &std::path::Path) -> usize {
+        std::fs::read_to_string(dir.join("checkpoints.jsonl"))
+            .map(|s| s.lines().count())
+            .unwrap_or(0)
+    }
+
+    /// A burst of halves sealed inside one window shares ONE checkpoint: the
+    /// first push cuts, the second (sealed after that cut) waits out the
+    /// window and cuts once more, covering both itself and anything else
+    /// sealed meanwhile.
+    #[tokio::test]
+    async fn pushes_inside_one_window_cut_at_most_once_per_window() {
+        let dir = std::env::temp_dir().join(format!("cadence-push-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TempDir(dir);
+        let handle = handle_over(dir.path());
+
+        let a = append_capsule(dir.path(), "a");
+        let first = handle.coverage_for(&a).await.unwrap();
+        assert!(first.cut_new);
+
+        let b = append_capsule(dir.path(), "b");
+        let c = append_capsule(dir.path(), "c");
+        let started = Instant::now();
+        let (cov_b, cov_c) = tokio::join!(handle.coverage_for(&b), handle.coverage_for(&c));
+        let (cov_b, cov_c) = (cov_b.unwrap(), cov_c.unwrap());
+        assert!(
+            started.elapsed() >= PUSH_COALESCE_WINDOW - Duration::from_millis(10),
+            "the second cut must wait out the window"
+        );
+        assert_eq!(cov_b.checkpoint, cov_c.checkpoint, "b and c share one checkpoint");
+        assert_eq!(checkpoint_lines(dir.path()), 2, "two windows, two cuts -- never one per push");
+        assert_eq!(handle.latest_head().get(), Some(cov_c.checkpoint.clone()));
+
+        // Already covered: returns at once, no new cut.
+        let again = handle.coverage_for(&a).await.unwrap();
+        assert!(!again.cut_new);
+        assert_eq!(checkpoint_lines(dir.path()), 2);
+    }
+
+    #[test]
+    fn latest_head_never_moves_backwards() {
+        let head = LatestHead::default();
+        let cp = |size: u64| CheckpointRecord {
+            v: 1,
+            kind: "mmr_checkpoint".into(),
+            log_id: "l".into(),
+            mmr_size: size,
+            root: String::new(),
+            prev_size: 0,
+            prev_root: String::new(),
+            key_id: String::new(),
+            timestamp: String::new(),
+            signature: String::new(),
+            witnesses: Vec::new(),
+        };
+        head.set(cp(7));
+        head.set(cp(3));
+        assert_eq!(head.get().unwrap().mmr_size, 7);
     }
 }

@@ -242,10 +242,17 @@ fn push_eligibility<'a>(
 /// propagates -- a push failure must not disturb sealing or channel-message
 /// processing, same discipline as `seal_observed_host_exchange`'s own
 /// producer-error handling.
+///
+/// Push-a-bundle: with the checkpoint cadence on (`checkpoints` is `Some`),
+/// the half goes out with a checkpoint covering it and its inclusion proof,
+/// so the receiver reaches "in their log" in one step. If no coverage can be
+/// had (cadence off, or a checkpoint-layer error) the bare record is pushed,
+/// as before -- the half is never held back for want of a proof.
 async fn push_at_completion_if_configured(
     context: &mut mesh_llm_plugin::PluginContext<'_>,
     envelope: &OpenAiExchangeEnvelope,
     capsule_json: Value,
+    checkpoints: Option<&checkpoint_cadence::CheckpointHandle>,
 ) {
     let self_id = self_peer_id();
     let Some((peer_id, self_id)) = push_eligibility(
@@ -255,7 +262,25 @@ async fn push_at_completion_if_configured(
     ) else {
         return;
     };
-    match record_push_bridge::push_capsule_to_peer(context, peer_id, self_id, &capsule_json).await {
+    let coverage = match (checkpoints, capsule_json.get("capsule_id").and_then(Value::as_str)) {
+        (Some(handle), Some(capsule_id)) => match handle.coverage_for(capsule_id).await {
+            Ok(coverage) => Some(coverage),
+            Err(error) => {
+                tracing::warn!(%error, %peer_id, "no checkpoint covering the pushed half -- pushing the bare record");
+                None
+            }
+        },
+        _ => None,
+    };
+    match record_push_bridge::push_capsule_to_peer(
+        context,
+        peer_id,
+        self_id,
+        &capsule_json,
+        coverage.as_ref(),
+    )
+    .await
+    {
         Ok(()) => {
             tracing::info!(%peer_id, "pushed sealed capsule to counterparty at completion");
         }
@@ -429,9 +454,9 @@ async fn main() -> anyhow::Result<()> {
     // the Path 1 README note. `checkpoint_shutdown_tx` held for the
     // process lifetime so dropping it doesn't fire the watch early.
     let (checkpoint_shutdown_tx, checkpoint_shutdown_rx) = tokio::sync::watch::channel(false);
-    let checkpoint_head = if checkpoint_cadence::is_enabled() {
+    let checkpoints = if checkpoint_cadence::is_enabled() {
         let ledger_dir = data_dir.join("ledger");
-        let latest_head = checkpoint_cadence::spawn(
+        let handle = checkpoint_cadence::spawn(
             ledger_dir,
             PLUGIN_ID.to_string(),
             capsules.signing_key().clone(),
@@ -441,11 +466,13 @@ async fn main() -> anyhow::Result<()> {
             let _ = tokio::signal::ctrl_c().await;
             let _ = checkpoint_shutdown_tx.send(true);
         });
-        Some(latest_head)
+        Some(handle)
     } else {
         drop(checkpoint_shutdown_rx);
         None
     };
+    let checkpoint_head = checkpoints.as_ref().map(checkpoint_cadence::CheckpointHandle::latest_head);
+    let checkpoints_for_handler = checkpoints.clone();
 
     let capsules_for_handler = capsules.clone();
     // the record-push responder's
@@ -494,6 +521,7 @@ async fn main() -> anyhow::Result<()> {
         plugin.on_channel_message(move |message, context| {
             let lifecycle_events = lifecycle_events_for_handler.clone();
             let capsules = capsules_for_handler.clone();
+            let checkpoints = checkpoints_for_handler.clone();
             Box::pin(async move {
                 if message.channel == OPENAI_EXCHANGE_CHANNEL {
                     match serde_json::from_slice::<OpenAiExchangeEnvelope>(&message.body) {
@@ -541,7 +569,13 @@ async fn main() -> anyhow::Result<()> {
                                             // one is knowable and pushing is configured
                                             // on. See `push_at_completion_if_configured`'s
                                             // own doc for the honest-absence rules.
-                                            push_at_completion_if_configured(context, &envelope, capsule_json).await;
+                                            push_at_completion_if_configured(
+                                                context,
+                                                &envelope,
+                                                capsule_json,
+                                                checkpoints.as_ref(),
+                                            )
+                                            .await;
                                         }
                                         lifecycle_events.record(envelope);
                                     }

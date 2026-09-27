@@ -1,17 +1,34 @@
 # SPDX-License-Identifier: Apache-2.0
 """Record-push-at-completion (``docs/SHARING-POLICY.md``).
 
-**What:** when an exchange ends, each side pushes its own SEALED record --
-not a bundle, just the one capsule -- to the other's evidence door
-(``POST /evidence/record-push``). The provider's half to the requester; the
-requester's half to the provider. CLOSED becomes the default row state
-instead of the exception, and each side holds the other's signed digests as
-its own defence.
+**What:** when an exchange ends, each side pushes its own SEALED record to
+the other's evidence door (``POST /evidence/record-push``). The provider's
+half to the requester; the requester's half to the provider. CLOSED becomes
+the default row state instead of the exception, and each side holds the
+other's signed digests as its own defence.
 
-**Why not a bundle:** the bundle needs the inclusion proof and a covering
-checkpoint, and at completion the record isn't checkpointed yet. Proof
-arrives on the clock or on request (``chain_segment``/``correlation``, see
-``evidence_responder.py``).
+**Push a bundle (``[mesh-closed-then-in-their-log]``).** A sender whose
+checkpoint cadence is on checkpoints at push and sends a BUNDLE -- the half,
+its inclusion proof, and the signed checkpoint covering it::
+
+    {"record_push_bundle": 1, "capsule": <the half, as sealed>,
+     "inclusion": {"leaf_index": n, "proof": <cll inclusion proof>},
+     "checkpoint": <the sender's signed checkpoint>}
+
+This door verifies all three (:func:`_verify_bundle_inclusion`): the half as
+below, the checkpoint's signature under the SAME key as the half, and the
+proof reconstructing the checkpoint's root from the half's ``capsule_id``.
+The proof and checkpoint are then held artifacts
+(:data:`RECEIVED_INCLUSION_FILENAME`) -- this node thereby retains the
+sender's checkpoint -- and the success reply names the verified inclusion so
+the Rust plugin seals a ``counterparty_inclusion`` citing record beside the
+``counterparty_half`` one. A bare-capsule push (a sender with its cadence
+off, or one that predates bundles) is still received exactly as before;
+proof for it arrives on the clock or on request (``chain_segment``/
+``correlation``, see ``evidence_responder.py``). A bundle whose checkpoint or
+proof does not verify is refused ``inclusion_unverified`` as a WHOLE -- the
+half inside it is not stored either, so a broken sender is visible rather
+than silently downgraded to a bare push.
 
 **Symmetry rule:** a node with ``record_at_completion: off`` does not
 receive the other side's push either (it can still ask -- fetch-on-request
@@ -139,6 +156,7 @@ __all__ = [
     "EVIDENCE_RECORD_PUSH_PATH",
     "REASON_POLICY_DECLINE",
     "REASON_REQUEST_MALFORMED",
+    "REASON_INCLUSION_UNVERIFIED",
     "REASON_SIGNATURE_UNVERIFIED",
     "handle_record_push",
     "push_record",
@@ -156,6 +174,14 @@ REASON_REQUEST_MALFORMED = "request_malformed"
 #: unconditionally since the door hardening; see the module doc), an
 #: announced key that does not match, or a signature that does not verify.
 REASON_SIGNATURE_UNVERIFIED = "signature_unverified"
+#: A bundle push whose checkpoint signature or inclusion proof does not
+#: verify against the half it carries (see the module doc's bundle note).
+REASON_INCLUSION_UNVERIFIED = "inclusion_unverified"
+
+#: The top-level member that marks a push body as a bundle (a capsule never
+#: carries it) and the one bundle version this door reads.
+BUNDLE_MARKER = "record_push_bundle"
+BUNDLE_VERSION = 1
 
 #: Seam A2 -- the provenance sibling file,
 #: co-located with ``capsules.jsonl`` (same convention as
@@ -180,6 +206,15 @@ RECEIVED_CAPSULES_FILENAME = "received-capsules.jsonl"
 #: A claimed-identity push that failed the signature/announced-key check --
 #: recorded, but NEVER folded into ``capsules.jsonl`` as a sibling.
 REJECTED_PUSHES_FILENAME = "rejected-record-pushes.jsonl"
+#: The held-artifact store for a bundle's verified inclusion evidence: one
+#: line per received bundle -- the half it is about, the inclusion proof, the
+#: sender's signed checkpoint (kept whole, so it re-verifies offline), and
+#: the digests the ``counterparty_inclusion`` citing record cites them by.
+#: An artifact store like :data:`RECEIVED_CAPSULES_FILENAME`: nothing chains
+#: or checkpoints it.
+RECEIVED_INCLUSION_FILENAME = "received-inclusion.jsonl"
+
+_PROOF_FIELDS = ("v", "kind", "size", "leaf_index", "witness", "peaks_left", "peaks_right")
 
 
 def _now_iso() -> str:
@@ -283,6 +318,62 @@ def _append_rejected_push(
     )
 
 
+def _canonical_digest(obj: dict[str, Any]) -> str:
+    """SHA-256 of sorted-key compact JSON -- the JCS form for objects that
+    hold only strings, integers and lists of strings (a proof)."""
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _checkpoint_signature_ok(checkpoint: Any) -> bool:
+    """Ed25519 over the checkpoint's ``digest()`` (hex string, UTF-8), under
+    the raw public key its ``key_id`` names -- the same check as the Rust
+    ``CheckpointRecord::verify_signature_offline``. Never raises."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    try:
+        key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(checkpoint.key_id))
+        key.verify(bytes.fromhex(checkpoint.signature), checkpoint.digest().encode("utf-8"))
+        return True
+    except Exception:  # noqa: BLE001 -- any malformed input is a failed check
+        return False
+
+
+def _verify_bundle_inclusion(capsule: dict[str, Any], bundle: dict[str, Any]) -> dict[str, Any] | None:
+    """The bundle's two extra checks, after the half itself has passed:
+    (1) the checkpoint is signed by the half's own key; (2) the proof puts
+    the half's ``capsule_id`` at ``leaf_index`` under the checkpoint's root.
+    Returns the facts to store and cite, or ``None`` when either fails."""
+    from scitt_cose import cll
+
+    try:
+        checkpoint_dict = bundle["checkpoint"]
+        inclusion = bundle["inclusion"]
+        # A leaf_index that disagrees with the proof's own fails
+        # verify_inclusion below; no separate check.
+        leaf_index = inclusion["leaf_index"]
+        proof_dict = {k: inclusion["proof"][k] for k in _PROOF_FIELDS}
+        checkpoint = cll.Checkpoint.from_dict(checkpoint_dict)
+        proof = cll.InclusionProof.from_dict(proof_dict)
+        body_digest = bytes.fromhex(capsule["capsule_id"])
+    except Exception:  # noqa: BLE001 -- malformed bundle parts fail the check
+        return None
+    if checkpoint.key_id != capsule.get("key_id") or not _checkpoint_signature_ok(checkpoint):
+        return None
+    result = cll.verify_leaf_against_checkpoint(
+        body_digest=body_digest, leaf_index=leaf_index, checkpoint=checkpoint, proof=proof
+    )
+    if not result.ok:
+        return None
+    return {
+        "leaf_index": leaf_index,
+        "mmr_size": checkpoint.mmr_size,
+        "checkpoint": checkpoint_dict,
+        "checkpoint_digest": checkpoint.digest(),
+        "inclusion_proof": proof_dict,
+        "inclusion_proof_digest": _canonical_digest(proof_dict),
+    }
+
+
 def handle_record_push(
     state: Any,
     body: bytes,
@@ -326,6 +417,15 @@ def handle_record_push(
     except Exception:
         return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at)
 
+    # A bundle carries the half under "capsule"; every check below runs on
+    # the half exactly as for a bare push, then the bundle's own checks.
+    bundle: dict[str, Any] | None = None
+    if isinstance(capsule, dict) and BUNDLE_MARKER in capsule:
+        if capsule.get(BUNDLE_MARKER) != BUNDLE_VERSION:
+            return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at)
+        bundle = capsule
+        capsule = bundle.get("capsule")
+
     if not isinstance(capsule, dict) or not capsule.get("capsule_id"):
         return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at)
 
@@ -366,9 +466,44 @@ def handle_record_push(
     # the Rust plugin onto OUR chain (``record_push_bridge.rs`` ->
     # ``capsule_emit.rs``), preserving ONE WRITER per chain. "cite, never
     # mutate."
+    inclusion: dict[str, Any] | None = None
+    if bundle is not None:
+        inclusion = _verify_bundle_inclusion(capsule, bundle)
+        if inclusion is None:
+            _append_rejected_push(
+                state, capsule.get("capsule_id"), sender_peer_id, REASON_INCLUSION_UNVERIFIED, issued_at
+            )
+            return _refuse(request_digest, REASON_INCLUSION_UNVERIFIED, state=state, issued_at=issued_at)
+
     _append_jsonl(state.ledger_dir, RECEIVED_CAPSULES_FILENAME, capsule)
     _append_provenance(state, capsule, sender_peer_id, issued_at)
-    return {"status": "received"}
+    if inclusion is None:
+        return {"status": "received"}
+
+    held = {
+        "half_capsule_id": capsule["capsule_id"],
+        "received_from": sender_peer_id,
+        "via": "push",
+        "received_at": issued_at,
+        **inclusion,
+    }
+    _append_jsonl(state.ledger_dir, RECEIVED_INCLUSION_FILENAME, held)
+    # What the Rust plugin cites (record_push_bridge.rs's DoorInclusion):
+    # the facts, never the artifacts themselves.
+    return {
+        "status": "received",
+        "inclusion": {
+            k: held[k]
+            for k in (
+                "half_capsule_id",
+                "leaf_index",
+                "mmr_size",
+                "checkpoint_digest",
+                "inclusion_proof_digest",
+                "received_at",
+            )
+        },
+    }
 
 
 def push_record(

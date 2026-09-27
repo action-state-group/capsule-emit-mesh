@@ -1210,7 +1210,49 @@ impl CapsuleState {
         ledger.append(&capsule, &statement)?;
         Ok(Some(EmittedCapsule { capsule_id, capsule }))
     }
+
+    /// Seal, chain, and ledger the `counterparty_inclusion` citing record for
+    /// a held half's inclusion evidence (a pushed bundle's proof + covering
+    /// checkpoint, verified and stored by the door) -- the same single-writer
+    /// path as [`Self::emit_citing_record`], and deduped the same way: a
+    /// re-pushed bundle for a half already covered seals nothing (`Ok(None)`).
+    pub fn emit_inclusion_citing_record(
+        &self,
+        citation: &InclusionCitation,
+    ) -> anyhow::Result<Option<EmittedCapsule>> {
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ledger.cites_counterparty_inclusion(citation.half_capsule_id) {
+            return Ok(None);
+        }
+        let capsule = capsule_producer::capsule::seal_inclusion_citing_record(
+            citation,
+            ledger.chain_head(),
+            &self.keys.signing_key,
+        )?;
+        let capsule_id = capsule["capsule_id"]
+            .as_str()
+            .expect("seal_inclusion_citing_record always sets capsule_id")
+            .to_string();
+        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let statement = build_signed_statement(
+            &SignedStatementInput {
+                payload: &payload,
+                issuer: &self.node_id,
+                subject: &capsule_id,
+                content_type: CAPSULE_CONTENT_TYPE,
+            },
+            &self.keys.signing_key,
+        );
+        ledger.append(&capsule, &statement)?;
+        Ok(Some(EmittedCapsule { capsule_id, capsule }))
+    }
 }
+
+/// See `capsule_producer::capsule::InclusionCitation`.
+pub use capsule_producer::capsule::InclusionCitation;
 
 #[cfg(test)]
 mod tests {
@@ -1326,6 +1368,50 @@ mod tests {
             reopened.chain_head().as_deref(),
             Some(citing.capsule_id.as_str())
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The inclusion citing record lands on the SAME chain after the half's
+    /// own citing record, and a re-pushed bundle (live or after a restart)
+    /// seals nothing new.
+    #[test]
+    fn emit_inclusion_citing_record_chains_after_the_half_citation_and_dedups() {
+        let dir = std::env::temp_dir().join(format!("cap-incl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let half = "d".repeat(64);
+        let prov = ReceivedHalfProvenance {
+            foreign_capsule_id: &half,
+            received_from: "m4",
+            via: "push",
+            received_at: "2026-09-27T00:00:00Z",
+            signature_ok: true,
+            digest_match: None,
+            foreign_agent_input_digest: None,
+            foreign_agent_output_digest: None,
+        };
+        let half_citation = state.emit_citing_record(&prov).unwrap().unwrap();
+        let citation = InclusionCitation {
+            half_capsule_id: &half,
+            received_from: "m4",
+            via: "push",
+            received_at: "2026-09-27T00:00:00Z",
+            leaf_index: 3,
+            mmr_size: 7,
+            checkpoint_digest: "1".repeat(64).leak(),
+            inclusion_proof_digest: "2".repeat(64).leak(),
+        };
+        let inclusion = state.emit_inclusion_citing_record(&citation).unwrap().unwrap();
+        assert_eq!(
+            inclusion.capsule["chain"]["parent_capsule_id"].as_str(),
+            Some(half_citation.capsule_id.as_str())
+        );
+        assert!(state.emit_inclusion_citing_record(&citation).unwrap().is_none());
+
+        drop(state);
+        let reopened = CapsuleState::open(&dir, "node-under-test").expect("reopen");
+        assert!(reopened.emit_inclusion_citing_record(&citation).unwrap().is_none());
+        assert_eq!(reopened.chain_head().as_deref(), Some(inclusion.capsule_id.as_str()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -50,6 +50,17 @@
 //! recorded at all (never synthesized); the ledger carries only the
 //! door-verified self-declared `received_from`.
 //!
+//! **Push-a-bundle (`[mesh-closed-then-in-their-log]`).** When the sender's
+//! checkpoint cadence is on, the JSON body is a bundle instead of the bare
+//! capsule: `{"record_push_bundle": 1, "capsule": <the half, unchanged>,
+//! "inclusion": {"leaf_index", "proof"}, "checkpoint": <signed checkpoint>}`
+//! (~2.5 KB). The door verifies all three (`record_push.py`) and its success
+//! reply names the verified inclusion; this bridge then seals the
+//! `counterparty_half` citing record AND a second, `counterparty_inclusion`
+//! citing record -- the row reaches "in their log" in one step. A door that
+//! predates bundles refuses one `request_malformed` (no top-level
+//! `capsule_id`); the sender then re-pushes the bare capsule once.
+//!
 //! **Single `on_open_stream` slot.** The plugin SDK gives a plugin exactly
 //! ONE `on_open_stream` handler slot (`SimplePlugin::open_stream_handler:
 //! Option<OpenStreamHandler>`, verified against the 0.76.2 crate source) and
@@ -65,7 +76,38 @@ use mesh_llm_plugin::proto::{OpenMeshStreamRequest, OpenStreamRequest, OpenStrea
 use mesh_llm_plugin::{LocalListener, LocalStream, PluginContext, PluginError, PluginResult, bind_side_stream};
 use tokio::io::AsyncWriteExt;
 
-use crate::capsule_emit::{CapsuleState, ReceivedHalfProvenance};
+use capsule_producer::checkpoint::{inclusion_proof_json, Coverage};
+
+use crate::capsule_emit::{CapsuleState, InclusionCitation, ReceivedHalfProvenance};
+
+/// The top-level member that marks a push body as a bundle (a capsule never
+/// carries it), and the one bundle version this plugin speaks.
+pub const BUNDLE_MARKER: &str = "record_push_bundle";
+pub const BUNDLE_VERSION: u64 = 1;
+
+/// The push body for `capsule_json` covered by `coverage`: the half itself,
+/// unchanged, beside its inclusion proof and the covering checkpoint.
+pub fn bundle_body(capsule_json: &serde_json::Value, coverage: &Coverage) -> serde_json::Value {
+    serde_json::json!({
+        BUNDLE_MARKER: BUNDLE_VERSION,
+        "capsule": capsule_json,
+        "inclusion": {
+            "leaf_index": coverage.leaf_index,
+            "proof": inclusion_proof_json(&coverage.proof),
+        },
+        "checkpoint": coverage.checkpoint,
+    })
+}
+
+/// The pushed half inside a push body: the bundle's `capsule`, or the body
+/// itself for a bare push.
+fn pushed_half(body: &serde_json::Value) -> &serde_json::Value {
+    if body.get(BUNDLE_MARKER).is_some() {
+        body.get("capsule").unwrap_or(&serde_json::Value::Null)
+    } else {
+        body
+    }
+}
 
 /// The mesh channel this module declares on both ends, distinct from
 /// `mesh_evidence_bridge::EVIDENCE_REQUEST_CHANNEL`.
@@ -248,10 +290,10 @@ async fn bridge_inbound_record_push(
     let door_reply = serde_json::from_slice::<serde_json::Value>(&response_bytes).ok();
     let reply_bytes = match door_reply {
         Some(reply) if door_accepted(&reply) => {
-            match seal_citing_record_for_push(&capsules, &sender_peer_id, &capsule_bytes).await {
+            match seal_citing_records_for_push(&capsules, &sender_peer_id, &capsule_bytes, &reply).await {
                 Ok(()) => response_bytes.to_vec(),
                 Err(error) => {
-                    tracing::warn!(%error, received_from = %sender_peer_id, "door stored the pushed half but the citing-record seal failed -- refusing instead of acking");
+                    tracing::warn!(%error, received_from = %sender_peer_id, "door stored the pushed half but a citing-record seal failed -- refusing instead of acking");
                     seal_failed_refusal()
                 }
             }
@@ -262,6 +304,31 @@ async fn bridge_inbound_record_push(
     };
     write_half.write_all(&reply_bytes).await?;
     write_half.shutdown().await?;
+    Ok(())
+}
+
+/// On door success: the half's `counterparty_half` citing record, then --
+/// for a bundle the door verified -- the `counterparty_inclusion` one. Both
+/// must be on our chain before the ack is written (seal-before-ack); a
+/// retried push re-runs both, and each dedups on its own.
+async fn seal_citing_records_for_push(
+    capsules: &Arc<CapsuleState>,
+    sender_peer_id: &str,
+    body_bytes: &[u8],
+    door_reply: &serde_json::Value,
+) -> anyhow::Result<()> {
+    let body: serde_json::Value = serde_json::from_slice(body_bytes)
+        .map_err(|e| anyhow::anyhow!("door accepted an unparseable body: {e}"))?;
+    let half = pushed_half(&body);
+    let half_bytes = serde_json::to_vec(half)?;
+    seal_citing_record_for_push(capsules, sender_peer_id, &half_bytes).await?;
+    if let Some(inclusion) = door_inclusion(door_reply) {
+        let half_id = half
+            .get("capsule_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("pushed half carries no capsule_id"))?;
+        seal_inclusion_citing_record_for_push(capsules, sender_peer_id, half_id, inclusion).await?;
+    }
     Ok(())
 }
 
@@ -332,6 +399,73 @@ async fn seal_citing_record_for_push(
     Ok(())
 }
 
+/// The door's verified inclusion facts for a bundle push, lifted from its
+/// success reply (`record_push.py`'s `inclusion` member). `None` for a bare
+/// push. The door is the one authority on whether the proof and checkpoint
+/// verified -- this reads its verdict, same as `signature_ok`.
+#[derive(Debug, PartialEq, Eq)]
+struct DoorInclusion {
+    half_capsule_id: String,
+    leaf_index: u64,
+    mmr_size: u64,
+    checkpoint_digest: String,
+    inclusion_proof_digest: String,
+    received_at: String,
+}
+
+fn door_inclusion(reply: &serde_json::Value) -> Option<DoorInclusion> {
+    let inclusion = reply.get("inclusion")?;
+    let text = |k: &str| inclusion.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    let num = |k: &str| inclusion.get(k).and_then(|v| v.as_u64());
+    Some(DoorInclusion {
+        half_capsule_id: text("half_capsule_id")?,
+        leaf_index: num("leaf_index")?,
+        mmr_size: num("mmr_size")?,
+        checkpoint_digest: text("checkpoint_digest")?,
+        inclusion_proof_digest: text("inclusion_proof_digest")?,
+        received_at: text("received_at")?,
+    })
+}
+
+/// After the half's own citing record: seal the `counterparty_inclusion`
+/// citing record for the bundle's verified proof + checkpoint. A reply
+/// whose inclusion names a different half than the one pushed is refused
+/// (never cited) -- the two records must be about the same half.
+async fn seal_inclusion_citing_record_for_push(
+    capsules: &Arc<CapsuleState>,
+    sender_peer_id: &str,
+    pushed_capsule_id: &str,
+    inclusion: DoorInclusion,
+) -> anyhow::Result<()> {
+    if inclusion.half_capsule_id != pushed_capsule_id {
+        anyhow::bail!(
+            "door inclusion names half {} but the pushed half is {pushed_capsule_id}",
+            inclusion.half_capsule_id
+        );
+    }
+    let capsules = capsules.clone();
+    let received_from = sender_peer_id.to_string();
+    let emitted = tokio::task::spawn_blocking(move || {
+        capsules.emit_inclusion_citing_record(&InclusionCitation {
+            half_capsule_id: &inclusion.half_capsule_id,
+            received_from: &received_from,
+            via: "push",
+            received_at: &inclusion.received_at,
+            leaf_index: inclusion.leaf_index,
+            mmr_size: inclusion.mmr_size,
+            checkpoint_digest: &inclusion.checkpoint_digest,
+            inclusion_proof_digest: &inclusion.inclusion_proof_digest,
+        })
+    })
+    .await
+    .map_err(|join_error| anyhow::anyhow!("inclusion citing-record seal task did not complete: {join_error}"))??;
+    match emitted {
+        Some(_) => tracing::info!(half = %pushed_capsule_id, %sender_peer_id, "SEALED counterparty_inclusion citing record"),
+        None => tracing::info!(half = %pushed_capsule_id, %sender_peer_id, "inclusion for this half already cited -- nothing new sealed"),
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------
 // Requester role: push this node's own sealed capsule to a peer's door
 // ---------------------------------------------------------------------
@@ -340,6 +474,9 @@ async fn seal_citing_record_for_push(
 /// `capsule_json` (this node's own just-sealed capsule, unmodified --
 /// `record_push.py`'s "AS TRANSMITTED, never re-signed" invariant), self-
 /// declaring `self_peer_id` as the sender (see module doc's "wire shape").
+/// With `coverage` the body is the bundle (module doc, "push-a-bundle");
+/// a `request_malformed` refusal of a bundle is read as a door that predates
+/// bundles, and the bare capsule is pushed once more.
 /// Best-effort by design -- the caller (`main.rs`'s seal-on-observe path)
 /// logs success/failure and never lets a push failure disturb sealing or
 /// channel-message processing, same discipline as
@@ -349,7 +486,40 @@ pub async fn push_capsule_to_peer(
     peer_id: &str,
     self_peer_id: &str,
     capsule_json: &serde_json::Value,
+    coverage: Option<&Coverage>,
 ) -> anyhow::Result<()> {
+    let response = match coverage {
+        Some(coverage) => {
+            let bundle = bundle_body(capsule_json, coverage);
+            let response = send_push(context, peer_id, self_peer_id, &bundle).await?;
+            if refused_as_older_door(&response) {
+                tracing::info!(%peer_id, "peer door predates bundles -- re-pushing the bare record");
+                send_push(context, peer_id, self_peer_id, capsule_json).await?
+            } else {
+                response
+            }
+        }
+        None => send_push(context, peer_id, self_peer_id, capsule_json).await?,
+    };
+    if response.get("reason").is_some() {
+        anyhow::bail!("peer {peer_id} refused record-push: {response}");
+    }
+    Ok(())
+}
+
+/// A bundle refused `request_malformed` came from a door that reads the body
+/// as a bare capsule and found no `capsule_id` at its top level.
+fn refused_as_older_door(response: &serde_json::Value) -> bool {
+    response.get("reason").and_then(|r| r.as_str()) == Some("request_malformed")
+}
+
+/// One `record-push/1` stream: write `sender\n<body>`, read the door's reply.
+async fn send_push(
+    context: &mut PluginContext<'_>,
+    peer_id: &str,
+    self_peer_id: &str,
+    body: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
     let open_request = OpenMeshStreamRequest {
         stream_id: next_stream_id("record-push"),
         target_peer_id: peer_id.to_string(),
@@ -374,7 +544,7 @@ pub async fn push_capsule_to_peer(
     let mut wire = Vec::with_capacity(self_peer_id.len() + 1);
     wire.extend_from_slice(self_peer_id.as_bytes());
     wire.push(b'\n');
-    serde_json::to_writer(&mut wire, capsule_json)?;
+    serde_json::to_writer(&mut wire, body)?;
 
     let write_and_read = async {
         write_half.write_all(&wire).await?;
@@ -395,12 +565,8 @@ pub async fn push_capsule_to_peer(
     .map_err(|_| anyhow::anyhow!("peer {peer_id} did not acknowledge record-push"))?
     .map_err(|error| anyhow::anyhow!("peer {peer_id} did not acknowledge record-push: {error}"))?;
 
-    let response: serde_json::Value = serde_json::from_slice(&response_bytes)
-        .map_err(|error| anyhow::anyhow!("peer {peer_id} returned malformed record-push response: {error}"))?;
-    if response.get("reason").is_some() {
-        anyhow::bail!("peer {peer_id} refused record-push: {response}");
-    }
-    Ok(())
+    serde_json::from_slice(&response_bytes)
+        .map_err(|error| anyhow::anyhow!("peer {peer_id} returned malformed record-push response: {error}"))
 }
 
 #[cfg(test)]
@@ -425,5 +591,172 @@ mod tests {
         let (sender, body) = split_wire(b"peer-abc\n").expect("wire has a newline");
         assert_eq!(sender, "peer-abc");
         assert!(body.is_empty());
+    }
+
+    fn sample_coverage() -> Coverage {
+        use capsule_producer::checkpoint::{CheckpointCadenceConfig, CheckpointState};
+        use capsule_producer::anchor::AnchorClient;
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("bundle-body-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = "a".repeat(64);
+        let mut f = std::fs::File::create(dir.join("capsules.jsonl")).unwrap();
+        writeln!(f, "{}", serde_json::json!({"capsule_id": id})).unwrap();
+        let (mut state, _) =
+            CheckpointState::load(&dir, "log", CheckpointCadenceConfig::default()).unwrap();
+        let key = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]);
+        let coverage = state
+            .checkpoint_covering(&id, &key, &AnchorClient::new("http://127.0.0.1:1"))
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        coverage
+    }
+
+    #[test]
+    fn bundle_body_carries_the_half_unchanged_beside_proof_and_checkpoint() {
+        let coverage = sample_coverage();
+        let half = serde_json::json!({"capsule_id": "a".repeat(64), "signature": "s", "key_id": "k"});
+        let body = bundle_body(&half, &coverage);
+        assert_eq!(body[BUNDLE_MARKER], serde_json::json!(1));
+        assert_eq!(body["capsule"], half, "the half is carried as transmitted");
+        assert_eq!(body["inclusion"]["leaf_index"], serde_json::json!(0));
+        assert_eq!(body["inclusion"]["proof"]["kind"], serde_json::json!("inclusion"));
+        assert_eq!(
+            body["inclusion"]["proof"]["size"],
+            serde_json::json!(coverage.checkpoint.mmr_size)
+        );
+        assert_eq!(body["checkpoint"]["root"], serde_json::json!(coverage.checkpoint.root));
+        assert!(body.get("capsule_id").is_none(), "an older door must see no top-level capsule_id");
+        assert_eq!(pushed_half(&body), &half);
+        assert_eq!(pushed_half(&half), &half);
+    }
+
+    #[test]
+    fn only_request_malformed_reads_as_an_older_door() {
+        assert!(refused_as_older_door(&serde_json::json!({"reason": "request_malformed"})));
+        assert!(!refused_as_older_door(&serde_json::json!({"reason": "inclusion_unverified"})));
+        assert!(!refused_as_older_door(&serde_json::json!({"reason": "signature_unverified"})));
+        assert!(!refused_as_older_door(&serde_json::json!({"status": "received"})));
+    }
+
+    #[test]
+    fn door_inclusion_is_read_only_when_every_fact_is_present() {
+        let reply = serde_json::json!({
+            "status": "received",
+            "inclusion": {
+                "half_capsule_id": "h", "leaf_index": 4, "mmr_size": 8,
+                "checkpoint_digest": "c", "inclusion_proof_digest": "p",
+                "received_at": "2026-09-27T00:00:00Z"
+            }
+        });
+        let inclusion = door_inclusion(&reply).expect("complete inclusion facts");
+        assert_eq!(inclusion.leaf_index, 4);
+        assert_eq!(inclusion.mmr_size, 8);
+        assert!(door_inclusion(&serde_json::json!({"status": "received"})).is_none());
+        let mut partial = reply.clone();
+        partial["inclusion"].as_object_mut().unwrap().remove("checkpoint_digest");
+        assert!(door_inclusion(&partial).is_none(), "a partial verdict is never cited");
+    }
+
+    /// The whole sender flow over a REAL sealed half: seal through
+    /// `CapsuleState`, cover it with a push-time checkpoint over the same
+    /// ledger, build the bundle -- and the bundle's proof verifies against its
+    /// checkpoint, which is signed by the half's own key.
+    fn real_bundle(dir: &std::path::Path) -> serde_json::Value {
+        use capsule_producer::anchor::AnchorClient;
+        use capsule_producer::checkpoint::{CheckpointCadenceConfig, CheckpointState};
+        let capsules = CapsuleState::open(dir, "rust-node").expect("open capsule state");
+        let exchange = crate::capsule_emit::ExchangeRecord {
+            model: "m",
+            client_nonce: Some("n"),
+            request_bytes: br#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#,
+            response_bytes: br#"{"id":"x","choices":[{"message":{"role":"assistant","content":"y"}}]}"#,
+            latency_ms: 1.0,
+            exchange_id: Some("e-1"),
+            requesting_party: Some("party-1"),
+            host_provenance: None,
+        };
+        capsules.emit_for_exchange(&exchange).expect("seal an earlier record");
+        let half = capsules.emit_for_exchange(&exchange).expect("seal the pushed half");
+        let (mut state, _) =
+            CheckpointState::load(&dir.join("ledger"), "rust-node", CheckpointCadenceConfig::default())
+                .expect("load checkpoint state");
+        let coverage = state
+            .checkpoint_covering(
+                &half.capsule_id,
+                capsules.signing_key(),
+                &AnchorClient::new("http://127.0.0.1:1"),
+            )
+            .expect("cover the half");
+        assert_eq!(coverage.leaf_index, 1);
+        assert_eq!(coverage.checkpoint.key_id, half.capsule["key_id"].as_str().unwrap());
+        assert!(coverage.checkpoint.verify_signature_offline());
+        bundle_body(&half.capsule, &coverage)
+    }
+
+    #[test]
+    fn a_real_bundle_proves_the_half_under_a_checkpoint_signed_by_its_key() {
+        let dir = std::env::temp_dir().join(format!("bundle-real-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let body = real_bundle(&dir);
+        let root: [u8; 32] = hex::decode(body["checkpoint"]["root"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let leaf: [u8; 32] = hex::decode(body["capsule"]["capsule_id"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let p = &body["inclusion"]["proof"];
+        let strings = |k: &str| {
+            p[k].as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        let proof = capsule_producer::checkpoint::InclusionProof {
+            v: p["v"].as_u64().unwrap() as u32,
+            kind: p["kind"].as_str().unwrap().to_string(),
+            size: p["size"].as_u64().unwrap(),
+            leaf_index: p["leaf_index"].as_u64().unwrap(),
+            witness: strings("witness"),
+            peaks_left: strings("peaks_left"),
+            peaks_right: strings("peaks_right"),
+        };
+        assert!(cll_verify_inclusion(
+            &root,
+            body["checkpoint"]["mmr_size"].as_u64().unwrap(),
+            1,
+            &leaf,
+            &proof
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn cll_verify_inclusion(
+        root: &[u8; 32],
+        size: u64,
+        leaf_index: u64,
+        body: &[u8; 32],
+        proof: &capsule_producer::checkpoint::InclusionProof,
+    ) -> bool {
+        capsule_producer::checkpoint::verify_inclusion(root, size, leaf_index, body, proof)
+    }
+
+    /// Writes `tests/fixtures/record_push_bundle_rust.json`, the bundle the
+    /// Python door's cross-language test verifies. Run to regenerate:
+    ///   cargo test writes_the_cross_language_bundle_fixture -- --ignored
+    #[test]
+    #[ignore = "regenerates a committed fixture"]
+    fn writes_the_cross_language_bundle_fixture() {
+        let dir = std::env::temp_dir().join(format!("bundle-fixture-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let body = real_bundle(&dir);
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/record_push_bundle_rust.json");
+        std::fs::write(&out, serde_json::to_string_pretty(&body).unwrap() + "\n").unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

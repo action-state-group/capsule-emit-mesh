@@ -47,9 +47,13 @@ use cll::checkpoint::{
     SignerError, WitnessRecord as CheckpointWitness,
 };
 use cll::mmr::{
-    add_leaf, consistency_proof, leaf_count as mmr_leaf_count, leaf_hash, leaf_index_to_pos,
-    peaks, root_from_peaks, ConsistencyProof, Hash, MmrError, NodeReader, DIGEST_LEN,
+    add_leaf, consistency_proof, inclusion_proof, leaf_count as mmr_leaf_count, leaf_hash,
+    leaf_index_to_pos, peaks, root_from_peaks, ConsistencyProof, Hash, MmrError, NodeReader,
+    DIGEST_LEN,
 };
+// Re-exported for the same reason as `CheckpointRecord`: the push-a-bundle
+// sender names the proof type without a direct `cll` dependency.
+pub use cll::mmr::{verify_inclusion, InclusionProof};
 use cll::node_store::{FileNodeStore, NodeStoreError, OpenReport};
 use cll::store::{append_checkpoint, read_last_checkpoint, CheckpointLine, StoreError};
 use std::fs::File;
@@ -120,6 +124,35 @@ pub enum CheckpointStateError {
         actual_root: String,
         recorded_root: String,
     },
+    #[error("capsule_id {capsule_id} is not in capsules.jsonl -- nothing to cover")]
+    CapsuleNotInLedger { capsule_id: String },
+}
+
+/// What [`CheckpointState::checkpoint_covering`] hands the push-a-bundle
+/// sender: the signed checkpoint covering one leaf, that leaf's index, and
+/// its inclusion proof against the checkpoint's `mmr_size`.
+#[derive(Debug, Clone)]
+pub struct Coverage {
+    pub checkpoint: CheckpointRecord,
+    pub leaf_index: u64,
+    pub proof: InclusionProof,
+    /// `true` when this call cut a new checkpoint, `false` when an existing
+    /// one already covered the leaf (the coalescing case).
+    pub cut_new: bool,
+}
+
+/// The wire JSON of an inclusion proof -- the exact field set
+/// `scitt_cose.cll.InclusionProof.from_dict` reads.
+pub fn inclusion_proof_json(proof: &InclusionProof) -> serde_json::Value {
+    serde_json::json!({
+        "v": proof.v,
+        "kind": proof.kind,
+        "size": proof.size,
+        "leaf_index": proof.leaf_index,
+        "witness": proof.witness,
+        "peaks_left": proof.peaks_left,
+        "peaks_right": proof.peaks_right,
+    })
 }
 
 /// Cadence/witness policy -- the fields of `checkpointing.py`'s use of
@@ -203,6 +236,12 @@ pub struct CheckpointState {
     /// `witness_urls` from the last checkpoint's own registration attempt
     /// that have not yet succeeded.
     pending_witness_urls: Vec<String>,
+    /// The latest checkpoint was cut at push time (see
+    /// [`CheckpointState::checkpoint_covering`]) and has not been offered to
+    /// a witness yet. Witness registration stays on the clock: the next
+    /// [`CheckpointState::tick`] registers the LATEST checkpoint of the
+    /// window once, never one registration per turn.
+    witness_deferred: bool,
 }
 
 fn leaf_positions_and_hashes(
@@ -326,6 +365,7 @@ impl CheckpointState {
             entries_since_checkpoint,
             pending_since: (entries_since_checkpoint > 0).then(Instant::now),
             pending_witness_urls: Vec::new(),
+            witness_deferred: false,
         };
         let report = LoadReport {
             node_store: Some(open_report),
@@ -348,6 +388,12 @@ impl CheckpointState {
     /// the NEW tail (the durable node store already holds every prior
     /// leaf's hash).
     fn sync(&mut self) -> Result<u64, CheckpointStateError> {
+        self.sync_returning_ids().map(|(added, _)| added)
+    }
+
+    /// [`Self::sync`], also handing back the `capsule_id`s it read (in leaf
+    /// order), so a caller locating one leaf does not re-read the file.
+    fn sync_returning_ids(&mut self) -> Result<(u64, Vec<String>), CheckpointStateError> {
         let capsule_ids = read_capsule_ids(&self.capsules_path)?;
         if self.leaf_count > capsule_ids.len() as u64 {
             return Err(CheckpointStateError::NodeStoreAheadOfLedger {
@@ -371,7 +417,63 @@ impl CheckpointState {
         }
         self.leaf_count += added;
         self.note_pending(added);
-        Ok(added)
+        Ok((added, capsule_ids))
+    }
+
+    /// Checkpoint at push: return a signed checkpoint covering `capsule_id`
+    /// plus that leaf's inclusion proof, cutting a new checkpoint only when
+    /// the latest one does not already cover it (a burst of pushes shares
+    /// one checkpoint -- the caller paces cuts, see admission-policy's
+    /// `push_checkpoint`). A cut here is LOCAL ONLY: it is signed and
+    /// persisted to `checkpoints.jsonl` exactly like a clock checkpoint, but
+    /// never registered with a witness -- the next [`Self::tick`] registers
+    /// the latest checkpoint of the window instead.
+    pub fn checkpoint_covering(
+        &mut self,
+        capsule_id: &str,
+        signer: &dyn CheckpointSigner,
+        anchor: &AnchorClient,
+    ) -> Result<Coverage, CheckpointStateError> {
+        if let Some(coverage) = self.existing_coverage(capsule_id)? {
+            return Ok(coverage);
+        }
+        self.checkpoint_now(signer, anchor, false)?;
+        self.witness_deferred = true;
+        let mut coverage = self
+            .existing_coverage(capsule_id)?
+            .expect("the checkpoint just cut covers every leaf synced before it");
+        coverage.cut_new = true;
+        Ok(coverage)
+    }
+
+    /// The coverage the LATEST checkpoint already gives `capsule_id`, or
+    /// `None` when that leaf is newer than it (or there is no checkpoint
+    /// yet). Never cuts -- the pacing caller checks this first, so a burst
+    /// waits for one cut instead of cutting per push.
+    pub fn existing_coverage(
+        &mut self,
+        capsule_id: &str,
+    ) -> Result<Option<Coverage>, CheckpointStateError> {
+        let (_, capsule_ids) = self.sync_returning_ids()?;
+        let leaf_index = capsule_ids
+            .iter()
+            .rposition(|id| id == capsule_id)
+            .ok_or_else(|| CheckpointStateError::CapsuleNotInLedger {
+                capsule_id: capsule_id.to_string(),
+            })? as u64;
+        let Some(checkpoint) = self.last_checkpoint.clone() else {
+            return Ok(None);
+        };
+        if leaf_index >= mmr_leaf_count(checkpoint.mmr_size)? {
+            return Ok(None);
+        }
+        let proof = inclusion_proof(&self.node_store, leaf_index, checkpoint.mmr_size)?;
+        Ok(Some(Coverage {
+            checkpoint,
+            leaf_index,
+            proof,
+            cut_new: false,
+        }))
     }
 
     fn note_pending(&mut self, added: u64) {
@@ -418,10 +520,26 @@ impl CheckpointState {
         }
         let seconds_since = self.pending_since.map(|t| t.elapsed().as_secs_f64());
         if due_for_checkpoint(&self.cfg, self.entries_since_checkpoint, seconds_since) {
-            return Ok(Some(self.checkpoint_now(signer, anchor)?));
+            return Ok(Some(self.checkpoint_now(signer, anchor, true)?));
         }
+        self.offer_deferred_to_witnesses();
         self.retry_pending_witnesses(anchor);
         Ok(None)
+    }
+
+    /// The clock leg of push-time checkpoints: a checkpoint cut at push was
+    /// never offered to a witness, so the tick offers the LATEST one once
+    /// (older push cuts in the window are covered by it through the
+    /// prev_size/prev_root chain and its consistency proof). No-op when
+    /// witnessing is off.
+    fn offer_deferred_to_witnesses(&mut self) {
+        if !self.witness_deferred {
+            return;
+        }
+        self.witness_deferred = false;
+        if self.pending_witness_urls.is_empty() {
+            self.pending_witness_urls = self.cfg.witness_urls.clone();
+        }
     }
 
     /// Latest-checkpoint-on-reconnect: commit everything accrued since the
@@ -443,7 +561,7 @@ impl CheckpointState {
                 return Ok(None);
             }
         }
-        Ok(Some(self.checkpoint_now(signer, anchor)?))
+        Ok(Some(self.checkpoint_now(signer, anchor, true)?))
     }
 
     /// On-shutdown flush: anchor any uncommitted backlog so the final
@@ -457,10 +575,14 @@ impl CheckpointState {
         self.reconnect(signer, anchor)
     }
 
+    /// `register`: offer the new checkpoint to the configured witnesses now
+    /// (the clock legs) or not (a push-time cut -- see
+    /// [`Self::checkpoint_covering`]).
     fn checkpoint_now(
         &mut self,
         signer: &dyn CheckpointSigner,
         anchor: &AnchorClient,
+        register: bool,
     ) -> Result<CheckpointRecord, CheckpointStateError> {
         let prev_before = self.last_checkpoint.clone();
         let current_size = self.node_store.size();
@@ -537,9 +659,13 @@ impl CheckpointState {
             consistency.as_ref(),
         );
 
-        let ts_urls = self.cfg.witness_urls.clone();
-        let still_pending = register_with(anchor, &mut cp, checkpoint_cose.as_deref(), &ts_urls);
-        self.pending_witness_urls = still_pending;
+        if register {
+            let ts_urls = self.cfg.witness_urls.clone();
+            let still_pending =
+                register_with(anchor, &mut cp, checkpoint_cose.as_deref(), &ts_urls);
+            self.pending_witness_urls = still_pending;
+            self.witness_deferred = false;
+        }
 
         append_checkpoint(
             &self.checkpoints_path,
@@ -904,7 +1030,7 @@ mod tests {
         state.last_checkpoint = Some(tampered_prev);
         write_capsule(dir.path(), "c");
         state.sync().unwrap();
-        let err = state.checkpoint_now(&signer(), &anchor).unwrap_err();
+        let err = state.checkpoint_now(&signer(), &anchor, true).unwrap_err();
         assert!(matches!(err, CheckpointStateError::RollbackRoot { .. }));
     }
 
@@ -915,7 +1041,7 @@ mod tests {
             CheckpointState::load(dir.path(), "test-log", CheckpointCadenceConfig::default())
                 .unwrap();
         let anchor = AnchorClient::new("http://127.0.0.1:1");
-        let err = state.checkpoint_now(&signer(), &anchor).unwrap_err();
+        let err = state.checkpoint_now(&signer(), &anchor, true).unwrap_err();
         assert!(matches!(err, CheckpointStateError::EmptyMmr));
     }
 
@@ -1133,5 +1259,166 @@ mod tests {
             1,
             "the failed URL must be queued for retry"
         );
+    }
+
+    fn checkpoint_lines(dir: &Path) -> usize {
+        cll::store::read_checkpoints(dir.join("checkpoints.jsonl"))
+            .unwrap()
+            .len()
+    }
+
+    fn assert_covers(coverage: &Coverage, capsule_id: &str) {
+        let root: Hash = hex_to_digest(&coverage.checkpoint.root).unwrap();
+        let body = hex_to_digest(capsule_id).unwrap();
+        assert!(
+            cll::mmr::verify_inclusion(
+                &root,
+                coverage.checkpoint.mmr_size,
+                coverage.leaf_index,
+                &body,
+                &coverage.proof,
+            ),
+            "the inclusion proof must reconstruct the covering checkpoint's root"
+        );
+        assert!(coverage.checkpoint.verify_signature_offline());
+    }
+
+    #[test]
+    fn checkpoint_covering_cuts_a_checkpoint_whose_proof_verifies() {
+        let dir = tempfile::tempdir().unwrap();
+        write_capsule(dir.path(), "one");
+        let two = write_capsule(dir.path(), "two");
+        let (mut state, _) =
+            CheckpointState::load(dir.path(), "test-log", CheckpointCadenceConfig::default())
+                .unwrap();
+        let anchor = AnchorClient::new("http://127.0.0.1:1");
+
+        let coverage = state.checkpoint_covering(&two, &signer(), &anchor).unwrap();
+        assert!(coverage.cut_new);
+        assert_eq!(coverage.leaf_index, 1);
+        assert_covers(&coverage, &two);
+        assert_eq!(checkpoint_lines(dir.path()), 1, "a push cut is persisted like any checkpoint");
+        assert_eq!(state.entries_since_checkpoint, 0);
+    }
+
+    #[test]
+    fn checkpoint_covering_reuses_a_checkpoint_that_already_covers_the_leaf() {
+        let dir = tempfile::tempdir().unwrap();
+        let one = write_capsule(dir.path(), "one");
+        let two = write_capsule(dir.path(), "two");
+        let (mut state, _) =
+            CheckpointState::load(dir.path(), "test-log", CheckpointCadenceConfig::default())
+                .unwrap();
+        let anchor = AnchorClient::new("http://127.0.0.1:1");
+
+        let first = state.checkpoint_covering(&two, &signer(), &anchor).unwrap();
+        // A burst: the earlier leaf is already under the checkpoint just cut.
+        let second = state.checkpoint_covering(&one, &signer(), &anchor).unwrap();
+        assert!(!second.cut_new, "a covered leaf must not cut a second checkpoint");
+        assert_eq!(second.checkpoint, first.checkpoint);
+        assert_covers(&second, &one);
+        assert_eq!(checkpoint_lines(dir.path()), 1);
+    }
+
+    #[test]
+    fn checkpoint_covering_a_capsule_not_in_the_ledger_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        write_capsule(dir.path(), "one");
+        let (mut state, _) =
+            CheckpointState::load(dir.path(), "test-log", CheckpointCadenceConfig::default())
+                .unwrap();
+        let anchor = AnchorClient::new("http://127.0.0.1:1");
+        let err = state
+            .checkpoint_covering(&"f".repeat(64), &signer(), &anchor)
+            .unwrap_err();
+        assert!(matches!(err, CheckpointStateError::CapsuleNotInLedger { .. }));
+        assert_eq!(checkpoint_lines(dir.path()), 0);
+    }
+
+    #[test]
+    fn successive_push_cuts_chain_and_stay_consistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let one = write_capsule(dir.path(), "one");
+        let (mut state, _) =
+            CheckpointState::load(dir.path(), "test-log", CheckpointCadenceConfig::default())
+                .unwrap();
+        let anchor = AnchorClient::new("http://127.0.0.1:1");
+        let first = state.checkpoint_covering(&one, &signer(), &anchor).unwrap();
+        let two = write_capsule(dir.path(), "two");
+        let three = write_capsule(dir.path(), "three");
+        let second = state.checkpoint_covering(&three, &signer(), &anchor).unwrap();
+        assert!(second.cut_new);
+        assert_eq!(second.checkpoint.prev_size, first.checkpoint.mmr_size);
+        assert_eq!(second.checkpoint.prev_root, first.checkpoint.root);
+        assert_covers(&second, &three);
+
+        // The earlier checkpoint is a prefix of the later one.
+        let proof = consistency_proof(
+            &state.node_store,
+            first.checkpoint.mmr_size,
+            second.checkpoint.mmr_size,
+        )
+        .unwrap();
+        assert!(cll::mmr::verify_consistency(
+            &hex_to_digest(&first.checkpoint.root).unwrap(),
+            first.checkpoint.mmr_size,
+            &hex_to_digest(&second.checkpoint.root).unwrap(),
+            second.checkpoint.mmr_size,
+            &proof,
+        ));
+
+        // A leaf cut under the first checkpoint still proves under the second.
+        let reused = state.checkpoint_covering(&two, &signer(), &anchor).unwrap();
+        assert!(!reused.cut_new);
+        assert_covers(&reused, &two);
+    }
+
+    #[test]
+    fn a_push_cut_is_not_witnessed_until_the_clock_offers_the_latest_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let one = write_capsule(dir.path(), "one");
+        let cfg = CheckpointCadenceConfig {
+            cadence_entries: 100,
+            cadence_seconds: 300,
+            // Unreachable: any registration attempt fails and stays pending,
+            // which is how this test observes whether one was made.
+            witness_urls: vec!["http://127.0.0.1:1".to_string()],
+        };
+        let (mut state, _) = CheckpointState::load(dir.path(), "test-log", cfg).unwrap();
+        let anchor = AnchorClient::new("http://127.0.0.1:1");
+
+        state.checkpoint_covering(&one, &signer(), &anchor).unwrap();
+        assert!(
+            state.pending_witness_urls.is_empty(),
+            "a push cut must never register with a witness per turn"
+        );
+        assert!(state.witness_deferred);
+
+        // The clock leg: nothing new to cut, but the deferred checkpoint is
+        // offered once (it fails against the unreachable URL and stays queued).
+        assert!(state.tick(&signer(), &anchor).unwrap().is_none());
+        assert!(!state.witness_deferred);
+        assert_eq!(state.pending_witness_urls, vec!["http://127.0.0.1:1".to_string()]);
+        assert_eq!(checkpoint_lines(dir.path()), 1, "the tick must not cut a second checkpoint");
+    }
+
+    #[test]
+    fn after_a_restart_a_covered_leaf_reuses_the_persisted_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let one = write_capsule(dir.path(), "one");
+        let anchor = AnchorClient::new("http://127.0.0.1:1");
+        {
+            let (mut state, _) =
+                CheckpointState::load(dir.path(), "test-log", CheckpointCadenceConfig::default())
+                    .unwrap();
+            state.checkpoint_covering(&one, &signer(), &anchor).unwrap();
+        }
+        let (mut reopened, _) =
+            CheckpointState::load(dir.path(), "test-log", CheckpointCadenceConfig::default())
+                .unwrap();
+        let coverage = reopened.checkpoint_covering(&one, &signer(), &anchor).unwrap();
+        assert!(!coverage.cut_new);
+        assert_covers(&coverage, &one);
+        assert_eq!(checkpoint_lines(dir.path()), 1);
     }
 }

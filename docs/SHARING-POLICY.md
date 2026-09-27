@@ -68,22 +68,35 @@ deliberately never gated by this switch.
 
 ## The record exchange at completion (`record_at_completion`)
 
-**What:** when an exchange ends, each side pushes its own **sealed record** —
-not a bundle, the one capsule — to the other's evidence door
-(`POST /evidence/record-push`, `record_push.py`). The provider's half to the
-requester; the requester's half to the provider.
+**What:** when an exchange ends, each side pushes its own **sealed record** to
+the other's evidence door (`POST /evidence/record-push`, `record_push.py`).
+The provider's half to the requester; the requester's half to the provider.
+With the checkpoint cadence on (the default), the record goes out as a
+**bundle**: the record, a signed checkpoint of the sender's log taken at push,
+and the record's inclusion proof under it.
 
 **Why default on:** the record contains nothing the counterparty can't
 already compute — they hold the response bytes, so both digests are theirs to
 derive, and they know the identity from the marker and announcements. New
-facts: the sealed-at time and the signature. Effect: a "both sides hold each
+facts: the sealed-at time and the signature — and, in a bundle, the
+checkpoint, which carries **the size of the sender's whole log** (its record
+count across every peer, not just this exchange), the log's root hash, and
+the checkpoint's time, plus the record's position in the log. No other
+record's content leaves: the proof is hashes only. Effect: a "both sides hold each
 other's signed half" state becomes the default, and each side has its own
 defence ("nobody can say I served something else"). This is double entry at
 exchange time, to the one party who was there.
 
-**Why not a bundle:** the bundle needs the inclusion proof and a covering
-checkpoint, and at completion the record is not checkpointed yet — proof
-arrives on the clock or on request (`chain_segment`/`correlation`).
+**Why a bundle:** the record alone means "they signed a matching
+statement"; the checkpoint and proof mean "and it is fixed in their log" — the
+receiver reaches `CLOSED · in their log (checkpoint N)` in one step, and every
+counterparty keeps a copy of the sender's checkpoint. The sender checkpoints
+at push (at most one checkpoint per 100 ms under load; a burst shares one).
+Those push checkpoints stay local: witness registration remains on the
+clock, the latest checkpoint once per window, never per turn. A sender with
+its checkpoint cadence off pushes the bare record, and proof arrives on
+request (`chain_segment`/`correlation`). A bundle whose checkpoint or proof
+does not verify is refused whole (`inclusion_unverified`).
 
 **Symmetry rule:** a node with `record_at_completion: off` does not receive
 the other side's push either (it can still ask — fetch-on-request is
