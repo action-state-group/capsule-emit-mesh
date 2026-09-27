@@ -13,7 +13,8 @@
 
 use crate::lifecycle_channel::{dispatch_path_wire_value, role_for_dispatch_path, DispatchPath};
 use capsule_producer::capsule::{
-    seal, CapsuleInput, ChainLink, HostBinding, MeshPocV1, ServingProvenance, TokenUsage,
+    seal, seal_owner_maintenance_record, CapsuleInput, ChainLink, HostBinding, MeshPocV1, OwnerMaintenance,
+    ServingProvenance, TokenUsage,
 };
 use capsule_producer::cose::{build_signed_statement, SignedStatementInput};
 use capsule_producer::jcs;
@@ -369,6 +370,9 @@ impl LearnedSelfNodeId {
 pub struct CapsuleState {
     keys: KeyPair,
     ledger: Mutex<Ledger>,
+    /// Where `ledger` lives, kept so an owner cleanup can re-open it
+    /// (`rebuild_index`) without a second writer ever existing.
+    ledger_dir: PathBuf,
     node_id: String,
     /// Per-`(self, counterparty)` monotone `seq`/`prev_seq` cache, persisted
     /// beside the ledger at `<data_dir>/sequence_counters.json` (see
@@ -446,7 +450,8 @@ impl CapsuleState {
     /// `mesh-rust-capsule-production-m2`'s `chain_ledger_conformance` test.
     pub fn open(data_dir: &Path, node_id: impl Into<String>) -> anyhow::Result<Self> {
         let keys = keys::load_or_create(&data_dir.join("keys"))?;
-        let (ledger, report) = Ledger::open(&data_dir.join("ledger"))?;
+        let ledger_dir = data_dir.join("ledger");
+        let (ledger, report) = Ledger::open(&ledger_dir)?;
         tracing::info!(
             recovered_entries = report.valid_entries,
             "capsule-producer ledger opened"
@@ -457,6 +462,7 @@ impl CapsuleState {
         Ok(Self {
             keys,
             ledger: Mutex::new(ledger),
+            ledger_dir,
             node_id: node_id.into(),
             sequence_counters: Mutex::new(sequence_counters),
             learned_self_node_id: Mutex::new(learned_self_node_id),
@@ -1179,6 +1185,75 @@ impl CapsuleState {
             capsule_id,
             capsule,
         })
+    }
+}
+
+/// What an index rebuild found: every record re-read and re-checked from disk.
+pub struct IndexRebuild {
+    pub records_checked: usize,
+    pub head: Option<String>,
+}
+
+impl CapsuleState {
+    /// Seal an owner cleanup ([`OwnerMaintenance`]) onto this node's chain
+    /// through the same single-writer path every other local record uses.
+    pub fn emit_owner_maintenance(&self, action: &OwnerMaintenance) -> anyhow::Result<EmittedCapsule> {
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let capsule = seal_owner_maintenance_record(action, ledger.chain_head(), &self.keys.signing_key)?;
+        let capsule_id = capsule["capsule_id"]
+            .as_str()
+            .expect("seal_owner_maintenance_record always sets capsule_id")
+            .to_string();
+        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let statement = build_signed_statement(
+            &SignedStatementInput {
+                payload: &payload,
+                issuer: &self.node_id,
+                subject: &capsule_id,
+                content_type: CAPSULE_CONTENT_TYPE,
+            },
+            &self.keys.signing_key,
+        );
+        ledger.append(&capsule, &statement)?;
+        Ok(EmittedCapsule { capsule_id, capsule })
+    }
+
+    /// Every record's `capsule_id`, in chain order.
+    pub fn capsule_ids_in_order(&self) -> Vec<String> {
+        self.ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .capsule_ids_in_order()
+    }
+
+    pub fn ledger_dir(&self) -> &Path {
+        &self.ledger_dir
+    }
+
+    /// Rebuild the in-memory index by re-opening the ledger from disk, which
+    /// re-checks every record (id, chain link, signed statement). Swapped in
+    /// only when the rebuilt chain ends at the same head this node already
+    /// holds; a mismatch means something other than this process changed the
+    /// file, and that is reported, never papered over.
+    pub fn rebuild_index(&self) -> anyhow::Result<IndexRebuild> {
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (rebuilt, report) = Ledger::open(&self.ledger_dir)?;
+        if rebuilt.chain_head() != ledger.chain_head() {
+            anyhow::bail!(
+                "the records on disk end at {:?} but this node holds {:?}; not replacing the index",
+                rebuilt.chain_head(),
+                ledger.chain_head()
+            );
+        }
+        let head = rebuilt.chain_head().map(str::to_string);
+        *ledger = rebuilt;
+        Ok(IndexRebuild { records_checked: report.valid_entries, head })
     }
 }
 

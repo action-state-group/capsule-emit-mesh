@@ -3,6 +3,7 @@ mod checkpoint_cadence;
 mod decision;
 mod lifecycle_channel;
 mod mesh_evidence_bridge;
+mod owner_maintenance;
 mod record_push_bridge;
 mod routing_choice_bridge;
 mod self_peer;
@@ -445,6 +446,70 @@ async fn serve_admission_http(listener: TcpListener, state: AppState) {
         .expect("admission-policy HTTP server crashed");
 }
 
+/// The Evidence tab's `Your records` status and its three cleanups, each on
+/// the blocking pool: they fsync, and a cleanup must not stall a tokio worker.
+fn register_owner_maintenance(router: &mut OperationRouter, maintenance: Arc<owner_maintenance::Maintenance>) {
+    use owner_maintenance::{NoArgs, StartNewHistoryArgs};
+    use mesh_llm_plugin::PluginError;
+
+    fn blocking<T, F>(f: F) -> impl std::future::Future<Output = mesh_llm_plugin::PluginResult<T>>
+    where
+        F: FnOnce() -> mesh_llm_plugin::PluginResult<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        async move {
+            tokio::task::spawn_blocking(f)
+                .await
+                .map_err(|e| PluginError::internal(format!("cleanup task did not complete: {e}")))?
+        }
+    }
+
+    let m = maintenance.clone();
+    router.add_json(
+        json_schema_operation::<NoArgs>(
+            owner_maintenance::STATUS_OPERATION,
+            "This node's own records: where they are, how many, stored text count, and the sharing switches as applied.",
+        ),
+        move |_args: NoArgs, _context| {
+            let m = m.clone();
+            Box::pin(blocking(move || Ok(m.status())))
+        },
+    );
+    let m = maintenance.clone();
+    router.add_json(
+        json_schema_operation::<NoArgs>(
+            owner_maintenance::DELETE_STORED_TEXT_OPERATION,
+            "Delete stored prompt and answer text. Records keep their digests and stay valid; a record of the deletion is sealed.",
+        ),
+        move |_args: NoArgs, _context| {
+            let m = m.clone();
+            Box::pin(blocking(move || m.delete_stored_text()))
+        },
+    );
+    let m = maintenance.clone();
+    router.add_json(
+        json_schema_operation::<NoArgs>(
+            owner_maintenance::REBUILD_INDEX_OPERATION,
+            "Re-read and re-check every record from disk and rebuild the index. Nothing is lost; a record of the rebuild is sealed.",
+        ),
+        move |_args: NoArgs, _context| {
+            let m = m.clone();
+            Box::pin(blocking(move || m.rebuild_index()))
+        },
+    );
+    let m = maintenance;
+    router.add_json(
+        json_schema_operation::<StartNewHistoryArgs>(
+            owner_maintenance::START_NEW_HISTORY_OPERATION,
+            "Seal a closing record and start a new history the next time this node starts. The current records are kept whole in an archive.",
+        ),
+        move |args: StartNewHistoryArgs, _context| {
+            let m = m.clone();
+            Box::pin(blocking(move || m.start_new_history(args)))
+        },
+    );
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Packaging time: print the `plugin-manifest.json` the installer reads
@@ -473,7 +538,11 @@ async fn main() -> anyhow::Result<()> {
     let models = blocked_models();
 
     let data_dir = data_dir();
+    // A new history the owner asked for last run starts HERE, before the
+    // ledger or the checkpoint cadence opens (see `owner_maintenance`).
+    let log_id = owner_maintenance::apply_pending_before_open(&data_dir, PLUGIN_ID)?;
     let capsules = Arc::new(CapsuleState::open(&data_dir, PLUGIN_ID)?);
+    owner_maintenance::finish_pending_after_open(&data_dir, &capsules, &log_id)?;
     tracing::info!(
         chain_head = ?capsules.chain_head(),
         "capsule-producer ready"
@@ -491,7 +560,7 @@ async fn main() -> anyhow::Result<()> {
         let ledger_dir = data_dir.join("ledger");
         let handle = checkpoint_cadence::spawn(
             ledger_dir,
-            PLUGIN_ID.to_string(),
+            log_id.clone(),
             capsules.signing_key().clone(),
             capsules.clone(),
             checkpoint_shutdown_rx,
@@ -525,7 +594,14 @@ async fn main() -> anyhow::Result<()> {
 
     let lifecycle_events_for_handler = lifecycle_events.clone();
 
+    let maintenance = Arc::new(owner_maintenance::Maintenance::new(
+        data_dir.clone(),
+        capsules_for_handler.clone(),
+        log_id.clone(),
+    ));
+
     let mut evidence_operations = OperationRouter::new();
+    register_owner_maintenance(&mut evidence_operations, maintenance);
     evidence_operations.add_json(
         json_schema_operation::<MeshEvidenceRequestArgs>(
             EVIDENCE_REQUEST_OPERATION,

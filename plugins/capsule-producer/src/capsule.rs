@@ -1350,6 +1350,128 @@ pub fn seal_local_routing_choice(
     Ok(capsule)
 }
 
+// ---------------------------------------------------------------------------
+// The OWNER-MAINTENANCE record:
+// a cleanup the node's owner ran on their own records, sealed onto the chain
+// so the cleanup is itself on the record.
+// ---------------------------------------------------------------------------
+
+/// `compute_attestation` key an owner-maintenance record carries its facts
+/// under. PROVISIONAL (not a registered AAC field): a reader identifies this
+/// record KIND by the presence of this block alone.
+pub const OWNER_MAINTENANCE_BLOCK: &str = "owner_maintenance";
+
+/// `references[].citation_purpose` for a new history's first record citing the
+/// last record of the history it replaced. PROVISIONAL, same status as
+/// [`CITATION_PURPOSE_COUNTERPARTY_HALF`]: flagged ahead of registry promotion.
+pub const CITATION_PURPOSE_PRIOR_HISTORY: &str = "prior_history";
+
+/// One owner cleanup to seal. `kind` names the action (`stored_text_deleted`,
+/// `index_rebuilt`, `history_closing`, `history_started`); `facts` are the
+/// action's own measured facts (counts, ranges, digests) -- never a path, and
+/// never text the cleanup removed. `prior_history_head` is set only on a new
+/// history's first record and becomes its single `references[]` entry.
+pub struct OwnerMaintenance<'a> {
+    pub kind: &'a str,
+    pub facts: Map<String, Value>,
+    pub prior_history_head: Option<&'a str>,
+}
+
+/// Seal an owner-maintenance record chained onto `chain_head` (`"follows"`,
+/// like every other local record; `None` only for the first record of a new
+/// history), with the inline producer envelope attached. Same body shape as
+/// [`seal_citing_record`]: a capsule KIND with no served exchange, so
+/// `effect_mode` is `not_applicable` and there is no `x-mesh-poc-v1` block.
+/// The caller appends it through `Ledger::append`, the single-writer path.
+pub fn seal_owner_maintenance_record(
+    action: &OwnerMaintenance,
+    chain_head: Option<&str>,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> Result<Value, crate::jcs::JcsError> {
+    let chain = chain_head.map(|parent| ChainLink {
+        parent_capsule_id: parent.to_string(),
+        relation: CHAIN_RELATION_FOLLOWS.to_string(),
+    });
+    // The same seal path as every other record (Evidence Layer -00 §12.1):
+    // committed times truncated to the minute, and a fresh store nonce.
+    let timestamp = crate::timestamp::utc_now_minute();
+
+    let mut block = Map::new();
+    block.insert("kind".into(), json!(action.kind));
+    for (k, v) in &action.facts {
+        block.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+
+    let mut body = Map::new();
+    body.insert("spec_version".into(), json!(SPEC_VERSION));
+    body.insert("format_version".into(), json!(FORMAT_VERSION));
+    body.insert("canonicalization_id".into(), json!(CANONICALIZATION_ID));
+    body.insert(
+        "action_id".into(),
+        json!(format!("mesh-poc/owner-maintenance/{}/{timestamp}", action.kind)),
+    );
+    body.insert("action_type".into(), json!("fyi"));
+    body.insert("operator".into(), json!("capsule-emit-mesh-poc-rust"));
+    body.insert("developer".into(), json!("capsule-producer/0.2.0"));
+    body.insert("timestamp".into(), json!(timestamp));
+    body.insert("domain".into(), json!("action"));
+    body.insert("provenance".into(), json!("collector"));
+
+    let mut compute_attestation = Map::new();
+    compute_attestation.insert(OWNER_MAINTENANCE_BLOCK.into(), Value::Object(block));
+    compute_attestation.insert(STORE_NONCE_FIELD.into(), json!(fresh_store_nonce()));
+    body.insert(
+        "model_attestation".into(),
+        json!({
+            "model_id": "n/a-owner-maintenance",
+            "provider": "mesh-llm",
+            "compute_attestation": Value::Object(compute_attestation),
+        }),
+    );
+    body.insert(
+        "assurance".into(),
+        json!({
+            "attestation_mode": "self_attested",
+            "effect_mode": "not_applicable",
+            "ledger_mode": if chain.is_some() { "chained" } else { "standalone" },
+        }),
+    );
+    body.insert(
+        "disposition".into(),
+        json!({
+            "decision": "accept",
+            "approver": "owner",
+            "human_disposed": true,
+            "verdict_class": "executed",
+        }),
+    );
+    if let Some(chain) = &chain {
+        body.insert("chain".into(), chain.to_value());
+    }
+    if let Some(prior) = action.prior_history_head {
+        body.insert(
+            "references".into(),
+            json!([{
+                "type": REFERENCE_TYPE_CAPSULE,
+                "digest_alg": REFERENCE_DIGEST_ALG,
+                "digest": prior,
+                "citation_purpose": CITATION_PURPOSE_PRIOR_HISTORY,
+            }]),
+        );
+    }
+
+    let capsule_id = compute_capsule_id(&Value::Object(body.clone()))?;
+    let mut sealed = Map::new();
+    sealed.insert("capsule_id".into(), json!(capsule_id));
+    for (k, v) in body {
+        sealed.entry(k).or_insert(v);
+    }
+    let mut capsule = Value::Object(sealed);
+    attach_producer_envelope(&mut capsule, signing_key)
+        .expect("owner-maintenance record always carries a hex capsule_id");
+    Ok(capsule)
+}
+
 /// Why [`attach_producer_envelope`] could not attach an inline signature — all
 /// three are caller mistakes (a non-sealed value), never a signing failure
 /// (signing itself is infallible for a valid key).
@@ -2342,5 +2464,53 @@ mod tests {
         assert_eq!(keys(&a), keys(&b));
         assert_eq!(a["assurance"], b["assurance"]);
         assert_eq!(a["disposition"], b["disposition"]);
+    }
+
+    /// An owner-maintenance record is a well-formed format-4 capsule: chained
+    /// `"follows"` onto the head, its facts under
+    /// `compute_attestation.owner_maintenance` (covered by the id -- tampering
+    /// a count breaks it), and no `references` unless it starts a new history.
+    #[test]
+    fn seal_owner_maintenance_record_chains_and_covers_its_facts() {
+        let key = crate::keys::KeyPair::generate();
+        let head = "c".repeat(64);
+        let mut facts = Map::new();
+        facts.insert("deleted_count".into(), json!(3));
+        facts.insert("kind".into(), json!("an attempt to override the kind"));
+        let action = OwnerMaintenance { kind: "stored_text_deleted", facts, prior_history_head: None };
+        let mut capsule = seal_owner_maintenance_record(&action, Some(&head), &key.signing_key).unwrap();
+
+        let stored = capsule["capsule_id"].as_str().unwrap().to_string();
+        assert_eq!(stored, compute_capsule_id(&capsule).unwrap());
+        assert_eq!(capsule["chain"]["parent_capsule_id"], json!(head));
+        assert_eq!(capsule["chain"]["relation"], json!("follows"));
+        let block = &capsule["model_attestation"]["compute_attestation"][OWNER_MAINTENANCE_BLOCK];
+        assert_eq!(block["kind"], json!("stored_text_deleted"), "facts never override the kind");
+        assert_eq!(block["deleted_count"], json!(3));
+        assert_eq!(capsule["assurance"]["effect_mode"], json!("not_applicable"));
+        assert!(capsule.get("references").is_none());
+        assert!(capsule.get("signature").is_some());
+        assert!(crate::timestamp::is_minute_granular(capsule["timestamp"].as_str().unwrap()));
+        assert!(is_hex64(
+            capsule["model_attestation"]["compute_attestation"][STORE_NONCE_FIELD].as_str().unwrap()
+        ));
+
+        capsule["model_attestation"]["compute_attestation"][OWNER_MAINTENANCE_BLOCK]["deleted_count"] = json!(0);
+        assert_ne!(stored, compute_capsule_id(&capsule).unwrap());
+    }
+
+    /// A new history's first record is standalone and cites the prior
+    /// history's last record by CPB typed digest (`prior_history`).
+    #[test]
+    fn history_started_record_is_standalone_and_cites_the_prior_head() {
+        let key = crate::keys::KeyPair::generate();
+        let prior = "a".repeat(64);
+        let action = OwnerMaintenance { kind: "history_started", facts: Map::new(), prior_history_head: Some(&prior) };
+        let capsule = seal_owner_maintenance_record(&action, None, &key.signing_key).unwrap();
+        assert!(capsule.get("chain").is_none());
+        assert_eq!(capsule["assurance"]["ledger_mode"], json!("standalone"));
+        assert_eq!(capsule["references"][0]["digest"], json!(prior));
+        assert_eq!(capsule["references"][0]["citation_purpose"], json!(CITATION_PURPOSE_PRIOR_HISTORY));
+        assert_eq!(capsule["capsule_id"].as_str().unwrap(), compute_capsule_id(&capsule).unwrap());
     }
 }

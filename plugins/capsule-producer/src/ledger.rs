@@ -400,6 +400,24 @@ impl Ledger {
         self.index.keys().cloned().collect()
     }
 
+    /// Every indexed `capsule_id` in chain order (first record first), read
+    /// off the index's byte offsets -- `capsules.jsonl` is append-only, so
+    /// offset order IS chain order. Position `i` here is record `i + 1`.
+    pub fn capsule_ids_in_order(&self) -> Vec<String> {
+        let mut by_offset: Vec<(&u64, &String)> = self.index.iter().map(|(id, off)| (off, id)).collect();
+        by_offset.sort_unstable();
+        by_offset.into_iter().map(|(_, id)| id.clone()).collect()
+    }
+
+    /// How many records this ledger holds.
+    pub fn len(&self) -> usize {
+        self.index.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.index.is_empty()
+    }
+
     /// Whether this ledger already holds a counterparty-half CITING record
     /// for `foreign_capsule_id` -- the live record-push dedup gate: a
     /// re-pushed foreign half must not seal a second citing record (fsync +
