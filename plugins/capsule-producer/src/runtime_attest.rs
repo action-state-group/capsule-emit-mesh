@@ -176,9 +176,11 @@ pub struct BinaryAttestation {
     /// The honesty grade of this measurement: [`MeasurementClass::SelfMeasured`]
     /// or [`MeasurementClass::OsMeasured`] — see module docs.
     pub measurement_class: MeasurementClass,
-    /// Absolute path of the executable that was hashed, as the process resolved
-    /// its own `current_exe`. Recorded so a reader knows WHICH file was
-    /// measured; it is NOT a claim the path is canonical or un-swappable.
+    /// File name (basename only) of the executable that was hashed, from the
+    /// process's own `current_exe`. Recorded so a reader knows WHICH file was
+    /// measured; the directory is dropped because the sealed record travels
+    /// to counterparties and an absolute path exposes the operator's home
+    /// directory. The digest, not the name, identifies the binary.
     pub binary_path: String,
     /// Lowercase-hex SHA-256 of the executable's bytes, computed by THIS
     /// process (the `self_measured` claim). Always present, even when
@@ -367,7 +369,10 @@ fn build_attestation(
     let signature = keys.signing_key.sign(message.as_bytes());
     BinaryAttestation {
         measurement_class,
-        binary_path: path.display().to_string(),
+        binary_path: path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         binary_sha256,
         binary_size_bytes,
         signature_algorithm: "ed25519".to_string(),

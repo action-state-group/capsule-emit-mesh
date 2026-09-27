@@ -258,6 +258,29 @@ fn output_sub_digests(response_bytes: &[u8]) -> (Option<String>, Option<String>)
     (tool_calls_digest, reasoning_digest)
 }
 
+/// Operator opt-in for sealing the serving host's name. The sealed body is
+/// pushed at completion to every counterparty, so the machine name is
+/// withheld unless the operator sets this to `1`, `true` or `on`.
+pub const ENV_SEAL_HOSTNAME: &str = "ADMISSION_POLICY_SEAL_HOSTNAME";
+
+fn hostname_opt_in() -> bool {
+    hostname_opt_in_for(std::env::var(ENV_SEAL_HOSTNAME).ok().as_deref())
+}
+
+fn hostname_opt_in_for(raw: Option<&str>) -> bool {
+    matches!(raw, Some("1" | "true" | "on"))
+}
+
+/// The hostname to seal: the host-reported value only when the operator
+/// opted in; otherwise `None`, which the producer omits from the record.
+fn sealed_hostname(host: &HostProvenance, opted_in: bool) -> Option<String> {
+    if opted_in {
+        host.hostname.clone()
+    } else {
+        None
+    }
+}
+
 const CAPSULE_CONTENT_TYPE: &str =
     "application/vnd.agent-action-capsule+json; profile=draft-mih-scitt-agent-action-capsule-02";
 
@@ -593,7 +616,7 @@ impl CapsuleState {
                     dispatch_path: None,
                     requesting_party: requesting_party_id.clone(),
                     exchange_id: exchange_id.unwrap_or("unknown").to_string(),
-                    hostname: host.hostname.clone(),
+                    hostname: sealed_hostname(&host, hostname_opt_in()),
                     // Quantization from the host serving-provenance block when it
                     // carried one; else "unknown" — never guessed.
                     quantization: host
@@ -1030,7 +1053,7 @@ impl CapsuleState {
                     // observe path -- honest "unknown", never invented.
                     requesting_party: "unknown".to_string(),
                     exchange_id: exchange_id.unwrap_or("unknown").to_string(),
-                    hostname: host.hostname.clone(),
+                    hostname: sealed_hostname(&host, hostname_opt_in()),
                     quantization: host
                         .quantization
                         .clone()
@@ -2079,6 +2102,96 @@ mod tests {
         assert_eq!(att["signature"].as_str().unwrap().len(), 128, "ed25519 hex sig");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every string value in a sealed record, at any depth.
+    fn sealed_strings(value: &Value, out: &mut Vec<String>) {
+        match value {
+            Value::String(s) => out.push(s.clone()),
+            Value::Array(items) => items.iter().for_each(|v| sealed_strings(v, out)),
+            Value::Object(map) => map.values().for_each(|v| sealed_strings(v, out)),
+            _ => {}
+        }
+    }
+
+    /// Fails if any sealed string names `hostname` or looks like an absolute
+    /// path (POSIX root, Windows drive, this binary's directory or `$HOME`).
+    fn assert_no_host_identifying_strings(capsule: &Value, hostname: &str) {
+        let exe = std::env::current_exe().expect("test binary path");
+        let exe_dir = exe.parent().expect("exe has a parent").display().to_string();
+        let home = std::env::var("HOME").ok().filter(|h| h.len() > 1);
+        let mut strings = Vec::new();
+        sealed_strings(capsule, &mut strings);
+        for s in &strings {
+            assert!(!s.contains(hostname), "sealed record carries the hostname: {s}");
+            assert!(!s.starts_with('/'), "sealed record carries an absolute path: {s}");
+            let bytes = s.as_bytes();
+            assert!(
+                !(bytes.len() > 2 && bytes[0].is_ascii_alphabetic() && &bytes[1..3] == b":\\"),
+                "sealed record carries a drive path: {s}"
+            );
+            assert!(!s.contains(&exe_dir), "sealed record carries the binary's directory: {s}");
+            if let Some(home) = &home {
+                assert!(!s.contains(home.as_str()), "sealed record carries $HOME: {s}");
+            }
+        }
+    }
+
+    const OPERATOR_HOSTNAME: &str = "operators-machine.local";
+
+    /// u9: the sealed body is pushed to every counterparty at completion, so
+    /// with no operator opt-in it must carry neither the host-reported
+    /// hostname nor any absolute path -- on both seal paths. The binary
+    /// attestation still names the measured file, by basename.
+    #[test]
+    fn sealed_records_carry_no_hostname_and_no_absolute_path() {
+        let dir = std::env::temp_dir().join(format!("cap-u9-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let host = HostProvenance {
+            hostname: Some(OPERATOR_HOSTNAME.to_string()),
+            ..Default::default()
+        };
+
+        let mut exchange = sample_exchange("party-1");
+        exchange.host_provenance = Some(host.clone());
+        let admitted = state.emit_for_exchange(&exchange).expect("seal admitted");
+
+        let mut observed = observed_with(DispatchPath::TypedFrontend, Some("node-under-test"));
+        observed.host_provenance = host;
+        let observed = state
+            .emit_for_observed_host_exchange(&observed)
+            .expect("seal observed");
+
+        for capsule in [&admitted.capsule, &observed.capsule] {
+            let poc = &capsule["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"];
+            assert!(poc["serving_provenance"].get("hostname").is_none());
+            assert_no_host_identifying_strings(capsule, OPERATOR_HOSTNAME);
+            let att = &poc["evidence_refs"]["binary_attestation"];
+            let exe = std::env::current_exe().unwrap();
+            assert_eq!(
+                att["binary_path"].as_str().expect("binary measured"),
+                exe.file_name().unwrap().to_string_lossy(),
+                "the measured binary is named by basename only"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hostname_is_sealed_only_on_explicit_opt_in() {
+        for raw in [None, Some(""), Some("0"), Some("off"), Some("yes"), Some("TRUE")] {
+            assert!(!hostname_opt_in_for(raw), "{raw:?} must not opt in");
+        }
+        for raw in ["1", "true", "on"] {
+            assert!(hostname_opt_in_for(Some(raw)), "{raw} opts in");
+        }
+        let host = HostProvenance {
+            hostname: Some(OPERATOR_HOSTNAME.to_string()),
+            ..Default::default()
+        };
+        assert_eq!(sealed_hostname(&host, false), None);
+        assert_eq!(sealed_hostname(&host, true).as_deref(), Some(OPERATOR_HOSTNAME));
     }
 
     fn seq_of(capsule: &Value) -> (u64, Option<u64>) {

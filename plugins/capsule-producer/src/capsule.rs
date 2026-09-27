@@ -91,7 +91,8 @@ pub struct ServingProvenance {
     pub hardware_device: Option<String>,
     /// Whether the serving host is a unified-memory SoC, from the host event.
     pub hardware_is_soc: Option<bool>,
-    /// Serving host name, from the host event.
+    /// Serving host name, from the host event -- `Some` only when the
+    /// operator opted in to sealing it; `None` omits the key entirely.
     pub hostname: Option<String>,
     /// Model IDENTITY / fidelity from the host serving-provenance block. Each
     /// is `None` when the host did not report it — never fabricated.
@@ -167,7 +168,6 @@ impl ServingProvenance {
             "dispatch_path": self.dispatch_path,
             "requesting_party": self.requesting_party,
             "exchange_id": self.exchange_id,
-            "hostname": self.hostname,
             // Quantization: real value from the host event, or "unknown".
             "quantization": self.quantization,
             // Model identity / fidelity from the host serving-provenance block.
@@ -195,6 +195,15 @@ impl ServingProvenance {
             "peer_capsule_id": self.peer_capsule_id,
             "peer_capsule_id_provenance": self.peer_capsule_id_provenance,
         });
+        // hostname: OMITTED entirely unless the operator opted in upstream --
+        // the sealed body travels to every counterparty, and a machine name
+        // is not theirs to receive by default.
+        if let Some(hostname) = &self.hostname {
+            value
+                .as_object_mut()
+                .expect("serving_provenance value is always a JSON object")
+                .insert("hostname".into(), json!(hostname));
+        }
         // twin_bracket_id: OMITTED entirely when the envelope carried none --
         // never a null placeholder -- so an untwinned row (the overwhelming
         // majority) never reads as a half-bracket.
@@ -1384,6 +1393,19 @@ mod tests {
         assert!(
             provenance(&capsule).get("twin_bracket_id").is_none(),
             "an absent twin_bracket_id must be omitted, not null"
+        );
+    }
+
+    /// A record sealed without an opted-in hostname carries no `hostname`
+    /// key at all -- not a null that invites a reader to ask what was hidden.
+    #[test]
+    fn hostname_absent_when_not_supplied() {
+        let mut input = base_input(None);
+        input.mesh_poc.serving_provenance.hostname = None;
+        let capsule = seal(&input).unwrap();
+        assert!(
+            provenance(&capsule).get("hostname").is_none(),
+            "an unsupplied hostname must be omitted, not null"
         );
     }
 

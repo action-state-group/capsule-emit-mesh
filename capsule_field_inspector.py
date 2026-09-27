@@ -50,7 +50,7 @@ def check_hardware_provenance(capsule: dict[str, Any]) -> None:
     poc = capsule["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]
     sp = poc["serving_provenance"]
     hw = sp["hardware"]
-    if hw["gpu"] is None and hw["vram_bytes"] is None and sp["hostname"] is None:
+    if hw["gpu"] is None and hw["vram_bytes"] is None and sp.get("hostname") is None:
         raise ProvenanceMissing(
             "hardware fields are ALL null (hardware.gpu, hardware.vram_bytes, "
             "hostname) -- this host is not reporting real serving provenance.\n"
@@ -107,7 +107,7 @@ def render_report(
         f"  hardware.vram_bytes       : {_fmt(hw['vram_bytes'])}"
         + (f"  (~{hw['vram_bytes'] / (1024**3):.1f} GiB)" if hw["vram_bytes"] else ""),
         f"  hardware.is_soc           : {_fmt(hw['is_soc'])}",
-        f"  hostname                  : {_fmt(sp['hostname'])}",
+        f"  hostname                  : {_fmt(sp.get('hostname'))}",
         f"  served_by_node_id         : {_fmt(sp['served_by_node_id'])}",
         "",
         "-- over which bytes --",
