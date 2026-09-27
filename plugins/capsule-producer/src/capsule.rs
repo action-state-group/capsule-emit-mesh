@@ -1014,23 +1014,19 @@ pub struct LocalRoutingChoice<'a> {
     pub change: RoutingChoiceChange,
     /// The peer's endpoint id, as the host keys its local block store.
     pub peer_id: &'a str,
-    /// Fresh per record; kept by the host's local block store, never sealed.
+    /// Fresh per record, chosen and kept by the host's local block store;
+    /// never sealed.
     pub salt: &'a [u8; 32],
     /// When a block lapses (RFC 3339), or `None` for "until I undo" and for
     /// every unblock.
     pub until: Option<&'a str>,
 }
 
-/// A fresh 32-byte salt for one routing-choice record.
-pub fn fresh_routing_choice_salt() -> [u8; 32] {
-    use rand_core::RngCore;
-    let mut salt = [0u8; 32];
-    rand_core::OsRng.fill_bytes(&mut salt);
-    salt
-}
-
-/// `sha256(salt || peer_id)`, lowercase hex. Only a holder of the salt (this
-/// node's local block store) can say which peer a routing-choice record names.
+/// `sha256(salt || peer_id)`, lowercase hex, where `peer_id` is the endpoint id
+/// as hex text (the bytes of the string, not the decoded key). Only a holder of
+/// the salt (this node's local block store) can say which peer a routing-choice
+/// record names. The host computes the same value to confirm a seal; both pin
+/// one vector (`peer_commitment_matches_the_host_vector`).
 pub fn peer_commitment(peer_id: &str, salt: &[u8; 32]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -1087,7 +1083,7 @@ pub fn seal_local_routing_choice(
                 "local_routing_choice": {
                     "change": choice.change.as_str(),
                     "peer_commitment": {"alg": "SHA-256", "digest": commitment},
-                    "reason": "your_choice",
+                    "requested_via": "host_local_api",
                     "until": choice.until,
                     "scope": "this_node_only",
                 }
@@ -1103,14 +1099,14 @@ pub fn seal_local_routing_choice(
             "ledger_mode": if chain.is_some() { "chained" } else { "standalone" },
         }),
     );
-    // The only caller is the host's loopback-only `/api/peer-blocks` route,
-    // reached from the console's `Stop routing to this peer` dialog.
+    // The host's local operator API asked for this. A local API call does not
+    // prove a person made it, so the record does not claim one did.
     body.insert(
         "disposition".into(),
         json!({
             "decision": "accept",
-            "approver": "human",
-            "human_disposed": true,
+            "approver": "policy",
+            "human_disposed": false,
             "verdict_class": "executed",
         }),
     );
@@ -1816,9 +1812,25 @@ mod tests {
             fact["peer_commitment"]["digest"],
             json!(peer_commitment(&peer, &salt))
         );
+        // A local API call is not proof a person made it: no human claim.
+        assert_eq!(capsule["disposition"]["approver"], json!("policy"));
+        assert_eq!(capsule["disposition"]["human_disposed"], json!(false));
         // The peer id itself appears nowhere in the sealed bytes.
         assert!(!serde_json::to_string(&capsule).unwrap().contains(&peer));
         assert!(capsule.get("signature").is_some());
+    }
+
+    /// Cross-implementation vector: the mesh-llm host's
+    /// `network::peer_blocks::peer_commitment` pins the same inputs and output
+    /// (`commitment_matches_the_plugin_vector`); computed independently with
+    /// Python's hashlib.
+    #[test]
+    fn peer_commitment_matches_the_host_vector() {
+        let peer = "a70d3967bea3b22fa48a28f77c5d2b3764fc8bd5204a82c09ff8430f3f2a0a00";
+        assert_eq!(
+            peer_commitment(peer, &[7u8; 32]),
+            "265aff057ebdeba261253f6ce9d8eea274ef65bab0aadfbf99a5ddb2facd7e74"
+        );
     }
 
     #[test]

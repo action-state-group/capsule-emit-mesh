@@ -1185,19 +1185,20 @@ impl CapsuleState {
     }
 
     /// Seal a local routing choice (block or unblock) onto the same
-    /// single-writer chain. The caller keeps the returned salt; it is the only
-    /// way to say later which peer the record's commitment names.
+    /// single-writer chain, committing to the peer with the caller's salt. The
+    /// caller keeps that salt; it is the only way to say later which peer the
+    /// record's commitment names.
     pub fn emit_local_routing_choice(
         &self,
         change: capsule_producer::capsule::RoutingChoiceChange,
         peer_id: &str,
         until: Option<&str>,
+        salt: &[u8; 32],
     ) -> anyhow::Result<EmittedRoutingChoice> {
-        let salt = capsule_producer::capsule::fresh_routing_choice_salt();
         let choice = capsule_producer::capsule::LocalRoutingChoice {
             change,
             peer_id,
-            salt: &salt,
+            salt,
             until,
         };
         let mut ledger = self
@@ -1226,8 +1227,7 @@ impl CapsuleState {
         ledger.append(&capsule, &statement)?;
         Ok(EmittedRoutingChoice {
             capsule_id,
-            peer_commitment: capsule_producer::capsule::peer_commitment(peer_id, &salt),
-            salt_hex: hex::encode(salt),
+            peer_commitment: capsule_producer::capsule::peer_commitment(peer_id, salt),
         })
     }
 }
@@ -1237,7 +1237,6 @@ impl CapsuleState {
 pub struct EmittedRoutingChoice {
     pub capsule_id: String,
     pub peer_commitment: String,
-    pub salt_hex: String,
 }
 
 #[cfg(test)]
@@ -1265,37 +1264,44 @@ mod tests {
         );
     }
 
-    /// `emit_citing_record` seals a
-    /// citing record onto the SAME single-writer chain, chained onto whatever
-    /// this node last sealed (`chain.relation == "follows"` -- the citation is
-    /// the `references[]` entry), citing the foreign
-    /// half by CPB typed digest -- and it reopens clean (proving the ledger
-    /// accepts the new record shape without any `Ledger::open` change).
-    /// A block then an unblock both land on the chain, in order, and the
-    /// returned salt reopens each record's commitment to the peer.
+    /// A block then an unblock both land on the chain, in order (the unblock
+    /// chains onto the block), each carrying the commitment the caller's salt
+    /// gives.
     #[test]
-    fn routing_choices_chain_in_order_and_reopen_with_their_salt() {
+    fn routing_choices_chain_in_order_with_the_callers_salt() {
         use capsule_producer::capsule::{peer_commitment, RoutingChoiceChange};
         let dir = std::env::temp_dir().join(format!("cap-route-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
         let peer = "e5ba9d1001".repeat(6);
+        let (block_salt, unblock_salt) = ([1u8; 32], [2u8; 32]);
 
         let block = state
             .emit_local_routing_choice(
                 RoutingChoiceChange::Block,
                 &peer,
                 Some("2026-10-04T00:00:00Z"),
+                &block_salt,
             )
             .expect("seal block");
         let unblock = state
-            .emit_local_routing_choice(RoutingChoiceChange::Unblock, &peer, None)
+            .emit_local_routing_choice(RoutingChoiceChange::Unblock, &peer, None, &unblock_salt)
             .expect("seal unblock");
 
+        let ledger = std::fs::read_to_string(dir.join("ledger").join("capsules.jsonl")).expect("ledger");
+        let unblock_line: Value = ledger
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|record| record["capsule_id"] == unblock.capsule_id.as_str())
+            .expect("the unblock record is on the chain");
+        assert_eq!(
+            unblock_line["chain"]["parent_capsule_id"].as_str(),
+            Some(block.capsule_id.as_str()),
+            "the unblock chains onto the block"
+        );
         assert_eq!(state.chain_head().as_deref(), Some(unblock.capsule_id.as_str()));
-        let salt: [u8; 32] = hex::decode(&block.salt_hex).unwrap().try_into().unwrap();
-        assert_eq!(peer_commitment(&peer, &salt), block.peer_commitment);
-        assert_ne!(block.salt_hex, unblock.salt_hex);
+        assert_eq!(block.peer_commitment, peer_commitment(&peer, &block_salt));
+        assert_eq!(unblock.peer_commitment, peer_commitment(&peer, &unblock_salt));
 
         drop(state);
         let reopened = CapsuleState::open(&dir, "node-under-test").expect("reopen state");
@@ -1303,6 +1309,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `emit_citing_record` seals a
+    /// citing record onto the SAME single-writer chain, chained onto whatever
+    /// this node last sealed (`chain.relation == "follows"` -- the citation is
+    /// the `references[]` entry), citing the foreign
+    /// half by CPB typed digest -- and it reopens clean (proving the ledger
+    /// accepts the new record shape without any `Ledger::open` change).
     #[test]
     fn emit_citing_record_chains_onto_the_local_head_and_reopens_clean() {
         let dir = std::env::temp_dir().join(format!("cap-cite-{}", std::process::id()));
