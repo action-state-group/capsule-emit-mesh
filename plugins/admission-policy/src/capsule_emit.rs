@@ -1183,6 +1183,61 @@ impl CapsuleState {
         ledger.append(&capsule, &statement)?;
         Ok(Some(EmittedCapsule { capsule_id, capsule }))
     }
+
+    /// Seal a local routing choice (block or unblock) onto the same
+    /// single-writer chain. The caller keeps the returned salt; it is the only
+    /// way to say later which peer the record's commitment names.
+    pub fn emit_local_routing_choice(
+        &self,
+        change: capsule_producer::capsule::RoutingChoiceChange,
+        peer_id: &str,
+        until: Option<&str>,
+    ) -> anyhow::Result<EmittedRoutingChoice> {
+        let salt = capsule_producer::capsule::fresh_routing_choice_salt();
+        let choice = capsule_producer::capsule::LocalRoutingChoice {
+            change,
+            peer_id,
+            salt: &salt,
+            until,
+        };
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let capsule = capsule_producer::capsule::seal_local_routing_choice(
+            &choice,
+            ledger.chain_head(),
+            &self.keys.signing_key,
+        )?;
+        let capsule_id = capsule["capsule_id"]
+            .as_str()
+            .expect("seal_local_routing_choice always sets capsule_id")
+            .to_string();
+        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let statement = build_signed_statement(
+            &SignedStatementInput {
+                payload: &payload,
+                issuer: &self.node_id,
+                subject: &capsule_id,
+                content_type: CAPSULE_CONTENT_TYPE,
+            },
+            &self.keys.signing_key,
+        );
+        ledger.append(&capsule, &statement)?;
+        Ok(EmittedRoutingChoice {
+            capsule_id,
+            peer_commitment: capsule_producer::capsule::peer_commitment(peer_id, &salt),
+            salt_hex: hex::encode(salt),
+        })
+    }
+}
+
+/// What [`CapsuleState::emit_local_routing_choice`] hands back to the host's
+/// block store.
+pub struct EmittedRoutingChoice {
+    pub capsule_id: String,
+    pub peer_commitment: String,
+    pub salt_hex: String,
 }
 
 #[cfg(test)]
@@ -1216,6 +1271,38 @@ mod tests {
     /// the `references[]` entry), citing the foreign
     /// half by CPB typed digest -- and it reopens clean (proving the ledger
     /// accepts the new record shape without any `Ledger::open` change).
+    /// A block then an unblock both land on the chain, in order, and the
+    /// returned salt reopens each record's commitment to the peer.
+    #[test]
+    fn routing_choices_chain_in_order_and_reopen_with_their_salt() {
+        use capsule_producer::capsule::{peer_commitment, RoutingChoiceChange};
+        let dir = std::env::temp_dir().join(format!("cap-route-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let peer = "e5ba9d1001".repeat(6);
+
+        let block = state
+            .emit_local_routing_choice(
+                RoutingChoiceChange::Block,
+                &peer,
+                Some("2026-10-04T00:00:00Z"),
+            )
+            .expect("seal block");
+        let unblock = state
+            .emit_local_routing_choice(RoutingChoiceChange::Unblock, &peer, None)
+            .expect("seal unblock");
+
+        assert_eq!(state.chain_head().as_deref(), Some(unblock.capsule_id.as_str()));
+        let salt: [u8; 32] = hex::decode(&block.salt_hex).unwrap().try_into().unwrap();
+        assert_eq!(peer_commitment(&peer, &salt), block.peer_commitment);
+        assert_ne!(block.salt_hex, unblock.salt_hex);
+
+        drop(state);
+        let reopened = CapsuleState::open(&dir, "node-under-test").expect("reopen state");
+        assert_eq!(reopened.chain_head().as_deref(), Some(unblock.capsule_id.as_str()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn emit_citing_record_chains_onto_the_local_head_and_reopens_clean() {
         let dir = std::env::temp_dir().join(format!("cap-cite-{}", std::process::id()));
