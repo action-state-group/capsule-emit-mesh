@@ -1049,6 +1049,166 @@ pub fn seal_citing_record(
         signing_key,
     )
 }
+// ---------------------------------------------------------------------------
+// Settlement records: the payer node's sealed observation of one
+// `payment.lifecycle.v1` event.
+// ---------------------------------------------------------------------------
+
+/// The host mesh channel a settlement record's observation came from. The
+/// host broadcasts payer-side payment lifecycle events on it; a settlement
+/// record names it verbatim in `x-mesh-settlement-v1.channel`.
+pub const SETTLEMENT_CHANNEL: &str = "payment.lifecycle.v1";
+
+/// The `model_attestation.compute_attestation` key a settlement record's
+/// observation lives under. A reader identifies the settlement record KIND by
+/// this key's presence; `Ledger` keys its event_ref dedup set on it.
+pub const SETTLEMENT_EXTENSION_KEY: &str = "x-mesh-settlement-v1";
+
+/// One observed payment lifecycle event, borrowed from the caller's parsed
+/// event. Every value is copied verbatim into the sealed record by
+/// [`seal_settlement_record`]; none is computed, summed or normalized here.
+/// The caller is responsible for having checked the event (the plugin's
+/// channel handler recomputes `event_ref` before it ever builds one of these).
+pub struct SettlementObservation<'a> {
+    /// The host's exchange id -- the join key to the exchange's own records.
+    pub exchange_id: &'a str,
+    /// The host's content reference for the event (lowercase-hex SHA-256 of
+    /// the JCS event with `event_ref` blanked). Unique per distinct event, so
+    /// it is also the dedup key.
+    pub event_ref: &'a str,
+    /// The host's digest of the public request terms.
+    pub terms_digest: &'a str,
+    /// The lifecycle phase wire string (e.g. `"input_settlement_observed"`).
+    pub phase: &'a str,
+    /// Who asserted this event's values: `"payer_asserted"`,
+    /// `"provider_asserted"` or `"wallet_reported"`.
+    pub source: &'a str,
+    /// `Some("terminal")` for a wallet-reported settlement; `None` otherwise.
+    pub settlement: Option<&'a str>,
+    /// The payment segment (0 = input, non-zero = output) when the event has one.
+    pub segment: Option<u32>,
+    /// The Lightning payment hash when the event carries one.
+    pub payment_hash: Option<&'a str>,
+    /// The amount the event states, in millisatoshis -- a recorded value.
+    pub amount_msat: u64,
+}
+
+/// Seal a SETTLEMENT record: this payer node's own signed, chained record that
+/// it observed one payment lifecycle event the host broadcast on
+/// [`SETTLEMENT_CHANNEL`]. Built exactly like [`seal_citing_record`] (same
+/// header fields, `chain.relation = "follows"` onto `chain_head`, inline
+/// producer envelope via [`attach_producer_envelope`]) but with NO
+/// `references[]` entry -- it cites no capsule. The observation rides under
+/// `model_attestation.compute_attestation["x-mesh-settlement-v1"]`; `null`
+/// optional fields are omitted rather than written as `null`.
+///
+/// What the record claims, and what it does not. It is the payer node's
+/// sealed observation of what its host broadcast, nothing more. The `source`
+/// field says who asserted each value: the payer (`payer_asserted`), the
+/// provider's invoice (`provider_asserted`), or the payer's wallet
+/// (`wallet_reported`). It is not a claim that money moved beyond what a
+/// `wallet_reported` event says, and never a claim about the provider's
+/// books. The absence of settlement records for an exchange means "no payment
+/// lifecycle observed" (a free exchange, payments off, or a failure before
+/// authorization), never "unpaid".
+///
+/// Errors only when the observation cannot be canonicalized -- in practice an
+/// `amount_msat` above 2^53-1, which [`compute_capsule_id`]'s JCS refuses.
+pub fn seal_settlement_record(
+    ev: &SettlementObservation,
+    chain_head: Option<&str>,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> Result<Value, crate::jcs::JcsError> {
+    let chain = chain_head.map(|parent| ChainLink {
+        parent_capsule_id: parent.to_string(),
+        relation: CHAIN_RELATION_FOLLOWS.to_string(),
+    });
+
+    let mut observation = Map::new();
+    observation.insert("v".into(), json!(1));
+    observation.insert("observed_by".into(), json!("payer"));
+    observation.insert("channel".into(), json!(SETTLEMENT_CHANNEL));
+    observation.insert("exchange_id".into(), json!(ev.exchange_id));
+    observation.insert("event_ref".into(), json!(ev.event_ref));
+    observation.insert("terms_digest".into(), json!(ev.terms_digest));
+    observation.insert("phase".into(), json!(ev.phase));
+    observation.insert("source".into(), json!(ev.source));
+    if let Some(settlement) = ev.settlement {
+        observation.insert("settlement".into(), json!(settlement));
+    }
+    if let Some(segment) = ev.segment {
+        observation.insert("segment".into(), json!(segment));
+    }
+    if let Some(payment_hash) = ev.payment_hash {
+        observation.insert("payment_hash".into(), json!(payment_hash));
+    }
+    observation.insert("amount_msat".into(), json!(ev.amount_msat));
+
+    let mut body = Map::new();
+    body.insert("spec_version".into(), json!(SPEC_VERSION));
+    body.insert("format_version".into(), json!(FORMAT_VERSION));
+    body.insert("canonicalization_id".into(), json!(CANONICALIZATION_ID));
+    body.insert(
+        "action_id".into(),
+        json!(format!(
+            "mesh-poc/settlement/{}/{}",
+            ev.exchange_id, ev.event_ref
+        )),
+    );
+    body.insert("action_type".into(), json!("fyi"));
+    body.insert("operator".into(), json!("capsule-emit-mesh-poc-rust"));
+    body.insert("developer".into(), json!("capsule-producer/0.2.0"));
+    body.insert(
+        "timestamp".into(),
+        json!(crate::timestamp::utc_now_iso8601()),
+    );
+    body.insert("domain".into(), json!("action"));
+    body.insert("provenance".into(), json!("collector"));
+
+    let mut compute_attestation = Map::new();
+    compute_attestation.insert(SETTLEMENT_EXTENSION_KEY.into(), Value::Object(observation));
+    body.insert(
+        "model_attestation".into(),
+        json!({
+            "model_id": "n/a-settlement-observation",
+            "provider": "mesh-llm",
+            "compute_attestation": Value::Object(compute_attestation),
+        }),
+    );
+    body.insert(
+        "assurance".into(),
+        json!({
+            "attestation_mode": "self_attested",
+            "effect_mode": "not_applicable",
+            "ledger_mode": if chain.is_some() { "chained" } else { "standalone" },
+        }),
+    );
+    body.insert(
+        "disposition".into(),
+        json!({
+            "decision": "accept",
+            "approver": "policy",
+            "human_disposed": false,
+            "verdict_class": "executed",
+        }),
+    );
+    if let Some(chain) = &chain {
+        body.insert("chain".into(), chain.to_value());
+    }
+
+    let capsule_id = compute_capsule_id(&Value::Object(body.clone()))?;
+    let mut sealed = Map::new();
+    sealed.insert("capsule_id".into(), json!(capsule_id));
+    for (k, v) in body {
+        sealed.entry(k).or_insert(v);
+    }
+    let mut capsule = Value::Object(sealed);
+    // `attach_producer_envelope` only fails on a non-hex capsule_id, which
+    // `compute_capsule_id` never produces.
+    attach_producer_envelope(&mut capsule, signing_key)
+        .expect("settlement record always carries a hex capsule_id");
+    Ok(capsule)
+}
 
 /// A time a citing record commits to, truncated to the minute
 /// (Evidence Layer -00 §12.1; see `crate::timestamp`'s module doc). A value
@@ -2540,5 +2700,112 @@ mod tests {
         assert_eq!(capsule["references"][0]["digest"], json!(prior));
         assert_eq!(capsule["references"][0]["citation_purpose"], json!(CITATION_PURPOSE_PRIOR_HISTORY));
         assert_eq!(capsule["capsule_id"].as_str().unwrap(), compute_capsule_id(&capsule).unwrap());
+    }
+
+    // -------------------------------------------------------------------
+    // seal_settlement_record
+    // -------------------------------------------------------------------
+
+    fn sample_settlement<'a>(payment_hash: Option<&'a str>) -> SettlementObservation<'a> {
+        SettlementObservation {
+            exchange_id: "ex-paid-1",
+            event_ref: "0f".repeat(32).leak(),
+            terms_digest: "1e".repeat(32).leak(),
+            phase: "output_settlement_observed",
+            source: "wallet_reported",
+            settlement: Some("terminal"),
+            segment: Some(1),
+            payment_hash,
+            amount_msat: 123457,
+        }
+    }
+
+    /// Every observed value lands verbatim under
+    /// `compute_attestation["x-mesh-settlement-v1"]`, the record chains onto
+    /// the head with `"follows"`, carries no `references`, and its id recomputes.
+    #[test]
+    fn seal_settlement_record_copies_every_field_verbatim_and_chains() {
+        let key = crate::keys::KeyPair::generate();
+        let head = "c".repeat(64);
+        let hash = "bb".repeat(32);
+        let ev = sample_settlement(Some(&hash));
+        let capsule = seal_settlement_record(&ev, Some(&head), &key.signing_key).unwrap();
+
+        assert_eq!(
+            capsule["capsule_id"].as_str().unwrap(),
+            compute_capsule_id(&capsule).unwrap()
+        );
+        assert_eq!(capsule["chain"]["parent_capsule_id"], json!(head));
+        assert_eq!(capsule["chain"]["relation"], json!("follows"));
+        assert!(capsule.get("references").is_none());
+        assert_eq!(capsule["action_type"], json!("fyi"));
+        assert_eq!(
+            capsule["action_id"],
+            json!(format!("mesh-poc/settlement/ex-paid-1/{}", "0f".repeat(32)))
+        );
+        assert_eq!(
+            capsule["model_attestation"]["model_id"],
+            json!("n/a-settlement-observation")
+        );
+        let obs = &capsule["model_attestation"]["compute_attestation"]["x-mesh-settlement-v1"];
+        assert_eq!(
+            obs,
+            &json!({
+                "v": 1,
+                "observed_by": "payer",
+                "channel": "payment.lifecycle.v1",
+                "exchange_id": "ex-paid-1",
+                "event_ref": "0f".repeat(32),
+                "terms_digest": "1e".repeat(32),
+                "phase": "output_settlement_observed",
+                "source": "wallet_reported",
+                "settlement": "terminal",
+                "segment": 1,
+                "payment_hash": hash,
+                "amount_msat": 123457,
+            })
+        );
+        assert!(capsule.get("signature").is_some());
+        assert!(capsule.get("key_id").is_some());
+    }
+
+    /// Null optional fields are omitted, never written as `null`; no head ->
+    /// standalone.
+    #[test]
+    fn seal_settlement_record_omits_absent_optionals_and_is_standalone_without_head() {
+        let key = crate::keys::KeyPair::generate();
+        let ev = SettlementObservation {
+            phase: "terms_accepted",
+            source: "payer_asserted",
+            settlement: None,
+            segment: None,
+            ..sample_settlement(None)
+        };
+        let capsule = seal_settlement_record(&ev, None, &key.signing_key).unwrap();
+        let obs = capsule["model_attestation"]["compute_attestation"]["x-mesh-settlement-v1"]
+            .as_object()
+            .unwrap();
+        for absent in ["settlement", "segment", "payment_hash"] {
+            assert!(
+                !obs.contains_key(absent),
+                "{absent} must be omitted when null"
+            );
+        }
+        assert!(capsule.get("chain").is_none());
+        assert_eq!(capsule["assurance"]["ledger_mode"], json!("standalone"));
+    }
+
+    /// An amount the JCS cannot represent losslessly is refused, never sealed.
+    #[test]
+    fn seal_settlement_record_refuses_an_unsafe_amount() {
+        let key = crate::keys::KeyPair::generate();
+        let ev = SettlementObservation {
+            amount_msat: 1u64 << 53,
+            ..sample_settlement(None)
+        };
+        assert!(matches!(
+            seal_settlement_record(&ev, None, &key.signing_key),
+            Err(crate::jcs::JcsError::UnsafeInteger(_))
+        ));
     }
 }

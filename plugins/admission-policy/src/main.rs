@@ -19,6 +19,7 @@ mod self_peer;
 /// dependency bumps.
 #[allow(dead_code)]
 mod peer_root_ledger;
+mod settlement_channel;
 mod share_policy;
 mod split_stage;
 mod web_ui_manifest;
@@ -839,6 +840,7 @@ async fn main() -> anyhow::Result<()> {
     .mesh_item(mesh_channel(EVIDENCE_REQUEST_CHANNEL))
     .mesh_item(mesh_channel(record_push_bridge::RECORD_PUSH_CHANNEL))
     .mesh_item(mesh_channel(LEDGER_FETCH_CHANNEL))
+    .mesh_item(mesh_channel(settlement_channel::PAYMENT_LIFECYCLE_CHANNEL))
     // Any mesh event carries this node's own peer id; the host sends these
     // kinds as a snapshot right after the plugin loads (see `self_peer`).
     .event_item(events::local_accepting())
@@ -955,6 +957,39 @@ async fn main() -> anyhow::Result<()> {
                         }
                         Err(error) => {
                             tracing::warn!(%error, "unparseable openai.exchange.v1 envelope");
+                        }
+                    }
+                } else if message.channel == settlement_channel::PAYMENT_LIFECYCLE_CHANNEL {
+                    // One settlement record per checked payment lifecycle
+                    // event, sealed on `spawn_blocking` like the exchange seal
+                    // above (same ledger mutex across two fsyncs). Never
+                    // pushed to peers. Every failure is logged, never
+                    // propagated: a refused or unsealed event is missing
+                    // evidence, not a failed exchange.
+                    match settlement_channel::parse_and_check(&message.body) {
+                        Ok(event) => {
+                            let capsules_for_seal = capsules.clone();
+                            match tokio::task::spawn_blocking(move || {
+                                capsules_for_seal.emit_settlement_record(&event.observation())
+                            })
+                            .await
+                            {
+                                Ok(Ok(Some(sealed))) => {
+                                    tracing::info!(capsule_id = %sealed.capsule_id, "sealed settlement record");
+                                }
+                                Ok(Ok(None)) => {
+                                    tracing::debug!("payment lifecycle event already sealed");
+                                }
+                                Ok(Err(error)) => {
+                                    tracing::warn!(%error, "settlement record seal failed");
+                                }
+                                Err(join_error) => {
+                                    tracing::warn!(%join_error, "settlement seal task did not complete");
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "refused payment.lifecycle.v1 event; not sealed");
                         }
                     }
                 }

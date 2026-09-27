@@ -130,6 +130,12 @@ pub struct Ledger {
     /// Every line in `capsules.jsonl`, padding included -- the leaf count the
     /// checkpoint MMR over this file will reach once it has folded it all.
     entries: u64,
+    /// `event_ref`s of the payment lifecycle events this ledger already holds
+    /// a settlement record for -- rebuilt on `open`, maintained on `append`.
+    /// A settlement record is identified by its
+    /// `compute_attestation["x-mesh-settlement-v1"]` block; the live channel
+    /// seal path reads this so a rebroadcast event never seals twice.
+    settlement_event_refs: HashSet<String>,
 }
 
 fn statement_path(statements_dir: &Path, capsule_id: &str) -> PathBuf {
@@ -173,6 +179,21 @@ fn collect_counterparty_inclusion_citations(capsule: &Value, out: &mut HashSet<S
         .and_then(Value::as_str)
     {
         out.insert(half.to_string());
+    }
+}
+
+/// Collect into `out` the `event_ref` of this capsule's settlement
+/// observation, when it is a settlement record (see
+/// `Ledger::settlement_event_refs`).
+fn collect_settlement_event_ref(capsule: &Value, out: &mut HashSet<String>) {
+    if let Some(event_ref) = capsule
+        .get("model_attestation")
+        .and_then(|m| m.get("compute_attestation"))
+        .and_then(|c| c.get(crate::capsule::SETTLEMENT_EXTENSION_KEY))
+        .and_then(|s| s.get("event_ref"))
+        .and_then(Value::as_str)
+    {
+        out.insert(event_ref.to_string());
     }
 }
 
@@ -266,6 +287,7 @@ impl Ledger {
         let mut report = RecoveryReport::default();
         let mut cited_counterparty_halves = HashSet::new();
         let mut inclusion_cited_halves = HashSet::new();
+        let mut settlement_event_refs = HashSet::new();
 
         // Split on '\n', keeping track of whether the buffer ends with one.
         // A missing trailing newline on the final chunk means a torn write:
@@ -359,6 +381,7 @@ impl Ledger {
             }
             collect_counterparty_half_citations(&parsed, &mut cited_counterparty_halves);
             collect_counterparty_inclusion_citations(&parsed, &mut inclusion_cited_halves);
+            collect_settlement_event_ref(&parsed, &mut settlement_event_refs);
             index.insert(stored_id.clone(), offset - line_bytes_len);
             chain_head = Some(stored_id);
         }
@@ -375,6 +398,7 @@ impl Ledger {
                 cited_counterparty_halves,
                 inclusion_cited_halves,
                 entries: report.valid_entries as u64,
+                settlement_event_refs,
             },
             report,
         ))
@@ -435,6 +459,13 @@ impl Ledger {
         self.inclusion_cited_halves.contains(foreign_capsule_id)
     }
 
+    /// Whether this ledger already holds a settlement record for the payment
+    /// lifecycle event whose `event_ref` is `event_ref` -- the channel seal
+    /// path's dedup gate, so a rebroadcast event seals at most one record.
+    pub fn has_settlement_event(&self, event_ref: &str) -> bool {
+        self.settlement_event_refs.contains(event_ref)
+    }
+
     /// Append a sealed capsule + its signed statement. The statement file is
     /// written and fsync'd BEFORE the jsonl line, so a crash between the two
     /// leaves at worst an unindexed orphan `.cose` file -- never a jsonl
@@ -468,6 +499,7 @@ impl Ledger {
 
         collect_counterparty_half_citations(capsule, &mut self.cited_counterparty_halves);
         collect_counterparty_inclusion_citations(capsule, &mut self.inclusion_cited_halves);
+        collect_settlement_event_ref(capsule, &mut self.settlement_event_refs);
         self.index.insert(capsule_id.clone(), offset);
         self.chain_head = Some(capsule_id);
         Ok(())

@@ -1529,6 +1529,57 @@ pub struct EmittedRoutingChoice {
 /// See `capsule_producer::capsule::InclusionCitation`.
 pub use capsule_producer::capsule::InclusionCitation;
 
+impl CapsuleState {
+    /// Seal, chain, and ledger one SETTLEMENT record -- this payer node's
+    /// sealed observation of one checked `payment.lifecycle.v1` event (see
+    /// `capsule_producer::capsule::seal_settlement_record` for what the record
+    /// does and does not claim). Same single-writer path as
+    /// [`CapsuleState::emit_citing_record`]: the one ledger mutex, the current
+    /// head, the detached `.cose` statement, `Ledger::append`.
+    ///
+    /// DEDUP by `event_ref`: the host may deliver the same event more than
+    /// once, and each delivery must not seal another record. The ledger tracks
+    /// the `event_ref`s its settlement records already carry
+    /// (`Ledger::has_settlement_event`, rebuilt on open); a repeat returns
+    /// `Ok(None)`.
+    pub fn emit_settlement_record(
+        &self,
+        ev: &capsule_producer::capsule::SettlementObservation,
+    ) -> anyhow::Result<Option<EmittedCapsule>> {
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ledger.has_settlement_event(ev.event_ref) {
+            return Ok(None);
+        }
+        let capsule = capsule_producer::capsule::seal_settlement_record(
+            ev,
+            ledger.chain_head(),
+            &self.keys.signing_key,
+        )?;
+        let capsule_id = capsule["capsule_id"]
+            .as_str()
+            .expect("seal_settlement_record always sets capsule_id")
+            .to_string();
+        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let statement = build_signed_statement(
+            &SignedStatementInput {
+                payload: &payload,
+                issuer: &self.node_id,
+                subject: &capsule_id,
+                content_type: CAPSULE_CONTENT_TYPE,
+            },
+            &self.keys.signing_key,
+        );
+        ledger.append(&capsule, &statement)?;
+        Ok(Some(EmittedCapsule {
+            capsule_id,
+            capsule,
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3695,5 +3746,179 @@ mod tests {
             "a local-served exchange must seal exactly one capsule, never two"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod settlement_tests {
+    use super::*;
+    use crate::settlement_channel::{host_shaped_event, parse_and_check, Phase};
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cap-settle-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn exchange(exchange_id: &str) -> ExchangeRecord<'_> {
+        ExchangeRecord {
+            model: "m",
+            client_nonce: Some("n"),
+            request_bytes: br#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#,
+            response_bytes:
+                br#"{"id":"x","choices":[{"message":{"role":"assistant","content":"y"}}]}"#,
+            latency_ms: 1.0,
+            exchange_id: Some(exchange_id),
+            requesting_party: Some("party-1"),
+            host_provenance: None,
+        }
+    }
+
+    fn checked(body: &Value) -> crate::settlement_channel::PaymentLifecycleEvent {
+        parse_and_check(&serde_json::to_vec(body).unwrap()).expect("host-shaped event checks")
+    }
+
+    /// A checked event seals one record onto the local head with every value
+    /// copied verbatim (the amount included), under
+    /// `compute_attestation["x-mesh-settlement-v1"]`.
+    #[test]
+    fn settlement_record_seals_verbatim_and_chains_onto_the_head() {
+        let dir = temp_dir("happy");
+        let state = CapsuleState::open(&dir, "node-under-test").unwrap();
+        let local = state.emit_for_exchange(&exchange("ex-paid-1")).unwrap();
+
+        let hash = "bb".repeat(32);
+        let body = host_shaped_event(
+            "ex-paid-1",
+            Phase::OutputSettlementObserved,
+            Some(1),
+            Some(&hash),
+            123457,
+        );
+        let event = checked(&body);
+        let sealed = state
+            .emit_settlement_record(&event.observation())
+            .unwrap()
+            .expect("first observation seals");
+
+        assert_eq!(
+            sealed.capsule["chain"]["parent_capsule_id"].as_str(),
+            Some(local.capsule_id.as_str())
+        );
+        assert_eq!(sealed.capsule["chain"]["relation"], json!("follows"));
+        assert!(sealed.capsule.get("references").is_none());
+        let obs =
+            &sealed.capsule["model_attestation"]["compute_attestation"]["x-mesh-settlement-v1"];
+        assert_eq!(
+            obs,
+            &json!({
+                "v": 1,
+                "observed_by": "payer",
+                "channel": "payment.lifecycle.v1",
+                "exchange_id": "ex-paid-1",
+                "event_ref": body["event_ref"],
+                "terms_digest": body["terms_digest"],
+                "phase": "output_settlement_observed",
+                "source": "wallet_reported",
+                "settlement": "terminal",
+                "segment": 1,
+                "payment_hash": hash,
+                "amount_msat": 123457,
+            })
+        );
+        assert_eq!(
+            state.chain_head().as_deref(),
+            Some(sealed.capsule_id.as_str())
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The same event twice seals one record; still one after a reopen (the
+    /// dedup set is rebuilt from the ledger).
+    #[test]
+    fn settlement_record_dedups_by_event_ref_across_reopen() {
+        let dir = temp_dir("dedup");
+        let state = CapsuleState::open(&dir, "node-under-test").unwrap();
+        let body = host_shaped_event("ex-paid-1", Phase::TermsAccepted, None, None, 5000);
+        let event = checked(&body);
+        let first = state
+            .emit_settlement_record(&event.observation())
+            .unwrap()
+            .expect("first observation seals");
+        assert!(state
+            .emit_settlement_record(&event.observation())
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            state.chain_head().as_deref(),
+            Some(first.capsule_id.as_str())
+        );
+
+        drop(state);
+        let reopened = CapsuleState::open(&dir, "node-under-test").unwrap();
+        assert!(reopened
+            .emit_settlement_record(&event.observation())
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            reopened.chain_head().as_deref(),
+            Some(first.capsule_id.as_str())
+        );
+        let lines = fs::read_to_string(dir.join("ledger").join("capsules.jsonl")).unwrap();
+        assert_eq!(lines.lines().count(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Writes a ledger fixture for host-side reader tests: two exchange
+    /// records ("ex-paid-1", "ex-free-1") and the six lifecycle settlement
+    /// records for "ex-paid-1". Output dir from `SETTLEMENT_FIXTURE_OUT`.
+    #[test]
+    #[ignore]
+    fn write_settlement_ledger_fixture() {
+        let out = PathBuf::from(
+            std::env::var("SETTLEMENT_FIXTURE_OUT").expect("set SETTLEMENT_FIXTURE_OUT"),
+        );
+        let _ = fs::remove_dir_all(&out);
+        let state = CapsuleState::open(&out, "fixture-node").unwrap();
+        state.emit_for_exchange(&exchange("ex-paid-1")).unwrap();
+        state.emit_for_exchange(&exchange("ex-free-1")).unwrap();
+        let (input_hash, output_hash) = ("aa".repeat(32), "bb".repeat(32));
+        for (phase, segment, hash, amount) in [
+            (Phase::TermsAccepted, None, None, 5000),
+            (Phase::InputInvoiceIssued, Some(0), Some(&input_hash), 1200),
+            (
+                Phase::InputSettlementObserved,
+                Some(0),
+                Some(&input_hash),
+                1200,
+            ),
+            (
+                Phase::OutputInvoiceIssued,
+                Some(1),
+                Some(&output_hash),
+                2300,
+            ),
+            (
+                Phase::OutputSettlementObserved,
+                Some(1),
+                Some(&output_hash),
+                2300,
+            ),
+            (Phase::FinalAccounted, None, None, 3502),
+        ] {
+            let body = host_shaped_event(
+                "ex-paid-1",
+                phase,
+                segment,
+                hash.map(String::as_str),
+                amount,
+            );
+            let event = checked(&body);
+            let sealed = state
+                .emit_settlement_record(&event.observation())
+                .unwrap()
+                .expect("fresh event seals");
+            println!("{}", serde_json::to_string(&sealed.capsule).unwrap());
+        }
     }
 }
