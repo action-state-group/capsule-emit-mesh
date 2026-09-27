@@ -50,7 +50,7 @@
 //! recorded at all (never synthesized); the ledger carries only the
 //! door-verified self-declared `received_from`.
 //!
-//! **Push-a-bundle (`[mesh-closed-then-in-their-log]`).** When the sender's
+//! **Push-a-bundle.** When the sender's
 //! checkpoint cadence is on, the JSON body is a bundle instead of the bare
 //! capsule: `{"record_push_bundle": 1, "capsule": <the half, unchanged>,
 //! "inclusion": {"leaf_index", "proof"}, "checkpoint": <signed checkpoint>}`

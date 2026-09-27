@@ -1,15 +1,15 @@
 {
   "record_push_bundle": 1,
   "capsule": {
-    "spec_version": "draft-mih-scitt-agent-action-capsule-02",
+    "spec_version": "draft-mih-scitt-agent-action-capsule-05",
     "format_version": "4",
-    "capsule_id": "97fefefe6df381785fece560c8410f184c36c03f881ef60b1dae8c5eca2b4e51",
+    "capsule_id": "48243fd98f18bcae1c612d74553248603e0c577de3ac3e69b5cfa3f45bf1bab4",
     "canonicalization_id": "jcs",
     "action_id": "mesh-poc/capsule-emit-mesh-integration/6d139f1403cd84518768857efed6c375c0e3fe1af3f250cd3a5c59ea87a0323c",
     "action_type": "decide",
     "operator": "capsule-emit-mesh-poc-rust",
     "developer": "capsule-producer/0.2.0",
-    "timestamp": "2026-09-27T17:49:36.543Z",
+    "timestamp": "2026-09-27T19:21:48.787Z",
     "domain": "action",
     "provenance": "collector",
     "model_attestation": {
@@ -20,7 +20,7 @@
         "agent_output_digest": "a8461110d26a1ceb91765128a3f8a648e86238810f4bdf27a330deb8681f9d87",
         "runtime": {
           "name": "admission-policy-plugin/mesh-llm-host-runtime",
-          "runtime_digest": "b444d9b0b43c6c4a21c7f16de2094ad115124d8161ce310f3750d12ad63b1d43",
+          "runtime_digest": "0e1b8939f369602ec703f2b619cabfe2fd97bdc9a402b8c247a0c9f2c6014bbe",
           "measurement_class": "os_measured",
           "platform_integrity": {
             "sip_enabled": true,
@@ -48,7 +48,6 @@
             "dispatch_path": null,
             "requesting_party": "party-1",
             "exchange_id": "e-1",
-            "hostname": null,
             "quantization": "unknown",
             "model": {
               "architecture": null,
@@ -91,15 +90,15 @@
             "binary_attestation": {
               "type": "binary_attestation",
               "measurement_class": "os_measured",
-              "digest": "b444d9b0b43c6c4a21c7f16de2094ad115124d8161ce310f3750d12ad63b1d43",
+              "digest": "0e1b8939f369602ec703f2b619cabfe2fd97bdc9a402b8c247a0c9f2c6014bbe",
               "digest_alg": "sha256",
-              "binary_path": "/Users/intangible/dev/asg/_worktrees/capsule-emit-mesh/closed-then-in-their-log/plugins/admission-policy/target/debug/deps/admission_policy_plugin-3fc8d89bee6dc18e",
-              "binary_size_bytes": 17954424,
-              "signature": "c95eb28e7295b79a85c2dd6795f727164c85474365d1f8ad25992376e58314eed0b51e2a2554812864ec2cb9a2c3c305787106b4cfaba4cb8611dd49e80c1d07",
+              "binary_path": "admission_policy_plugin-67491b54c66cd142",
+              "binary_size_bytes": 18095720,
+              "signature": "5c8129cb430498ba331aa89fa1379b6c5df5288216643c2636a73ae1f2e7e2a067feff97c98318ebcbbf04356e24bdf3cd21b789435e9447c59a93f4251ff80d",
               "signature_algorithm": "ed25519",
-              "signer_key_id": "9e1d17f94542ba05",
-              "measured_at": "2026-09-27T17:49:35.353Z",
-              "code_directory_hash": "cbd53c6a16ff7c0d52698510e18df5dc6649893f",
+              "signer_key_id": "d543c9a6e0826053",
+              "measured_at": "2026-09-27T19:21:47.876Z",
+              "code_directory_hash": "105e302112cecbf81fd03b3ec934e6470159a3a7",
               "cdhash_source": "csops(CS_OPS_CDHASH)",
               "kernel_valid": true,
               "kernel_signed": true,
@@ -116,9 +115,9 @@
     "effect": {
       "status": "confirmed",
       "type": "inference_completion",
+      "effect_attestation": "gate_executed",
       "request_digest": "6d139f1403cd84518768857efed6c375c0e3fe1af3f250cd3a5c59ea87a0323c",
-      "response_digest": "a8461110d26a1ceb91765128a3f8a648e86238810f4bdf27a330deb8681f9d87",
-      "effect_attestation": "gate_executed"
+      "response_digest": "a8461110d26a1ceb91765128a3f8a648e86238810f4bdf27a330deb8681f9d87"
     },
     "assurance": {
       "attestation_mode": "self_attested",
@@ -132,11 +131,11 @@
       "verdict_class": "executed"
     },
     "chain": {
-      "parent_capsule_id": "9972d9d3cb47719d026b2d7fef17c1fa67801645b9826787655c0f4786fb0ce6",
+      "parent_capsule_id": "f9c2678e464f3034797b796c382fcdc57bae80b027d4f7d4d80d33078c9ecc08",
       "relation": "follows"
     },
-    "signature": "d284584ca301270378236170706c69636174696f6e2f6167656e742d616374696f6e2d63617073756c652d69640458202c0fa6ad89223f6ae4588d9eecfc35906295ad339c61a912d5a1dfed08702c45a0582097fefefe6df381785fece560c8410f184c36c03f881ef60b1dae8c5eca2b4e5158405963746cac546791dadde73c3c5e937f461636922385bb5f56fc35145a2136fdb41c40c0e9316e9a33117482175aeb79560ed2790a5abe670e4a435ba0e65e0e",
-    "key_id": "2c0fa6ad89223f6ae4588d9eecfc35906295ad339c61a912d5a1dfed08702c45"
+    "signature": "d284584ca301270378236170706c69636174696f6e2f6167656e742d616374696f6e2d63617073756c652d6964045820aa05c0ed2bd6f9b67974652ade338b3b1b9b949972462dd44ce1fd76cd87b944a0582048243fd98f18bcae1c612d74553248603e0c577de3ac3e69b5cfa3f45bf1bab45840fc3b6be7521b7d4c50ed02e563a3e31364ae4736035fff5b140c2d276f933dc8b69317e56c5537bbbc284f28204f351276e284f96280d2c5d629a54d2816e20f",
+    "key_id": "aa05c0ed2bd6f9b67974652ade338b3b1b9b949972462dd44ce1fd76cd87b944"
   },
   "inclusion": {
     "leaf_index": 1,
@@ -146,7 +145,7 @@
       "size": 3,
       "leaf_index": 1,
       "witness": [
-        "d58e8ef93a183d560f6cda59cb6c38dc905c4d26750cf30ff2ed7b8941db4152"
+        "c42c57563c538621a46082a6bbe8ddc2c2e5c41f766c227274b0f98cacd23fa9"
       ],
       "peaks_left": [],
       "peaks_right": []
@@ -157,11 +156,11 @@
     "kind": "mmr_checkpoint",
     "log_id": "rust-node",
     "mmr_size": 3,
-    "root": "8501a3a8dbc02e8df5da00d520d4676ab5ad3e7ca4395e5e16d393346e66bb5e",
+    "root": "9eb95492f84a7b7b36e8d19e52851b9fcff44432c62a376816ce4836c305dc14",
     "prev_size": 0,
     "prev_root": "",
-    "key_id": "2c0fa6ad89223f6ae4588d9eecfc35906295ad339c61a912d5a1dfed08702c45",
-    "timestamp": "2026-09-27T17:49:36.570Z",
-    "signature": "4af24e7cf736fb054c5c2b7bbf216f098e6f4dd5f0e1a45a79af32e890cf85903ba3d04721d0ef31b33eb488ea366c8c207a6debd4ea83df02ebeec200f2f601"
+    "key_id": "aa05c0ed2bd6f9b67974652ade338b3b1b9b949972462dd44ce1fd76cd87b944",
+    "timestamp": "2026-09-27T19:21:48.810Z",
+    "signature": "a3f52e7e6177924844b76c8e372bab526a2b35de03d8a2369211454c775d17cbe128b990d7fdc09fc6f6f32b5a725cd45cb1dc52ffce3c3b85790db30c44db04"
   }
 }

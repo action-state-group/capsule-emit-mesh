@@ -24,7 +24,7 @@
 //! signal, exactly the shape `checkpoint_daemon.py`'s own `run_daemon`
 //! background loop has.
 //!
-//! **Checkpoint at push (`[mesh-closed-then-in-their-log]`).** The same
+//! **Checkpoint at push.** The same
 //! `CheckpointState` is shared (one lock, one writer of `checkpoints.jsonl`)
 //! with the record-push sender, which asks [`CheckpointHandle::coverage_for`]
 //! for a checkpoint covering the half it is about to push. Cuts are paced to

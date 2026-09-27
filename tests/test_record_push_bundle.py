@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Push-a-bundle at the record-push door (``[mesh-closed-then-in-their-log]``).
+"""Push-a-bundle at the record-push door.
 
 A bundle is the pushed half + its inclusion proof + the sender's signed
 checkpoint covering it. The door verifies all three and, on success, holds the

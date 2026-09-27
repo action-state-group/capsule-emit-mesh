@@ -7,7 +7,7 @@ half to the requester; the requester's half to the provider. CLOSED becomes
 the default row state instead of the exception, and each side holds the
 other's signed digests as its own defence.
 
-**Push a bundle (``[mesh-closed-then-in-their-log]``).** A sender whose
+**Push a bundle.** A sender whose
 checkpoint cadence is on checkpoints at push and sends a BUNDLE -- the half,
 its inclusion proof, and the signed checkpoint covering it::
 
