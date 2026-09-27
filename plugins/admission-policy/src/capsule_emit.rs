@@ -588,11 +588,11 @@ impl CapsuleState {
             // (graceful degradation, never a fabricated hash).
             runtime: runtime_field(&binary_attestation),
             mesh_poc: MeshPocV1 {
-                client_nonce: client_nonce.unwrap_or("sidecar-generated").to_string(),
+                client_nonce: client_nonce.unwrap_or("plugin_generated").to_string(),
                 client_nonce_source: if client_nonce.is_some() {
                     "client_supplied"
                 } else {
-                    "sidecar_generated_fallback"
+                    "plugin_generated_fallback"
                 }
                 .to_string(),
                 // Renamed from the overclaiming `model_package_digest`: this is
@@ -670,8 +670,8 @@ impl CapsuleState {
             },
             effect_status: "confirmed".to_string(),
             effect_type: "inference_completion".to_string(),
-            effect_request_digest: agent_input_digest,
-            effect_response_digest: agent_output_digest,
+            effect_request_digest: Some(agent_input_digest),
+            effect_response_digest: Some(agent_output_digest),
             effect_attestation: "gate_executed".to_string(),
             disposition_decision: "accept".to_string(),
             // §5.4: disposition.approver MUST be `human` or `policy` -- the
@@ -832,21 +832,20 @@ impl CapsuleState {
     /// request digest); no bytes are handled here.
     ///
     /// DIGEST BINDING (honest, precise):
-    ///   * `agent_input_digest` / `effect_request_digest` = the host-forwarded
-    ///     `request_digest`, the canonical JSON-DIGEST of the REAL request body
-    ///     (computed host-side the same way this plugin's `canonical_body_digest`
-    ///     does, so the two are comparable). When the host forwarded none, an
-    ///     explicit `unknown-request:<model>` sentinel is bound instead -- an
-    ///     honest marker of absence, never a fabricated body digest.
-    ///   * `agent_output_digest` / `effect_response_digest` = the canonical
-    ///     JSON-DIGEST of the observed TERMINAL FACTS (model + real usage), NOT
-    ///     the served response body: the host streams the response to the client
-    ///     and only the token `usage` returns to the publish site, so the plugin
-    ///     never sees the response bytes. This digest therefore binds *what the
-    ///     host attested about the output* (its real token accounting), and is
-    ///     documented as such -- it is a real digest of real observed facts, not
-    ///     a stand-in for a body it never had. See PROTOCOL-NOTE.md for what full
-    ///     response-body binding would additionally require host-side.
+    ///   * `agent_input_digest` = the host-forwarded `request_digest`, the
+    ///     canonical JSON-DIGEST of the REAL request body (computed host-side
+    ///     the same way this plugin's `canonical_body_digest` does). When the
+    ///     host forwarded none, an explicit `unknown-request:<model>` sentinel.
+    ///   * `agent_output_digest` = the host-forwarded response-body digest, or
+    ///     when absent the canonical JSON-DIGEST of the observed TERMINAL FACTS
+    ///     (model + real usage) -- documented as NOT a response-body digest.
+    ///   * `effect` (AAC-05 §5.2) carries ONLY digests of real bodies:
+    ///     `request_digest` is the host-forwarded request digest or absent;
+    ///     `status` is `confirmed` with `response_digest` = the host-forwarded
+    ///     response-body digest, and `dispatched` with no `response_digest`
+    ///     when the host forwarded none. The sentinel and the terminal-facts
+    ///     digest never enter the effect.
+    ///   * `action_type` is `fyi`: the plugin decided nothing on this path.
     pub fn emit_for_observed_host_exchange(
         &self,
         observed: &ObservedHostExchange,
@@ -991,7 +990,8 @@ impl CapsuleState {
 
         let input = CapsuleInput {
             action_id: format!("mesh-poc/capsule-emit-mesh-host-served/{agent_input_digest}"),
-            action_type: "decide".to_string(),
+            // Observed, not admitted: this plugin decided nothing here.
+            action_type: "fyi".to_string(),
             operator: "capsule-emit-mesh-poc-rust".to_string(),
             developer: "capsule-producer/0.2.0".to_string(),
             timestamp: utc_now_iso8601(),
@@ -1098,10 +1098,14 @@ impl CapsuleState {
                 // absence, never fabricated. See `capsule_producer::tee_attest`.
                 tee_attestation: None,
             },
-            effect_status: "confirmed".to_string(),
+            // Confirmed only over the host's digest of the REAL response body;
+            // without one the completion was dispatched but its output is
+            // unbound, so the effect carries no response digest (AAC-05 §5.2).
+            effect_status: if response_digest.is_some() { "confirmed" } else { "dispatched" }
+                .to_string(),
             effect_type: "inference_completion".to_string(),
-            effect_request_digest: agent_input_digest,
-            effect_response_digest: agent_output_digest,
+            effect_request_digest: request_digest.map(str::to_string),
+            effect_response_digest: response_digest.map(str::to_string),
             effect_attestation: "host_served_observed".to_string(),
             disposition_decision: "accept".to_string(),
             disposition_approver: "policy".to_string(),
@@ -2135,6 +2139,74 @@ mod tests {
                 assert!(!s.contains(home.as_str()), "sealed record carries $HOME: {s}");
             }
         }
+    }
+
+    /// AAC-05 §5.2 on the OBSERVE path: with no host digest of the real
+    /// response body, the effect is `dispatched` and carries no
+    /// `response_digest` (never `confirmed` over the terminal-facts digest),
+    /// no request digest when none was forwarded (never the sentinel), and
+    /// the record is `fyi` -- the plugin decided nothing.
+    #[test]
+    fn observe_path_without_host_digests_is_dispatched_fyi_with_no_placeholders() {
+        let dir = std::env::temp_dir().join(format!("cap-obs-nodig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let emitted = state
+            .emit_for_observed_host_exchange(&observed_with(DispatchPath::RawProxy, None))
+            .expect("seal observed");
+        let c = &emitted.capsule;
+        assert_eq!(c["action_type"], "fyi");
+        assert_eq!(c["effect"]["status"], "dispatched");
+        assert_eq!(c["effect"]["type"], "inference_completion");
+        assert_eq!(c["effect"]["effect_attestation"], "host_served_observed");
+        assert!(c["effect"].get("response_digest").is_none());
+        assert!(c["effect"].get("request_digest").is_none());
+        assert_eq!(c["assurance"]["effect_mode"], "dispatched_unconfirmed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With the host's real request/response body digests, the observe path
+    /// seals `confirmed` over exactly those digests -- still `fyi`.
+    #[test]
+    fn observe_path_with_host_digests_is_confirmed_over_the_real_bodies() {
+        let dir = std::env::temp_dir().join(format!("cap-obs-dig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let req = "1".repeat(64);
+        let resp = "2".repeat(64);
+        let mut observed = observed_with(DispatchPath::RawProxy, None);
+        observed.request_digest = Some(&req);
+        observed.response_digest = Some(&resp);
+        let c = state.emit_for_observed_host_exchange(&observed).expect("seal").capsule;
+        assert_eq!(c["action_type"], "fyi");
+        assert_eq!(c["effect"]["status"], "confirmed");
+        assert_eq!(c["effect"]["request_digest"], req);
+        assert_eq!(c["effect"]["response_digest"], resp);
+        assert_eq!(c["assurance"]["effect_mode"], "confirmed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The admitted path is where the plugin decided: `decide`, `confirmed`
+    /// over the digests of the bodies it held; the nonce fallback names this
+    /// plugin, not a sidecar that isn't there.
+    #[test]
+    fn admitted_path_is_decide_and_confirmed_with_plugin_generated_fallback() {
+        let dir = std::env::temp_dir().join(format!("cap-adm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let mut exchange = sample_exchange("party-1");
+        exchange.client_nonce = None;
+        let c = state.emit_for_exchange(&exchange).expect("seal").capsule;
+        assert_eq!(c["action_type"], "decide");
+        assert_eq!(c["effect"]["status"], "confirmed");
+        assert_eq!(
+            c["effect"]["response_digest"],
+            canonical_body_digest(exchange.response_bytes).unwrap()
+        );
+        let poc = &c["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"];
+        assert_eq!(poc["client_nonce"], "plugin_generated");
+        assert_eq!(poc["client_nonce_source"], "plugin_generated_fallback");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     const OPERATOR_HOSTNAME: &str = "operators-machine.local";

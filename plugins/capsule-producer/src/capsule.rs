@@ -10,7 +10,7 @@
 use crate::jcs::compute_capsule_id;
 use serde_json::{json, Map, Value};
 
-pub const SPEC_VERSION: &str = "draft-mih-scitt-agent-action-capsule-02";
+pub const SPEC_VERSION: &str = "draft-mih-scitt-agent-action-capsule-05";
 pub const FORMAT_VERSION: &str = "4";
 /// Format 4 requires this literal `canonicalization_id` (§5.1); see `jcs::CANONICALIZATION_JCS`.
 pub const CANONICALIZATION_ID: &str = crate::jcs::CANONICALIZATION_JCS;
@@ -520,8 +520,13 @@ pub struct CapsuleInput {
     pub mesh_poc: MeshPocV1,
     pub effect_status: String,
     pub effect_type: String,
-    pub effect_request_digest: String,
-    pub effect_response_digest: String,
+    /// `None` omits the member. Present only as a 64-hex JSON-DIGEST of the
+    /// request body; never a sentinel string.
+    pub effect_request_digest: Option<String>,
+    /// `None` omits the member. `confirmed` REQUIRES it (a 64-hex digest of
+    /// the effect's actual output); `dispatched`/`planned` REQUIRE it absent
+    /// (AAC-05 §5.2). [`seal`] refuses any other combination.
+    pub effect_response_digest: Option<String>,
     pub effect_attestation: String,
     pub disposition_decision: String,
     pub disposition_approver: String,
@@ -532,13 +537,49 @@ pub struct CapsuleInput {
     pub chain: Option<ChainLink>,
 }
 
+fn is_hex64(v: &str) -> bool {
+    v.len() == 64 && v.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+
+/// Why [`seal`] refused to build a capsule.
+#[derive(Debug, thiserror::Error)]
+pub enum SealError {
+    #[error(transparent)]
+    Jcs(#[from] crate::jcs::JcsError),
+    /// The effect's status and digests break AAC-05 §5.2's status/digest
+    /// table -- e.g. `confirmed` with no digest of the actual output.
+    #[error("effect record violates AAC-05 §5.2: {0}")]
+    EffectInvariant(&'static str),
+}
+
+/// AAC-05 §5.2's confirmed-effect invariant and status/digest table, as
+/// `agent_action_capsule.contracts.EffectRecord` enforces them.
+fn check_effect(input: &CapsuleInput) -> Result<(), SealError> {
+    let req = input.effect_request_digest.as_deref();
+    let resp = input.effect_response_digest.as_deref();
+    if req.is_some_and(|d| !is_hex64(d)) || resp.is_some_and(|d| !is_hex64(d)) {
+        return Err(SealError::EffectInvariant(
+            "request_digest/response_digest must be a 64-hex JSON-DIGEST when present",
+        ));
+    }
+    match input.effect_status.as_str() {
+        "confirmed" if resp.is_none() => Err(SealError::EffectInvariant(
+            "confirmed requires a response_digest over the observed output",
+        )),
+        "planned" if req.is_some() || resp.is_some() => Err(SealError::EffectInvariant(
+            "planned requires request_digest and response_digest absent",
+        )),
+        "dispatched" if resp.is_some() => Err(SealError::EffectInvariant(
+            "dispatched requires response_digest absent",
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// derive_effect_mode (contracts.py) for the subset this milestone emits:
 /// status "confirmed" with a well-formed (64-hex) response_digest -> "confirmed".
-fn derive_effect_mode(status: &str, response_digest: &str) -> &'static str {
-    let is_hex64 = response_digest.len() == 64
-        && response_digest
-            .chars()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
+fn derive_effect_mode(status: &str, response_digest: Option<&str>) -> &'static str {
+    let is_hex64 = response_digest.is_some_and(is_hex64);
     match status {
         "planned" => "not_applicable",
         "confirmed" if is_hex64 => "confirmed",
@@ -550,7 +591,8 @@ fn derive_effect_mode(status: &str, response_digest: &str) -> &'static str {
 /// Build and seal a Capsule (mirrors `emit.emit()` + `parse.Capsule.seal()`):
 /// returns the full capsule dict with `capsule_id` computed over the canonical
 /// capsule form (§5.1) — standalone (no `chain` block; chaining is milestone 2).
-pub fn seal(input: &CapsuleInput) -> Result<Value, crate::jcs::JcsError> {
+pub fn seal(input: &CapsuleInput) -> Result<Value, SealError> {
+    check_effect(input)?;
     let mut body = Map::new();
     body.insert("spec_version".into(), json!(SPEC_VERSION));
     body.insert("format_version".into(), json!(FORMAT_VERSION));
@@ -702,17 +744,22 @@ pub fn seal(input: &CapsuleInput) -> Result<Value, crate::jcs::JcsError> {
             "compute_attestation": Value::Object(compute_attestation),
         }),
     );
-    body.insert(
-        "effect".into(),
-        json!({
-            "status": input.effect_status,
-            "type": input.effect_type,
-            "request_digest": input.effect_request_digest,
-            "response_digest": input.effect_response_digest,
-            "effect_attestation": input.effect_attestation,
-        }),
-    );
-    let effect_mode = derive_effect_mode(&input.effect_status, &input.effect_response_digest);
+    let mut effect = json!({
+        "status": input.effect_status,
+        "type": input.effect_type,
+        "effect_attestation": input.effect_attestation,
+    });
+    for (key, digest) in [
+        ("request_digest", &input.effect_request_digest),
+        ("response_digest", &input.effect_response_digest),
+    ] {
+        if let Some(digest) = digest {
+            effect[key] = json!(digest);
+        }
+    }
+    body.insert("effect".into(), effect);
+    let effect_mode =
+        derive_effect_mode(&input.effect_status, input.effect_response_digest.as_deref());
     // ledger_mode mirrors emit.py: "chained" iff a chain block is present,
     // "standalone" otherwise -- NOT a statement about whether this producer
     // happens to also be writing to a local ledger file.
@@ -831,11 +878,9 @@ pub const REFERENCE_DIGEST_ALG: &str = "SHA-256";
 pub const CHAIN_RELATION_FOLLOWS: &str = "follows";
 
 /// `references[].citation_purpose` for a citing record's reference to the
-/// foreign half. PROVISIONAL: the
-/// ruling names `"counterparty_half"`; it is not among the AAC-05 registered
-/// `citation_purpose` values, so this is a clearly-flagged provisional value
-/// hard-coded ahead of registry promotion. This citation purpose ALONE
-/// identifies the counterparty-half citing record kind --
+/// foreign half. Registered in the AAC-05 citation-purpose registry
+/// (`counterparty_half`). This citation purpose ALONE identifies the
+/// counterparty-half citing record kind --
 /// never the `chain.relation` string.
 pub const CITATION_PURPOSE_COUNTERPARTY_HALF: &str = "counterparty_half";
 
@@ -1091,8 +1136,8 @@ mod tests {
             },
             effect_status: "confirmed".to_string(),
             effect_type: "inference_completion".to_string(),
-            effect_request_digest: "a".repeat(64),
-            effect_response_digest: "b".repeat(64),
+            effect_request_digest: Some("a".repeat(64)),
+            effect_response_digest: Some("b".repeat(64)),
             effect_attestation: "gate_executed".to_string(),
             disposition_decision: "accept".to_string(),
             disposition_approver: "policy".to_string(),
@@ -1111,13 +1156,17 @@ mod tests {
     /// capsule ids stay stable. These two literals were captured from
     /// `seal()`'s output BEFORE this task's envelope work (the `seal()`
     /// function body is byte-identical to that commit); if either changes, the
-    /// preimage was perturbed and the fix is wrong.
+    /// preimage was perturbed and the fix is wrong. Re-pinned once for the
+    /// AAC-05 `spec_version`; before:
+    /// standalone f22a917852446fe83865ad3a247bad9471d3b1bc464c1e193401804e07c44550,
+    /// chained 050b194efccf9e000d19f3d7f965b82861a7217389ed5e91888f3f5f9c04f8e3
+    /// (both still reproduce with `SPEC_VERSION` set back to -02).
     #[test]
     fn capsule_id_is_unchanged_by_attaching_the_producer_envelope() {
         const STANDALONE_ID: &str =
-            "f22a917852446fe83865ad3a247bad9471d3b1bc464c1e193401804e07c44550";
+            "bff097741877ff783911eb6a2771c0fcca9e6e4862d0126b368f20cee1ebb7c8";
         const CHAINED_ID: &str =
-            "050b194efccf9e000d19f3d7f965b82861a7217389ed5e91888f3f5f9c04f8e3";
+            "4ba7516fbae648e0bf8c868a3ea59c1f1884a892dde85ef1c40c82b816a19231";
 
         // 1. The pinned fixture ids are what `seal()` computes today.
         let mut standalone = seal(&base_input(None)).unwrap();
@@ -1394,6 +1443,49 @@ mod tests {
             provenance(&capsule).get("twin_bracket_id").is_none(),
             "an absent twin_bracket_id must be omitted, not null"
         );
+    }
+
+    /// AAC-05 §5.2: `confirmed` without a digest of the actual output is a
+    /// false record, so `seal` refuses it rather than emitting one.
+    #[test]
+    fn seal_refuses_confirmed_without_a_response_digest() {
+        let mut input = base_input(None);
+        input.effect_response_digest = None;
+        assert!(matches!(seal(&input), Err(SealError::EffectInvariant(_))));
+    }
+
+    #[test]
+    fn seal_refuses_a_non_digest_in_an_effect_digest_slot() {
+        let mut input = base_input(None);
+        input.effect_request_digest = Some("unknown-request:m".to_string());
+        assert!(matches!(seal(&input), Err(SealError::EffectInvariant(_))));
+    }
+
+    #[test]
+    fn seal_refuses_dispatched_with_a_response_digest() {
+        let mut input = base_input(None);
+        input.effect_status = "dispatched".to_string();
+        assert!(matches!(seal(&input), Err(SealError::EffectInvariant(_))));
+    }
+
+    /// `dispatched` with no response digest seals, omits the member (never
+    /// null), and derives `dispatched_unconfirmed`.
+    #[test]
+    fn dispatched_effect_omits_response_digest_and_is_unconfirmed() {
+        let mut input = base_input(None);
+        input.effect_status = "dispatched".to_string();
+        input.effect_response_digest = None;
+        let capsule = seal(&input).unwrap();
+        assert_eq!(capsule["effect"]["status"], "dispatched");
+        assert!(capsule["effect"].get("response_digest").is_none());
+        assert_eq!(capsule["effect"]["request_digest"], "a".repeat(64));
+        assert_eq!(capsule["assurance"]["effect_mode"], "dispatched_unconfirmed");
+    }
+
+    #[test]
+    fn sealed_capsule_declares_aac_05() {
+        let capsule = seal(&base_input(None)).unwrap();
+        assert_eq!(capsule["spec_version"], "draft-mih-scitt-agent-action-capsule-05");
     }
 
     /// A record sealed without an opted-in hostname carries no `hostname`
