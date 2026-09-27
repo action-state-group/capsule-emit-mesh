@@ -157,6 +157,8 @@ __all__ = [
     "EVIDENCE_RECORD_PUSH_PATH",
     "REASON_POLICY_DECLINE",
     "REASON_REQUEST_MALFORMED",
+    "REASON_CHECKPOINT_EQUIVOCATION",
+    "REASON_CHECKPOINT_STALE",
     "REASON_INCLUSION_UNVERIFIED",
     "REASON_SIGNATURE_UNVERIFIED",
     "handle_record_push",
@@ -178,6 +180,13 @@ REASON_SIGNATURE_UNVERIFIED = "signature_unverified"
 #: A bundle push whose checkpoint signature or inclusion proof does not
 #: verify against the half it carries (see the module doc's bundle note).
 REASON_INCLUSION_UNVERIFIED = "inclusion_unverified"
+#: A bundle whose checkpoint is older than the newest one held for the same
+#: sender key + log, at a size this node has no record of.
+REASON_CHECKPOINT_STALE = "checkpoint_stale"
+#: A bundle whose checkpoint -- or its signed prev link -- claims a different
+#: root for a size this node already holds a signed root for. Recorded as
+#: evidence (:data:`CHECKPOINT_EQUIVOCATIONS_FILENAME`), never accepted.
+REASON_CHECKPOINT_EQUIVOCATION = "checkpoint_equivocation"
 
 #: The top-level member that marks a push body as a bundle (a capsule never
 #: carries it) and the one bundle version this door reads.
@@ -214,6 +223,10 @@ REJECTED_PUSHES_FILENAME = "rejected-record-pushes.jsonl"
 #: An artifact store like :data:`RECEIVED_CAPSULES_FILENAME`: nothing chains
 #: or checkpoints it.
 RECEIVED_INCLUSION_FILENAME = "received-inclusion.jsonl"
+#: One line per detected equivocation: two checkpoints signed by the same key
+#: for the same log that give different roots at one size -- the claimed
+#: checkpoint whole, and the held root it contradicts.
+CHECKPOINT_EQUIVOCATIONS_FILENAME = "checkpoint-equivocations.jsonl"
 
 _PROOF_FIELDS = ("v", "kind", "size", "leaf_index", "witness", "peaks_left", "peaks_right")
 #: The exact member sets of a bundle and its parts. Nothing unsigned rides
@@ -519,6 +532,71 @@ def _verify_bundle_inclusion(capsule: dict[str, Any], bundle: dict[str, Any]) ->
     }
 
 
+def _held_inclusions(ledger_dir: Any) -> list[dict[str, Any]]:
+    from pathlib import Path
+
+    path = Path(ledger_dir) / RECEIVED_INCLUSION_FILENAME
+    if not path.is_file():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _signed_roots(checkpoint: dict[str, Any]) -> list[tuple[int, str]]:
+    """The (size, root) pairs a checkpoint signs: its own, and its prev link."""
+    pairs = [(checkpoint["mmr_size"], checkpoint["root"])]
+    if checkpoint["prev_size"] > 0:
+        pairs.append((checkpoint["prev_size"], checkpoint["prev_root"]))
+    return pairs
+
+
+def _history_verdict(
+    held_rows: list[dict[str, Any]], half_capsule_id: str, inclusion: dict[str, Any]
+) -> tuple[str, dict[str, Any] | None]:
+    """Judge a verified bundle's checkpoint against the checkpoints already
+    held for the same sender key + log:
+
+    * ``("duplicate", row)`` -- this half under this checkpoint is held already.
+    * ``("equivocation", evidence)`` -- the checkpoint or its prev link gives
+      a different root for a size a held checkpoint already signed.
+    * ``("stale", None)`` -- older than the newest held checkpoint, at a size
+      no held checkpoint vouches for.
+    * ``("ok", None)`` -- otherwise. A burst sharing one checkpoint, and an
+      older checkpoint arriving after a newer one that links back to it,
+      are both fine.
+    """
+    new = inclusion["checkpoint"]
+    same_log = [
+        row
+        for row in held_rows
+        if row["checkpoint"]["key_id"] == new["key_id"] and row["checkpoint"]["log_id"] == new["log_id"]
+    ]
+    for row in same_log:
+        if row["half_capsule_id"] == half_capsule_id and row["checkpoint_digest"] == inclusion["checkpoint_digest"]:
+            return "duplicate", row
+
+    known: dict[int, tuple[str, dict[str, Any]]] = {}
+    for row in same_log:
+        for size, root in _signed_roots(row["checkpoint"]):
+            known.setdefault(size, (root, row["checkpoint"]))
+    for size, root in _signed_roots(new):
+        if size in known and known[size][0] != root:
+            held_root, held_checkpoint = known[size]
+            return "equivocation", {
+                "key_id": new["key_id"],
+                "log_id": new["log_id"],
+                "mmr_size": size,
+                "held_root": held_root,
+                "claimed_root": root,
+                "held_checkpoint": held_checkpoint,
+                "claimed_checkpoint": new,
+            }
+
+    newest = max((row["checkpoint"]["mmr_size"] for row in same_log), default=0)
+    if new["mmr_size"] < newest and new["mmr_size"] not in known:
+        return "stale", None
+    return "ok", None
+
+
 def handle_record_push(
     state: Any,
     body: bytes,
@@ -624,6 +702,28 @@ def handle_record_push(
             )
             return _refuse(request_digest, REASON_INCLUSION_UNVERIFIED, state=state, issued_at=issued_at)
 
+        verdict, detail = _history_verdict(
+            _held_inclusions(state.ledger_dir), capsule["capsule_id"], inclusion
+        )
+        if verdict == "duplicate":
+            # A replay: nothing new to hold. The reply repeats the held facts,
+            # so a retrying sender's citing record dedups on our side.
+            return _received_reply(detail)
+        if verdict == "equivocation":
+            _append_jsonl(
+                state.ledger_dir,
+                CHECKPOINT_EQUIVOCATIONS_FILENAME,
+                {**detail, "received_from": sender_peer_id, "detected_at": issued_at},
+            )
+            reason = REASON_CHECKPOINT_EQUIVOCATION
+        elif verdict == "stale":
+            reason = REASON_CHECKPOINT_STALE
+        else:
+            reason = None
+        if reason is not None:
+            _append_rejected_push(state, capsule.get("capsule_id"), sender_peer_id, reason, issued_at)
+            return _refuse(request_digest, reason, state=state, issued_at=issued_at)
+
     _append_jsonl(state.ledger_dir, RECEIVED_CAPSULES_FILENAME, capsule)
     _append_provenance(state, capsule, sender_peer_id, issued_at)
     if inclusion is None:
@@ -637,8 +737,13 @@ def handle_record_push(
         **inclusion,
     }
     _append_jsonl(state.ledger_dir, RECEIVED_INCLUSION_FILENAME, held)
-    # What the Rust plugin cites (record_push_bridge.rs's DoorInclusion):
-    # the facts, never the artifacts themselves.
+    return _received_reply(held)
+
+
+def _received_reply(held: dict[str, Any]) -> dict[str, Any]:
+    """The success reply for a held bundle: what the Rust plugin cites
+    (record_push_bridge.rs's DoorInclusion) -- the facts, never the
+    artifacts themselves."""
     return {
         "status": "received",
         "inclusion": {

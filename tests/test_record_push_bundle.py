@@ -444,3 +444,144 @@ def test_s2_held_artifacts_are_the_canonical_forms(tmp_path, monkeypatch):
     assert result["inclusion"]["inclusion_proof_digest"] == hashlib.sha256(
         json.dumps(canonical_proof, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# S3 (EM review): freshness, replay and equivocation against the checkpoints
+# this node already holds for the same sender key + log.
+# ---------------------------------------------------------------------------
+
+
+def _log_bundle(
+    capsule: dict,
+    private_key: Ed25519PrivateKey,
+    ids: list[str],
+    *,
+    prev: dict | None = None,
+) -> dict:
+    """A bundle for ``capsule`` (which must be in ``ids``) under a checkpoint
+    over exactly ``ids``, optionally chained to ``prev`` (an earlier
+    checkpoint dict of the same log)."""
+    store = MemoryNodeStore()
+    for capsule_id in ids:
+        add_leaf(store, leaf_hash(bytes.fromhex(capsule_id)))
+    size = store.size()
+    root = root_from_peaks([store.node(p) for p in peaks(size)])
+    public_hex = (
+        private_key.public_key()
+        .public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        .hex()
+    )
+    checkpoint = _sign_checkpoint(
+        {
+            "v": 1,
+            "kind": "mmr_checkpoint",
+            "log_id": "sender-log",
+            "mmr_size": size,
+            "root": root.hex(),
+            "prev_size": prev["mmr_size"] if prev else 0,
+            "prev_root": prev["root"] if prev else "",
+            "key_id": public_hex,
+            "timestamp": f"2026-09-27T00:00:{size:02d}Z",
+        },
+        private_key,
+    )
+    index = ids.index(capsule["capsule_id"])
+    proof = inclusion_proof(store, index, size)
+    return {
+        "record_push_bundle": 1,
+        "capsule": capsule,
+        "inclusion": {
+            "leaf_index": index,
+            "proof": {
+                "v": proof.v, "kind": proof.kind, "size": proof.size, "leaf_index": proof.leaf_index,
+                "witness": list(proof.witness), "peaks_left": list(proof.peaks_left),
+                "peaks_right": list(proof.peaks_right),
+            },
+        },
+        "checkpoint": checkpoint,
+    }
+
+
+def _ids(prefix: str, n: int) -> list[str]:
+    return [hashlib.sha256(f"{prefix}-{i}".encode()).hexdigest() for i in range(n)]
+
+
+def test_s3_a_replayed_bundle_is_idempotent_and_stores_nothing_new(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    bundle = _bundle(s.capsule, s.private_key)
+    first = s.push(bundle)
+    for _ in range(2):
+        assert s.push(bundle) == first
+    assert len(_lines(s.ledger_dir, RECEIVED_INCLUSION_FILENAME)) == 1
+    assert len(_lines(s.ledger_dir, RECEIVED_CAPSULES_FILENAME)) == 1
+    assert len(_lines(s.ledger_dir, RECEIVED_PROVENANCE_FILENAME)) == 1
+
+
+def test_s3_an_older_unknown_checkpoint_is_refused_as_stale(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    half = s.capsule["capsule_id"]
+    big = _log_bundle(s.capsule, s.private_key, _ids("a", 8) + [half, *_ids("b", 1)])  # size 18
+    assert big["checkpoint"]["mmr_size"] == 18
+    assert s.push(big)["status"] == "received"
+    small = _log_bundle(s.capsule, s.private_key, _ids("c", 2) + [half])  # size 4, other root
+    assert small["checkpoint"]["mmr_size"] == 4
+    result = s.push(small)
+    assert result["reason"] == "checkpoint_stale"
+    assert len(_lines(s.ledger_dir, RECEIVED_INCLUSION_FILENAME)) == 1
+
+
+def test_s3_same_size_different_root_is_recorded_as_equivocation(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    half = s.capsule["capsule_id"]
+    one = _log_bundle(s.capsule, s.private_key, _ids("a", 4) + [half, *_ids("b", 1)])
+    two = _log_bundle(s.capsule, s.private_key, _ids("z", 4) + [half, *_ids("b", 1)])
+    assert one["checkpoint"]["mmr_size"] == two["checkpoint"]["mmr_size"]
+    assert s.push(one)["status"] == "received"
+    result = s.push(two)
+    assert result["reason"] == "checkpoint_equivocation"
+    evidence = _lines(s.ledger_dir, "checkpoint-equivocations.jsonl")
+    assert len(evidence) == 1
+    assert evidence[0]["mmr_size"] == one["checkpoint"]["mmr_size"]
+    assert {evidence[0]["held_root"], evidence[0]["claimed_root"]} == {
+        one["checkpoint"]["root"], two["checkpoint"]["root"]
+    }
+    assert evidence[0]["claimed_checkpoint"]["signature"] == two["checkpoint"]["signature"]
+    assert len(_lines(s.ledger_dir, RECEIVED_INCLUSION_FILENAME)) == 1
+
+
+def test_s3_a_prev_link_contradicting_a_held_checkpoint_is_equivocation(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    half = s.capsule["capsule_id"]
+    first = _log_bundle(s.capsule, s.private_key, _ids("a", 4) + [half])
+    assert s.push(first)["status"] == "received"
+    other_second = _signed_capsule(s.key_path)
+    forged_prev = {**first["checkpoint"], "root": "0" * 64}
+    later = _log_bundle(
+        other_second, s.private_key, _ids("a", 4) + [half, other_second["capsule_id"]], prev=forged_prev
+    )
+    assert s.push(later)["reason"] == "checkpoint_equivocation"
+
+
+def test_s3_an_out_of_order_but_consistent_older_checkpoint_is_accepted(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    first_half = s.capsule
+    second_half = _signed_capsule(s.key_path)
+    ids1 = _ids("a", 3) + [first_half["capsule_id"]]
+    earlier = _log_bundle(first_half, s.private_key, ids1)
+    later = _log_bundle(
+        second_half, s.private_key, ids1 + [second_half["capsule_id"]], prev=earlier["checkpoint"]
+    )
+    # The later push arrives first; the earlier checkpoint is then known
+    # through the later one's signed prev link.
+    assert s.push(later)["status"] == "received"
+    assert s.push(earlier)["status"] == "received"
+    assert len(_lines(s.ledger_dir, RECEIVED_INCLUSION_FILENAME)) == 2
+
+
+def test_s3_a_burst_sharing_one_checkpoint_is_accepted(tmp_path, monkeypatch):
+    s = _Setup(tmp_path, monkeypatch)
+    a, b = s.capsule, _signed_capsule(s.key_path)
+    ids = _ids("a", 3) + [a["capsule_id"], b["capsule_id"]]
+    assert s.push(_log_bundle(a, s.private_key, ids))["status"] == "received"
+    assert s.push(_log_bundle(b, s.private_key, ids))["status"] == "received"
