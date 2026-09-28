@@ -59,8 +59,9 @@ const EVIDENCE_OUTCOME_TO_KIND: Record<string, RightCellStateKind> = {
  * CLOSED needs all four: the signature verified against the peer's announced
  * key, the body recomputes to its `capsule_id`, both `effect` digests equal
  * ours (§6.2/L-G), and the provider check (`providerMatches`, provisional).
- * CONTRADICTED: the body does not recompute to its id, or both sides carry
- * real digests that differ. A PUSHED half from a node that did not serve the
+ * CONTRADICTED: the body does not recompute to its id, both sides carry
+ * real digests that differ, or the provider's half names other model weights
+ * than it served us under (`modelSwapped`). A PUSHED half from a node that did not serve the
  * exchange is never CONTRADICTED (any peer can push). Anything else -- not recomputed yet, unsigned,
  * a missing digest, a different or unnamed provider -- stays OPEN
  * (`open_not_held`): never a verdict we did not check.
@@ -120,6 +121,33 @@ function digestsDisagree(localRecord: CapsuleRecord | null | undefined, peerReco
   })
 }
 
+/** Every weights digest a record names for the model: the producer's
+ *  `compute_attestation.weights_digest.digest`, the host's
+ *  `serving_provenance.model.weights_digest`, and a `sha256-<hex>` inside
+ *  `model_attestation.model_id` (a local GGUF is named by its weights). */
+export function weightsClaims(record: Record<string, unknown> | null | undefined): Set<string> {
+  const claims = new Set<string>()
+  const add = (value: string | null) => {
+    const v = value?.trim().toLowerCase()
+    if (v && /^[0-9a-f]{64}$/.test(v)) claims.add(v)
+  }
+  add(recordString(record, ['model_attestation', 'compute_attestation', 'weights_digest', 'digest']))
+  add(recordString(record, ['model_attestation', 'compute_attestation', 'x-mesh-poc-v1', 'serving_provenance', 'model', 'weights_digest']))
+  const modelId = recordString(record, ['model_attestation', 'model_id'])
+  add(modelId?.toLowerCase().match(/sha256[-:]([0-9a-f]{64})/)?.[1] ?? null)
+  return claims
+}
+
+/** The provider's half names a different model than the one it served us
+ *  under: its own weights claims disagree with each other, or none of them
+ *  is the weights our record names. Names alone never count (aliases). */
+function modelSwapped(localRecord: CapsuleRecord | null | undefined, peerRecord: Record<string, unknown> | null): boolean {
+  const theirs = weightsClaims(peerRecord)
+  if (theirs.size > 1) return true
+  const ours = weightsClaims(localRecord as Record<string, unknown> | null | undefined)
+  return ours.size > 0 && theirs.size > 0 && ![...theirs].some((w) => ours.has(w))
+}
+
 const SERVED_BY_PATH = ['model_attestation', 'compute_attestation', 'x-mesh-poc-v1', 'serving_provenance', 'served_by_node_id'] as const
 
 /** "Obtained from the provider": both halves name the same serving node.
@@ -177,6 +205,9 @@ function counterpartyHalfState(
   if (evidence.signatureOk !== true) return 'open_not_held'
   if (!fromProvider) return 'open_not_held'
   if (digestsDisagree(localRecord, evidence.peerRecord)) return 'contradicted'
+  // Matching digests prove the two sides saw the same bytes, not which model
+  // made them: a provider half naming other weights is never CLOSED.
+  if (modelSwapped(localRecord, evidence.peerRecord)) return 'contradicted'
   if (digestsCiteOurHalf(localRecord, evidence.peerRecord)) return 'closed'
 
   return 'open_not_held'

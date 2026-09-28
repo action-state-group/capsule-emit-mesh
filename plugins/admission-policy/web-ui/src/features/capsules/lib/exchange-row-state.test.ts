@@ -513,3 +513,50 @@ describe('ledgerStateFilterValue — v3 §2a toolbar buckets', () => {
     expect(ledgerStateFilterValue(stateOf('open_not_asked'))).toBe('open')
   })
 })
+
+describe('deriveRightCellState — a swapped model is never CLOSED (attack D)', () => {
+  const W_ASKED = '1'.repeat(64)
+  const W_OTHER = '2'.repeat(64)
+  function withModel(
+    body: Record<string, unknown>,
+    m: { modelId?: string; caWeights?: string; spWeights?: string }
+  ): Record<string, unknown> {
+    const ma = structuredClone(body.model_attestation) as Record<string, any>
+    if (m.modelId) ma.model_id = m.modelId
+    if (m.caWeights) ma.compute_attestation.weights_digest = { digest_alg: 'SHA-256', digest: m.caWeights, scope: 'file' }
+    if (m.spWeights) ma.compute_attestation['x-mesh-poc-v1'].serving_provenance.model = { weights_digest: m.spWeights }
+    return { ...body, model_attestation: ma }
+  }
+  const ours = () => withModel(localRecordWithDigests(), { modelId: `local-gguf/sha256-${W_ASKED}` }) as CapsuleRecord
+  const gate = (peer: Record<string, unknown>) =>
+    deriveRightCellState(paneCRow(), fetched({ peerRecord: peer }), ours()).kind
+
+  it('control: the provider names the weights we asked for, digests agree -> CLOSED', () => {
+    const peer = withModel(citingPeerRecord(), { modelId: `local-gguf/sha256-${W_ASKED}`, caWeights: W_ASKED, spWeights: W_ASKED })
+    expect(gate(peer)).toBe('closed')
+  })
+
+  it('case 1: only serving_provenance.model.weights_digest swapped -> CONTRADICTED, never CLOSED', () => {
+    const peer = withModel(citingPeerRecord(), { modelId: `local-gguf/sha256-${W_ASKED}`, caWeights: W_ASKED, spWeights: W_OTHER })
+    expect(gate(peer)).toBe('contradicted')
+  })
+
+  it('case 2: a consistent liar (every weights field and model_id swapped) -> CONTRADICTED, never CLOSED', () => {
+    const peer = withModel(citingPeerRecord(), { modelId: `local-gguf/sha256-${W_OTHER}`, caWeights: W_OTHER, spWeights: W_OTHER })
+    expect(gate(peer)).toBe('contradicted')
+  })
+
+  it('the same holds for a pushed half', () => {
+    const theirs = fixtureTheirsCell('agrees')
+    const record = withModel(fixtureHalfBody({ capsuleId: theirs.capsule_id ?? undefined }), { caWeights: W_OTHER })
+    const row = paneCRow({ unilateral: false, mine: fixtureMineCell(), theirs: { ...theirs, record }, digest_match: { state: 'verified' } })
+    const mine = withModel(row.mine.record as Record<string, unknown>, { modelId: `local-gguf/sha256-${W_ASKED}` })
+    expect(deriveRightCellState({ ...row, mine: { ...row.mine, record: mine } }).kind).toBe('contradicted')
+  })
+
+  it('a model name alone (an alias, no weights on our side) never contradicts', () => {
+    const local = withModel(localRecordWithDigests(), { modelId: 'qwen' }) as CapsuleRecord
+    const peer = withModel(citingPeerRecord(), { modelId: `local-gguf/sha256-${W_OTHER}`, caWeights: W_OTHER })
+    expect(deriveRightCellState(paneCRow(), fetched({ peerRecord: peer }), local).kind).toBe('closed')
+  })
+})

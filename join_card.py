@@ -446,9 +446,22 @@ def _exchange_claims(line: dict[str, Any]) -> dict[str, Any] | None:
             return None
         return v
 
+    # The model is named by `canonical_ref` when the host fills it, else by
+    # the record's own `model_attestation.model_id` -- the same string the
+    # card's `ModelRef.name` is built from. Round-3 and stock-upstream records
+    # leave `canonical_ref` null, and skipping the comparison then let a
+    # swapped model pass.
+    model_id = (line.get("model_attestation") or {}).get("model_id")
+    ca_weights = _compute_attestation(line).get("weights_digest")
+    if isinstance(ca_weights, dict):
+        ca_weights = ca_weights.get("digest")
+    weights = [w for w in (clean(model.get("weights_digest")), clean(ca_weights)) if w]
     return {
-        "model_name": clean(model.get("canonical_ref") or sp.get("model_canonical_ref")),
-        "weights_digest": clean(model.get("weights_digest")),
+        "model_name": clean(model.get("canonical_ref") or sp.get("model_canonical_ref") or model_id),
+        "weights_digest": weights[0] if weights else None,
+        # Two weights claims in one record that differ: the record contradicts
+        # itself about which model ran.
+        "weights_digest_conflict": sorted(set(weights)) if len(set(weights)) > 1 else None,
         "hardware_gpu": clean(hardware.get("gpu") or sp.get("hardware_gpu")),
         "hardware_vram_bytes": clean(
             hardware.get("vram_bytes") if hardware.get("vram_bytes") is not None else sp.get("hardware_vram_bytes")
@@ -703,6 +716,16 @@ def card_consistency(ledger_lines: list[dict[str, Any]]) -> CardConsistencyResul
                 )
             elif _field(mismatches, "weights_digest", claims["weights_digest"], model_ref.weights_digest):
                 fields_compared += 1
+
+        if claims["weights_digest_conflict"] is not None:
+            fields_compared += 1
+            mismatches.append(
+                {
+                    "field": "weights_digest",
+                    "exchange": claims["weights_digest_conflict"],
+                    "card": model_ref.weights_digest if model_ref is not None else None,
+                }
+            )
 
         if _field(mismatches, "measurement_rung", claims["measurement_rung"], current_card.measurement_rung):
             fields_compared += 1

@@ -596,3 +596,75 @@ def test_genuinely_comparable_exchange_stays_status_ok_not_nothing_compared():
     result = card_consistency([cap, exchange])
     assert result.entries[0].status == STATUS_OK
     assert result.nothing_compared_count == 0
+
+
+# ── Attack D: a swapped model on a record that leaves canonical_ref null ────
+
+_W_CARD = "1" * 64
+_W_SWAP = "2" * 64
+
+
+def _round3_exchange(*, capsule_id, model_id, ca_weights, sp_weights):
+    """A served record as round-3 and stock-upstream hosts leave it:
+    `canonical_ref` null, the model named only by `model_attestation.model_id`
+    and the plugin-filled `compute_attestation.weights_digest`."""
+    line = _exchange_line(capsule_id=capsule_id, weights_digest=sp_weights)
+    line["model_attestation"]["model_id"] = model_id
+    line["model_attestation"]["compute_attestation"]["weights_digest"] = {
+        "digest_alg": "SHA-256",
+        "digest": ca_weights,
+        "scope": "file",
+    }
+    return line
+
+
+def _round3_card():
+    return _card(models=[ModelRef(name=f"local-gguf/sha256-{_W_CARD}", weights_digest=_W_CARD)])
+
+
+def test_round3_record_matching_its_card_is_ok():
+    ledger = [
+        _sealed_card_line(_round3_card()),
+        _round3_exchange(
+            capsule_id="e1", model_id=f"local-gguf/sha256-{_W_CARD}", ca_weights=_W_CARD, sp_weights=_W_CARD
+        ),
+    ]
+    assert card_consistency(ledger).entries[0].status == STATUS_OK
+
+
+def test_attack_d_case_1_swapped_serving_provenance_weights_is_broken():
+    ledger = [
+        _sealed_card_line(_round3_card()),
+        _round3_exchange(
+            capsule_id="e1", model_id=f"local-gguf/sha256-{_W_CARD}", ca_weights=_W_CARD, sp_weights=_W_SWAP
+        ),
+    ]
+    entry = card_consistency(ledger).entries[0]
+    assert entry.status == STATUS_BROKEN
+    assert "weights_digest" in {m["field"] for m in entry.mismatches}
+
+
+def test_attack_d_case_2_consistent_liar_is_broken():
+    """Every weights field and the model id swapped together: the card, sealed
+    from the node's own announcement, still names the other model."""
+    ledger = [
+        _sealed_card_line(_round3_card()),
+        _round3_exchange(
+            capsule_id="e1", model_id=f"local-gguf/sha256-{_W_SWAP}", ca_weights=_W_SWAP, sp_weights=_W_SWAP
+        ),
+    ]
+    entry = card_consistency(ledger).entries[0]
+    assert entry.status == STATUS_BROKEN
+    assert "model" in {m["field"] for m in entry.mismatches}
+
+
+def test_attack_d_plugin_filled_fields_alone_are_compared():
+    """No host `serving_provenance.model` at all (a stock host): the check
+    runs on the plugin's own `model_id` and `weights_digest`."""
+    line = _round3_exchange(
+        capsule_id="e1", model_id=f"local-gguf/sha256-{_W_CARD}", ca_weights=_W_SWAP, sp_weights=None
+    )
+    del line["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["serving_provenance"]["model"]
+    entry = card_consistency([_sealed_card_line(_round3_card()), line]).entries[0]
+    assert entry.status == STATUS_BROKEN
+    assert "weights_digest" in {m["field"] for m in entry.mismatches}

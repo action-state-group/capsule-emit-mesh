@@ -604,7 +604,7 @@ fn effective_ledger(ledger_dir: &Path) -> EffectiveLedger {
 /// the gate renders CONTRADICTED; a `verified` here (with the door's
 /// `signature_ok`) is what it renders CLOSED.
 fn digest_match_state(mine: &Value, theirs: &Value) -> &'static str {
-    let mut any_failed = false;
+    let mut any_failed = model_swapped(mine, theirs);
     let mut any_absent = false;
     for (a, b) in [
         (request_digest(mine), request_digest(theirs)),
@@ -623,6 +623,52 @@ fn digest_match_state(mine: &Value, theirs: &Value) -> &'static str {
     } else {
         STATE_VERIFIED
     }
+}
+
+/// Every weights digest a record names for its model: the producer's
+/// `compute_attestation.weights_digest.digest`, the host's
+/// `serving_provenance.model.weights_digest`, and a `sha256-<hex>` inside
+/// `model_attestation.model_id` (a local GGUF is named by its weights).
+/// Mirrors the page's `weightsClaims`.
+fn weights_claims(record: &Value) -> BTreeSet<String> {
+    let is_digest = |v: &str| v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit());
+    let mut claims = BTreeSet::new();
+    for pointer in [
+        "/model_attestation/compute_attestation/weights_digest/digest",
+        "/model_attestation/compute_attestation/x-mesh-poc-v1/serving_provenance/model/weights_digest",
+    ] {
+        if let Some(v) = record.pointer(pointer).and_then(Value::as_str) {
+            let v = v.trim().to_ascii_lowercase();
+            if is_digest(&v) {
+                claims.insert(v);
+            }
+        }
+    }
+    if let Some(model_id) = record.pointer("/model_attestation/model_id").and_then(Value::as_str) {
+        let model_id = model_id.to_ascii_lowercase();
+        for marker in ["sha256-", "sha256:"] {
+            if let Some(hex) = model_id.split(marker).nth(1).and_then(|rest| rest.get(..64)) {
+                if is_digest(hex) {
+                    claims.insert(hex.to_string());
+                }
+            }
+        }
+    }
+    claims
+}
+
+/// The other side's half names a different model than this exchange ran
+/// under: its own weights claims disagree with each other, or none of them is
+/// the weights our record names. Matching request/response digests prove the
+/// two sides saw the same bytes, not which model made them. Names alone never
+/// count (aliases).
+fn model_swapped(mine: &Value, theirs: &Value) -> bool {
+    let their_claims = weights_claims(theirs);
+    if their_claims.len() > 1 {
+        return true;
+    }
+    let our_claims = weights_claims(mine);
+    !our_claims.is_empty() && !their_claims.is_empty() && our_claims.is_disjoint(&their_claims)
 }
 
 /// One exchange-key group's records paired ONE-TO-ONE.
@@ -3428,6 +3474,49 @@ mod tests {
         );
         let pane = build_pane_c_list(&[local, from_provider], &provenance);
         assert_eq!(pane["rows"][0]["digest_match"]["state"], json!(STATE_FAILED));
+    }
+
+    fn with_weights(mut record: Value, model_id: Option<&str>, ca: Option<&str>, sp: Option<&str>) -> Value {
+        if let Some(id) = model_id {
+            record["model_attestation"]["model_id"] = json!(id);
+        }
+        if let Some(w) = ca {
+            record["model_attestation"]["compute_attestation"]["weights_digest"] =
+                json!({"digest_alg": "SHA-256", "digest": w, "scope": "file"});
+        }
+        if let Some(w) = sp {
+            record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["serving_provenance"]["model"] =
+                json!({"weights_digest": w});
+        }
+        record
+    }
+
+    /// Attack D: a provider half whose request and response digests agree
+    /// with ours but that names other model weights is a failed match, never
+    /// verified. Case 1 swaps only `serving_provenance.model.weights_digest`;
+    /// case 2 is a consistent liar that swaps every weights field and the
+    /// model id. MUTANT: drop `model_swapped` and both read verified.
+    #[test]
+    fn a_half_naming_other_model_weights_is_a_failed_match_not_verified() {
+        let asked = "1".repeat(64);
+        let other = "2".repeat(64);
+        let asked_id = format!("local-gguf/sha256-{asked}");
+        let other_id = format!("local-gguf/sha256-{other}");
+        let mine = with_weights(
+            mesh_half("a".repeat(64).as_str(), "requested", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "me-1"),
+            Some(&asked_id), None, None,
+        );
+        let theirs = |model_id: &str, ca: &str, sp: &str| {
+            with_weights(
+                mesh_half("b".repeat(64).as_str(), "served", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "them-1"),
+                Some(model_id), Some(ca), Some(sp),
+            )
+        };
+        assert_eq!(digest_match_state(&mine, &theirs(&asked_id, &asked, &asked)), STATE_VERIFIED, "control");
+        assert_eq!(digest_match_state(&mine, &theirs(&asked_id, &asked, &other)), STATE_FAILED, "case 1");
+        assert_eq!(digest_match_state(&mine, &theirs(&other_id, &other, &other)), STATE_FAILED, "case 2");
+        let alias = with_weights(mine.clone(), Some("qwen"), None, None);
+        assert_eq!(digest_match_state(&alias, &theirs(&other_id, &other, &other)), STATE_VERIFIED, "a name alone never counts");
     }
 
     /// A minimal CITING record our
