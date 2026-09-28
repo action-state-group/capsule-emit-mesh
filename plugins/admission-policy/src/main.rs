@@ -1,6 +1,8 @@
 mod capsule_emit;
 mod checkpoint_cadence;
 mod decision;
+mod evidence_panes;
+mod evidence_routes;
 mod ledger_fetch_bridge;
 mod lifecycle_channel;
 mod mesh_evidence_bridge;
@@ -546,6 +548,7 @@ async fn main() -> anyhow::Result<()> {
     // ledger or the checkpoint cadence opens (see `owner_maintenance`).
     let log_id = owner_maintenance::apply_pending_before_open(&data_dir, PLUGIN_ID)?;
     let capsules = Arc::new(CapsuleState::open(&data_dir, PLUGIN_ID)?);
+    let evidence_pub_key_pem = capsules.public_key_pem();
     owner_maintenance::finish_pending_after_open(&data_dir, &capsules, &log_id)?;
     tracing::info!(
         chain_head = ?capsules.chain_head(),
@@ -663,7 +666,16 @@ async fn main() -> anyhow::Result<()> {
     .event_item(events::local_standby())
     .event_item(events::mesh_id_updated())
     .event_item(events::peer_up())
-    .inference_item(inference::provider(ENDPOINT_ID, address))
+    .inference_item(inference::provider(ENDPOINT_ID, address));
+    // The Evidence page's data: this plugin's own ledger, served at
+    // `/api/plugins/<plugin>/http/...` (see `evidence_routes`).
+    let plugin = evidence_routes::with_routes(
+        plugin,
+        evidence_routes::EvidenceSource {
+            ledger_dir: data_dir.join("ledger"),
+            node_pub_key_pem: Some(evidence_pub_key_pem),
+        },
+    )
     .customize(move |plugin| {
         plugin.on_channel_message(move |message, context| {
             let lifecycle_events = lifecycle_events_for_handler.clone();
@@ -788,7 +800,9 @@ async fn main() -> anyhow::Result<()> {
             })
         })
     })
-    .customize(|plugin| plugin.with_operation_router(evidence_operations))
+    // Extend, never replace: the HTTP routes above registered their own
+    // operations on the builder's router.
+    .customize(|plugin| plugin.extend_operation_router(evidence_operations))
     .build();
 
     PluginRuntime::run(plugin).await

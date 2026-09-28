@@ -61,7 +61,10 @@ export function answerFromFixtures(method: string, url: string, read: CaptureRea
     return hit ? { status: hit.status, contentType: hit.contentType, body: hit.body } : miss(request, key)
   }
   if (!parsed.pathname.startsWith(PLUGIN_API_PREFIX)) return null
-  const route = parsed.pathname.slice(PLUGIN_API_PREFIX.length)
+  // The page's data routes are the plugin's HTTP bindings, which the console
+  // serves under `http/`; a tool call is not.
+  const pluginPath = parsed.pathname.slice(PLUGIN_API_PREFIX.length)
+  const route = pluginPath.startsWith('http/') ? pluginPath.slice('http/'.length) : pluginPath
 
   if (method === 'GET' && route.startsWith('panes/')) {
     const key = `GET /api/capsules/${route}${parsed.search}`

@@ -1,0 +1,382 @@
+//! The plugin HTTP routes the Evidence page reads (`web-ui/DATA-ROUTES.md`).
+//!
+//! The console serves a plugin's declared GET bindings at
+//! `/api/plugins/<plugin>/http/<path>`, and the page reaches them through its
+//! host's `fetchPlugin("http/<path>")`. Every route reads this plugin's own
+//! ledger directory, so the installed page needs nothing but the plugin:
+//!
+//! | Route | Answers |
+//! | --- | --- |
+//! | `ledger` | `{records, node_pub_key_pem}`: this node's records, padding left out |
+//! | `ledger/signed-statement?capsule_id=` | `{signed_statement_b64}`, or null |
+//! | `ledger/disclosure?capsule_id=` | `{disclosure}`, the kept request/response text, or null |
+//! | `panes/pane-a`, `panes/pane-b` | the pane JSON ([`crate::evidence_panes`]) |
+//! | `panes/pane-c[?exchange_id=]` | the Exchanges list, or one exchange's drilldown |
+//!
+//! The host turns query parameters into typed JSON (numbers stay numbers),
+//! so a capsule id that is not a string is refused rather than guessed back.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use base64::Engine;
+use mesh_llm_plugin::{http, DeclarativePluginBuilder, PluginError};
+use schemars::JsonSchema;
+use serde::Deserialize;
+use serde_json::{json, Value};
+
+use crate::evidence_panes::{build_pane_json, read_capsule_records};
+
+/// A route that takes no arguments. Unknown members (the host may add query
+/// parameters) are ignored.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct NoArgs {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CapsuleIdArgs {
+    /// The record's id: 64 lowercase hex.
+    pub capsule_id: Value,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct PaneCArgs {
+    /// One exchange's drilldown instead of the list.
+    #[serde(default)]
+    pub exchange_id: Option<Value>,
+}
+
+/// The ledger directory and the node's public key, shared by every route.
+#[derive(Clone)]
+pub struct EvidenceSource {
+    pub ledger_dir: PathBuf,
+    pub node_pub_key_pem: Option<String>,
+}
+
+fn is_record_id(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn record_id(value: &Value) -> Result<&str, PluginError> {
+    value
+        .as_str()
+        .filter(|id| is_record_id(id))
+        .ok_or_else(|| PluginError::invalid_params("capsule_id must be 64 lowercase hex"))
+}
+
+/// `{records, node_pub_key_pem}`.
+pub fn ledger_json(source: &EvidenceSource) -> Value {
+    json!({
+        "records": read_capsule_records(&source.ledger_dir),
+        "node_pub_key_pem": source.node_pub_key_pem,
+    })
+}
+
+/// `{signed_statement_b64}`: the record's detached COSE_Sign1, or null.
+pub fn signed_statement_json(ledger_dir: &Path, capsule_id: &str) -> Value {
+    let path = ledger_dir
+        .join("signed-statements")
+        .join(format!("{capsule_id}.cose"));
+    let b64 = std::fs::read(path)
+        .ok()
+        .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes));
+    json!({ "signed_statement_b64": b64 })
+}
+
+/// `{disclosure}`: the request/response text kept beside the record, or null.
+pub fn disclosure_json(ledger_dir: &Path, capsule_id: &str) -> Value {
+    let path = ledger_dir
+        .join("disclosures")
+        .join(format!("{capsule_id}.json"));
+    let disclosure = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .filter(Value::is_object);
+    json!({ "disclosure": disclosure })
+}
+
+/// One pane, or an error for a pane this plugin does not build.
+pub fn pane_json(
+    ledger_dir: &Path,
+    pane: &str,
+    exchange_id: Option<&str>,
+) -> Result<Value, PluginError> {
+    build_pane_json(pane, ledger_dir, exchange_id)
+        .ok_or_else(|| PluginError::invalid_params(format!("no pane {pane:?}")))
+}
+
+fn exchange_id(args: &PaneCArgs) -> Result<Option<String>, PluginError> {
+    match &args.exchange_id {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(id)) => Ok(Some(id.clone())),
+        Some(_) => Err(PluginError::invalid_params("exchange_id must be a string")),
+    }
+}
+
+/// Run a file read off the async worker.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, PluginError> + Send + 'static,
+) -> Result<T, PluginError> {
+    tokio::task::spawn_blocking(work).await.map_err(|error| {
+        PluginError::internal(format!("evidence route task did not complete: {error}"))
+    })?
+}
+
+/// `builder` with the six routes declared.
+pub fn with_routes(
+    builder: DeclarativePluginBuilder,
+    source: EvidenceSource,
+) -> DeclarativePluginBuilder {
+    let source = Arc::new(source);
+    let mut builder = builder;
+
+    let s = source.clone();
+    builder = builder.http_item(
+        http::get("/ledger")
+            .binding_id("evidence_ledger")
+            .description(
+                "This node's records (padding left out) and its public key, for the Evidence page.",
+            )
+            .input::<NoArgs>()
+            .handle(move |_args, _context| {
+                let s = s.clone();
+                Box::pin(async move { blocking(move || Ok(ledger_json(&s))).await })
+            }),
+    );
+
+    let s = source.clone();
+    builder = builder.http_item(
+        http::get("/ledger/signed-statement")
+            .binding_id("evidence_signed_statement")
+            .description("One record's detached signed statement, base64, or null.")
+            .input::<CapsuleIdArgs>()
+            .handle(move |args, _context| {
+                let s = s.clone();
+                Box::pin(async move {
+                    let id = record_id(&args.capsule_id)?.to_string();
+                    blocking(move || Ok(signed_statement_json(&s.ledger_dir, &id))).await
+                })
+            }),
+    );
+
+    let s = source.clone();
+    builder = builder.http_item(
+        http::get("/ledger/disclosure")
+            .binding_id("evidence_disclosure")
+            .description("The request/response text kept beside one record, or null.")
+            .input::<CapsuleIdArgs>()
+            .handle(move |args, _context| {
+                let s = s.clone();
+                Box::pin(async move {
+                    let id = record_id(&args.capsule_id)?.to_string();
+                    blocking(move || Ok(disclosure_json(&s.ledger_dir, &id))).await
+                })
+            }),
+    );
+
+    for pane in ["pane-a", "pane-b"] {
+        let s = source.clone();
+        builder = builder.http_item(
+            http::get(format!("/panes/{pane}"))
+                .binding_id(format!("evidence_{}", pane.replace('-', "_")))
+                .description("One of the Evidence page's panes, built from this node's ledger.")
+                .input::<NoArgs>()
+                .handle(move |_args, _context| {
+                    let s = s.clone();
+                    Box::pin(
+                        async move { blocking(move || pane_json(&s.ledger_dir, pane, None)).await },
+                    )
+                }),
+        );
+    }
+
+    let s = source;
+    builder = builder.http_item(
+        http::get("/panes/pane-c")
+            .binding_id("evidence_pane_c")
+            .description("The Exchanges list, or one exchange's drilldown with ?exchange_id=.")
+            .input::<PaneCArgs>()
+            .handle(move |args, _context| {
+                let s = s.clone();
+                Box::pin(async move {
+                    let exchange_id = exchange_id(&args)?;
+                    blocking(move || pane_json(&s.ledger_dir, "pane-c", exchange_id.as_deref()))
+                        .await
+                })
+            }),
+    );
+
+    builder
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn record(id: &str) -> Value {
+        json!({
+            "capsule_id": id,
+            "timestamp": "2026-09-27T10:00:00Z",
+            "model_attestation": {"compute_attestation": {"x-mesh-poc-v1": {"role": "served"}}},
+            "effect": {"request_digest": "a".repeat(64), "response_digest": "b".repeat(64)},
+        })
+    }
+
+    fn ledger(lines: &[Value]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = std::fs::File::create(dir.path().join("capsules.jsonl")).unwrap();
+        for line in lines {
+            writeln!(file, "{line}").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn the_ledger_route_lists_records_and_never_padding() {
+        let padding = json!({"capsule_id": "c".repeat(64), "record_type": "padding", "store_nonce": "d".repeat(64)});
+        let dir = ledger(&[record(&"1".repeat(64)), padding]);
+        let source = EvidenceSource {
+            ledger_dir: dir.path().into(),
+            node_pub_key_pem: Some("PEM".into()),
+        };
+        let body = ledger_json(&source);
+        assert_eq!(body["records"].as_array().unwrap().len(), 1);
+        assert_eq!(body["node_pub_key_pem"], json!("PEM"));
+    }
+
+    #[test]
+    fn a_missing_ledger_is_an_empty_list_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = EvidenceSource {
+            ledger_dir: dir.path().into(),
+            node_pub_key_pem: None,
+        };
+        assert_eq!(ledger_json(&source)["records"], json!([]));
+        assert_eq!(
+            pane_json(dir.path(), "pane-c", None).unwrap()["rows"],
+            json!([])
+        );
+    }
+
+    #[test]
+    fn signed_statements_and_disclosures_are_read_by_id_or_null() {
+        let dir = ledger(&[]);
+        let id = "e".repeat(64);
+        std::fs::create_dir_all(dir.path().join("signed-statements")).unwrap();
+        std::fs::write(
+            dir.path()
+                .join("signed-statements")
+                .join(format!("{id}.cose")),
+            [1u8, 2, 3],
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("disclosures")).unwrap();
+        std::fs::write(
+            dir.path().join("disclosures").join(format!("{id}.json")),
+            br#"{"request":"hi"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            signed_statement_json(dir.path(), &id)["signed_statement_b64"],
+            json!("AQID")
+        );
+        assert_eq!(
+            disclosure_json(dir.path(), &id)["disclosure"]["request"],
+            json!("hi")
+        );
+        let other = "f".repeat(64);
+        assert_eq!(
+            signed_statement_json(dir.path(), &other)["signed_statement_b64"],
+            Value::Null
+        );
+        assert_eq!(
+            disclosure_json(dir.path(), &other)["disclosure"],
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn only_a_64_hex_string_is_a_record_id() {
+        assert!(record_id(&json!("a".repeat(64))).is_ok());
+        for bad in [
+            json!("../keys/node-key.pem"),
+            json!("A".repeat(64)),
+            json!(1234),
+            json!("a".repeat(63)),
+        ] {
+            assert!(record_id(&bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn pane_c_answers_a_drilldown_for_a_string_exchange_id_only() {
+        let dir = ledger(&[record(&"1".repeat(64))]);
+        let args = PaneCArgs {
+            exchange_id: Some(json!(format!("digest:{}", "a".repeat(64)))),
+        };
+        let id = exchange_id(&args).unwrap();
+        assert_eq!(
+            pane_json(dir.path(), "pane-c", id.as_deref()).unwrap()["found"],
+            json!(true)
+        );
+        assert!(exchange_id(&PaneCArgs {
+            exchange_id: Some(json!(5))
+        })
+        .is_err());
+        assert!(pane_json(dir.path(), "pane-z", None).is_err());
+    }
+
+    /// The page reaches exactly these, at `/api/plugins/<plugin>/http/<path>`.
+    #[test]
+    fn the_manifest_declares_every_route_the_page_reads_as_a_get() {
+        use mesh_llm_plugin::{plugin_server_info, Plugin, PluginMetadata};
+        let dir = tempfile::tempdir().unwrap();
+        let builder = DeclarativePluginBuilder::new(PluginMetadata::new(
+            "capsule-emit-mesh",
+            "0.0.0",
+            plugin_server_info("capsule-emit-mesh", "0.0.0", "t", "t", None::<String>),
+        ));
+        let plugin = with_routes(
+            builder,
+            EvidenceSource {
+                ledger_dir: dir.path().into(),
+                node_pub_key_pem: None,
+            },
+        )
+        .build();
+        let manifest = plugin
+            .manifest()
+            .expect("a declarative plugin publishes a manifest");
+        let mut routes: Vec<(i32, String)> = manifest
+            .http_bindings
+            .iter()
+            .map(|b| (b.method, b.path.clone()))
+            .collect();
+        routes.sort();
+        let get = mesh_llm_plugin::proto::HttpMethod::Get as i32;
+        assert_eq!(
+            routes,
+            [
+                "/ledger",
+                "/ledger/disclosure",
+                "/ledger/signed-statement",
+                "/panes/pane-a",
+                "/panes/pane-b",
+                "/panes/pane-c",
+            ]
+            .iter()
+            .map(|p| (get, p.to_string()))
+            .collect::<Vec<_>>()
+        );
+        for binding in &manifest.http_bindings {
+            assert!(
+                binding.operation_name.is_some(),
+                "{} is served by an operation",
+                binding.path
+            );
+        }
+    }
+}

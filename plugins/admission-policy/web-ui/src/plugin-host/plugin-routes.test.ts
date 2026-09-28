@@ -37,7 +37,7 @@ describe('ledger client', () => {
   it('reads the wrapped ledger from the plugin route and skips a malformed entry', async () => {
     const spy = stubFetch({ records: [{ capsule_id: 'a' }, 'not-a-record', null, { capsule_id: 'b' }], node_pub_key_pem: 'PEM' })
     const ledger = await fetchCapsuleLedger()
-    expect(requestedUrls(spy)).toEqual(['/api/plugins/capsule-emit-mesh/ledger'])
+    expect(requestedUrls(spy)).toEqual(['/api/plugins/capsule-emit-mesh/http/ledger'])
     expect(ledger).toEqual({ records: [{ capsule_id: 'a' }, { capsule_id: 'b' }], nodePubKeyPem: 'PEM' })
   })
 
@@ -52,7 +52,7 @@ describe('ledger client', () => {
     const spy = stubFetch({ signed_statement_b64: 'AQID' })
     await expect(fetchSignedStatement('cap/1')).resolves.toEqual(new Uint8Array([1, 2, 3]))
     expect(requestedUrls(spy)).toEqual([
-      '/api/plugins/capsule-emit-mesh/ledger/signed-statement?capsule_id=cap%2F1'
+      '/api/plugins/capsule-emit-mesh/http/ledger/signed-statement?capsule_id=cap%2F1'
     ])
     stubFetch({ signed_statement_b64: null })
     await expect(fetchSignedStatement('cap-1')).resolves.toBeNull()
@@ -65,7 +65,7 @@ describe('ledger client', () => {
     await expect(fetchDisclosurePreimage('cap-1')).resolves.toEqual({ request_text: 'q' })
     stubFetch({ disclosure: null })
     await expect(fetchDisclosurePreimage('cap-1')).resolves.toBeNull()
-    expect(PLUGIN_ROUTES.disclosure('x y')).toBe('ledger/disclosure?capsule_id=x%20y')
+    expect(PLUGIN_ROUTES.disclosure('x y')).toBe('http/ledger/disclosure?capsule_id=x%20y')
   })
 })
 
@@ -77,10 +77,10 @@ describe('pane client', () => {
     await fetchPaneCList({ limit: 50, afterSeq: 7 })
     await fetchPaneCDrilldown('digest:ab')
     expect(requestedUrls(spy)).toEqual([
-      '/api/plugins/capsule-emit-mesh/panes/pane-a',
-      '/api/plugins/capsule-emit-mesh/panes/pane-b',
-      '/api/plugins/capsule-emit-mesh/panes/pane-c?limit=50&after_seq=7',
-      '/api/plugins/capsule-emit-mesh/panes/pane-c?exchange_id=digest%3Aab'
+      '/api/plugins/capsule-emit-mesh/http/panes/pane-a',
+      '/api/plugins/capsule-emit-mesh/http/panes/pane-b',
+      '/api/plugins/capsule-emit-mesh/http/panes/pane-c?limit=50&after_seq=7',
+      '/api/plugins/capsule-emit-mesh/http/panes/pane-c?exchange_id=digest%3Aab'
     ])
   })
 

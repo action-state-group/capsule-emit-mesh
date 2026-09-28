@@ -2,51 +2,40 @@
 
 The Evidence page is a mesh-llm plugin page. The console's plugin web UI
 contract lets a page reach its own plugin's routes, and only those, through
-`host.network.fetchPlugin(path)`. The console serves them at
-`/api/plugins/capsule-emit-mesh/<path>`. So the page reads **plugin-owned
-routes only**. It never uses the fork console's host routes
+`host.network.fetchPlugin(path)`. The console serves a plugin's declared
+HTTP bindings at `/api/plugins/capsule-emit-mesh/http/<path>` and its tools at
+`/api/plugins/capsule-emit-mesh/tools/<name>`, so the page asks for
+`http/<path>` and `tools/<name>`. It reads **plugin-owned routes only**. It never uses the fork console's host routes
 (`/api/capsules/ledger/*`, `/api/capsules/panes/*`), which were never
 upstream and never will be.
 
 Plugin HTTP routes (`mesh_llm_plugin::http::get`) answer JSON, so data that
 the fork served as raw files arrives wrapped in JSON.
 
-| Plugin route (GET unless noted) | Answers | The fork host route it replaces |
+| Plugin route, under `http/` (GET unless noted) | Answers | The fork host route it replaces |
 | --- | --- | --- |
-| `ledger` | `{ "records": [<capsule>...], "node_pub_key_pem": "<PEM>" \| null }`; 404 while nothing is sealed | `ledger/capsules.jsonl` + `ledger/node-key.pub.pem` |
+| `ledger` | `{ "records": [<capsule>...], "node_pub_key_pem": "<PEM>" \| null }`; padding records are never listed; an empty list while nothing is sealed | `ledger/capsules.jsonl` + `ledger/node-key.pub.pem` |
 | `ledger/signed-statement?capsule_id=<id>` | `{ "signed_statement_b64": "<COSE_Sign1, base64>" \| null }` | `ledger/signed-statements/<id>.cose` |
 | `ledger/disclosure?capsule_id=<id>` | `{ "disclosure": {...} \| null }` | `ledger/disclosures/<id>.json` |
 | `panes/pane-a` | pane A JSON, unchanged shape (`api/sidecarTypes.ts` `PaneAJson`) | `panes/pane-a` |
 | `panes/pane-b` | pane B JSON, unchanged shape (`PaneBJson`) | `panes/pane-b` |
 | `panes/pane-c[?limit=&after_seq=]` | pane C list, unchanged shape (`PaneCListJson`) | `panes/pane-c` |
 | `panes/pane-c?exchange_id=<id>` | pane C drilldown (`PaneCDrilldownJson`) | `panes/pane-c?exchange_id=` |
-| POST `tools/mesh_ledger_fetch` | the plugin's `mesh_ledger_fetch` tool: `LedgerFetchResponse` (`found` / `not_found` / `error`) | (already a plugin tool route on the fork, addressed to the old plugin name `admission-policy`) |
+| POST `tools/mesh_ledger_fetch` (a tool, not under `http/`) | the plugin's `mesh_ledger_fetch` tool: `LedgerFetchResponse` (`found` / `not_found` / `error`) | (already a plugin tool route on the fork, addressed to the old plugin name `admission-policy`) |
 
 Status codes the page tells apart (`LedgerPage.tsx` `describePaneError`):
 **404** means this plugin build serves no panes yet, and **503** means the
 plugin's pane service isn't running. Any other failure gets the generic
 message. A failed peer fetch renders as a transport error, never as a result.
 
-## Not served yet
+## Where they are served
 
-Every route above is **the page's contract, not yet the plugin's code**. On the
-round-2 plugin (`round2-plugin-integration` @
-331298a8b1ab517cacaf8f445f2d112bfe8ab4a9) none of them is served, and the
-`mesh_ledger_fetch` tool is not on that base either. Installed today, the page
-mounts and says so honestly. The console answers an undeclared plugin route
-404 "No matching plugin HTTP binding" (mesh-llm-host-runtime
-`api/routes/plugins.rs` `handle_stapled_http`, read from source; not run
-against a host in this round), and the page reads that 404 as "This plugin
-build doesn't serve its evidence panes yet." Fixture mode reproduces this with
-an empty fixture set. Serving the routes takes three pieces of plugin work:
-
-1. the `ledger*` routes read the plugin's own ledger directory. The plugin
-   owns the files, so this is a small Rust change;
-2. the `panes/*` routes: the pane reader, correlator and citing-record
-   resolver currently live in the fork host (`capsule_panes_native.rs`,
-   `build_pane_c_list`, `exchange_key_for`) and the Python sidecar. They
-   move into the plugin, and the fork host's copies are deleted;
-3. `tools/mesh_ledger_fetch` lands on this base.
+All of them are the plugin's own code: `src/evidence_routes.rs` declares the
+six GET bindings, `src/evidence_panes.rs` builds the panes from the plugin's
+ledger directory (moved from the console fork's host, padding left out of
+every count), and `src/ledger_fetch_bridge.rs` answers `mesh_ledger_fetch`.
+`evidence_routes`'s manifest test pins the bindings. Fixture mode strips the
+`http/` prefix and answers from the fork console's captures, as before.
 
 ## Console routes the page still reads
 

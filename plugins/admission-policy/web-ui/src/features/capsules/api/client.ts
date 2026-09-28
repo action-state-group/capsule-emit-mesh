@@ -15,9 +15,9 @@ import { PluginRouteError, getPluginJson } from '@/plugin-host/host'
 /** The plugin-relative routes this client reads. The plugin serves them; see
  *  `web-ui/DATA-ROUTES.md`. */
 export const PLUGIN_ROUTES = {
-  ledger: 'ledger',
-  signedStatement: (capsuleId: string) => `ledger/signed-statement?capsule_id=${encodeURIComponent(capsuleId)}`,
-  disclosure: (capsuleId: string) => `ledger/disclosure?capsule_id=${encodeURIComponent(capsuleId)}`
+  ledger: 'http/ledger',
+  signedStatement: (capsuleId: string) => `http/ledger/signed-statement?capsule_id=${encodeURIComponent(capsuleId)}`,
+  disclosure: (capsuleId: string) => `http/ledger/disclosure?capsule_id=${encodeURIComponent(capsuleId)}`
 } as const
 
 type LedgerBody = { records?: unknown; node_pub_key_pem?: unknown }

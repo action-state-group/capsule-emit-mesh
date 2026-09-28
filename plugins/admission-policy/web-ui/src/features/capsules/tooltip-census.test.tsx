@@ -59,7 +59,7 @@ const ALL_KINDS: RightCellStateKind[] = [
 ]
 
 const REQUIRED = {
-  hero: ['hero:your_records'],
+  hero: [] as string[],
   peers: [
     'peer_column:exchanges',
     'peer_column:confirmed',

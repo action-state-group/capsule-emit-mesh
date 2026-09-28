@@ -22,7 +22,7 @@ function bodyOf(answer: ReturnType<typeof answerFromFixtures>) {
 describe('fixture translation (plugin route -> captured host route)', () => {
   it('serves a pane route from the fork capture of the same pane, query included', () => {
     const read = reader({ 'GET /api/capsules/panes/pane-c?exchange_id=digest%3Aab': { body: '{"rows":[1]}' } })
-    const answer = answerFromFixtures('GET', `${P}/panes/pane-c?exchange_id=digest%3Aab`, read)
+    const answer = answerFromFixtures('GET', `${P}/http/panes/pane-c?exchange_id=digest%3Aab`, read)
     expect(answer?.status).toBe(200)
     expect(bodyOf(answer)).toEqual({ rows: [1] })
   })
@@ -32,7 +32,7 @@ describe('fixture translation (plugin route -> captured host route)', () => {
       'GET /api/capsules/ledger/capsules.jsonl': { body: '{"capsule_id":"a"}\nnot json\n\n{"capsule_id":"b"}\n' },
       'GET /api/capsules/ledger/node-key.pub.pem': { body: 'PEM' }
     })
-    expect(bodyOf(answerFromFixtures('GET', `${P}/ledger`, read))).toEqual({
+    expect(bodyOf(answerFromFixtures('GET', `${P}/http/ledger`, read))).toEqual({
       records: [{ capsule_id: 'a' }, { capsule_id: 'b' }],
       node_pub_key_pem: 'PEM'
     })
@@ -43,10 +43,10 @@ describe('fixture translation (plugin route -> captured host route)', () => {
       'GET /api/capsules/ledger/signed-statements/c1.cose': { body: Buffer.from([1, 2, 3]) },
       'GET /api/capsules/ledger/signed-statements/c2.cose': { status: 404, body: '' }
     })
-    expect(bodyOf(answerFromFixtures('GET', `${P}/ledger/signed-statement?capsule_id=c1`, read))).toEqual({
+    expect(bodyOf(answerFromFixtures('GET', `${P}/http/ledger/signed-statement?capsule_id=c1`, read))).toEqual({
       signed_statement_b64: 'AQID'
     })
-    expect(bodyOf(answerFromFixtures('GET', `${P}/ledger/signed-statement?capsule_id=c2`, read))).toEqual({
+    expect(bodyOf(answerFromFixtures('GET', `${P}/http/ledger/signed-statement?capsule_id=c2`, read))).toEqual({
       signed_statement_b64: null
     })
   })
@@ -55,7 +55,7 @@ describe('fixture translation (plugin route -> captured host route)', () => {
     const answer = answerFromFixtures('POST', `${P}/tools/mesh_ledger_fetch`, reader({}))
     expect(answer?.status).toBe(404)
     expect(bodyOf(answer).error).toBe('evidence fixture mode: not captured')
-    expect(answerFromFixtures('GET', `${P}/panes/pane-a`, reader({}))?.status).toBe(404)
+    expect(answerFromFixtures('GET', `${P}/http/panes/pane-a`, reader({}))?.status).toBe(404)
   })
 
   it('passes the console status/models captures through, and ignores other paths', () => {

@@ -1,6 +1,5 @@
 //! The owner's own records: status + the three cleanups the Evidence tab's
-//! `Clean up records` dialog offers ([mesh-evidence-hero-your-history-and-cleanup],
-//! UX review 2026-09-26 §1). Each cleanup seals an owner-maintenance record of
+//! `Clean up records` dialog offers (UX review §1). Each cleanup seals an owner-maintenance record of
 //! itself onto this node's chain, so cleanup is on the record too.
 //!
 //! **There is no single-record delete, and there will not be one.** Removing a

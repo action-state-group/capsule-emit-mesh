@@ -20,9 +20,9 @@ import { PluginRouteError, getPluginJson } from '@/plugin-host/host'
 export { PluginRouteError as PaneFetchError }
 
 export const PANE_ROUTES = {
-  paneA: 'panes/pane-a',
-  paneB: 'panes/pane-b',
-  paneC: 'panes/pane-c'
+  paneA: 'http/panes/pane-a',
+  paneB: 'http/panes/pane-b',
+  paneC: 'http/panes/pane-c'
 } as const
 
 export function fetchPaneA(): Promise<PaneAJson> {

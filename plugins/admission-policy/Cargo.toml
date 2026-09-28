@@ -43,6 +43,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]
+# Temporary ledger directories in the Evidence route and pane tests.
+tempfile = "3"
 # Decodes the `CallToolResult` a `tools/call` `RpcResponse` carries, in
 # `tests/mesh_evidence_bridge_interop.rs` -- same version mesh-llm-plugin
 # itself pins, so the wire shape matches exactly.

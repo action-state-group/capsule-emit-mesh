@@ -133,12 +133,6 @@ describe('LedgerPageContent', () => {
       screen.getByText('Everything here is checked on this machine, from sealed records.')
     ).toBeInTheDocument()
 
-    // The Live/Local + "This node's copy" chips each carry an (i) whose
-    // aria-describedby holds the moved honest sentence.
-    const copyGlyph = screen.getByRole('button', { name: "About This node's copy" })
-    const copyDesc = document.getElementById(copyGlyph.getAttribute('aria-describedby') as string)
-    expect(copyDesc).toHaveTextContent('The records this node keeps, sealed and checkpointed.')
-
     // The connectivity chip's (i) is present too (Live or Local depending on
     // the harness's sidecar-connected state).
     const liveGlyph =
@@ -527,12 +521,10 @@ describe('LedgerPageContent', () => {
     expect(bodyText).not.toMatch(/No served-summary data available yet\./)
   })
 
-  it('p2 item 1: "This node\'s copy" is a plain label, not a pill; its (i) is the only interaction', () => {
+  it('the retired "This node\'s copy" label is gone from the hero', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
-    const label = screen.getByTestId('hero-your-records')
-    expect(label.className).not.toMatch(/rounded-full/)
-    expect(label.closest('button')).toBeNull()
-    expect(screen.getByRole('button', { name: "About This node's copy" })).toBeInTheDocument()
+    expect(screen.queryByText("This node's copy")).not.toBeInTheDocument()
+    expect(screen.queryByTestId('hero-your-records')).not.toBeInTheDocument()
   })
 
   it('p2 item 5: on sample data the two setup jumps are disabled, with the reason on hover', async () => {
@@ -634,14 +626,9 @@ describe('LedgerPageContent', () => {
     expect(screen.queryByText(/Nothing needs your attention/)).not.toBeInTheDocument()
   })
 
-  it('Ledger badge reads "This node\'s copy" with its one-sentence meaning behind its (i), never the retired "Local only"', () => {
+  it('the hero never shows the retired "This node\'s copy" or "Local only" labels', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
-
-    expect(screen.getByText("This node's copy")).toBeInTheDocument()
-    // The pill's meaning sits behind its (i), carried by the glyph's
-    // aria-describedby copy (UX §8 rewrite; the pill's rename to "Your
-    // records" lands with the plain-language pass).
-    expect(screen.getByText('The records this node keeps, sealed and checkpointed.')).toBeInTheDocument()
+    expect(screen.queryByText("This node's copy")).not.toBeInTheDocument()
     expect(screen.queryByText('Local only')).not.toBeInTheDocument()
   })
 })
@@ -650,6 +637,7 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
   afterEach(() => {
     vi.clearAllMocks()
   })
+
 
   it('renders a two-sided row per exchange (OPEN · not held for a peer-asserted id with no bytes held, OPEN for a unilateral one), the `▸ checks` toggle expands full detail inline', async () => {
     // finding 1: a peer-

@@ -1347,15 +1347,6 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
                   label={HERO_TOOLTIPS[source]}
                 />
               </span>
-              <span className="inline-flex items-center gap-1">
-                {/* p2 item 1: a plain label, not a pill -- a pill reads as a
-                   control, and this one does nothing on click. The (i) is its
-                   only interaction. */}
-                <span className="text-[length:var(--density-type-caption)] text-fg-dim" data-testid="hero-your-records">
-                  This node's copy
-                </span>
-                <InfoHover census="hero:your_records" describes="This node's copy" label={HERO_TOOLTIPS.yourRecords} />
-              </span>
             </div>
           }
           title="Evidence"
