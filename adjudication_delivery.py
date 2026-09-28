@@ -232,10 +232,10 @@ def seal_adjudication_ack_refused(
         else None
     )
     # [mesh-referee-attribution] Forward referee_id from the original
-    # adjudication block so verifiers querying ack_refusal records can
-    # confirm the refused verdict was produced by an attributed referee --
-    # `ask_history._classify_receipt_for_x` gates ack_refusal tallies on
-    # this field being present and non-empty.
+    # adjudication block so a reader of the refusal can see who judged.
+    # `ask_history._classify_receipts_for_x` does not take this field's word:
+    # it counts a refusal only when `adjudication_capsule_id` names a verdict
+    # whose referee signature it verified.
     ack_refused_block: dict[str, Any] = {
         "adjudication_capsule_id": adjudication_capsule["capsule_id"],
         "verdict": original_verdict,

@@ -110,6 +110,7 @@ from typing import Any
 from capsule_emit.bundle import Bundle, verify_bundle
 from capsule_emit.evidence_request import Refusal, verify_refusal_offline
 
+from adjudication_hold import verdict_facts
 from history_card import build_history_card, with_references
 from sequence_counter import verify_pair_continuity
 
@@ -135,6 +136,7 @@ __all__ = [
 _VERDICT_CORROBORATED = "corroborated"
 _VERDICT_INCONCLUSIVE = "inconclusive"
 _VERDICT_CONTRADICTED_PREFIX = "contradicted:"
+_VERDICT_NOT_COMPARABLE = "not_comparable"
 
 #: Fields a mesh capsule may name a counterparty node under -- free-form
 #: `compute_attestation` extension data, not a fixed schema position (same
@@ -308,48 +310,56 @@ def sample_reference_candidates(
     return ranked[:k]
 
 
-def _is_attributed_adjudication(adjudication: dict[str, Any]) -> bool:
-    """[mesh-referee-attribution] Return True only when the adjudication
-    block carries a non-empty ``referee_id`` field -- meaning the verdict was
-    produced by an identified referee party whose identity was verified by
-    ``adjudicate()`` before the capsule was sealed.  An unattributed
-    adjudication (no ``referee_id``) cannot be trusted as an independent
-    tiebreak, so ack_refusal tallies that reference one are not counted."""
-    return bool(adjudication.get("referee_id"))
+def _ruling_about(verdict: str, half_node_ids: list[str], node_id: str) -> str | None:
+    """The bucket one verified verdict falls in for ``node_id``, or ``None``
+    when the verdict did not judge ``node_id``'s answer. A contradiction
+    naming the OTHER twin means the referee's answer matched ``node_id``'s
+    (``live_referee.referee_verdict``), so it lands in ``corroborated``."""
+    if node_id not in half_node_ids:
+        return None
+    if verdict.startswith(_VERDICT_CONTRADICTED_PREFIX):
+        return "contradicted" if verdict == f"{_VERDICT_CONTRADICTED_PREFIX}{node_id}" else "corroborated"
+    if verdict in (_VERDICT_CORROBORATED, _VERDICT_INCONCLUSIVE, _VERDICT_NOT_COMPARABLE):
+        return verdict
+    return None
 
 
-def _classify_receipt_for_x(receipt: dict[str, Any], x_node_id: str, tally: dict[str, int]) -> None:
-    """Fold one verified reference receipt's adjudication content into
-    *tally* (mutated in place: ``corroborated``/``contradicted``/
-    ``inconclusive``/``ack_refusals``). Only a verdict that actually NAMES
-    ``x_node_id`` (the ``contradicted:<owner_id>`` shape) is ever attributed
-    to it -- ``corroborated``/``inconclusive`` verdicts name no owner at all
-    (``twin_adjudicator``'s own trust-model choice: disagreement is a
-    trigger, not evidence of who is right) and so can never legitimately
-    land in these per-``X`` buckets; the counters exist so a shape that DOES
-    start naming an owner on those verdicts is picked up automatically, with
-    no code change here.
+def _classify_receipts_for_x(receipts: list[dict[str, Any]], x_node_id: str, tally: dict[str, int]) -> None:
+    """Fold the verified reference receipts' verdicts about ``x_node_id``
+    into *tally* (mutated in place: ``corroborated`` / ``contradicted`` /
+    ``inconclusive`` / ``not_comparable`` / ``ack_refusals``).
 
-    [mesh-referee-attribution] ``ack_refusals`` are only counted when the
-    referenced adjudication block carries an attributed ``referee_id`` --
-    i.e. when the verdict that was refused originated from an identified
-    referee.  An unattributed accusation (no ``referee_id``) predates the
-    attribution requirement or was produced outside the verified pipeline and
-    is not counted, so a forged unattributed ack_refusal does not inflate the
-    tally.
+    Only a receipt that IS a referee's signed verdict counts, and only when
+    that signature verifies under the key the referee announced
+    (:func:`adjudication_hold.verdict_facts`, the same check a door runs
+    before it holds a delivered verdict). A reference's bundle signature
+    says the reference holds the record, not that a referee signed it, so
+    an ``adjudication`` block without a verifying referee signature --
+    unsigned, signed by a key the referee never announced, or naming no
+    referee -- counts nowhere. Each verdict counts once, however many
+    references hold it.
+
+    ``ack_refusals`` counts a refusal only when it cites a verdict verified
+    here that names ``x_node_id`` as contradicted; the refusal's own copy
+    of the verdict string is never trusted.
     """
-    for adjudication in _iter_dicts_by_key(receipt, "adjudication"):
-        verdict = adjudication.get("verdict")
-        if verdict == f"{_VERDICT_CONTRADICTED_PREFIX}{x_node_id}":
-            tally["contradicted"] += 1
-        elif verdict == _VERDICT_CORROBORATED:
-            tally["corroborated"] += 1
-        elif verdict == _VERDICT_INCONCLUSIVE:
-            tally["inconclusive"] += 1
-    for ack_refused in _iter_dicts_by_key(receipt, "adjudication_ack_refused"):
-        if ack_refused.get("verdict") == f"{_VERDICT_CONTRADICTED_PREFIX}{x_node_id}":
-            if _is_attributed_adjudication(ack_refused):
-                tally["ack_refusals"] += 1
+    verified: dict[str, dict[str, Any]] = {}
+    for receipt in receipts:
+        facts = verdict_facts(receipt)
+        if facts is not None:
+            verified[facts["verdict_capsule_id"]] = facts
+    for facts in verified.values():
+        ruling = _ruling_about(facts["verdict"], facts["half_node_ids"], x_node_id)
+        if ruling is not None:
+            tally[ruling] += 1
+    contradicts_x = f"{_VERDICT_CONTRADICTED_PREFIX}{x_node_id}"
+    refused: set[str] = set()
+    for receipt in receipts:
+        for ack_refused in _iter_dicts_by_key(receipt, "adjudication_ack_refused"):
+            cited = ack_refused.get("adjudication_capsule_id")
+            if cited in verified and verified[cited]["verdict"] == contradicts_x:
+                refused.add(cited)
+    tally["ack_refusals"] += len(refused)
 
 
 @dataclass
@@ -428,7 +438,8 @@ def run_references(
     candidates = discover_counterparties(x_bundles, exclude_node_id=x_node_id)
     sampled = sample_reference_candidates(candidates, subject_node_id=x_node_id, k=k)
 
-    tally = {"corroborated": 0, "contradicted": 0, "inconclusive": 0, "ack_refusals": 0}
+    tally = {"corroborated": 0, "contradicted": 0, "inconclusive": 0, "not_comparable": 0, "ack_refusals": 0}
+    reference_receipts: list[dict[str, Any]] = []
     answered = 0
     unreachable: list[str] = []
 
@@ -469,7 +480,8 @@ def run_references(
                 # Never trust an unverified bundle's content -- contributes
                 # to nothing.
                 continue
-            _classify_receipt_for_x(bundle.receipt, x_node_id, tally)
+            reference_receipts.append(bundle.receipt)
+    _classify_receipts_for_x(reference_receipts, x_node_id, tally)
 
     continuity_by_pair = verify_pair_continuity(verified_x_receipts)
     continuity = {
@@ -485,6 +497,7 @@ def run_references(
         "corroborated": tally["corroborated"],
         "contradicted": tally["contradicted"],
         "inconclusive": tally["inconclusive"],
+        "not_comparable": tally["not_comparable"],
     }
 
     card = _build_history_card_from_bundles(x_bundles, node_id=x_node_id)
