@@ -18,7 +18,7 @@ use capsule_producer::capsule::{
     ReceivedHalfProvenance, SealError, ServingProvenance, STORE_NONCE_FIELD,
 };
 use capsule_producer::checkpoint::{
-    CheckpointCadenceConfig, CheckpointRecord, CheckpointState, PaddingSink,
+    verify_inclusion, CheckpointCadenceConfig, CheckpointRecord, CheckpointState, PaddingSink,
 };
 use capsule_producer::cose::{build_signed_statement, SignedStatementInput};
 use capsule_producer::jcs::compute_capsule_id;
@@ -27,7 +27,7 @@ use capsule_producer::padding::is_padding;
 use capsule_producer::timestamp::is_minute_granular;
 use cll::mmr::{
     add_leaf, consistency_proof, leaf_count, leaf_hash, peaks, root_from_peaks, verify_consistency,
-    verify_inclusion, MemoryNodeStore, NodeReader,
+    MemoryNodeStore, NodeReader,
 };
 use ed25519_dalek::SigningKey;
 use serde_json::Value;
@@ -133,12 +133,15 @@ fn append_real(ledger: &Mutex<Ledger>, n: usize) -> String {
     capsule["capsule_id"].as_str().unwrap().to_string()
 }
 
+/// A hook run once, right after padding, to land a real record before the cut.
+type AfterPad = Box<dyn FnOnce(&Mutex<Ledger>) + Send>;
+
 /// The plugin's padding hook, over a shared ledger (the plugin's is its
 /// `CapsuleState`); `after_pad` lets a test land a real record between the
 /// padding and the cut.
 struct Padder {
     ledger: Arc<Mutex<Ledger>>,
-    after_pad: Mutex<Option<Box<dyn FnOnce(&Mutex<Ledger>) + Send>>>,
+    after_pad: Mutex<Option<AfterPad>>,
 }
 
 impl PaddingSink for Padder {

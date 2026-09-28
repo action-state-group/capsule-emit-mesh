@@ -24,8 +24,9 @@ pub const CANONICALIZATION_ID: &str = crate::jcs::CANONICALIZATION_JCS;
 /// content and recomputing its digest. `client_nonce` does NOT meet this bar:
 /// it is supplied by (so known to) another party. Rides in
 /// `compute_attestation`, this producer's only free-form extension point
-/// (see `seal`'s note on the model_attestation fields).
-pub const STORE_NONCE_FIELD: &str = "store_nonce";
+/// (see `seal`'s note on the model_attestation fields). Defined by the
+/// `evidencebook` crate, which draws it for padding records too.
+pub use evidencebook::padding::STORE_NONCE_FIELD;
 
 /// Granularity of a committed `latency_ms`, in milliseconds.
 pub const LATENCY_BUCKET_MS: f64 = 100.0;
@@ -47,12 +48,7 @@ pub fn committed_latency_ms(measured_ms: f64) -> String {
 
 /// A fresh [`STORE_NONCE_FIELD`] value: 32 bytes from the OS CSPRNG, as 64
 /// lowercase hex.
-pub fn fresh_store_nonce() -> String {
-    use rand_core::RngCore;
-    let mut bytes = [0u8; 32];
-    rand_core::OsRng.fill_bytes(&mut bytes);
-    hex::encode(bytes)
-}
+pub use evidencebook::padding::fresh_store_nonce;
 
 /// Token accounting for one exchange, sourced verbatim from the OpenAI-shaped
 /// response body's `usage` object (`openai-frontend`'s `Usage`:

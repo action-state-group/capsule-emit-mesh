@@ -290,6 +290,17 @@ jobs:
       - name: Offline verification CLI tests (self-contained, no external workspace)
         run: cargo test --locked --test verify_cli
 
+      # Byte parity with the checkpoint substrate as it was before it moved
+      # into the evidencebook crate: capsule ids, checkpoint roots, signing
+      # digests and inclusion proofs against a committed fixture.
+      - name: Checkpoint substrate byte-parity test (self-contained)
+        run: cargo test --locked --test evidencebook_parity
+
+      # evidencebook's reconcile against the Python correlator's (and the Go
+      # book's) outcomes on real sealed halves, with this plugin's key names.
+      - name: Reconcile parity test (self-contained)
+        run: cargo test --locked --test reconcile_parity
+
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 

@@ -196,6 +196,7 @@ dependencies = [
  "der",
  "ecdsa",
  "ed25519-dalek",
+ "evidencebook",
  "hex",
  "p256",
  "p384",
@@ -285,9 +286,8 @@ dependencies = [
 [[package]]
 name = "cll"
 version = "0.1.0"
-source = "git+https://github.com/action-state-group/checkpointed-local-log?tag=rust-cll-v0.2.0#88e99d405241aee790f6795fda612527679114ba"
+source = "git+https://github.com/action-state-group/checkpointed-local-log?tag=rust-evidencebook-v0.1.0#374efe7577e16108ade3730b8ff5845e889246ed"
 dependencies = [
- "base64 0.22.1",
  "coset",
  "ed25519-dalek",
  "hex",
@@ -603,6 +603,21 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "evidencebook"
+version = "0.1.0"
+source = "git+https://github.com/action-state-group/checkpointed-local-log?tag=rust-evidencebook-v0.1.0#374efe7577e16108ade3730b8ff5845e889246ed"
+dependencies = [
+ "cll",
+ "ed25519-dalek",
+ "hex",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

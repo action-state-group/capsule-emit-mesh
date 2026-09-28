@@ -3,22 +3,20 @@
 //! leaves, a periodic signed checkpoint, and (opt-in) witness registration.
 //!
 //! This is the Rust re-expression of `capsule-emit-mesh/checkpointing.py`'s
-//! `CheckpointState` (see `docs/DESIGN-fold-sidecar-into-plugin.md` and
-//! `[mesh-plugin-checkpoint-cadence]`) over the primitives the `cll` crate
-//! (`checkpointed-local-log`, `rust/cll`, pinned by git tag) now provides:
-//! `cll::mmr` (the MMR algorithm + node storage traits), `cll::node_store`
-//! (the durable file-backed node store), `cll::checkpoint` (the signed
-//! `CheckpointRecord` + COSE wire form, via the `CheckpointSigner` SPI —
-//! see that module's doc comment), and `cll::store` (`checkpoints.jsonl`
-//! read/write, the exact on-disk shape `checkpointing.py` also reads/writes,
-//! so a Rust checkpointer and `checkpoint_daemon.py` share one file).
+//! `CheckpointState` (see `docs/DESIGN-fold-sidecar-into-plugin.md`) over the
+//! `evidencebook` crate's substrate (`checkpointed-local-log`,
+//! `rust/evidencebook`, pinned by git rev), which embeds the `cll` crate: the MMR, the durable file-backed node
+//! store, the signed checkpoint + COSE wire form, and `checkpoints.jsonl`
+//! read/write -- the exact on-disk shape `checkpointing.py` also
+//! reads/writes, so a Rust checkpointer and `checkpoint_daemon.py` share one
+//! file.
 //!
 //! **Durable node store, unlike the Python reference.** `checkpointing.py`'s
 //! `MmrLedger` is always in-memory (`MemoryNodeStore`), rebuilt from
 //! `capsules.jsonl` on every process start — fine for a short-lived daemon
 //! process, wrong for a long-running plugin. This module instead persists
-//! MMR node hashes to `<ledger_dir>/mmr_nodes.dat` (`cll::node_store::
-//! FileNodeStore`) — a Rust-only file with no Python counterpart — so a
+//! MMR node hashes to `<ledger_dir>/mmr_nodes.dat` (the substrate's durable
+//! node store) — a Rust-only file with no Python counterpart — so a
 //! restart re-hashes only the leaves appended since the last clean stop, not
 //! the whole ledger. The resulting MMR content (roots, peaks, proofs) is
 //! identical either way; only how it gets there differs.
@@ -30,32 +28,30 @@
 //! unreachable witness never blocks local checkpointing). See `tick`/
 //! `reconnect`/`checkpoint_on_shutdown`/`retry_pending_witnesses` below.
 //!
-//! **Signing goes only through `cll::checkpoint::CheckpointSigner`** (the
-//! v0.2.0 signer SPI) — this module never calls `ed25519_dalek::Signer`
-//! directly, so the caller's already-loaded node key
-//! (`capsule_producer::keys::KeyPair::signing_key`, an `ed25519_dalek::
-//! SigningKey`, which implements `CheckpointSigner`) is reused as-is, never
-//! a second, plugin-minted key.
+//! **The substrate is the `evidencebook` crate's.** The MMR node store, the
+//! monotonicity and rewrite guards, the root, the signature, the COSE wire
+//! form, `checkpoints.jsonl` and inclusion proofs all go through
+//! [`evidencebook::substrate::CllSubstrate`]; this module keeps the policy
+//! around it: which `capsules.jsonl` lines to fold, when to cut (cadence,
+//! push-time coverage, padding), what time a checkpoint commits to, and
+//! witness registration. `tests/evidencebook_parity.rs` pins the output
+//! against a fixture produced before the substrate moved into the crate.
+//!
+//! **Signing goes only through the substrate's [`CheckpointSigner`]** — this
+//! module never calls `ed25519_dalek::Signer` directly, so the caller's
+//! already-loaded node key (`capsule_producer::keys::KeyPair::signing_key`,
+//! an `ed25519_dalek::SigningKey`, which implements it) is reused as-is,
+//! never a second, plugin-minted key.
 
 use crate::anchor::{dispatch_base_for, AnchorClient};
-// Re-exported (not just `use`d) so a caller depending on this crate --
-// admission-policy's checkpoint cadence task -- can name `CheckpointRecord`
-// and `CheckpointSigner` without adding `cll` as its own direct dependency.
-pub use cll::checkpoint::{CheckpointRecord, CheckpointSigner};
-use cll::checkpoint::{
-    checkpoint_to_cose, try_sign_checkpoint_digest, CheckpointError as CllCheckpointError,
-    SignerError, WitnessRecord as CheckpointWitness,
+use evidencebook::substrate::{record_id_from_hex, CllSubstrate, SubstrateError, RECORD_ID_LEN};
+// Re-exported under this module's long-standing names so a caller of this
+// crate -- admission-policy's checkpoint cadence task, the push-a-bundle
+// sender -- names them without depending on `evidencebook` directly.
+pub use evidencebook::substrate::{
+    verify_inclusion, Checkpoint as CheckpointRecord, InclusionEvidence as InclusionProof,
+    OpenReport, Signer as CheckpointSigner, WitnessEntry as CheckpointWitness,
 };
-use cll::mmr::{
-    add_leaf, consistency_proof, inclusion_proof, leaf_count as mmr_leaf_count, leaf_hash,
-    leaf_index_to_pos, node_count, peaks, root_from_peaks, ConsistencyProof, Hash, MmrError, NodeReader,
-    DIGEST_LEN,
-};
-// Re-exported for the same reason as `CheckpointRecord`: the push-a-bundle
-// sender names the proof type without a direct `cll` dependency.
-pub use cll::mmr::{verify_inclusion, InclusionProof};
-use cll::node_store::{FileNodeStore, NodeStoreError, OpenReport};
-use cll::store::{append_checkpoint, read_last_checkpoint, CheckpointLine, StoreError};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
@@ -67,15 +63,15 @@ pub enum CheckpointStateError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("node store error: {0}")]
-    NodeStore(#[from] NodeStoreError),
+    NodeStore(String),
     #[error("checkpoints.jsonl error: {0}")]
-    Store(#[from] StoreError),
+    Store(String),
     #[error("mmr error: {0}")]
-    Mmr(#[from] MmrError),
+    Mmr(String),
     #[error("checkpoint error: {0}")]
-    Checkpoint(#[from] CllCheckpointError),
+    Checkpoint(String),
     #[error("signer error: {0}")]
-    Signer(#[from] SignerError),
+    Signer(String),
     #[error(
         "durable node store at {path} indexes {stored_leaves} leaves but capsules.jsonl only has \
          {ledger_leaves} -- the node store is AHEAD of the ledger it is meant to index; refusing \
@@ -106,7 +102,7 @@ pub enum CheckpointStateError {
     #[error("capsules.jsonl line {line}: missing or non-string capsule_id field")]
     MissingCapsuleId { line: usize },
     #[error(
-        "capsules.jsonl line {line}: capsule_id {capsule_id:?} is not {DIGEST_LEN} bytes of hex"
+        "capsules.jsonl line {line}: capsule_id {capsule_id:?} is not {RECORD_ID_LEN} bytes of hex"
     )]
     BadCapsuleId { line: usize, capsule_id: String },
     #[error("cannot checkpoint an empty MMR (no leaves appended yet)")]
@@ -136,6 +132,42 @@ pub enum CheckpointStateError {
     PaddingNotFolded { padded_to: u64, folded: u64 },
 }
 
+/// The substrate's errors, under this module's long-standing variants and
+/// messages. A leaf mismatch is not converted here: only the caller knows
+/// which `capsule_id` it checked, so it builds
+/// [`CheckpointStateError::NodeStoreDivergedFromLedger`] itself.
+impl From<SubstrateError> for CheckpointStateError {
+    fn from(e: SubstrateError) -> Self {
+        match e {
+            SubstrateError::NodeStore(m) => Self::NodeStore(m),
+            SubstrateError::Store(m) => Self::Store(m),
+            SubstrateError::Mmr(m) => Self::Mmr(m),
+            SubstrateError::Checkpoint(m) => Self::Checkpoint(m),
+            SubstrateError::Signer(m) => Self::Signer(m),
+            SubstrateError::EmptyMmr => Self::EmptyMmr,
+            SubstrateError::RollbackSize {
+                current_size,
+                prev_size,
+            } => Self::RollbackSize {
+                current_size,
+                prev_size,
+            },
+            SubstrateError::RollbackRoot {
+                prev_size,
+                actual_root,
+                recorded_root,
+            } => Self::RollbackRoot {
+                prev_size,
+                actual_root,
+                recorded_root,
+            },
+            other @ (SubstrateError::LeafMismatch { .. }
+            | SubstrateError::CutBeyondLog { .. }
+            | SubstrateError::StalePrepared { .. }) => Self::Checkpoint(other.to_string()),
+        }
+    }
+}
+
 /// Appends padding records to the ledger this state indexes (Evidence Layer
 /// -00 §12.1; see `crate::padding`). `CheckpointState` never writes
 /// `capsules.jsonl` itself -- the ledger has one writer -- so the plugin
@@ -163,15 +195,7 @@ pub struct Coverage {
 /// The wire JSON of an inclusion proof -- the exact field set
 /// `scitt_cose.cll.InclusionProof.from_dict` reads.
 pub fn inclusion_proof_json(proof: &InclusionProof) -> serde_json::Value {
-    serde_json::json!({
-        "v": proof.v,
-        "kind": proof.kind,
-        "size": proof.size,
-        "leaf_index": proof.leaf_index,
-        "witness": proof.witness,
-        "peaks_left": proof.peaks_left,
-        "peaks_right": proof.peaks_right,
-    })
+    proof.to_wire_json()
 }
 
 /// Cadence/witness policy -- the fields of `checkpointing.py`'s use of
@@ -250,8 +274,7 @@ pub struct LoadReport {
 /// `checkpointing.py`'s own module doc describes.
 pub struct CheckpointState {
     capsules_path: PathBuf,
-    checkpoints_path: PathBuf,
-    node_store: FileNodeStore,
+    substrate: CllSubstrate,
     leaf_count: u64,
     /// Byte offset just past the last `capsules.jsonl` line folded into the
     /// MMR: `sync` reads only from here on, never the whole file again.
@@ -264,8 +287,6 @@ pub struct CheckpointState {
     leaf_index_by_id: HashMap<String, u64>,
     log_id: String,
     cfg: CheckpointCadenceConfig,
-    last_checkpoint: Option<CheckpointRecord>,
-    last_checkpoint_cose: Option<Vec<u8>>,
     entries_since_checkpoint: u64,
     /// Instant of the FIRST currently-unwitnessed entry, or `None` when the
     /// log is fully caught up. Not restored across a restart (a monotonic
@@ -286,13 +307,6 @@ pub struct CheckpointState {
     padding: Option<Box<dyn PaddingSink>>,
 }
 
-fn leaf_positions_and_hashes(
-    reader: &impl NodeReader,
-    size: u64,
-) -> Result<Vec<Hash>, CheckpointStateError> {
-    Ok(peaks(size)?.iter().map(|&p| reader.node(p)).collect())
-}
-
 /// Divergence guard: verify the
 /// durable node store still commits to the SAME leaves `capsules.jsonl`
 /// holds -- not just to the same COUNT of leaves. The count-only trust was
@@ -310,7 +324,7 @@ fn leaf_positions_and_hashes(
 /// the tail). `full = false` checks only the LAST stored leaf (used on
 /// every `sync`, so the per-tick cost is one node read + one hash).
 fn verify_stored_leaves_match_chain(
-    store: &impl NodeReader,
+    substrate: &CllSubstrate,
     stored_leaf_count: u64,
     capsule_ids: &[String],
     full: bool,
@@ -321,23 +335,35 @@ fn verify_stored_leaves_match_chain(
     debug_assert!(stored_leaf_count as usize <= capsule_ids.len());
     let first = if full { 0 } else { stored_leaf_count - 1 };
     for leaf_index in first..stored_leaf_count {
-        let capsule_id = &capsule_ids[leaf_index as usize];
-        // read_capsule_ids already validated every id as DIGEST_LEN bytes
-        // of hex; this cannot fail.
-        let body_digest =
-            hex_to_digest(capsule_id).expect("read_capsule_ids validates capsule_id hex");
-        let expected_leaf = leaf_hash(&body_digest);
-        let stored_leaf = store.node(leaf_index_to_pos(leaf_index)?);
-        if stored_leaf != expected_leaf {
-            return Err(CheckpointStateError::NodeStoreDivergedFromLedger {
-                leaf_index,
-                capsule_id: capsule_id.clone(),
-                stored_leaf: hex::encode(stored_leaf),
-                expected_leaf: hex::encode(expected_leaf),
-            });
-        }
+        check_leaf(substrate, leaf_index, &capsule_ids[leaf_index as usize])?;
     }
     Ok(())
+}
+
+/// The substrate's leaf check, reported as the divergence error this module
+/// has always raised for a chain rewritten under the node store.
+fn check_leaf(
+    substrate: &CllSubstrate,
+    leaf_index: u64,
+    capsule_id: &str,
+) -> Result<(), CheckpointStateError> {
+    // read_complete_lines already validated every id as RECORD_ID_LEN bytes
+    // of hex; this cannot fail.
+    let record_id =
+        record_id_from_hex(capsule_id).expect("read_complete_lines validates capsule_id hex");
+    match substrate.check_leaf(leaf_index, &record_id) {
+        Err(SubstrateError::LeafMismatch {
+            leaf_index,
+            stored_leaf,
+            expected_leaf,
+        }) => Err(CheckpointStateError::NodeStoreDivergedFromLedger {
+            leaf_index,
+            capsule_id: capsule_id.to_string(),
+            stored_leaf,
+            expected_leaf,
+        }),
+        other => Ok(other?),
+    }
 }
 
 impl CheckpointState {
@@ -355,8 +381,8 @@ impl CheckpointState {
         let checkpoints_path = ledger_dir.join("checkpoints.jsonl");
         let node_store_path = ledger_dir.join("mmr_nodes.dat");
 
-        let (mut node_store, open_report) = FileNodeStore::open(&node_store_path)?;
-        let stored_leaf_count = mmr_leaf_count(node_store.size())?;
+        let (mut substrate, open_report) = CllSubstrate::open(&node_store_path, &checkpoints_path)?;
+        let stored_leaf_count = substrate.leaf_count()?;
 
         let lines = read_complete_lines(&capsules_path, 0, 0)?;
         let capsule_ids: Vec<String> = lines.iter().map(|l| l.capsule_id.clone()).collect();
@@ -371,15 +397,15 @@ impl CheckpointState {
         // store already holds must still be the chain's capsule_id at that
         // index (see verify_stored_leaves_match_chain's doc for the incident
         // this guards against).
-        verify_stored_leaves_match_chain(&node_store, stored_leaf_count, &capsule_ids, true)?;
+        verify_stored_leaves_match_chain(&substrate, stored_leaf_count, &capsule_ids, true)?;
 
         let mut leaves_indexed_this_load = 0u64;
         for capsule_id in &capsule_ids[stored_leaf_count as usize..] {
-            // read_capsule_ids already validated every id as DIGEST_LEN
+            // read_complete_lines already validated every id as RECORD_ID_LEN
             // bytes of hex; this cannot fail.
-            let body_digest =
-                hex_to_digest(capsule_id).expect("read_capsule_ids validates capsule_id hex");
-            add_leaf(&mut node_store, leaf_hash(&body_digest))?;
+            let record_id = record_id_from_hex(capsule_id)
+                .expect("read_complete_lines validates capsule_id hex");
+            substrate.append_leaf(&record_id)?;
             leaves_indexed_this_load += 1;
         }
         let leaf_count = capsule_ids.len() as u64;
@@ -388,33 +414,23 @@ impl CheckpointState {
             .enumerate()
             .map(|(i, id)| (id.clone(), i as u64))
             .collect();
-        let (consumed_bytes, last_line_start) =
-            lines.last().map_or((0, 0), |l| (l.end, l.start));
+        let (consumed_bytes, last_line_start) = lines.last().map_or((0, 0), |l| (l.end, l.start));
 
-        let last_line = read_last_checkpoint(&checkpoints_path)?;
-        let last_checkpoint = last_line.as_ref().map(|l| l.record.clone());
-        let last_checkpoint_cose = last_line
-            .and_then(|l| l.checkpoint_cose_hex)
-            .and_then(|hex_str| hex::decode(hex_str).ok());
-
-        let last_checkpoint_leaf_count = match &last_checkpoint {
-            Some(cp) => mmr_leaf_count(cp.mmr_size)?,
+        let last_checkpoint_leaf_count = match substrate.last_checkpoint() {
+            Some(cp) => cp.leaf_count()?,
             None => 0,
         };
         let entries_since_checkpoint = leaf_count.saturating_sub(last_checkpoint_leaf_count);
 
         let state = Self {
             capsules_path,
-            checkpoints_path,
-            node_store,
+            substrate,
             leaf_count,
             consumed_bytes,
             last_line_start,
             leaf_index_by_id,
             log_id: log_id.into(),
             cfg,
-            last_checkpoint,
-            last_checkpoint_cose,
             entries_since_checkpoint,
             pending_since: (entries_since_checkpoint > 0).then(Instant::now),
             pending_witness_urls: Vec::new(),
@@ -450,7 +466,9 @@ impl CheckpointState {
         let Some(sink) = self.padding.as_ref().filter(|_| bucket > 0) else {
             return Ok(self.leaf_count);
         };
-        let padded_to = sink.pad_to_bucket(bucket).map_err(CheckpointStateError::Padding)?;
+        let padded_to = sink
+            .pad_to_bucket(bucket)
+            .map_err(CheckpointStateError::Padding)?;
         self.sync()?;
         if self.leaf_count < padded_to {
             return Err(CheckpointStateError::PaddingNotFolded {
@@ -462,7 +480,7 @@ impl CheckpointState {
     }
 
     pub fn last_checkpoint(&self) -> Option<&CheckpointRecord> {
-        self.last_checkpoint.as_ref()
+        self.substrate.last_checkpoint()
     }
 
     /// Fold any `capsules.jsonl` lines not yet indexed into the MMR.
@@ -497,11 +515,11 @@ impl CheckpointState {
         )?;
         let mut added = 0u64;
         for line in lines {
-            // read_complete_lines already validated every id as DIGEST_LEN
+            // read_complete_lines already validated every id as RECORD_ID_LEN
             // bytes of hex; this cannot fail.
-            let body_digest =
-                hex_to_digest(&line.capsule_id).expect("read_complete_lines validates capsule_id hex");
-            add_leaf(&mut self.node_store, leaf_hash(&body_digest))?;
+            let record_id = record_id_from_hex(&line.capsule_id)
+                .expect("read_complete_lines validates capsule_id hex");
+            self.substrate.append_leaf(&record_id)?;
             self.leaf_index_by_id
                 .insert(line.capsule_id, self.leaf_count + added);
             self.consumed_bytes = line.end;
@@ -536,18 +554,7 @@ impl CheckpointState {
         .into_iter()
         .next()
         .ok_or_else(|| self.ahead_of_ledger())?;
-        let expected_leaf = leaf_hash(
-            &hex_to_digest(&line.capsule_id).expect("read_complete_lines validates capsule_id hex"),
-        );
-        let stored_leaf = self.node_store.node(leaf_index_to_pos(leaf_index)?);
-        if stored_leaf != expected_leaf {
-            return Err(CheckpointStateError::NodeStoreDivergedFromLedger {
-                leaf_index,
-                capsule_id: line.capsule_id,
-                stored_leaf: hex::encode(stored_leaf),
-                expected_leaf: hex::encode(expected_leaf),
-            });
-        }
+        check_leaf(&self.substrate, leaf_index, &line.capsule_id)?;
         // Same leaf; if the line's bytes changed length, resume after it.
         self.consumed_bytes = line.end;
         Ok(())
@@ -593,13 +600,15 @@ impl CheckpointState {
                 capsule_id: capsule_id.to_string(),
             }
         })?;
-        let Some(checkpoint) = self.last_checkpoint.clone() else {
+        let Some(checkpoint) = self.substrate.last_checkpoint().cloned() else {
             return Ok(None);
         };
-        if leaf_index >= mmr_leaf_count(checkpoint.mmr_size)? {
+        if leaf_index >= checkpoint.leaf_count()? {
             return Ok(None);
         }
-        let proof = inclusion_proof(&self.node_store, leaf_index, checkpoint.mmr_size)?;
+        let proof = self
+            .substrate
+            .inclusion_at(leaf_index, checkpoint.mmr_size)?;
         Ok(Some(Coverage {
             checkpoint,
             leaf_index,
@@ -686,8 +695,8 @@ impl CheckpointState {
         if self.leaf_count == 0 {
             return Ok(None);
         }
-        if let Some(last) = &self.last_checkpoint {
-            let last_leaf_count = mmr_leaf_count(last.mmr_size)?;
+        if let Some(last) = self.substrate.last_checkpoint() {
+            let last_leaf_count = last.leaf_count()?;
             if self.leaf_count <= last_leaf_count {
                 self.retry_pending_witnesses(anchor);
                 return Ok(None);
@@ -716,100 +725,35 @@ impl CheckpointState {
         anchor: &AnchorClient,
         register: bool,
     ) -> Result<CheckpointRecord, CheckpointStateError> {
-        let prev_before = self.last_checkpoint.clone();
         let cut_leaves = self.cut_leaf_count()?;
-        let current_size = node_count(cut_leaves);
-        if current_size == 0 {
-            return Err(CheckpointStateError::EmptyMmr);
-        }
-
-        let (prev_size, prev_root) = match &prev_before {
-            None => (0u64, String::new()),
-            Some(prev) => {
-                if current_size <= prev.mmr_size {
-                    return Err(CheckpointStateError::RollbackSize {
-                        current_size,
-                        prev_size: prev.mmr_size,
-                    });
-                }
-                let actual_prev_peaks = leaf_positions_and_hashes(&self.node_store, prev.mmr_size)?;
-                let actual_prev_root = hex::encode(root_from_peaks(&actual_prev_peaks));
-                if actual_prev_root != prev.root {
-                    return Err(CheckpointStateError::RollbackRoot {
-                        prev_size: prev.mmr_size,
-                        actual_root: actual_prev_root,
-                        recorded_root: prev.root.clone(),
-                    });
-                }
-                (prev.mmr_size, prev.root.clone())
-            }
-        };
-
-        let new_peak_hashes = leaf_positions_and_hashes(&self.node_store, current_size)?;
-        let root = hex::encode(root_from_peaks(&new_peak_hashes));
-
-        let mut cp = CheckpointRecord {
-            v: 1,
-            kind: "mmr_checkpoint".to_string(),
-            log_id: self.log_id.clone(),
-            mmr_size: current_size,
-            root,
-            prev_size,
-            prev_root,
-            key_id: signer.key_id(),
-            timestamp: crate::timestamp::utc_now_minute(),
-            signature: String::new(),
-            witnesses: Vec::new(),
-        };
-        cp.signature = try_sign_checkpoint_digest(&cp, signer)?;
-
-        // COSE-wire form, best-effort (mirrors `checkpointing.py._checkpoint_now`'s
-        // own try/except): a build failure here must never block the JSON
-        // checkpoint from being signed and persisted, it only means this
-        // checkpoint stays self-attested (no witness registration possible
-        // without the wire form). `cadence_seconds` is deliberately omitted
-        // (`None`) -- `checkpointing.py` never passes it either, and this
-        // claim is not part of the invariance surface.
-        let prev_peak_hashes = if prev_size > 0 {
-            Some(leaf_positions_and_hashes(&self.node_store, prev_size)?)
-        } else {
-            None
-        };
-        let consistency = if prev_size > 0 {
-            Some(consistency_proof(
-                &self.node_store,
-                prev_size,
-                current_size,
-            )?)
-        } else {
-            None
-        };
-        let checkpoint_cose = build_cose(
-            &cp,
+        let mut prepared = self.substrate.prepare_checkpoint(
+            cut_leaves,
+            &self.log_id,
+            &crate::timestamp::utc_now_minute(),
             signer,
-            &new_peak_hashes,
-            prev_peak_hashes.as_deref(),
-            consistency.as_ref(),
-        );
+        )?;
+        // The COSE-wire form is best-effort (mirrors `checkpointing.py.
+        // _checkpoint_now`'s own try/except): a build failure never blocks the
+        // JSON checkpoint from being signed and persisted, it only means this
+        // checkpoint stays self-attested (no witness registration possible
+        // without the wire form).
+        if let Some(err) = prepared.cose_error() {
+            eprintln!(
+                "[checkpoint] COSE-wire checkpoint serialization failed (staying JSON-only, \
+                 self-attested): {err}"
+            );
+        }
 
         if register {
             let ts_urls = self.cfg.witness_urls.clone();
+            let cose = prepared.cose().map(<[u8]>::to_vec);
             let still_pending =
-                register_with(anchor, &mut cp, checkpoint_cose.as_deref(), &ts_urls);
+                register_with(anchor, &mut prepared.checkpoint, cose.as_deref(), &ts_urls);
             self.pending_witness_urls = still_pending;
             self.witness_deferred = false;
         }
 
-        append_checkpoint(
-            &self.checkpoints_path,
-            &CheckpointLine {
-                record: cp.clone(),
-                checkpoint_cose_hex: checkpoint_cose.as_ref().map(hex::encode),
-            },
-        )?;
-
-        self.last_checkpoint = Some(cp.clone());
-        self.last_checkpoint_cose = checkpoint_cose;
+        let cp = self.substrate.commit_checkpoint(prepared)?;
         // Leaves folded past the cut (a record that landed between the
         // padding and the cut) are the next checkpoint's backlog.
         self.entries_since_checkpoint = self.leaf_count - cut_leaves;
@@ -828,43 +772,19 @@ impl CheckpointState {
         if self.pending_witness_urls.is_empty() {
             return false;
         }
-        let Some(cp) = self.last_checkpoint.as_mut() else {
+        let Some(mut cp) = self.substrate.last_checkpoint().cloned() else {
             return false;
         };
         let ts_urls = std::mem::take(&mut self.pending_witness_urls);
         let before = cp.witnesses.len();
-        let still_pending =
-            register_with(anchor, cp, self.last_checkpoint_cose.as_deref(), &ts_urls);
+        let cose = self.substrate.last_checkpoint_cose().map(<[u8]>::to_vec);
+        let still_pending = register_with(anchor, &mut cp, cose.as_deref(), &ts_urls);
         self.pending_witness_urls = still_pending;
-        cp.witnesses.len() > before
-    }
-}
-
-fn build_cose(
-    cp: &CheckpointRecord,
-    signer: &dyn CheckpointSigner,
-    new_peak_hashes: &[Hash],
-    prev_peak_hashes: Option<&[Hash]>,
-    consistency: Option<&ConsistencyProof>,
-) -> Option<Vec<u8>> {
-    match checkpoint_to_cose(
-        cp,
-        signer,
-        new_peak_hashes,
-        prev_peak_hashes,
-        consistency,
-        None,
-    ) {
-        Ok(bytes) => Some(bytes),
-        Err(err) => {
-            // Best-effort: never blocks the JSON-only checkpoint from being
-            // signed and persisted (see checkpoint_now's doc comment).
-            eprintln!(
-                "[checkpoint] COSE-wire checkpoint serialization failed (staying JSON-only, \
-                 self-attested): {err}"
-            );
-            None
+        let added = cp.witnesses.len() > before;
+        if let Some(witnesses) = self.substrate.last_checkpoint_witnesses_mut() {
+            *witnesses = cp.witnesses;
         }
+        added
     }
 }
 
@@ -913,11 +833,6 @@ fn register_with(
         }
     }
     still_pending
-}
-
-fn hex_to_digest(s: &str) -> Option<Hash> {
-    let bytes = hex::decode(s).ok()?;
-    bytes.try_into().ok()
 }
 
 /// One newline-terminated `capsules.jsonl` line: its byte span and id.
@@ -972,14 +887,17 @@ fn read_complete_lines_limit(
         if text.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let value: serde_json::Value = serde_json::from_slice(text)
-            .map_err(|source| CheckpointStateError::MalformedLine { line: line_no, source })?;
+        let value: serde_json::Value =
+            serde_json::from_slice(text).map_err(|source| CheckpointStateError::MalformedLine {
+                line: line_no,
+                source,
+            })?;
         let capsule_id = value
             .get("capsule_id")
             .and_then(serde_json::Value::as_str)
             .ok_or(CheckpointStateError::MissingCapsuleId { line: line_no })?
             .to_string();
-        if hex_to_digest(&capsule_id).is_none() {
+        if record_id_from_hex(&capsule_id).is_none() {
             return Err(CheckpointStateError::BadCapsuleId {
                 line: line_no,
                 capsule_id,
@@ -1033,7 +951,7 @@ fn read_capsule_ids(path: &Path) -> Result<Vec<String>, CheckpointStateError> {
             .and_then(serde_json::Value::as_str)
             .ok_or(CheckpointStateError::MissingCapsuleId { line: i + 1 })?
             .to_string();
-        if hex_to_digest(&capsule_id).is_none() {
+        if record_id_from_hex(&capsule_id).is_none() {
             return Err(CheckpointStateError::BadCapsuleId {
                 line: i + 1,
                 capsule_id,
@@ -1048,8 +966,33 @@ fn read_capsule_ids(path: &Path) -> Result<Vec<String>, CheckpointStateError> {
 mod tests {
     use super::*;
     use cll::checkpoint::verify_checkpoint_cose_offline;
+    use cll::mmr::{
+        add_leaf, consistency_proof, leaf_count as mmr_leaf_count, leaf_hash, peaks,
+        root_from_peaks, Hash, NodeReader,
+    };
     use ed25519_dalek::SigningKey;
     use serde_json::json;
+
+    fn hex_to_digest(s: &str) -> Option<Hash> {
+        record_id_from_hex(s)
+    }
+
+    fn leaf_positions_and_hashes(
+        reader: &impl NodeReader,
+        size: u64,
+    ) -> Result<Vec<Hash>, cll::mmr::MmrError> {
+        Ok(peaks(size)?.iter().map(|&p| reader.node(p)).collect())
+    }
+
+    /// The MMR over `capsules.jsonl`, rebuilt in memory independently of the
+    /// substrate under test.
+    fn independent_mmr(dir: &Path) -> cll::mmr::MemoryNodeStore {
+        let mut mem = cll::mmr::MemoryNodeStore::new();
+        for id in read_capsule_ids(&dir.join("capsules.jsonl")).unwrap() {
+            add_leaf(&mut mem, leaf_hash(&hex_to_digest(&id).unwrap())).unwrap();
+        }
+        mem
+    }
 
     fn write_capsule(dir: &Path, seed: &str) -> String {
         use sha2::{Digest, Sha256};
@@ -1210,8 +1153,8 @@ mod tests {
         );
 
         let cose = state
-            .last_checkpoint_cose
-            .as_ref()
+            .substrate
+            .last_checkpoint_cose()
             .expect("COSE bytes must have been built");
         let verified = verify_checkpoint_cose_offline(cose);
         assert!(
@@ -1239,11 +1182,19 @@ mod tests {
         let anchor = AnchorClient::new("http://127.0.0.1:1");
         state.reconnect(&signer(), &anchor).unwrap();
 
-        // Simulate a mutated ledger: swap in a checkpoint record that claims
-        // a prev_root the current MMR does not actually have at that size.
-        let mut tampered_prev = state.last_checkpoint.clone().unwrap();
-        tampered_prev.root = "f".repeat(64);
-        state.last_checkpoint = Some(tampered_prev);
+        // Simulate a mutated ledger: rewrite the persisted checkpoint so it
+        // claims a root the current MMR does not actually have at that size
+        // (the replace also rewrites that root inside the COSE wire form; only
+        // the JSON record's root matters to the rollback check).
+        let path = dir.path().join("checkpoints.jsonl");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let recorded = state.last_checkpoint().unwrap().root.clone();
+        std::fs::write(&path, text.replace(&recorded, &"f".repeat(64))).unwrap();
+        drop(state);
+        let (mut state, _) =
+            CheckpointState::load(dir.path(), "test-log", CheckpointCadenceConfig::default())
+                .unwrap();
+        assert_eq!(state.last_checkpoint().unwrap().root, "f".repeat(64));
         write_capsule(dir.path(), "c");
         state.sync().unwrap();
         let err = state.checkpoint_now(&signer(), &anchor, true).unwrap_err();
@@ -1328,7 +1279,10 @@ mod tests {
         let anchor = AnchorClient::new("http://127.0.0.1:1");
         let err = state.reconnect(&signer(), &anchor).unwrap_err();
         assert!(
-            matches!(err, CheckpointStateError::NodeStoreDivergedFromLedger { leaf_index: 1, .. }),
+            matches!(
+                err,
+                CheckpointStateError::NodeStoreDivergedFromLedger { leaf_index: 1, .. }
+            ),
             "expected NodeStoreDivergedFromLedger, got: {err}"
         );
         assert!(
@@ -1379,7 +1333,10 @@ mod tests {
                 Ok(_) => panic!("expected NodeStoreDivergedFromLedger, load succeeded"),
             };
         assert!(
-            matches!(err, CheckpointStateError::NodeStoreDivergedFromLedger { leaf_index: 1, .. }),
+            matches!(
+                err,
+                CheckpointStateError::NodeStoreDivergedFromLedger { leaf_index: 1, .. }
+            ),
             "expected NodeStoreDivergedFromLedger at leaf 1, got: {err}"
         );
     }
@@ -1415,7 +1372,10 @@ mod tests {
 
         let anchor = AnchorClient::new("http://127.0.0.1:1");
         let soft = state.tick(&signer(), &anchor).unwrap();
-        assert!(soft.is_none(), "a transiently-short read must soft-skip the tick");
+        assert!(
+            soft.is_none(),
+            "a transiently-short read must soft-skip the tick"
+        );
         assert!(
             !dir.path().join("checkpoints.jsonl").exists(),
             "the soft-skipped tick must not have emitted a checkpoint"
@@ -1489,7 +1449,7 @@ mod tests {
         let root: Hash = hex_to_digest(&coverage.checkpoint.root).unwrap();
         let body = hex_to_digest(capsule_id).unwrap();
         assert!(
-            cll::mmr::verify_inclusion(
+            verify_inclusion(
                 &root,
                 coverage.checkpoint.mmr_size,
                 coverage.leaf_index,
@@ -1515,7 +1475,11 @@ mod tests {
         assert!(coverage.cut_new);
         assert_eq!(coverage.leaf_index, 1);
         assert_covers(&coverage, &two);
-        assert_eq!(checkpoint_lines(dir.path()), 1, "a push cut is persisted like any checkpoint");
+        assert_eq!(
+            checkpoint_lines(dir.path()),
+            1,
+            "a push cut is persisted like any checkpoint"
+        );
         assert_eq!(state.entries_since_checkpoint, 0);
     }
 
@@ -1532,7 +1496,10 @@ mod tests {
         let first = state.checkpoint_covering(&two, &signer(), &anchor).unwrap();
         // A burst: the earlier leaf is already under the checkpoint just cut.
         let second = state.checkpoint_covering(&one, &signer(), &anchor).unwrap();
-        assert!(!second.cut_new, "a covered leaf must not cut a second checkpoint");
+        assert!(
+            !second.cut_new,
+            "a covered leaf must not cut a second checkpoint"
+        );
         assert_eq!(second.checkpoint, first.checkpoint);
         assert_covers(&second, &one);
         assert_eq!(checkpoint_lines(dir.path()), 1);
@@ -1549,7 +1516,10 @@ mod tests {
         let err = state
             .checkpoint_covering(&"f".repeat(64), &signer(), &anchor)
             .unwrap_err();
-        assert!(matches!(err, CheckpointStateError::CapsuleNotInLedger { .. }));
+        assert!(matches!(
+            err,
+            CheckpointStateError::CapsuleNotInLedger { .. }
+        ));
         assert_eq!(checkpoint_lines(dir.path()), 0);
     }
 
@@ -1564,7 +1534,9 @@ mod tests {
         let first = state.checkpoint_covering(&one, &signer(), &anchor).unwrap();
         let two = write_capsule(dir.path(), "two");
         let three = write_capsule(dir.path(), "three");
-        let second = state.checkpoint_covering(&three, &signer(), &anchor).unwrap();
+        let second = state
+            .checkpoint_covering(&three, &signer(), &anchor)
+            .unwrap();
         assert!(second.cut_new);
         assert_eq!(second.checkpoint.prev_size, first.checkpoint.mmr_size);
         assert_eq!(second.checkpoint.prev_root, first.checkpoint.root);
@@ -1572,7 +1544,7 @@ mod tests {
 
         // The earlier checkpoint is a prefix of the later one.
         let proof = consistency_proof(
-            &state.node_store,
+            &independent_mmr(dir.path()),
             first.checkpoint.mmr_size,
             second.checkpoint.mmr_size,
         )
@@ -1617,8 +1589,15 @@ mod tests {
         // offered once (it fails against the unreachable URL and stays queued).
         assert!(state.tick(&signer(), &anchor).unwrap().is_none());
         assert!(!state.witness_deferred);
-        assert_eq!(state.pending_witness_urls, vec!["http://127.0.0.1:1".to_string()]);
-        assert_eq!(checkpoint_lines(dir.path()), 1, "the tick must not cut a second checkpoint");
+        assert_eq!(
+            state.pending_witness_urls,
+            vec!["http://127.0.0.1:1".to_string()]
+        );
+        assert_eq!(
+            checkpoint_lines(dir.path()),
+            1,
+            "the tick must not cut a second checkpoint"
+        );
     }
 
     #[test]
@@ -1635,7 +1614,9 @@ mod tests {
         let (mut reopened, _) =
             CheckpointState::load(dir.path(), "test-log", CheckpointCadenceConfig::default())
                 .unwrap();
-        let coverage = reopened.checkpoint_covering(&one, &signer(), &anchor).unwrap();
+        let coverage = reopened
+            .checkpoint_covering(&one, &signer(), &anchor)
+            .unwrap();
         assert!(!coverage.cut_new);
         assert_covers(&coverage, &one);
         assert_eq!(checkpoint_lines(dir.path()), 1);
@@ -1662,7 +1643,9 @@ mod tests {
 
         let fresh = write_capsule(dir.path(), "fresh");
         let anchor = AnchorClient::new("http://127.0.0.1:1");
-        let coverage = state.checkpoint_covering(&fresh, &signer(), &anchor).unwrap();
+        let coverage = state
+            .checkpoint_covering(&fresh, &signer(), &anchor)
+            .unwrap();
         assert_eq!(coverage.leaf_index, 50);
         assert_covers(&coverage, &fresh);
     }
@@ -1680,7 +1663,10 @@ mod tests {
         let line = serde_json::to_string(&json!({"capsule_id": id})).unwrap();
         let path = dir.path().join("capsules.jsonl");
         let (head, tail) = line.split_at(10);
-        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         write!(f, "{head}").unwrap();
         assert_eq!(state.sync().unwrap(), 0, "a torn tail is not folded");
         writeln!(f, "{tail}").unwrap();
