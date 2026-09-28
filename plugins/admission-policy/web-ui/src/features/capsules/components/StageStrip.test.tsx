@@ -34,6 +34,11 @@ describe('StageStrip', () => {
     expect(screen.getByText('request: completed')).toBeInTheDocument()
   })
 
+  it("says on its face that each stage's node is the coordinator's word", () => {
+    render(<StageStrip split={requesterRow('relayed_all_agree')} />)
+    expect(screen.getByText('per coordinator:')).toBeInTheDocument()
+  })
+
   it('says not received and gap for a missing stage, never agree', () => {
     render(<StageStrip split={requesterRow('missing_end_absent')} />)
     expect(screen.getByText(/not received/)).toBeInTheDocument()

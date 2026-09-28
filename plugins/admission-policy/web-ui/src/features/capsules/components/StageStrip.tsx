@@ -32,6 +32,11 @@ export function StageStrip({ split }: { split: SplitRowJson }) {
     >
       <p className="text-fg-dim">{view.headline}</p>
       <p className="inline-flex flex-wrap items-center gap-x-2 text-foreground">
+        {/* Each cell's node is the coordinator's assignment, not a node the
+            stage record itself is linked to: the strip says so on its face. */}
+        <span className="text-fg-faint" data-stage-cells-source="coordinator">
+          per coordinator:
+        </span>
         {view.cells.map((cell, i) => (
           <span data-stage-cell={cell.state} key={cell.stageIndex} title={cell.words}>
             {i > 0 ? <span className="text-fg-faint">· </span> : null}
