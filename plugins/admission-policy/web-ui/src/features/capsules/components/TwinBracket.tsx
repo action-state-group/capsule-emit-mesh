@@ -150,7 +150,9 @@ export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, childr
           </p>
         ) : (
           <p className="type-caption flex flex-wrap items-center gap-x-2 text-fg-faint">
-            <span>Referee's signed verdict: {capsuleId ? `${capsuleId.slice(0, 12)}…` : 'id not recorded'}</span>
+            {/* Not "signed": the signature is checked only when the record is
+               opened (View the verdict), so the line doesn't claim it. */}
+            <span>Referee's verdict: {capsuleId ? `${capsuleId.slice(0, 12)}…` : 'id not recorded'}</span>
             {capsuleId ? (
               <>
                 <button

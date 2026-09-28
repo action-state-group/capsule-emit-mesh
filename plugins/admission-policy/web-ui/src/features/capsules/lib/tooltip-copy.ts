@@ -168,7 +168,7 @@ export const TWIN_TOOLTIPS = {
   same: 'The two machines’ answers have the same fingerprint, compared by this node. That is not a verdict.',
   different: 'The two machines’ answers have different fingerprints, compared by this node. That alone doesn’t say which is wrong.',
   not_compared: 'Not compared yet: one of the two answers’ fingerprints hasn’t reached this node.',
-  verdict: 'A referee’s signed verdict on this pair. Open it to see whether its signature checks on this node.',
+  verdict: 'A referee’s verdict on this pair, as this node recorded it. Open it to see whether the referee’s signature checks here.',
   parameters: 'The settings both machines were asked to use; a difference here can explain a different answer.',
   compare: 'Show the two answers side by side. This page doesn’t judge them.',
   save: 'Download both records of this side-by-side check as a file.'
@@ -176,8 +176,8 @@ export const TWIN_TOOLTIPS = {
 
 /** The side-by-side check's verdict badge, per ruling the referee sealed. */
 export const TWIN_VERDICT_TOOLTIPS = {
-  corroborated: 'A referee compared the two answers, found they agree, and signed that verdict. Open it to see whether its signature checks here.',
-  contradicted: 'A referee compared the two answers, found one wrong, and signed that verdict. Open it to see whether its signature checks here.',
+  corroborated: 'A referee’s verdict, as this node recorded it: the two answers agree. Open it to see whether the referee’s signature checks here.',
+  contradicted: 'A referee’s verdict, as this node recorded it: one answer is wrong. Open it to see whether the referee’s signature checks here.',
   inconclusive: 'A referee compared the two answers and couldn’t decide between them. That is not a disagreement.',
   not_comparable: 'The two answers were sampled, so a referee can’t compare them. This is never a disagreement.'
 } as const

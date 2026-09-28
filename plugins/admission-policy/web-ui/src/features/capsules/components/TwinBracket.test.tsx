@@ -154,6 +154,10 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
     expect(screen.queryByText('no verdict')).not.toBeInTheDocument()
     expect(screen.getByText(/a9a0ca668223/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'View the verdict' })).toBeInTheDocument()
+    // The signature is checked only when the record is opened, so the face
+    // never calls the verdict signed.
+    expect(screen.getByText(/Referee's verdict: a9a0ca668223/)).toBeInTheDocument()
+    expect(screen.getByTestId('twin-bracket-twin-xyz').textContent).not.toMatch(/signed verdict/)
   })
 
   it('a not-comparable ruling is a verdict, shown as not comparable, never as no verdict or a disagreement', () => {
