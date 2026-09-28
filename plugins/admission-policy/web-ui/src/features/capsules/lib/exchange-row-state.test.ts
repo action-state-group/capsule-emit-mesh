@@ -225,6 +225,13 @@ describe('deriveRightCellState — the ONE gate: pushed and fetched halves take 
     expect(deriveRightCellState(paneCRow(), fetched({ peerRecord }), localRecordWithDigests()).kind).toBe('contradicted')
   })
 
+  it('a PUSHED half from a node that did not serve us never contradicts: junk digests or a bad id stay OPEN', () => {
+    const theirs = fixtureTheirsCell('disagrees')
+    const record = fixtureHalfBody({ capsuleId: theirs.capsule_id ?? undefined, responseDigest: 'e'.repeat(64), servedBy: 'd'.repeat(64) })
+    expect(deriveRightCellState(pushedRow({ ...theirs, record })).kind).toBe('open_not_held')
+    expect(deriveRightCellState(pushedRow({ ...theirs, record, id_match: false })).kind).toBe('open_not_held')
+  })
+
   it('the fetch path takes the SAME predicate: a different provider -> not CLOSED', () => {
     const peerRecord = fixtureHalfBody({ capsuleId: 'a'.repeat(64), servedBy: 'd'.repeat(64) })
     expect(deriveRightCellState(paneCRow(), fetched({ peerRecord }), localRecordWithDigests()).kind).toBe('open_not_held')

@@ -637,8 +637,8 @@ fn digest_match_state(mine: &Value, theirs: &Value) -> &'static str {
 /// both halves of each real exchange agreed. Here each
 /// received half closes at most ONE own record: first an unpaired one whose
 /// response digest also matches; only a half that matches none of them is set
-/// against a leftover own record, which is a real disagreement and still
-/// renders CONTRADICTED. Own records and halves left over stand alone.
+/// against a leftover own record naming the same serving node, which is a
+/// real disagreement and still renders CONTRADICTED. Own records and halves left over stand alone.
 /// Order: own records in ledger order, then the halves that paired with none.
 fn pair_one_to_one<'a>(
     own: &[&'a Value],
@@ -659,7 +659,7 @@ fn pair_one_to_one<'a>(
     }
     let mut unmatched: Vec<&'a Value> = Vec::new();
     for half in leftover {
-        match (0..own.len()).find(|&i| theirs_for[i].is_none()) {
+        match (0..own.len()).find(|&i| theirs_for[i].is_none() && same_provider(own[i], half)) {
             Some(i) => theirs_for[i] = Some(half),
             None => unmatched.push(half),
         }
@@ -671,6 +671,20 @@ fn pair_one_to_one<'a>(
         .collect();
     pairs.extend(unmatched.into_iter().map(|half| (None, Some(half))));
     pairs
+}
+
+/// Both records name the same serving node. A half that answers none of our
+/// records is set against one only when it comes from the node that served
+/// it: a half from any other node is not a disagreement about our exchange.
+fn same_provider(mine: &Value, theirs: &Value) -> bool {
+    let served_by = |record: &Value| {
+        poc_block(record)
+            .and_then(|poc| poc.pointer("/serving_provenance/served_by_node_id"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty() && *s != "unknown")
+            .map(str::to_string)
+    };
+    served_by(mine).is_some_and(|node| served_by(theirs).as_deref() == Some(node.as_str()))
 }
 
 fn is_received_record(
@@ -3383,6 +3397,40 @@ mod tests {
         let row = &pane["rows"][0];
         assert_eq!(row["unilateral"], json!(false)); // both halves present...
         assert_eq!(row["digest_match"]["state"], json!(STATE_FAILED)); // ...but they disagree.
+    }
+
+    /// A signed half from a node that did not serve our exchange, carrying
+    /// our request digest and a junk response, is never set against our
+    /// record: no failed match, our row stays as it was. MUTANT: pair
+    /// leftovers regardless of provider and the row reads FAILED.
+    #[test]
+    fn a_half_from_a_node_that_did_not_serve_us_never_contradicts_our_row() {
+        let provider = format!("c1f5{}", "5".repeat(60));
+        let other = format!("b0b0{}", "4".repeat(60));
+        let local = mesh_half_served_by(
+            "a".repeat(64).as_str(), "requested", "d".repeat(64).as_str(),
+            "e".repeat(64).as_str(), "me-1", &provider,
+        );
+        let junk = mesh_half_served_by(
+            "b".repeat(64).as_str(), "served", "d".repeat(64).as_str(),
+            "f".repeat(64).as_str(), "them-1", &other,
+        );
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for("b".repeat(64).as_str(), "e5ba9d1001")].into_iter().collect();
+
+        let pane = build_pane_c_list(&[local.clone(), junk.clone()], &provenance);
+        let rows = pane["rows"].as_array().unwrap();
+        assert!(rows.iter().all(|r| r["digest_match"]["state"] != json!(STATE_FAILED)));
+        let ours = rows.iter().find(|r| r["mine"]["capsule_id"] == json!("a".repeat(64))).expect("our row");
+        assert_eq!(ours["unilateral"], json!(true));
+
+        // The same half from the provider is a real disagreement.
+        let from_provider = mesh_half_served_by(
+            "b".repeat(64).as_str(), "served", "d".repeat(64).as_str(),
+            "f".repeat(64).as_str(), "them-1", &provider,
+        );
+        let pane = build_pane_c_list(&[local, from_provider], &provenance);
+        assert_eq!(pane["rows"][0]["digest_match"]["state"], json!(STATE_FAILED));
     }
 
     /// A minimal CITING record our

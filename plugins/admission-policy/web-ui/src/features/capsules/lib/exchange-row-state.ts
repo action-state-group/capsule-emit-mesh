@@ -60,7 +60,8 @@ const EVIDENCE_OUTCOME_TO_KIND: Record<string, RightCellStateKind> = {
  * key, the body recomputes to its `capsule_id`, both `effect` digests equal
  * ours (§6.2/L-G), and the provider check (`providerMatches`, provisional).
  * CONTRADICTED: the body does not recompute to its id, or both sides carry
- * real digests that differ. Anything else -- not recomputed yet, unsigned,
+ * real digests that differ. A PUSHED half from a node that did not serve the
+ * exchange is never CONTRADICTED (any peer can push). Anything else -- not recomputed yet, unsigned,
  * a missing digest, a different or unnamed provider -- stays OPEN
  * (`open_not_held`): never a verdict we did not check.
  *
@@ -160,18 +161,24 @@ export function pushedHalfRecompute(row: PaneCRow): PeerRecomputeState | null {
  *  ours, and it came from the provider (`providerMatches`). */
 function counterpartyHalfState(
   evidence: PeerRecomputeState,
-  localRecord: CapsuleRecord | null | undefined
+  localRecord: CapsuleRecord | null | undefined,
+  source: 'fetched' | 'pushed'
 ): RightCellStateKind {
   // Recompute not run / could not run: inconclusive, never a verdict.
   if (evidence.idMatch === null) return 'open_not_held'
+  const fromProvider = providerMatches(localRecord, evidence.peerRecord)
+  // Any peer can push a half. One from a node that did not serve this
+  // exchange says nothing about it: never a contradiction, never a close. A
+  // fetched half came from the peer this browser asked.
+  if (source === 'pushed' && !fromProvider) return 'open_not_held'
   // The peer's own bytes don't produce the id claimed for them.
   if (!evidence.idMatch) return 'contradicted'
   // Unauthenticated bytes prove nothing either way.
   if (evidence.signatureOk !== true) return 'open_not_held'
+  if (!fromProvider) return 'open_not_held'
   if (digestsDisagree(localRecord, evidence.peerRecord)) return 'contradicted'
-  if (digestsCiteOurHalf(localRecord, evidence.peerRecord) && providerMatches(localRecord, evidence.peerRecord)) {
-    return 'closed'
-  }
+  if (digestsCiteOurHalf(localRecord, evidence.peerRecord)) return 'closed'
+
   return 'open_not_held'
 }
 
@@ -212,10 +219,11 @@ export function deriveRightCellState(
   // the pushed half the pane correlated from our citing record. Our half is
   // the caller's record when supplied, else the body the pane sent with the
   // pair.
-  const evidence = theirsRecompute?.status === 'found' ? theirsRecompute : pushedHalfRecompute(row)
+  const fetchedHalf = theirsRecompute?.status === 'found' ? theirsRecompute : null
+  const evidence = fetchedHalf ?? pushedHalfRecompute(row)
   if (evidence) {
     const ours = localRecord ?? (row.mine.record as CapsuleRecord | undefined) ?? null
-    return { kind: counterpartyHalfState(evidence, ours), date: null }
+    return { kind: counterpartyHalfState(evidence, ours, fetchedHalf ? 'fetched' : 'pushed'), date: null }
   }
 
   // No confirmed fetch yet. A peer id is "known but not fetched" (fetchable)
