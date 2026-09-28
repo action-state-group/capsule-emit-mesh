@@ -169,12 +169,14 @@ describe('buildExchangeLedgerRows', () => {
     expect(row.rightCellState.kind).toBe('open_not_asked')
   })
 
-  it('the Pane B pair join outranks the row field; the door sender is the last resort', () => {
+  it("the row's own counterparty outranks the Pane B pair join; the door sender is the last resort", () => {
     const index = new Map([['exch-1', 'node:from-pane-b']])
-    const [joined] = buildExchangeLedgerRows(
+    const [own] = buildExchangeLedgerRows(
       [paneCRow({ exchange_key: 'exch-1', counterparty: 'key:from-row' })],
       index
     )
+    expect(own.counterparty).toBe('key:from-row')
+    const [joined] = buildExchangeLedgerRows([paneCRow({ exchange_key: 'exch-1', counterparty: null })], index)
     expect(joined.counterparty).toBe('node:from-pane-b')
 
     const [doorFallback] = buildExchangeLedgerRows(
@@ -187,6 +189,28 @@ describe('buildExchangeLedgerRows', () => {
       new Map()
     )
     expect(doorFallback.counterparty).toBe('e5ba9d1001')
+  })
+
+  it('a twin pair: two rows sharing one exchange key each name their own provider (Phase C finding)', () => {
+    // Both providers' Peers rows list the shared digest; the old order let the
+    // index (last writer wins) label BOTH rows as one provider.
+    const index = new Map([['digest:twin', 'key:provider-a']])
+    const rows = buildExchangeLedgerRows(
+      [
+        paneCRow({ exchange_key: 'digest:twin', counterparty: 'key:provider-a' }),
+        paneCRow({ exchange_key: 'digest:twin#2', counterparty: 'key:provider-b' })
+      ],
+      index
+    )
+    expect(rows.map((r) => r.counterparty)).toEqual(['key:provider-a', 'key:provider-b'])
+    const sameKey = buildExchangeLedgerRows(
+      [
+        paneCRow({ exchange_key: 'digest:twin', counterparty: 'key:provider-a' }),
+        paneCRow({ exchange_key: 'digest:twin', counterparty: 'key:provider-b' })
+      ],
+      index
+    )
+    expect(sameKey.map((r) => r.counterparty)).toEqual(['key:provider-a', 'key:provider-b'])
   })
 })
 
@@ -215,6 +239,25 @@ describe('buildExchangeCounterpartyIndex', () => {
     const index = buildExchangeCounterpartyIndex([peer])
     expect(index.get('exch-a')).toBe('node:peer-a')
     expect(index.has('exch-nonexistent')).toBe(false)
+  })
+
+  it('an exchange id two peers both list (a twin pair) names neither', () => {
+    const peer = (peer_id: string): PaneBRow => ({
+      peer_id,
+      node: { state: 'present' },
+      rung: { state: 'present' },
+      role: { state: 'present' },
+      history: { state: 'NOT_CHECKED' },
+      served: { state: 'NOT_CHECKED' },
+      pair: { state: 'verified', verified: 1, failed: 0, missing: 0, details: [{ exchange_id: 'digest:twin', state: 'verified' }] },
+      verdicts: { state: 'NOT_CHECKED' },
+      asked: { state: 'absent' },
+      exchange_count: 1,
+      first_seen: null,
+      last_seen: null
+    })
+    const index = buildExchangeCounterpartyIndex([peer('key:provider-a'), peer('key:provider-b')])
+    expect(index.has('digest:twin')).toBe(false)
   })
 
   it('ADVERSARIAL: an unattributed Pane B row (no peer_id, no node.peer_id) contributes no entries — never "unknown peer"', () => {

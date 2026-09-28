@@ -55,13 +55,20 @@ export type ExchangeLedgerRow = {
  *  below reads as `counterparty: null`, never a synthetic placeholder. */
 export function buildExchangeCounterpartyIndex(paneBRows: readonly PaneBRow[]): Map<string, string> {
   const index = new Map<string, string>()
+  // An id two peers both list (a twin pair: one prompt, two providers,
+  // one shared request digest) names neither: it is dropped, never "the
+  // last peer written wins".
+  const claimedTwice = new Set<string>()
   for (const row of paneBRows) {
     const displayId = peerDisplayId(row)
     if (displayId === null) continue
     for (const exchangeId of peerExchangeIds(row)) {
+      const already = index.get(exchangeId)
+      if (already !== undefined && already !== displayId) claimedTwice.add(exchangeId)
       index.set(exchangeId, displayId)
     }
   }
+  for (const exchangeId of claimedTwice) index.delete(exchangeId)
   return index
 }
 
@@ -100,13 +107,13 @@ export function buildExchangeLedgerRows(
       exchangeKey: row.exchange_key,
       timestamp: row.timestamp,
       roleTag: row.role_tag,
-      // Prefer the Pane B pair-reconciliation join; then the row's own
-      // `counterparty` (the native pane's peer attribution -- names the
-      // server a requester-side row routed to, and uses the SAME row key as
-      // the Peers table, D4(a));
-      // last, the sender the record-push door recorded for a locally-held
-      // counterparty half (older payloads without the row field).
-      counterparty: counterpartyIndex.get(row.exchange_key) ?? row.counterparty ?? pushedHalfCounterparty(row),
+      // The row's own `counterparty` first (the pane's per-record peer
+      // attribution -- names the server THIS row routed to, with the SAME
+      // row key as the Peers table, D4(a); a twin pair's two rows share an
+      // exchange key but not a counterparty); then the Pane B
+      // pair-reconciliation join; last, the sender the record-push door
+      // recorded for a locally-held counterparty half (older payloads).
+      counterparty: row.counterparty ?? counterpartyIndex.get(row.exchange_key) ?? pushedHalfCounterparty(row),
       // Derived from the ONE gate -- `closed` is the only state where their
       // half is held, signed, and cites ours. The retired structural read
       // (`theirs.state !== 'absent' && !unilateral`) was a dormant second
