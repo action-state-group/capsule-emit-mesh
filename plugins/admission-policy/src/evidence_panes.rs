@@ -3108,6 +3108,23 @@ mod tests {
         assert_ne!(row["identity"]["node_id"], json!(node_h), "never H's id on M's row");
         assert_ne!(row["identity"]["node_id_source"], json!("your_records"));
 
+        // M's half claiming H as its server, but the door recorded M as its
+        // sender: the sender our records name wins; never H.
+        let lying_m = with_key(
+            mesh_half_served_by(
+                "b".repeat(64).as_str(), "served", "d".repeat(64).as_str(),
+                "e".repeat(64).as_str(), "them-1", &node_h,
+            ),
+            m_key,
+        );
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_with_node("b".repeat(64).as_str(), "e5ba9d1001", &node_m)].into_iter().collect();
+        let pane = build_pane_b(&[asked_h.clone(), lying_m], &provenance);
+        let row = pane["rows"].as_array().unwrap().iter()
+            .find(|r| r["peer_id"] == json!("key:71eb26f8e583ccc9")).expect("M's row");
+        assert_eq!(row["identity"]["node_id"], json!(node_m));
+        assert_eq!(row["identity"]["node_id_source"], json!("your_records"));
+
         // H's own half, received from H, does take the routed node.
         let pushed_h = with_key(
             mesh_half_served_by(
