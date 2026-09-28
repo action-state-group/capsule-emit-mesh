@@ -1445,6 +1445,24 @@ pub struct LocalRoutingChoice<'a> {
     /// When a block lapses (RFC 3339), or `None` for "until I undo" and for
     /// every unblock.
     pub until: Option<&'a str>,
+    /// Set when an operator rule, not a person at the console, asked for this
+    /// block: the rule and the verdicts that met it.
+    pub rule: Option<&'a RoutingRuleCitation<'a>>,
+}
+
+/// The operator rule behind a block, and the referee-signed verdicts that met
+/// it. The record cites each verdict by `sha256(salt || verdict capsule id)`
+/// under the same salt as the peer: the verdicts name the peer, so citing
+/// them in clear would tell any asker who was blocked.
+#[derive(Debug, Clone, Copy)]
+pub struct RoutingRuleCitation<'a> {
+    /// The rule's name, e.g. `stop_routing_after_contradictions`.
+    pub rule: &'a str,
+    /// N: contradictions that fire the rule.
+    pub after: u32,
+    /// D: the window, in days, they must fall in.
+    pub window_days: u32,
+    pub verdict_capsule_ids: &'a [String],
 }
 
 /// `sha256(salt || peer_id)`, lowercase hex, where `peer_id` is the endpoint id
@@ -1510,6 +1528,16 @@ pub fn seal_local_routing_choice(
                     "requested_via": "host_local_api",
                     "until": choice.until.map(committed_time),
                     "scope": "this_node_only",
+                    "rule": choice.rule.map(|rule| json!({
+                        "rule": rule.rule,
+                        "after": rule.after,
+                        "window_days": rule.window_days,
+                        "verdict_commitments": rule
+                            .verdict_capsule_ids
+                            .iter()
+                            .map(|id| json!({"alg": "SHA-256", "digest": peer_commitment(id, choice.salt)}))
+                            .collect::<Vec<_>>(),
+                    })),
                 },
                 STORE_NONCE_FIELD: fresh_store_nonce(),
             },
@@ -2595,6 +2623,7 @@ mod tests {
             peer_id: &peer,
             salt: &salt,
             until: Some("2026-10-04T00:00:00Z"),
+            rule: None,
         };
         let head = "c".repeat(64);
         let capsule = seal_local_routing_choice(&choice, Some(&head), &key.signing_key).unwrap();
@@ -2620,6 +2649,46 @@ mod tests {
         assert!(capsule.get("signature").is_some());
     }
 
+    /// A block an operator rule asked for names the rule and cites its
+    /// verdicts, but only by commitment under the record's salt: the verdicts
+    /// name the peer, so no verdict id appears in the sealed bytes either.
+    #[test]
+    fn a_rule_block_cites_its_verdicts_only_by_commitment() {
+        let key = crate::keys::KeyPair::generate();
+        let peer = "a70d3967bea3b22f".repeat(4);
+        let salt = [7u8; 32];
+        let verdicts = vec!["1".repeat(64), "2".repeat(64)];
+        let rule = RoutingRuleCitation {
+            rule: "stop_routing_after_contradictions",
+            after: 2,
+            window_days: 30,
+            verdict_capsule_ids: &verdicts,
+        };
+        let choice = LocalRoutingChoice {
+            change: RoutingChoiceChange::Block,
+            peer_id: &peer,
+            salt: &salt,
+            until: None,
+            rule: Some(&rule),
+        };
+        let capsule = seal_local_routing_choice(&choice, None, &key.signing_key).unwrap();
+        let fact = &capsule["model_attestation"]["compute_attestation"]["local_routing_choice"];
+        assert_eq!(fact["rule"]["rule"], json!("stop_routing_after_contradictions"));
+        assert_eq!(fact["rule"]["after"], json!(2));
+        assert_eq!(fact["rule"]["window_days"], json!(30));
+        assert_eq!(
+            fact["rule"]["verdict_commitments"][1]["digest"],
+            json!(peer_commitment(&verdicts[1], &salt))
+        );
+        let sealed = serde_json::to_string(&capsule).unwrap();
+        assert!(verdicts.iter().all(|id| !sealed.contains(id.as_str())));
+        assert!(!sealed.contains(&peer));
+
+        let manual = LocalRoutingChoice { rule: None, ..choice };
+        let capsule = seal_local_routing_choice(&manual, None, &key.signing_key).unwrap();
+        assert_eq!(capsule["model_attestation"]["compute_attestation"]["local_routing_choice"]["rule"], Value::Null);
+    }
+
     /// A routing-choice record takes the same seal path as every other record
     /// (Evidence Layer -00 §12.1): a fresh 256-bit store nonce, and committed
     /// times (the record timestamp and the block's `until`) truncated to the
@@ -2634,6 +2703,7 @@ mod tests {
             peer_id: &peer,
             salt: &salt,
             until: Some("2026-10-04T00:00:37.250Z"),
+            rule: None,
         };
         let first = seal_local_routing_choice(&choice, None, &key.signing_key).unwrap();
         let second = seal_local_routing_choice(&choice, None, &key.signing_key).unwrap();
@@ -2695,6 +2765,7 @@ mod tests {
             peer_id: &peer,
             salt: &[3u8; 32],
             until: None,
+            rule: None,
         };
         let capsule = seal_local_routing_choice(&choice, None, &key.signing_key).unwrap();
         assert!(capsule.get("chain").is_none());

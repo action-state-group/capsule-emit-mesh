@@ -16,6 +16,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "capsule-producer",
+ "chrono",
  "ed25519-dalek",
  "hex",
  "mesh-llm-plugin",
