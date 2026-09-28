@@ -364,6 +364,7 @@ def fetch_verdicts_about_peer(
         "references_answered": getattr(result, "references_answered", 0),
         "candidates_discovered": getattr(result, "candidates_discovered", 0),
         "unreachable_references": getattr(result, "unreachable_references", 0),
+        "selection": getattr(result, "selection", {}),
     }
 
 

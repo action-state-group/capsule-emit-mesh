@@ -127,13 +127,16 @@ def stub_witness(monkeypatch):
     thread.join(timeout=5)
 
 
-def _node_state(tmp_path, name: str):
+def _node_state(tmp_path, name: str, *, ts_url: str | None = None):
+    """``ts_url`` registers every checkpoint with that (stub) witness; without
+    it the node self-checkpoints only."""
     manifest_path = tmp_path / f"{name}-manifest.json"
     manifest_path.write_text(
         json.dumps({"model_id": "m/1", "source_model": {"sha256": "e" * 64, "canonical_ref": "m/1"}, "skippy_abi_version": "1"})
     )
     checkpoint_config_path = tmp_path / f"{name}-checkpoint.toml"
-    checkpoint_config_path.write_text(f'[checkpoint]\nlog_id = "{name}"\ncadence_entries = 1\n')
+    ts_urls = f'ts_urls = ["{ts_url}"]\n' if ts_url else ""
+    checkpoint_config_path.write_text(f'[checkpoint]\nlog_id = "{name}"\ncadence_entries = 1\n{ts_urls}')
     return cs.default_state(
         ledger_dir=tmp_path / f"{name}-ledger",
         manifest_path=manifest_path,
@@ -205,7 +208,7 @@ def _seed(state, capsule: dict) -> None:
     state.log_source.append(capsule)
 
 
-def _build_gcp_caught_by_m4(tmp_path, *, prune_seq_1: bool = False):
+def _build_gcp_caught_by_m4(tmp_path, *, prune_seq_1: bool = False, ts_url: str | None = None):
     """Build GCP's ledger (an ordinary served exchange with M4, seq=1 then
     seq=2 -- or just seq=2 when *prune_seq_1*, simulating GCP dropping the
     earlier record) and M4's ledger (the adjudication `contradicted:gcp`
@@ -213,8 +216,8 @@ def _build_gcp_caught_by_m4(tmp_path, *, prune_seq_1: bool = False):
     ``(gcp_state, m4_state, gcp_cids)``.
     """
     tmp_path.mkdir(parents=True, exist_ok=True)
-    gcp_state = _node_state(tmp_path, "gcp")
-    m4_state = _node_state(tmp_path, "m4")
+    gcp_state = _node_state(tmp_path, "gcp", ts_url=ts_url)
+    m4_state = _node_state(tmp_path, "m4", ts_url=ts_url)
 
     cap_b, _disc_b = _make_served_half("goodbye world", owner_id="gcp")
     _seed(gcp_state, cap_b)
@@ -282,24 +285,49 @@ def _run_server(state) -> tuple:
 # ---------------------------------------------------------------------------
 
 
+#: Cross-implementation vector for the sample ranking. ``expected`` was
+#: computed with coreutils, not Python:
+#:   for c in m4 aws azure gcp-2 edge-7 lab-3; do
+#:     printf '%s %s\n' "$(printf '%s:%s' "$SEED" "$c" | shasum -a 256 | cut -d' ' -f1)" "$c"
+#:   done | sort
+#: ``node_id_ranking`` is the same pipeline keyed on the subject id "gcp" --
+#: the old, subject-predictable seed. ``candidates_digest`` is
+#: ``printf '["aws","azure","edge-7","gcp-2","lab-3","m4"]' | shasum -a 256``.
+SAMPLE_VECTOR = {
+    "seed": "3b1f0c9e5a7d2468ace0f13579bdf02468ace13579bdf02468ace13579bdf024",
+    "candidates": ["m4", "aws", "azure", "gcp-2", "edge-7", "lab-3"],
+    "expected": ["gcp-2", "m4", "edge-7", "lab-3", "aws", "azure"],
+    "node_id_ranking": ["aws", "lab-3", "m4", "edge-7", "azure", "gcp-2"],
+    "candidates_digest": "1ce65631ac4cdaefff4699243eba8406c0b17746eb0093e37c81960072fc7b19",
+}
+
+
+def test_sample_ranking_matches_the_coreutils_vector():
+    v = SAMPLE_VECTOR
+    assert ah.sample_reference_candidates(v["candidates"], seed=v["seed"], k=6) == v["expected"]
+    assert ah.sample_reference_candidates(v["candidates"], seed=v["seed"], k=3) == v["expected"][:3]
+    assert ah.candidates_digest(v["candidates"]) == v["candidates_digest"]
+
+
+def test_sample_is_not_the_subjects_own_predictable_ranking():
+    """The bug: seeded by the subject's node id, X computes its own sample
+    before writing a record. The witnessed-root sample is a different one."""
+    v = SAMPLE_VECTOR
+    assert ah.sample_reference_candidates(v["candidates"], seed=v["seed"], k=3) != v["node_id_ranking"][:3]
+
+
 def test_sample_reference_candidates_is_deterministic_and_capped():
     candidates = ["m4", "gcp-2", "aws", "azure"]
-    a = ah.sample_reference_candidates(candidates, subject_node_id="gcp", k=2)
-    b = ah.sample_reference_candidates(list(reversed(candidates)), subject_node_id="gcp", k=2)
+    a = ah.sample_reference_candidates(candidates, seed="ab" * 32, k=2)
+    b = ah.sample_reference_candidates(list(reversed(candidates)), seed="ab" * 32, k=2)
     assert a == b
     assert len(a) == 2
     assert set(a) <= set(candidates)
 
 
-def test_sample_reference_candidates_depends_only_on_subject_not_asker():
-    candidates = ["m4", "aws"]
-    as_asker_one = ah.sample_reference_candidates(candidates, subject_node_id="gcp", k=5)
-    as_asker_two = ah.sample_reference_candidates(candidates, subject_node_id="gcp", k=5)
-    assert as_asker_one == as_asker_two
-    different_subject = ah.sample_reference_candidates(candidates, subject_node_id="aws", k=5)
-    # Not required to differ, but the seed is provably subject-only: same
-    # subject, same result, regardless of anything about who is calling.
-    assert isinstance(different_subject, list)
+def test_sample_reference_candidates_has_no_subject_seed():
+    with pytest.raises(TypeError):
+        ah.sample_reference_candidates(["m4"], subject_node_id="gcp", k=1)
 
 
 def test_discover_counterparties_reads_nested_and_top_level_fields():
@@ -349,7 +377,7 @@ def test_classify_receipt_only_attributes_owner_naming_verdicts_to_x():
 
 class TestReferencesEndToEnd:
     def test_stranger_gets_m4s_verdict_and_held_refusal_about_gcp(self, tmp_path, stub_witness):
-        gcp_state, m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path)
+        gcp_state, m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path, ts_url=stub_witness)
 
         gcp_server, gcp_thread, gcp_url = _run_server(gcp_state)
         m4_server, m4_thread, m4_url = _run_server(m4_state)
@@ -372,6 +400,18 @@ class TestReferencesEndToEnd:
         assert result.references_answered == 1
         assert result.unreachable_references == []
         assert result.adjudications_about_x == {"corroborated": 0, "contradicted": 1, "inconclusive": 0}
+
+        # The sample was seeded by a checkpoint root of GCP's own log whose
+        # witness receipt re-verifies -- recorded so anyone can recompute it.
+        selection = result.selection
+        assert selection["method"] == "seeded"
+        seed = selection["seed"]
+        assert seed["source"] == "witnessed_checkpoint"
+        assert seed["log_id"] == "gcp"
+        assert seed["ts_url"] == stub_witness
+        assert seed["root"] == gcp_state.checkpoint.last_checkpoint.root
+        assert selection["candidates_digest"] == ah.candidates_digest(["m4"])
+        assert ah.sample_reference_candidates(["m4"], seed=seed["root"], k=3) == ["m4"]
         assert result.ack_refusals_about_x == 1
 
         pair = result.continuity["gcp::m4"]
@@ -403,7 +443,7 @@ class TestReferencesEndToEnd:
             assert "adjudication_ack_refused" not in block
 
     def test_unreachable_reference_is_counted_not_raised(self, tmp_path, stub_witness):
-        gcp_state, _m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path)
+        gcp_state, _m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path, ts_url=stub_witness)
         gcp_server, gcp_thread, gcp_url = _run_server(gcp_state)
         try:
             result = ah.run_references(
@@ -421,6 +461,63 @@ class TestReferencesEndToEnd:
         assert result.references_answered == 0
         assert result.unreachable_references == ["m4"]
         assert result.adjudications_about_x == {"corroborated": 0, "contradicted": 0, "inconclusive": 0}
+
+    def test_no_witnessed_checkpoint_draws_no_sample(self, tmp_path, stub_witness, monkeypatch):
+        """GCP's checkpoints carry receipts, but from a witness whose key the
+        asker has not pinned: nothing re-verifies as WITNESSED. The old code
+        sampled anyway, seeded by GCP's own node id; now nobody is asked and
+        the result says why."""
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+        gcp_state, m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path, ts_url=stub_witness)
+        other_key = Ed25519PrivateKey.generate().public_key().public_bytes(
+            Encoding.PEM, PublicFormat.SubjectPublicKeyInfo
+        )
+        monkeypatch.setattr(checkpoint_emit_mod, "DEFAULT_TS_PUBLIC_KEY_PEM", other_key)
+
+        gcp_server, gcp_thread, gcp_url = _run_server(gcp_state)
+        m4_server, m4_thread, m4_url = _run_server(m4_state)
+        try:
+            result = ah.run_references(
+                gcp_url,
+                x_node_id="gcp",
+                x_selector=f"{gcp_cids[0]}..{gcp_cids[-1]}",
+                peer_map={"m4": m4_url},
+                k=3,
+            )
+        finally:
+            gcp_server.shutdown()
+            m4_server.shutdown()
+            gcp_thread.join(timeout=5)
+            m4_thread.join(timeout=5)
+
+        assert result.references_asked == 0
+        assert result.references_answered == 0
+        assert result.selection["method"] == "not_sampled"
+        assert "witnessed" in result.selection["reason"]
+        assert "sample: none drawn" in ah.render_references_result(result)
+
+    def test_self_checkpointed_x_draws_no_sample(self, tmp_path, stub_witness):
+        """X checkpoints but never registers with a witness. Its node id is
+        still known, and the old code sampled from it; now nobody is asked."""
+        gcp_state, m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path)
+        gcp_server, gcp_thread, gcp_url = _run_server(gcp_state)
+        try:
+            result = ah.run_references(
+                gcp_url,
+                x_node_id="gcp",
+                x_selector=f"{gcp_cids[0]}..{gcp_cids[-1]}",
+                peer_map={"m4": "http://127.0.0.1:9"},
+                k=3,
+            )
+        finally:
+            gcp_server.shutdown()
+            gcp_thread.join(timeout=5)
+
+        assert result.candidates_discovered == 1
+        assert result.references_asked == 0
+        assert result.selection["method"] == "not_sampled"
 
     def test_x_refuses_its_own_pull_raises(self, tmp_path, stub_witness):
         gcp_state = _node_state(tmp_path, "gcp")

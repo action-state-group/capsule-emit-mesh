@@ -69,8 +69,8 @@ mechanism 1: how a STRANGER finds a verdict about node ``X`` that ``X``
 itself won't hold (a pruned/declined record never reaches ``X``'s own
 chain -- see ``adjudication_delivery.seal_adjudication_ack_refused``), with
 no new trusted party. ``peer`` is ``X``'s own evidence door; ``--x-node-id``
-is ``X``'s stable identity (the ``value`` a ``correlation`` ask names, and
-the seed for deterministic sampling); ``--x-selector`` names which of
+is ``X``'s stable identity (the ``value`` a ``correlation`` ask names);
+``--x-selector`` names which of
 ``X``'s own records to pull (digest tier, a plain ``range`` ask -- there is
 no evidence-door subject for "give me everything", so the caller supplies
 the region of interest, same as any other ``range`` ask); ``--peer-map``
@@ -81,11 +81,20 @@ verdict is taken on the address book's say-so).
 The flow: (1) pull ``X``'s own ``range`` at ``x_selector`` and read every
 counterparty node id ``X``'s own records name (``requesting_party`` /
 ``served_by_node_id`` / ``counterparty_ref``, wherever a producer nested
-them); (2) deterministically sample ``--k`` (default 3) of them, keyed on
-``x_node_id`` alone (see :func:`sample_reference_candidates`) so two
+them); (2) deterministically sample ``--k`` (default 3) of them, seeded by
+the root of a WITNESSED checkpoint in ``X``'s own pulled range (see
+:func:`witnessed_seed` / :func:`sample_reference_candidates`), so two
 independent strangers running this against the same ``X`` converge on the
-same sample without coordinating; (3) ask each sampled counterparty's own
-door ``correlation{by: counterparty, value: x_node_id}``; (4) verify every
+same sample without coordinating. Unlike ``X``'s node id, that root is not
+known before the records it commits to are written, and once witnessed it is
+fixed at a third party. The limit: ``X`` can still try candidate record sets
+locally before any is witnessed. A checkpoint witnessed after the request,
+or a public beacon, would close that; neither is implemented here. No
+witnessed checkpoint means no sample, never a fallback to a seed ``X`` can
+predict. The seed and its source are recorded in
+:attr:`ReferencesResult.selection` so anyone can recompute the sample;
+(3) ask each sampled counterparty's own door
+``correlation{by: counterparty, value: x_node_id}``; (4) verify every
 returned bundle OFFLINE (:func:`verify_bundle`, the same full check
 ``render_artifact`` runs) before trusting anything in it -- an unverified
 bundle contributes to nothing; (5) fold verified adjudication/ack-refusal
@@ -107,7 +116,9 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
+from agent_action_capsule.canonical import jcs
 from capsule_emit.bundle import Bundle, verify_bundle
+from capsule_emit.checkpoint import StampVerdict, verify_witness_stamp_tristate
 from capsule_emit.evidence_request import Refusal, verify_refusal_offline
 
 from history_card import build_history_card, with_references
@@ -116,6 +127,8 @@ from sequence_counter import verify_pair_continuity
 __all__ = [
     "DEFAULT_REFERENCE_K",
     "ReferencesResult",
+    "WitnessedSeed",
+    "candidates_digest",
     "discover_counterparties",
     "fetch_all_pages",
     "main",
@@ -126,6 +139,7 @@ __all__ = [
     "render_refusal",
     "run_references",
     "sample_reference_candidates",
+    "witnessed_seed",
 ]
 
 #: Verdict vocabulary, mirrored from `twin_adjudicator`'s public constants --
@@ -294,17 +308,69 @@ def discover_counterparties(bundles: list[Bundle], *, exclude_node_id: str) -> l
     return sorted(found)
 
 
-def sample_reference_candidates(
-    candidates: list[str], *, subject_node_id: str, k: int = DEFAULT_REFERENCE_K
-) -> list[str]:
-    """Deterministic sample of ``min(k, len(candidates))``, seeded ONLY by
-    ``subject_node_id`` (``X``'s own identity) -- a pure function of ``(X,
-    the candidate set)``, never of who is asking or of any randomness. Two
-    independent strangers who discover the same candidate set for the same
-    ``X`` always pick the same sample without coordinating, exactly the
-    property ``[mesh-ask-the-references]`` calls for."""
+@dataclass(frozen=True)
+class WitnessedSeed:
+    """The reference-sample seed: the root of a checkpoint of ``X``'s own
+    log whose witness receipt verifies (:attr:`StampVerdict.WITNESSED` --
+    checkpoint-bound and signed under a pinned Transparency Service key),
+    plus where it came from, so a stranger can recompute the sample."""
+
+    root: str
+    log_id: str
+    mmr_size: int
+    ts_url: str
+
+    def to_value(self) -> dict[str, Any]:
+        return {
+            "source": "witnessed_checkpoint",
+            "root": self.root,
+            "log_id": self.log_id,
+            "mmr_size": self.mmr_size,
+            "ts_url": self.ts_url,
+        }
+
+
+def witnessed_seed(bundles: list[Bundle]) -> WitnessedSeed | None:
+    """The latest (largest ``mmr_size``) checkpoint among ``X``'s own
+    VERIFIED bundles' ``checkpoint``/``prior_checkpoint`` whose witness
+    receipt re-verifies as :attr:`StampVerdict.WITNESSED`. A receipt is
+    re-verified, never trusted for being present, and a producer-set
+    ``is_stub`` flag counts for nothing. ``None`` when there is no such
+    checkpoint -- the caller then draws no sample."""
+    best: WitnessedSeed | None = None
+    for b in bundles:
+        ok, _errors = verify_bundle(b)
+        if not ok:
+            continue
+        for cp in (b.prior_checkpoint, b.checkpoint):
+            if cp is None or (best is not None and cp.mmr_size <= best.mmr_size):
+                continue
+            for w in cp.witnesses or []:
+                verdict, _stamp_errors = verify_witness_stamp_tristate(cp, w)
+                if verdict is StampVerdict.WITNESSED:
+                    best = WitnessedSeed(root=cp.root, log_id=cp.log_id, mmr_size=cp.mmr_size, ts_url=w.ts_url)
+                    break
+    return best
+
+
+def candidates_digest(candidates: list[str]) -> str:
+    """SHA-256 of the JCS of the sorted, de-duplicated candidate set -- what
+    the sample was drawn from, recorded beside the seed."""
+    return hashlib.sha256(jcs(sorted(set(candidates)))).hexdigest()
+
+
+def sample_reference_candidates(candidates: list[str], *, seed: str, k: int = DEFAULT_REFERENCE_K) -> list[str]:
+    """Deterministic sample of ``min(k, len(candidates))``: candidates ranked
+    by ``sha256(f"{seed}:{candidate}")``, lowest first. A pure function of
+    ``(seed, the candidate set)``, never of who is asking or of any
+    randomness, so independent strangers converge on the same sample.
+
+    ``seed`` is :func:`witnessed_seed`'s root. It was ``X``'s own node id,
+    which ``X`` knows before it writes a single record: ``X`` could compute
+    its own sample in advance and shape it, by what it records or by
+    grinding counterparty ids."""
     uniq = sorted(set(candidates))
-    ranked = sorted(uniq, key=lambda c: hashlib.sha256(f"{subject_node_id}:{c}".encode()).hexdigest())
+    ranked = sorted(uniq, key=lambda c: hashlib.sha256(f"{seed}:{c}".encode()).hexdigest())
     return ranked[:k]
 
 
@@ -379,6 +445,12 @@ class ReferencesResult:
     #: folded in via ``history_card.with_references``. ``None`` when X's
     #: pulled range carried no bundles to fold a checkpoint from.
     history_card: Any = None
+    #: How the sample was drawn, so anyone can recompute it:
+    #: ``{"method": "seeded", "seed": WitnessedSeed.to_value(), "k",
+    #: "candidates_digest"}``, or ``{"method": "not_sampled", "reason", "k",
+    #: "candidates_digest"}`` when X's pulled range had no witnessed
+    #: checkpoint to seed from.
+    selection: dict[str, Any] = field(default_factory=dict)
 
 
 def run_references(
@@ -426,7 +498,14 @@ def run_references(
             verified_x_receipts.append(b.receipt)
 
     candidates = discover_counterparties(x_bundles, exclude_node_id=x_node_id)
-    sampled = sample_reference_candidates(candidates, subject_node_id=x_node_id, k=k)
+    seed = witnessed_seed(x_bundles)
+    selection: dict[str, Any] = {"k": k, "candidates_digest": candidates_digest(candidates)}
+    if seed is None:
+        sampled: list[str] = []
+        selection.update(method="not_sampled", reason="no witnessed checkpoint in the pulled range to seed from")
+    else:
+        sampled = sample_reference_candidates(candidates, seed=seed.root, k=k)
+        selection.update(method="seeded", seed=seed.to_value())
 
     tally = {"corroborated": 0, "contradicted": 0, "inconclusive": 0, "ack_refusals": 0}
     answered = 0
@@ -507,6 +586,7 @@ def run_references(
         continuity=continuity,
         unreachable_references=unreachable,
         history_card=card,
+        selection=selection,
     )
 
 
@@ -518,6 +598,16 @@ def render_references_result(result: ReferencesResult) -> str:
         ),
         f"  adjudications_about_x={result.adjudications_about_x} ack_refusals_about_x={result.ack_refusals_about_x}",
     ]
+    selection = result.selection
+    if selection.get("method") == "seeded":
+        seed = selection["seed"]
+        lines.append(
+            f"  sample: seeded by witnessed checkpoint root={seed['root']} "
+            f"(log_id={seed['log_id']} mmr_size={seed['mmr_size']} witness={seed['ts_url']}) "
+            f"k={selection['k']} candidates_digest={selection['candidates_digest']}"
+        )
+    elif selection:
+        lines.append(f"  sample: none drawn -- {selection.get('reason')}")
     if result.unreachable_references:
         lines.append(f"  unreachable references: {', '.join(result.unreachable_references)}")
     if result.continuity:
