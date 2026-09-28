@@ -79,6 +79,13 @@ re-verifies the same real-host-produced ledger against the Python
 independent `scitt-cose-go-verify` Go implementation — see that test's doc
 comment for the env vars.
 
+## Evidence page (web UI bundle)
+
+The plugin's console page is built from `web-ui/` (`pnpm install && pnpm build`
+writes `bundle/register-mesh-plugin-ui.js`), and the release workflow builds it
+and packages `bundle/` plus `plugin-manifest.json` (from
+`--print-package-manifest`) next to the executable; see `web-ui/README.md`.
+
 ## Running the tests
 
 ```sh

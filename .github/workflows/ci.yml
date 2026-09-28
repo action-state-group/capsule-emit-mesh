@@ -197,6 +197,46 @@ jobs:
       - name: Real-host e2e test compiles (scenarios need a local mesh-llm binary)
         run: cargo test --locked --test host_runtime_e2e
 
+  # The plugin's Evidence page (mesh-llm plugin web UI bundle, source in
+  # plugins/admission-policy/web-ui/): typecheck, the unit suite that moved
+  # with the page from the fork console (copy pins, retired-phrase and
+  # tooltip-census gates included), and the bundle build the release packages.
+  # The manifest side (one `evidence` page, entry script, bundle root) is
+  # checked by the Rust unit tests above (`web_ui_manifest`), which read these
+  # sources.
+  admission-policy-web-ui:
+    name: admission-policy web UI bundle (typecheck + unit tests + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/admission-policy/web-ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: plugins/admission-policy/web-ui/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: plugins/admission-policy/web-ui/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Build the bundle (one ES module under ../bundle)
+        run: |
+          pnpm build
+          test "$(ls ../bundle)" = "register-mesh-plugin-ui.js"
+
   # Milestone 1 of #1332: emits ONE Agent Action Capsule + COSE_Sign1 signed
   # statement in Rust (JCS canonicalization, Ed25519, COSE_Sign1 via `coset`).
   # Milestone 2 adds chaining, a durable local ledger, key persistence +
