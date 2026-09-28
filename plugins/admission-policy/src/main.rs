@@ -206,6 +206,7 @@ fn seal_observed(
         peer_capsule_id: peer_capsule_id_for_seal(envelope).map(|(id, _)| id),
         peer_capsule_id_provenance: peer_capsule_id_for_seal(envelope).map(|(_, prov)| prov),
         twin_bracket_id: envelope.twin_bracket_id.as_deref(),
+        response_text_digest: envelope.response_text_digest.as_deref(),
     };
     let emitted = match split {
         Some(plan) => capsules.emit_for_observed_split_exchange(&observed, plan),
@@ -1092,6 +1093,7 @@ mod push_eligibility_tests {
             tool_calls_digest: None,
             reasoning_digest: None,
             twin_bracket_id: None,
+            response_text_digest: None,
         }
     }
 

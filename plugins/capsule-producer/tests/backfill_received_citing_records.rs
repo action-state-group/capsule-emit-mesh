@@ -72,6 +72,7 @@ fn local_input(seed: &str, chain: Option<ChainLink>) -> CapsuleInput {
                 peer_capsule_id: None,
                 peer_capsule_id_provenance: None,
                 twin_bracket_id: None,
+                response_text_digest: None,
             },
             role: "served".to_string(),
             observation_point: None,

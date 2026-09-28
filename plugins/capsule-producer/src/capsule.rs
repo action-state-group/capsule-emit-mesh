@@ -186,6 +186,13 @@ pub struct ServingProvenance {
     /// the identical string because both plugin instances forward the same
     /// host-minted value off their own terminal envelope for that exchange.
     pub twin_bracket_id: Option<String>,
+    /// SHA-256 (lowercase hex) of the answer TEXT (`choices[0].message.content`,
+    /// UTF-8; a stream's assembled text), forwarded from the host's terminal
+    /// envelope. Unlike `response_digest`, which covers the whole body (ids,
+    /// timestamps), two halves of a twin that gave the same answer carry the
+    /// same value. `None` -- and then ABSENT, never fabricated -- when the
+    /// host sent none.
+    pub response_text_digest: Option<String>,
 }
 
 impl ServingProvenance {
@@ -247,6 +254,12 @@ impl ServingProvenance {
                 .as_object_mut()
                 .expect("serving_provenance value is always a JSON object")
                 .insert("twin_bracket_id".into(), json!(twin_bracket_id));
+        }
+        if let Some(digest) = &self.response_text_digest {
+            value
+                .as_object_mut()
+                .expect("serving_provenance value is always a JSON object")
+                .insert("response_text_digest".into(), json!(digest));
         }
         value
     }
@@ -1750,6 +1763,7 @@ mod tests {
                     peer_capsule_id: None,
                     peer_capsule_id_provenance: None,
                     twin_bracket_id: None,
+                    response_text_digest: None,
                 },
                 role: "served".to_string(),
                 observation_point: None,
@@ -2060,6 +2074,16 @@ mod tests {
         input.mesh_poc.serving_provenance.twin_bracket_id = Some("twin-abc123".to_string());
         let capsule = seal(&input).unwrap();
         assert_eq!(provenance(&capsule)["twin_bracket_id"], "twin-abc123");
+    }
+
+    #[test]
+    fn response_text_digest_is_carried_when_present_and_absent_otherwise() {
+        let mut input = base_input(None);
+        let capsule = seal(&input).unwrap();
+        assert!(provenance(&capsule).get("response_text_digest").is_none(), "never a null placeholder");
+        input.mesh_poc.serving_provenance.response_text_digest = Some("ab".repeat(32));
+        let capsule = seal(&input).unwrap();
+        assert_eq!(provenance(&capsule)["response_text_digest"], "ab".repeat(32));
     }
 
     /// Absence rule: when the envelope carried no `twin_bracket_id` (the

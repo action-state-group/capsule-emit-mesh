@@ -692,6 +692,7 @@ impl CapsuleState {
                     // read an ambient twin bracket off of, so this is never
                     // twinned on this path.
                     twin_bracket_id: None,
+                    response_text_digest: None,
                 },
                 // This exchange was admitted and served by THIS plugin's own
                 // `/v1` handler -- unambiguously "served", not a guess: there
@@ -870,6 +871,9 @@ pub struct ObservedHostExchange<'a> {
     /// (the overwhelming majority) -- the capsule then omits the field
     /// entirely, never a fabricated bracket.
     pub twin_bracket_id: Option<&'a str>,
+    /// The host's digest of the answer text, forwarded verbatim (see
+    /// `ServingProvenance::response_text_digest`). `None` when the host sent none.
+    pub response_text_digest: Option<&'a str>,
 }
 
 impl CapsuleState {
@@ -1003,7 +1007,11 @@ impl CapsuleState {
             peer_capsule_id,
             peer_capsule_id_provenance,
             twin_bracket_id,
+            response_text_digest,
         } = observed;
+        let response_text_digest = response_text_digest
+            .map(|d| d.trim().to_ascii_lowercase())
+            .filter(|d| d.len() == 64 && d.bytes().all(|b| b.is_ascii_hexdigit()));
         let (model, exchange_id, request_digest, response_digest, tool_calls_digest, reasoning_digest, usage, nonce, peer_capsule_id, peer_capsule_id_provenance, twin_bracket_id) = (
             *model,
             *exchange_id,
@@ -1232,6 +1240,7 @@ impl CapsuleState {
                     // plugin never mints or derives one. `None` on every
                     // exchange that wasn't ambiently twinned.
                     twin_bracket_id: twin_bracket_id.map(str::to_string),
+                    response_text_digest: response_text_digest.clone(),
                 },
                 role,
                 observation_point,
@@ -1969,6 +1978,7 @@ mod tests {
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
             twin_bracket_id: None,
+            response_text_digest: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -2009,6 +2019,7 @@ mod tests {
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
             twin_bracket_id: None,
+            response_text_digest: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -2057,6 +2068,7 @@ mod tests {
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
             twin_bracket_id: None,
+            response_text_digest: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -2204,6 +2216,7 @@ mod tests {
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
             twin_bracket_id: None,
+            response_text_digest: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -2269,6 +2282,7 @@ mod tests {
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
             twin_bracket_id: None,
+            response_text_digest: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -2310,6 +2324,7 @@ mod tests {
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
             twin_bracket_id: Some("twin-abc123"),
+            response_text_digest: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -2343,6 +2358,7 @@ mod tests {
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
             twin_bracket_id: None,
+            response_text_digest: None,
         };
         let emitted = state
             .emit_for_observed_host_exchange(&observed)
@@ -2386,6 +2402,7 @@ mod tests {
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
             twin_bracket_id: Some("twin-shared"),
+            response_text_digest: None,
         };
         let observed_b = ObservedHostExchange {
             model: "m",
@@ -2401,6 +2418,7 @@ mod tests {
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
             twin_bracket_id: Some("twin-shared"),
+            response_text_digest: None,
         };
 
         let emitted_a = state_a
@@ -2917,6 +2935,7 @@ mod tests {
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
             twin_bracket_id: None,
+            response_text_digest: None,
         };
         let first = state
             .emit_for_observed_host_exchange(&observed)
@@ -2993,6 +3012,7 @@ mod tests {
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
             twin_bracket_id: None,
+            response_text_digest: None,
         }
     }
 
@@ -3638,6 +3658,7 @@ mod tests {
             peer_capsule_id: None,
             peer_capsule_id_provenance: None,
             twin_bracket_id: None,
+            response_text_digest: None,
         };
         let router_emitted = router_state
             .emit_for_observed_host_exchange(&router_observed)

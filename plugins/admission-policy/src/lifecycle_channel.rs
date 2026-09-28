@@ -247,6 +247,10 @@ pub struct OpenAiExchangeEnvelope {
     /// twinned.
     #[serde(default)]
     pub twin_bracket_id: Option<String>,
+    /// SHA-256 hex of the answer text (`choices[0].message.content`), set by a
+    /// host that computes it; `None` from a host that predates the field.
+    #[serde(default)]
+    pub response_text_digest: Option<String>,
 }
 
 /// Mirror of the host's `ExchangeUsage` (real token counts). Every field is a
@@ -527,6 +531,8 @@ struct LoggedEnvelope {
     reasoning_digest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     twin_bracket_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_text_digest: Option<String>,
 }
 
 impl From<&OpenAiExchangeEnvelope> for LoggedEnvelope {
@@ -547,6 +553,7 @@ impl From<&OpenAiExchangeEnvelope> for LoggedEnvelope {
             tool_calls_digest: e.tool_calls_digest.clone(),
             reasoning_digest: e.reasoning_digest.clone(),
             twin_bracket_id: e.twin_bracket_id.clone(),
+            response_text_digest: e.response_text_digest.clone(),
         }
     }
 }
@@ -680,6 +687,16 @@ mod tests {
         let wire_without_id = r#"{"exchange_id":"exch-7","dispatch_path":"raw_proxy","phase":"terminal","model":"local-gguf/sha256-4ff195f73917d9c2","status":200,"capsule_id":null,"nonce":null}"#;
         let env: OpenAiExchangeEnvelope = serde_json::from_str(wire_without_id).expect("parse");
         assert!(env.twin_bracket_id.is_none());
+    }
+
+    #[test]
+    fn response_text_digest_parses_when_present_and_is_none_when_omitted() {
+        let with = format!(r#"{{"exchange_id":"e","dispatch_path":"raw_proxy","phase":"terminal","model":"m","status":200,"capsule_id":null,"nonce":null,"response_text_digest":"{}"}}"#, "cd".repeat(32));
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(&with).expect("parse");
+        assert_eq!(env.response_text_digest.as_deref(), Some("cd".repeat(32).as_str()));
+        let without = r#"{"exchange_id":"e","dispatch_path":"raw_proxy","phase":"terminal","model":"m","status":200,"capsule_id":null,"nonce":null}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(without).expect("parse");
+        assert!(env.response_text_digest.is_none());
     }
 
     /// The plugin's OWN plugin-served stub terminal event (a synthetic endpoint
@@ -1001,6 +1018,7 @@ mod tests {
                 requested_by_node_id: None,
             }),
             twin_bracket_id: None,
+            response_text_digest: None,
         };
 
         store.record(event("model-a", Some("gpu-old")));

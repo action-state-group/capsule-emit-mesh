@@ -95,6 +95,7 @@ fn capsule_input(n: usize, parent: Option<&str>) -> CapsuleInput {
                 seq: (n + 1) as u64,
                 prev_seq: if n == 0 { None } else { Some(n as u64) },
                 twin_bracket_id: None,
+                response_text_digest: None,
             },
             role: "served".to_string(),
             observation_point: None,

@@ -180,6 +180,7 @@ fn step_input(step: &Step, chain: Option<ChainLink>) -> CapsuleInput {
                 peer_capsule_id_provenance: None,
                 // Deterministic demo, no host envelope -- never twinned.
                 twin_bracket_id: None,
+                response_text_digest: None,
             },
             // Single-node demo: this node always serves its own steps.
             role: "served".to_string(),

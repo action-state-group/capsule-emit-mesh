@@ -64,7 +64,7 @@
 //!    diverges the day a tampered record lands.
 
 use serde_json::{json, Value};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 /// Sentinel for "this mechanism exists but isn't wired for a plugin-ledger
@@ -1989,6 +1989,9 @@ pub(crate) fn build_pane_c_list(
             .map(move |(n, (mine, theirs))| (pair_row_key(group_key, n), mine, theirs))
     });
     let mut rows = Vec::new();
+    // Per row: (twin bracket, the provider half's answer-text digest), for
+    // the twin pass after the loop.
+    let mut twin_facts: Vec<(Option<String>, Option<String>)> = Vec::new();
     for (exchange_key, mine, theirs_sibling) in exchanges {
         // The row anchors on the local half when there is one; a received
         // sibling with no local half of its own still renders (its own column
@@ -2072,7 +2075,13 @@ pub(crate) fn build_pane_c_list(
             // treats a missing key the same as an explicit `null`.
             "twin_bracket_id": twin_bracket_id(anchor),
         }));
+        let provider_half = theirs_sibling.or_else(|| (label_role(anchor) == "served").then_some(anchor));
+        twin_facts.push((
+            twin_bracket_id(anchor).map(str::to_string),
+            provider_half.and_then(response_text_digest).map(str::to_string),
+        ));
     }
+    attach_twins(&mut rows, &twin_facts);
     json!({
         "row_count": rows.len(),
         "default_sort": "timestamp",
@@ -2081,6 +2090,45 @@ pub(crate) fn build_pane_c_list(
         "next_after_seq": Value::Null,
         "archived_segments": [],
     })
+}
+
+/// The host's digest of the answer text a record carries
+/// (`serving_provenance.response_text_digest`), when any.
+fn response_text_digest(record: &Value) -> Option<&str> {
+    poc_block(record)
+        .and_then(|poc| poc.pointer("/serving_provenance/response_text_digest"))
+        .and_then(Value::as_str)
+        .filter(|d| !d.is_empty())
+}
+
+/// A twin pair is two rows sharing a host-minted `twin_bracket_id`. Each gets
+/// `twin: {bracket_id, same_answer, other_row}`: `same_answer` compares the two
+/// provider halves' answer-text digests (`null` while either is missing --
+/// never a guess). A bracket with any other number of rows gets no
+/// comparison (`same_answer` and `other_row` null).
+fn attach_twins(rows: &mut [Value], facts: &[(Option<String>, Option<String>)]) {
+    let mut by_bracket: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (i, (bracket, _)) in facts.iter().enumerate() {
+        if let Some(bracket) = bracket {
+            by_bracket.entry(bracket.as_str()).or_default().push(i);
+        }
+    }
+    for (bracket, members) in by_bracket {
+        for &i in &members {
+            let (same_answer, other_row) = match members.as_slice() {
+                [a, b] => {
+                    let other = if i == *a { *b } else { *a };
+                    let same = match (&facts[i].1, &facts[other].1) {
+                        (Some(x), Some(y)) => json!(x == y),
+                        _ => Value::Null,
+                    };
+                    (same, rows[other]["exchange_key"].clone())
+                }
+                _ => (Value::Null, Value::Null),
+            };
+            rows[i]["twin"] = json!({ "bracket_id": bracket, "same_answer": same_answer, "other_row": other_row });
+        }
+    }
 }
 
 /// Pane C drill-down (`exchange_id` supplied) -- `capsule_exchange_tab.
@@ -3311,6 +3359,55 @@ mod tests {
         assert_eq!((a.1.clone(), b.1.clone()), (json!(1), json!(1)), "one exchange each");
         assert_eq!((a.2.clone(), a.3.clone()), (json!(node_a), json!("your_records")));
         assert_eq!((b.2.clone(), b.3.clone()), (json!(node_b), json!("your_records")));
+    }
+
+    /// Twin rows on the screen: two requester rows sharing a host-minted
+    /// twin_bracket_id each name the other and say whether the two providers
+    /// gave the same answer (their answer-text digests), or null while either
+    /// is missing. MUTANT: compare the whole-body response_digest and a same
+    /// answer never reads same.
+    #[test]
+    fn a_twin_pair_says_whether_the_two_providers_gave_the_same_answer() {
+        let (key_a, key_b) = (
+            "aaaa26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d",
+            "bbbb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d",
+        );
+        let (node_a, node_b) = (format!("a0a0{}", "1".repeat(60)), format!("b0b0{}", "2".repeat(60)));
+        let req = "d".repeat(64);
+        let build = |text_a: Option<&str>, text_b: Option<&str>| {
+            let mut asked_a = mesh_half_served_by("1".repeat(64).as_str(), "requested", &req, &"5".repeat(64), "me-a", &node_a);
+            let mut asked_b = mesh_half_served_by("2".repeat(64).as_str(), "requested", &req, &"6".repeat(64), "me-b", &node_b);
+            for r in [&mut asked_a, &mut asked_b] {
+                r["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["serving_provenance"]["twin_bracket_id"] = json!("twin-1");
+            }
+            let mut half_a = with_key(mesh_half_served_by("3".repeat(64).as_str(), "served", &req, &"5".repeat(64), "a-1", &node_a), key_a);
+            let mut half_b = with_key(mesh_half_served_by("4".repeat(64).as_str(), "served", &req, &"6".repeat(64), "b-1", &node_b), key_b);
+            for (h, t) in [(&mut half_a, text_a), (&mut half_b, text_b)] {
+                if let Some(t) = t {
+                    h["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["serving_provenance"]["response_text_digest"] = json!(t);
+                }
+            }
+            let provenance: HashMap<String, ReceivedProvenance> = [
+                provenance_for("3".repeat(64).as_str(), &node_a),
+                provenance_for("4".repeat(64).as_str(), &node_b),
+            ]
+            .into_iter()
+            .collect();
+            build_pane_c_list(&[asked_a, asked_b, half_a, half_b], &provenance)
+        };
+        let twins = |pane: &Value| -> Vec<Value> {
+            pane["rows"].as_array().unwrap().iter().filter_map(|r| r.get("twin").cloned()).collect()
+        };
+        let same = "7".repeat(64);
+        let pane = build(Some(&same), Some(&same));
+        let t = twins(&pane);
+        assert_eq!(t.len(), 2, "both rows of the pair: {pane}");
+        assert!(t.iter().all(|x| x["bracket_id"] == json!("twin-1") && x["same_answer"] == json!(true)));
+        assert_ne!(t[0]["other_row"], t[1]["other_row"], "each names the other");
+        let differ = build(Some(&same), Some(&"8".repeat(64)));
+        assert!(twins(&differ).iter().all(|x| x["same_answer"] == json!(false)));
+        let missing = build(Some(&same), None);
+        assert!(twins(&missing).iter().all(|x| x["same_answer"].is_null()));
     }
 
     /// A node id from a record we RECEIVED never counts as ours, even on a
