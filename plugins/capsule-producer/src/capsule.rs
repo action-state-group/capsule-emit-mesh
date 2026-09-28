@@ -1108,10 +1108,10 @@ pub struct SettlementObservation<'a> {
 
 /// Seal a SETTLEMENT record: this payer node's own signed, chained record that
 /// it observed one payment lifecycle event the host broadcast on
-/// [`SETTLEMENT_CHANNEL`]. Built exactly like [`seal_citing_record`] (same
-/// header fields, `chain.relation = "follows"` onto `chain_head`, inline
-/// producer envelope via [`attach_producer_envelope`]) but with NO
-/// `references[]` entry -- it cites no capsule. The observation rides under
+/// [`SETTLEMENT_CHANNEL`]. Sealed through the same local-record path as
+/// [`seal_citing_record`] (same header fields, minute-granular timestamp, a
+/// fresh store nonce, `chain.relation = "follows"` onto `chain_head`, inline
+/// producer envelope) but with NO `references[]` entry -- it cites no capsule. The observation rides under
 /// `model_attestation.compute_attestation["x-mesh-settlement-v1"]`; `null`
 /// optional fields are omitted rather than written as `null`.
 ///
@@ -1157,70 +1157,20 @@ pub fn seal_settlement_record(
     }
     observation.insert("amount_msat".into(), json!(ev.amount_msat));
 
-    let mut body = Map::new();
-    body.insert("spec_version".into(), json!(SPEC_VERSION));
-    body.insert("format_version".into(), json!(FORMAT_VERSION));
-    body.insert("canonicalization_id".into(), json!(CANONICALIZATION_ID));
-    body.insert(
-        "action_id".into(),
-        json!(format!(
-            "mesh-poc/settlement/{}/{}",
-            ev.exchange_id, ev.event_ref
-        )),
-    );
-    body.insert("action_type".into(), json!("fyi"));
-    body.insert("operator".into(), json!("capsule-emit-mesh-poc-rust"));
-    body.insert("developer".into(), json!("capsule-producer/0.2.0"));
-    body.insert(
-        "timestamp".into(),
-        json!(crate::timestamp::utc_now_iso8601()),
-    );
-    body.insert("domain".into(), json!("action"));
-    body.insert("provenance".into(), json!("collector"));
-
-    let mut compute_attestation = Map::new();
-    compute_attestation.insert(SETTLEMENT_EXTENSION_KEY.into(), Value::Object(observation));
-    body.insert(
-        "model_attestation".into(),
-        json!({
-            "model_id": "n/a-settlement-observation",
-            "provider": "mesh-llm",
-            "compute_attestation": Value::Object(compute_attestation),
-        }),
-    );
-    body.insert(
-        "assurance".into(),
-        json!({
-            "attestation_mode": "self_attested",
-            "effect_mode": "not_applicable",
-            "ledger_mode": if chain.is_some() { "chained" } else { "standalone" },
-        }),
-    );
-    body.insert(
-        "disposition".into(),
-        json!({
-            "decision": "accept",
-            "approver": "policy",
-            "human_disposed": false,
-            "verdict_class": "executed",
-        }),
-    );
-    if let Some(chain) = &chain {
-        body.insert("chain".into(), chain.to_value());
-    }
-
-    let capsule_id = compute_capsule_id(&Value::Object(body.clone()))?;
-    let mut sealed = Map::new();
-    sealed.insert("capsule_id".into(), json!(capsule_id));
-    for (k, v) in body {
-        sealed.entry(k).or_insert(v);
-    }
-    let mut capsule = Value::Object(sealed);
-    // `attach_producer_envelope` only fails on a non-hex capsule_id, which
-    // `compute_capsule_id` never produces.
-    attach_producer_envelope(&mut capsule, signing_key)
-        .expect("settlement record always carries a hex capsule_id");
-    Ok(capsule)
+    // The same local-record path as every other record with no served
+    // exchange: minute-granular committed time and a fresh store nonce
+    // (Evidence Layer -00 §12.1), so a settlement record can't be confirmed
+    // by guessing its content or timed to the millisecond.
+    let mut blocks = Map::new();
+    blocks.insert(SETTLEMENT_EXTENSION_KEY.into(), Value::Object(observation));
+    seal_local_record(
+        format!("mesh-poc/settlement/{}/{}", ev.exchange_id, ev.event_ref),
+        "n/a-settlement-observation",
+        blocks,
+        None,
+        chain,
+        signing_key,
+    )
 }
 
 /// A time a citing record commits to, truncated to the minute
@@ -3057,6 +3007,45 @@ mod tests {
     }
 
     /// An amount the JCS cannot represent losslessly is refused, never sealed.
+    /// A settlement record takes the same seal path as every other local
+    /// record (Evidence Layer -00 §12.1): a fresh 256-bit store nonce beside
+    /// the observation, and a minute-granular timestamp. Sealing the same
+    /// observation twice gives two different records.
+    #[test]
+    fn seal_settlement_record_carries_a_store_nonce_and_a_minute_timestamp() {
+        let key = crate::keys::KeyPair::generate();
+        let payment_hash = "ab".repeat(32);
+        let ev = sample_settlement(Some(&payment_hash));
+        let first = seal_settlement_record(&ev, None, &key.signing_key).unwrap();
+        let second = seal_settlement_record(&ev, None, &key.signing_key).unwrap();
+
+        let compute = &first["model_attestation"]["compute_attestation"];
+        let nonce = compute[STORE_NONCE_FIELD]
+            .as_str()
+            .expect("store_nonce is sealed");
+        assert_eq!(nonce.len(), 64);
+        assert!(nonce
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert_ne!(
+            second["model_attestation"]["compute_attestation"][STORE_NONCE_FIELD],
+            compute[STORE_NONCE_FIELD],
+            "a fresh nonce per record"
+        );
+        assert_ne!(first["capsule_id"], second["capsule_id"]);
+        assert!(
+            compute[SETTLEMENT_EXTENSION_KEY].is_object(),
+            "the observation is still there"
+        );
+
+        let timestamp = first["timestamp"].as_str().unwrap();
+        assert_eq!(
+            crate::timestamp::coarsen_to_minute(timestamp).as_deref(),
+            Some(timestamp),
+            "the record timestamp is already whole minutes"
+        );
+    }
+
     #[test]
     fn seal_settlement_record_refuses_an_unsafe_amount() {
         let key = crate::keys::KeyPair::generate();
