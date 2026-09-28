@@ -3,10 +3,9 @@
 //! leaves, a periodic signed checkpoint, and (opt-in) witness registration.
 //!
 //! This is the Rust re-expression of `capsule-emit-mesh/checkpointing.py`'s
-//! `CheckpointState` (see `docs/DESIGN-fold-sidecar-into-plugin.md` and
-//! `[mesh-plugin-checkpoint-cadence]`) over the `evidencebook` crate's
-//! substrate (`checkpointed-local-log`, `rust/evidencebook`, pinned by git
-//! rev), which embeds the `cll` crate: the MMR, the durable file-backed node
+//! `CheckpointState` (see `docs/DESIGN-fold-sidecar-into-plugin.md`) over the
+//! `evidencebook` crate's substrate (`checkpointed-local-log`,
+//! `rust/evidencebook`, pinned by git rev), which embeds the `cll` crate: the MMR, the durable file-backed node
 //! store, the signed checkpoint + COSE wire form, and `checkpoints.jsonl`
 //! read/write -- the exact on-disk shape `checkpointing.py` also
 //! reads/writes, so a Rust checkpointer and `checkpoint_daemon.py` share one
