@@ -67,7 +67,7 @@
 //!    diverges the day a tampered record lands.
 
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 /// Sentinel for "this mechanism exists but isn't wired for a plugin-ledger
@@ -1515,15 +1515,20 @@ struct PeerAttribution {
     node_alias_to_row_key: HashMap<String, String>,
 }
 
-/// For each exchange key, the node THIS node's own requester record says its
+/// For each exchange key, the node THIS node's own requester records say its
 /// host routed the exchange to (`served_by_node_id` on a `requested` record
 /// we sealed ourselves, never a received one). That id is ours, not the
 /// peer's word, so it is one the console may block by.
+///
+/// The key is the request digest, so the same prompt sent to two peers is
+/// one key with two own records naming two nodes. Such a key names no node
+/// at all: which own record a peer's half answers is not known from the key,
+/// and a block must never land on the other peer.
 fn own_routed_node_by_key(
     records: &[Value],
     received_provenance: &HashMap<String, ReceivedProvenance>,
 ) -> HashMap<String, String> {
-    let mut by_key = HashMap::new();
+    let mut by_key: HashMap<String, BTreeSet<String>> = HashMap::new();
     for record in records {
         let received = record
             .get("capsule_id")
@@ -1535,10 +1540,19 @@ fn own_routed_node_by_key(
         if let (Some(key), Some(node)) =
             (exchange_key_for(record), full_counterparty_node_id(record))
         {
-            by_key.entry(key).or_insert(node);
+            by_key.entry(key).or_default().insert(node);
         }
     }
     by_key
+        .into_iter()
+        .filter_map(|(key, nodes)| {
+            let mut nodes = nodes.into_iter();
+            match (nodes.next(), nodes.next()) {
+                (Some(node), None) => Some((key, node)),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 fn peer_attribution(
@@ -2855,6 +2869,46 @@ mod tests {
             );
             assert_eq!(rows[0]["identity"]["node_id_source"], json!("your_records"));
         }
+    }
+
+    /// The same prompt asked of H, then of M: one request digest, two own
+    /// records naming two nodes. M's pushed half must not pick up H's node id
+    /// (a block would land on H). The key names no node from our records, so
+    /// M's row offers no block. MUTANT: first-entry-wins gives M H's id.
+    #[test]
+    fn the_same_prompt_to_two_peers_never_gives_one_peer_the_other_nodes_id() {
+        let m_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let node_h = format!("aaaa{}", "1".repeat(60));
+        let node_m = format!("bbbb{}", "2".repeat(60));
+        let asked_h = mesh_half_served_by(
+            "a".repeat(64).as_str(), "requested", "d".repeat(64).as_str(),
+            "e".repeat(64).as_str(), "me-1", &node_h,
+        );
+        let asked_m = mesh_half_served_by(
+            "c".repeat(64).as_str(), "requested", "d".repeat(64).as_str(),
+            "f".repeat(64).as_str(), "me-2", &node_m,
+        );
+        let pushed_m = with_key(
+            mesh_half_served_by(
+                "b".repeat(64).as_str(), "served", "d".repeat(64).as_str(),
+                "f".repeat(64).as_str(), "them-1", &node_m,
+            ),
+            m_key,
+        );
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for("b".repeat(64).as_str(), "e5ba9d1001")].into_iter().collect();
+
+        let records = [asked_h, asked_m, pushed_m];
+        assert!(own_routed_node_by_key(&records, &provenance).is_empty());
+        let pane = build_pane_b(&records, &provenance);
+        let row = pane["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["peer_id"] == json!("key:71eb26f8e583ccc9"))
+            .expect("M's row");
+        assert_ne!(row["identity"]["node_id"], json!(node_h), "never H's id on M's row");
+        assert_ne!(row["identity"]["node_id_source"], json!("your_records"));
     }
 
     /// A node id from a record we RECEIVED never counts as ours, even on a
