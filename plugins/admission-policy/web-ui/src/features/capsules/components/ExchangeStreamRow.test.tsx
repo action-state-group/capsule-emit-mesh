@@ -222,13 +222,13 @@ describe('ExchangeStreamRow — the states render distinct text/status/action', 
       expect(screen.getByText(status)).toBeInTheDocument()
       // no whole-row click target and no modal
       // left to open -- every row always carries the two `▸ content`/
-      // `▸ checks` toggle buttons + the state (i) info glyph, plus one more
-      // when an action exists.
+      // `▸ checks` toggle buttons + the state (i) and the whole-row (i) info
+      // glyphs, plus one more when an action exists.
       if (action) {
         expect(screen.getByRole('button', { name: action })).toBeInTheDocument()
-        expect(screen.getAllByRole('button')).toHaveLength(4)
+        expect(screen.getAllByRole('button')).toHaveLength(5)
       } else {
-        expect(screen.getAllByRole('button')).toHaveLength(3)
+        expect(screen.getAllByRole('button')).toHaveLength(4)
       }
       unmount()
     })
@@ -240,10 +240,10 @@ describe('ExchangeStreamRow — the states render distinct text/status/action', 
     )
     expect(screen.getByText('CLOSED')).toBeInTheDocument()
     expect(screen.getByText('✓ They recorded the same request and answer')).toBeInTheDocument()
-    // Collapsed: no engineer cells on the face -- the two toggles and the
-    // state (i) only.
+    // Collapsed: no engineer cells on the face -- the two toggles, the
+    // state (i) and the whole-row (i) only.
     expect(screen.queryByText('signature ✓')).not.toBeInTheDocument()
-    expect(screen.getAllByRole('button')).toHaveLength(3)
+    expect(screen.getAllByRole('button')).toHaveLength(4)
 
     rerender(
       <ExchangeStreamRow checksExpanded onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />
@@ -974,11 +974,11 @@ describe('ExchangeStreamRow — §3A chip strip -> checks jump', () => {
 
   it('a chip is a link, never counted among the row action buttons', () => {
     render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_asked')} />)
-    // Two toggles + one ask action + the state's (i) InfoHover == 4,
+    // Two toggles + one ask action + the state's (i) + the whole-row (i) == 5,
     // unchanged by the chip strip ("the two
     // toggles are the entire detail surface" -- chips jump to detail already
     // on the page, they don't add a row action).
-    expect(screen.getAllByRole('button')).toHaveLength(4)
+    expect(screen.getAllByRole('button')).toHaveLength(5)
     expect(screen.getByLabelText('signed: jump to that check')).toHaveAttribute('role', 'link')
   })
 

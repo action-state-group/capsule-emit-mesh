@@ -55,6 +55,7 @@ import { useClipboardCopy } from '@/lib/useClipboardCopy'
 import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 import { RowVerdictLine } from '@/features/capsules/components/RowVerdictLine'
 import { entryRowChipMark } from '@/features/capsules/lib/entry-row-chips'
+import { rowCombinationText } from '@/features/capsules/lib/row-combination'
 import { OWN_RECORD_FAILS_WARNING } from '@/features/capsules/lib/tooltip-copy'
 
 /** The gated cell text (Do (2)) when an ask
@@ -240,6 +241,20 @@ export function ExchangeStreamRow({
   // The bracket strip, drawn in words (UX §3): `Yours ● sealed —— Theirs ●
   // same`. Same state the badge renders.
   const strip = bracketStripText(bracketStrip(row.raw, state))
+  // One hover on the strip for what the badge and the chips say together.
+  const combination = rowCombinationText({
+    state: state.kind,
+    roleTag: row.roleTag,
+    yoursHeld: row.raw.mine.state !== 'absent',
+    marks: {
+      content: entryRowChipMark(checksRows, 'content'),
+      sig: entryRowChipMark(checksRows, 'sig'),
+      inclusion: entryRowChipMark(checksRows, 'inclusion'),
+      registered: entryRowChipMark(checksRows, 'registered')
+    },
+    refusedAtTheDoor: row.raw.theirs.evidence_outcome === 'claims_refused',
+    late: askForRecordIsDue(row.timestamp, nowMs)
+  })
   // UX §3 "Left: the event in words" -- role, peer, model, tokens, duration,
   // all read from this row's own record (the fetched `localRecord`, else the
   // body the pane sent with the pair). Any field the record doesn't carry is
@@ -352,9 +367,12 @@ export function ExchangeStreamRow({
           </div>
           <div className="flex flex-col gap-1.5 px-3 py-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="font-mono text-[11px] text-fg-faint" data-bracket-strip="true">
-                {strip}
-              </p>
+              <span className="inline-flex items-center gap-1">
+                <p className="font-mono text-[11px] text-fg-faint" data-bracket-strip="true">
+                  {strip}
+                </p>
+                <InfoHover census="row:combination" describes="this row as a whole" label={combination} side="left" />
+              </span>
               <span className="inline-flex items-center gap-1" data-row-tone={tone}>
                 {/* L-A/L-B: only CONTRADICTED gets the alarm dot; the tone
                    (§3A "one colour per state") still varies with CLOSED/
