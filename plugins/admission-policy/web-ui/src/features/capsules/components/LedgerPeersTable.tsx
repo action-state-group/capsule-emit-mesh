@@ -44,7 +44,7 @@ import {
 } from '@/features/capsules/lib/peer-row-view'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
 import type { SplitPeer } from '@/features/capsules/lib/split-stage'
-import { SPLIT_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
+import { ADVERTISED_UNUSED_TOOLTIP, PEER_NEEDS_A_LOOK_LABEL, SPLIT_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
 import type { Peer } from '@/features/app-tabs/types'
 
 // Plain-language column names (UX §2). One label drives both the header and
@@ -67,7 +67,7 @@ const ALL_ALARM_VALUES: AlarmFilterValue[] = ['has_alarm', 'clean']
 function filterOptionLabel(value: string): string {
   switch (value) {
     case 'has_alarm':
-      return 'Has alarm'
+      return 'Needs a look'
     case 'clean':
       return 'Clean'
     default:
@@ -84,11 +84,24 @@ function matchesSearch(view: PeerTableRowView, query: string): boolean {
   return view.displayId.toLowerCase().includes(query)
 }
 
-function GroupHeaderRow({ label, count, columnCount }: { label: string; count: number; columnCount: number }) {
+function GroupHeaderRow({
+  label,
+  count,
+  columnCount,
+  tooltip
+}: {
+  label: string
+  count: number
+  columnCount: number
+  tooltip?: string
+}) {
   return (
     <TableRow className="border-border-soft bg-panel-strong/40 hover:bg-panel-strong/40">
       <TableCell className="type-caption font-mono text-fg-faint" colSpan={columnCount}>
-        {label} · {count}
+        <span className="inline-flex items-center gap-1">
+          {label} · {count}
+          {tooltip ? <InfoHover census={`peer_group:${label}`} describes={label} label={tooltip} /> : null}
+        </span>
       </TableCell>
     </TableRow>
   )
@@ -184,7 +197,7 @@ export function LedgerPeersTable({
           </div>
           <FilterPopover<PeerFilterKey>
             activeFilterGroups={activeFilterGroups}
-            categories={[{ key: 'alarm', label: 'Alarm' }]}
+            categories={[{ key: 'alarm', label: PEER_NEEDS_A_LOOK_LABEL }]}
             contentLabel="Peer filters"
             formatOptionLabel={filterOptionLabel}
             id="ledger-peers-filters"
@@ -328,6 +341,7 @@ export function LedgerPeersTable({
             columnCount={columnCount}
             count={visibleAdvertised.length}
             label="Nodes advertised but unused"
+            tooltip={ADVERTISED_UNUSED_TOOLTIP}
           />
           {visibleAdvertised.length === 0 ? (
             <TableRow className="border-border-soft">

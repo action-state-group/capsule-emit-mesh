@@ -22,6 +22,8 @@ import {
   type PeerTableRowView
 } from '@/features/capsules/lib/peer-row-view'
 import { HoverChip } from '@/features/capsules/components/HoverChip'
+import { InfoHover } from '@/features/capsules/components/InfoHover'
+import { PEER_ALIAS_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
 
 export type PeerTableRowProps = {
   view: PeerTableRowView
@@ -78,7 +80,12 @@ export function PeerTableRow({
             {/* D3: the peer's other
                id spaces render as ALIASES on this one row -- signing key ·
                node · endpoint -- never as extra peer rows. */}
-            {view.aliasLine ? <span className="font-mono text-fg-faint text-xs">{view.aliasLine}</span> : null}
+            {view.aliasLine ? (
+              <span className="inline-flex items-center gap-1">
+                <span className="font-mono text-fg-faint text-xs">{view.aliasLine}</span>
+                <InfoHover census="peer:aliases" describes="the peer's ids" label={PEER_ALIAS_TOOLTIP} />
+              </span>
+            ) : null}
             {/* UX §2: "self-reported" is true of every row, so it is said
                once in the legend under the table, not on each row. */}
             {view.identityNote ? <span className="text-fg-faint text-xs">{view.identityNote}</span> : null}

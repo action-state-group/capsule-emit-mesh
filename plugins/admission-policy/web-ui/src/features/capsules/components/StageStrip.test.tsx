@@ -4,6 +4,7 @@ import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { StageStrip } from '@/features/capsules/components/StageStrip'
 import type { SplitRowJson, StageBlock } from '@/features/capsules/lib/split-stage'
+import { HANDOFF_TOOLTIPS, STAGE_CELL_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
 
 const FIXTURES = resolve(__dirname, '../../../../../../../tests/fixtures/split-stage')
 type HopCase = { name: string; own: unknown; receipt: unknown; carried: { capsule_id: string; block: unknown }[] }
@@ -49,6 +50,16 @@ describe('StageStrip', () => {
   it('names a conflict and a break in words', () => {
     render(<StageStrip split={requesterRow('two_records_one_key')} />)
     expect(screen.getByText(/two records for one stage/)).toBeInTheDocument()
+  })
+
+  it('gives each cell and each hand-off the hover for its own state', () => {
+    render(<StageStrip split={requesterRow('missing_end_absent')} />)
+    const missing = document.querySelector('[data-stage-cell="not_received"]') as HTMLElement
+    expect(missing).toHaveAccessibleDescription(STAGE_CELL_TOOLTIPS.not_received)
+    const ok = document.querySelector('[data-stage-cell="ok"]') as HTMLElement | null
+    if (ok) expect(ok).toHaveAccessibleDescription(STAGE_CELL_TOOLTIPS.ok)
+    const gap = document.querySelector('[data-handoff="gap"]') as HTMLElement
+    expect(gap).toHaveAccessibleDescription(HANDOFF_TOOLTIPS.gap)
   })
 
   it('shows a stopped request beside hand-offs that agree', () => {

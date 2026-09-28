@@ -116,14 +116,15 @@ describe('LedgerPeersTable — toolbar', () => {
     expect(screen.queryByText(CLEAN_ROW.peer_id ?? '')).not.toBeInTheDocument()
   })
 
-  it('the Alarm filter narrows to only the alarmed peer', async () => {
+  it('the Needs a look filter narrows to only the peer that needs a look, and never says Alarm', async () => {
     const user = userEvent.setup()
     const props = buildFixtureProps()
     render(<LedgerPeersTable {...props} />)
 
     await user.click(screen.getByRole('button', { name: /filter peers/i }))
     await user.click(screen.getByRole('button', { name: /^none$/i }))
-    await user.click(screen.getByRole('checkbox', { name: /has alarm/i }))
+    expect(screen.queryByText(/alarm/i)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('checkbox', { name: /needs a look/i }))
 
     expect(screen.getByText(ALARMED_ROW.peer_id ?? '')).toBeInTheDocument()
     expect(screen.queryByText(CLEAN_ROW.peer_id ?? '')).not.toBeInTheDocument()

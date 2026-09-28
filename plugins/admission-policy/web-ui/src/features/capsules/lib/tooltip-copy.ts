@@ -45,13 +45,19 @@ export const PEER_COLUMN_TOOLTIPS = {
   exchanges: 'Distinct exchanges with this peer. Your record and theirs of the same exchange count once.',
   confirmed: 'How many of your exchanges with them are confirmed by their own signed record, checked on this machine.',
   match:
-    'Their record and yours hold the same request and the same answer. A difference means the two records disagree.',
+    'How many of their records hold the same request and answer as yours, and how many disagree, including records your node refused for naming another server or model.',
   adjudication:
-    'Times someone compared this peer’s answers to another’s and sealed a verdict, and how many they looked at.',
+    'Verdicts sealed about this peer’s answers, and how many exchanges they looked at. None means no verdict has been sealed about this peer.',
   witness:
     'Whether this peer’s records are held by a witness they don’t run. Not shown yet: this view doesn’t have that data.',
   period: 'The date of your latest exchange with this peer.'
 } as const
+
+/** The Peers row's alias line, and the table's second group. */
+export const PEER_ALIAS_TOOLTIP =
+  'The ids this peer uses: the key it signs with, its mesh node and its endpoint, as they appear on your records.'
+export const ADVERTISED_UNUSED_TOOLTIP = 'Nodes the mesh told you about that you haven’t exchanged with.'
+export const PEER_NEEDS_A_LOOK_LABEL = 'Needs a look'
 
 /** The peer's self-reported identity note. */
 export const SELF_REPORTED_TOOLTIP =
@@ -71,13 +77,13 @@ export const PEER_ATTENTION = {
   differingAnswers: {
     label: (n: number) => `${n} differing answer${n === 1 ? '' : 's'}`,
     tooltip: (n: number, when?: string | null) =>
-      `${n === 1 ? '1 sealed comparison' : `${n} sealed comparisons`} found this peer’s answer differed from another machine’s.${
+      `${n === 1 ? '1 comparison your node sealed' : `${n} comparisons your node sealed`} found this peer’s answer differed from another machine’s.${
         when ? ` Latest: ${when}.` : ''
       }`
   },
   logFailed: {
     label: () => 'log didn’t check out',
-    tooltip: () => 'Their log, as shown to you, did not check out on this machine.'
+    tooltip: () => 'Your node fetched their log and it failed its checks on this machine.'
   },
   refused: {
     label: () => 'refused a request',
@@ -225,6 +231,24 @@ export const SPLIT_TOOLTIPS = {
     'The records at both ends of each hand-off name the same data. It says the two records agree, not which node signed them, that the nodes are independent, or that any layer was computed correctly.',
   throughSplit:
     'Nodes the coordinator says ran part of a request you sent it. You never dealt with them directly.'
+} as const
+
+/** The stage strip: one hover per cell state and per hand-off state. */
+export const STAGE_CELL_TOOLTIPS = {
+  coordinator_slice: 'The part of the request the coordinator ran itself.',
+  ok: 'This stage’s record matches what the coordinator assigned it.',
+  disagrees: 'This stage’s record doesn’t match what the coordinator assigned it.',
+  not_received: 'No record from this stage reached you.',
+  not_requested: 'This stage wasn’t part of the run.',
+  conflict: 'Two different records claim this stage; one of them is wrong.',
+  rejected: 'A record here is broken or isn’t a valid record of this stage, so it can’t be read.'
+} as const
+
+export const HANDOFF_TOOLTIPS = {
+  agree: 'The records at both ends of this hand-off name the same data.',
+  gap: 'One end of this hand-off has no record.',
+  break: 'The two ends of this hand-off name different data.',
+  malformed: 'A record at this hand-off is broken and can’t be read.'
 } as const
 
 /** §7.5: the drill's "your dealings with them" section title (console copy). */

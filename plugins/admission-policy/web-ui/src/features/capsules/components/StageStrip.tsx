@@ -1,10 +1,11 @@
 // The stage strip under a split request's row (design §7.2): one cell per
 // stage, the hand-offs line, and the request's terminal state beside it.
 // It is added beneath the row and never replaces the row's own state.
+import { HoverChip } from '@/features/capsules/components/HoverChip'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
 import type { SplitRowJson } from '@/features/capsules/lib/split-stage'
 import { splitView, stageRowHeadline } from '@/features/capsules/lib/split-stage'
-import { SPLIT_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
+import { HANDOFF_TOOLTIPS, SPLIT_TOOLTIPS, STAGE_CELL_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
 
 const HANDOFF_TONE: Record<string, string> = {
   agree: 'text-foreground',
@@ -38,22 +39,26 @@ export function StageStrip({ split }: { split: SplitRowJson }) {
           per coordinator:
         </span>
         {view.cells.map((cell, i) => (
-          <span data-stage-cell={cell.state} key={cell.stageIndex} title={cell.words}>
-            {i > 0 ? <span className="text-fg-faint">· </span> : null}
-            {cell.nodeId} {cell.layers}
-            {cell.mark ? ` ${cell.mark}` : ''}
-            {cell.state !== 'ok' ? <span className="text-fg-dim"> {cell.words}</span> : null}
-          </span>
+          <HoverChip census={`split:cell:${cell.state}`} key={cell.stageIndex} label={STAGE_CELL_TOOLTIPS[cell.state]}>
+            <span data-stage-cell={cell.state} tabIndex={0}>
+              {i > 0 ? <span className="text-fg-faint">· </span> : null}
+              {cell.nodeId} {cell.layers}
+              {cell.mark ? ` ${cell.mark}` : ''}
+              {cell.state !== 'ok' ? <span className="text-fg-dim"> {cell.words}</span> : null}
+            </span>
+          </HoverChip>
         ))}
         <InfoHover census="split:stage_cell" describes="the stage cells" label={SPLIT_TOOLTIPS.stageCell} />
       </p>
       <p className="inline-flex flex-wrap items-center gap-x-2">
         <span className="text-fg-faint">hand-offs:</span>
         {view.handoffs.map((item) => (
-          <span className={HANDOFF_TONE[item.state]} data-handoff={item.state} key={item.label}>
-            {item.label} {item.words}
-            {item.state === 'agree' ? ' ✓' : ''}
-          </span>
+          <HoverChip census={`split:handoff:${item.state}`} key={item.label} label={HANDOFF_TOOLTIPS[item.state]}>
+            <span className={HANDOFF_TONE[item.state]} data-handoff={item.state} tabIndex={0}>
+              {item.label} {item.words}
+              {item.state === 'agree' ? ' ✓' : ''}
+            </span>
+          </HoverChip>
         ))}
         <span className="text-fg-faint">·</span>
         <span data-split-terminal-state={view.terminalState}>request: {view.terminalState.replace(/_/g, ' ')}</span>
