@@ -1568,7 +1568,7 @@ describe('LedgerPageContent — real twin bracket + Twins-only filter', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
-    expect(await screen.findByText('TWIN · twin-abc · same request, two peers')).toBeInTheDocument()
+    expect(await screen.findByTestId('twin-bracket-twin-abc')).toHaveTextContent('Side-by-side check · twin-abc · same request, two machines')
     expect(screen.getByRole('group', { name: 'Exchange twin-exch-0' })).toBeInTheDocument()
     expect(screen.getByRole('group', { name: 'Exchange twin-exch-1' })).toBeInTheDocument()
     expect(
@@ -1589,7 +1589,7 @@ describe('LedgerPageContent — real twin bracket + Twins-only filter', () => {
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
 
     expect(await screen.findByRole('group', { name: 'Exchange twin-exch-0' })).toBeInTheDocument()
-    expect(screen.queryByText(/TWIN ·/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Side-by-side check/)).not.toBeInTheDocument()
   })
 
   it('the disclosure sentence uses the LIVE configured rate from the payload, not a hardcoded 1 in 50', async () => {

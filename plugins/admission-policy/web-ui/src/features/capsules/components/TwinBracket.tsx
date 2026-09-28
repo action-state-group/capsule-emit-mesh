@@ -19,7 +19,8 @@ import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import { saveTextFile } from '@/features/capsules/lib/exchange-export'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
 import { VerdictRecordDialog } from '@/features/capsules/components/VerdictRecordDialog'
-import { TWIN_NO_VERDICT_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
+import { HoverChip } from '@/features/capsules/components/HoverChip'
+import { TWIN_NO_VERDICT_TOOLTIP, TWIN_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
 import {
   TWIN_ANSWER_LABEL,
   twinAnswerState,
@@ -78,12 +79,19 @@ export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, childr
       role="group"
     >
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-soft bg-panel-strong/60 px-3 py-1.5">
-        <p className="type-caption font-mono font-medium text-fg-dim">TWIN · {bracketId} · same request, two peers</p>
+        <p className="type-caption inline-flex items-center gap-1 font-medium text-fg-dim">
+          Side-by-side check · <span className="font-mono">{bracketId.length > 12 ? `${bracketId.slice(0, 12)}…` : bracketId}</span> · same request, two machines
+          <InfoHover census="twin:header" describes="the side-by-side check" label={TWIN_TOOLTIPS.header} />
+        </p>
         <span className="inline-flex items-center gap-1">
           {/* A checked fact (the two sealed answer-text digests), never a verdict. */}
-          <StatusBadge size="caption" tone={answer === 'different' ? 'warn' : 'muted'}>
-            {TWIN_ANSWER_LABEL[answer]}
-          </StatusBadge>
+          <HoverChip census={`twin:answer:${answer}`} label={TWIN_TOOLTIPS[answer]}>
+            <span className="inline-flex" tabIndex={0}>
+              <StatusBadge size="caption" tone={answer === 'different' ? 'warn' : 'muted'}>
+                {TWIN_ANSWER_LABEL[answer]}
+              </StatusBadge>
+            </span>
+          </HoverChip>
           {verdict === null ? (
             <>
               <StatusBadge size="caption" tone="muted">
@@ -92,9 +100,13 @@ export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, childr
               <InfoHover census="twin:no_verdict" describes="the no verdict badge" label={TWIN_NO_VERDICT_TOOLTIP} />
             </>
           ) : (
-            <StatusBadge size="caption" tone={verdict.kind === 'contradicted' ? 'bad' : 'good'}>
-              {verdict.kind === 'contradicted' ? `referee: contradicted ${verdict.party.slice(0, 10)}…` : 'referee: corroborated'}
-            </StatusBadge>
+            <HoverChip census="twin:verdict" label={TWIN_TOOLTIPS.verdict}>
+              <span className="inline-flex" tabIndex={0}>
+                <StatusBadge size="caption" tone={verdict.kind === 'contradicted' ? 'bad' : 'good'}>
+                  {verdict.kind === 'contradicted' ? `referee: contradicted ${verdict.party.slice(0, 10)}…` : 'referee: corroborated'}
+                </StatusBadge>
+              </span>
+            </HoverChip>
           )}
         </span>
       </div>
@@ -102,14 +114,19 @@ export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, childr
       <div className="flex flex-col divide-y divide-border-soft">{children}</div>
 
       <div className="flex flex-col gap-1.5 border-t border-border-soft bg-panel-strong/40 px-3 py-2">
-        <p className="type-caption font-mono text-fg-dim">COMPARISON</p>
-        {parametersLine ? <p className="type-caption text-fg-faint">{parametersLine}</p> : null}
+        <p className="type-caption text-fg-dim">What was compared</p>
+        {parametersLine ? (
+          <p className="type-caption inline-flex items-center gap-1 text-fg-faint">
+            {parametersLine}
+            <InfoHover census="twin:parameters" describes="the settings line" label={TWIN_TOOLTIPS.parameters} />
+          </p>
+        ) : null}
         {/* OBSERVE-ONLY -- this line NEVER renders "identical"/"differs" or
            any other computed verdict, only the honest state of adjudication
            itself. */}
         {verdict === null ? (
           <p className="type-caption text-fg-faint">
-            Not yet adjudicated — no referee has signed a verdict for this pair.
+            No verdict yet — no referee has signed one for this pair.
           </p>
         ) : (
           <p className="type-caption flex flex-wrap items-center gap-x-2 text-fg-faint">
@@ -133,28 +150,34 @@ export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, childr
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="type-caption text-fg-faint">{disclosure}</p>
           <div className="flex items-center gap-1">
-            <Button
-              disabled={!canCompare}
-              onClick={() => setCompareOpen((open) => !open)}
-              size="sm"
-              title={canCompare ? undefined : 'Neither side has response text to compare yet.'}
-              type="button"
-              variant="outline"
+            <HoverChip
+              census="twin:compare"
+              label={canCompare ? TWIN_TOOLTIPS.compare : 'Neither side has answer text to compare yet.'}
             >
-              {compareOpen ? 'Compare ▾' : 'Compare ▸'}
-            </Button>
-            <Button onClick={handleSave} size="sm" type="button" variant="outline">
-              ⧉ Save
-            </Button>
+              <Button
+                disabled={!canCompare}
+                onClick={() => setCompareOpen((open) => !open)}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                {compareOpen ? 'Compare ▾' : 'Compare ▸'}
+              </Button>
+            </HoverChip>
+            <HoverChip census="twin:save" label={TWIN_TOOLTIPS.save}>
+              <Button onClick={handleSave} size="sm" type="button" variant="outline">
+                Save both records
+              </Button>
+            </HoverChip>
           </div>
         </div>
         {compareOpen && canCompare ? (
           <div className="mt-1 overflow-hidden rounded border border-border-soft">
             <ReactDiffViewer
-              leftTitle="Peer A response"
+              leftTitle="First answer"
               newValue={textB ?? ''}
               oldValue={textA ?? ''}
-              rightTitle="Peer B response"
+              rightTitle="Second answer"
               splitView
               styles={diffViewerStyles}
             />

@@ -148,6 +148,21 @@ export const ENTRY_CHIP_RESULT_TOOLTIPS = {
 export const OWN_RECORD_FAILS_WARNING =
   'Your own copy of this record fails its checks, so neither side can rely on it, whatever the badge says.'
 
+/** The side-by-side check (the twin bracket): its hovers. The answer
+ *  comparison is this node's plugin comparing the two sealed answer
+ *  fingerprints (evidence_panes.rs attach_twins); a verdict is a referee's
+ *  signed record, read here, its signature checked by the plugin. */
+export const TWIN_TOOLTIPS = {
+  header: 'Your node sent the same request to two machines and kept both answers, so they can be compared.',
+  same: 'The two machines’ answers have the same fingerprint, compared by this node. That is not a verdict.',
+  different: 'The two machines’ answers have different fingerprints, compared by this node. That alone doesn’t say which is wrong.',
+  not_compared: 'Not compared yet: one of the two answers’ fingerprints hasn’t reached this node.',
+  verdict: 'A referee’s signed verdict on this pair. Open it to see whether its signature checks on this node.',
+  parameters: 'The settings both machines were asked to use; a difference here can explain a different answer.',
+  compare: 'Show the two answers side by side. This page doesn’t judge them.',
+  save: 'Download both records of this side-by-side check as a file.'
+} as const
+
 /** The TWIN bracket's `no verdict` badge. */
 export const TWIN_NO_VERDICT_TOOLTIP =
   'The same request went to two machines and both answers are recorded. No one has compared them and sealed a verdict yet.'

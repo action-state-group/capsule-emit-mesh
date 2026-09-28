@@ -47,7 +47,8 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
         <p>row b</p>
       </TwinBracket>
     )
-    expect(screen.getByText(/TWIN · twin-xyz · same request, two peers/)).toBeInTheDocument()
+    expect(screen.getByText(/Side-by-side check/)).toBeInTheDocument()
+    expect(screen.getByText(/same request, two machines/)).toBeInTheDocument()
     expect(screen.getByText('row a')).toBeInTheDocument()
     expect(screen.getByText('row b')).toBeInTheDocument()
   })
@@ -107,8 +108,8 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
     const button = screen.getByRole('button', { name: /Compare/ })
     expect(button).toBeEnabled()
     await user.click(button)
-    expect(screen.getByText('Peer A response')).toBeInTheDocument()
-    expect(screen.getByText('Peer B response')).toBeInTheDocument()
+    expect(screen.getByText('First answer')).toBeInTheDocument()
+    expect(screen.getByText('Second answer')).toBeInTheDocument()
   })
 
   it('says "same answer" / "different answers" from the pane twin facts, and keeps "no verdict" until a referee signs one', () => {

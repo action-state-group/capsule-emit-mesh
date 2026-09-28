@@ -282,6 +282,7 @@ describe('tooltip census -- the copy itself', () => {
       ...Object.values(COPY.CLOSED_CELL_TOOLTIPS),
       ...Object.values(COPY.ENTRY_CHIP_RESULT_TOOLTIPS).flatMap((byMark) => Object.values(byMark)),
       COPY.OWN_RECORD_FAILS_WARNING,
+      ...Object.values(COPY.TWIN_TOOLTIPS),
       COPY.TWIN_NO_VERDICT_TOOLTIP,
       ...Object.values(COPY.SPLIT_TOOLTIPS),
       ...Object.values(COPY.INTEGRITY_TILE_TOOLTIPS),
