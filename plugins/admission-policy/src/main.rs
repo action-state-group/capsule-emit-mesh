@@ -12,6 +12,7 @@ mod record_push_bridge;
 #[allow(dead_code)]
 mod peer_root_ledger;
 mod share_policy;
+mod web_ui_manifest;
 
 use axum::{
     extract::State,
@@ -435,6 +436,21 @@ async fn serve_admission_http(listener: TcpListener, state: AppState) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Packaging time: print the `plugin-manifest.json` the installer reads
+    // (config schema + web UI block) and exit, before any listener, ledger,
+    // or key is touched.
+    if std::env::args().nth(1).as_deref() == Some("--print-package-manifest") {
+        println!(
+            "{}",
+            web_ui_manifest::package_manifest_json_for(
+                PLUGIN_ID,
+                PLUGIN_VERSION,
+                share_policy::share_policy_config_schema(PLUGIN_ID),
+            )?
+        );
+        return Ok(());
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
@@ -517,6 +533,7 @@ async fn main() -> anyhow::Result<()> {
     ))
     .provide(capability("admission_policy.v1"))
     .config_item(share_policy::share_policy_config_schema(PLUGIN_ID))
+    .web_ui_item(web_ui_manifest::evidence_web_ui())
     .mesh_item(mesh_channel(OPENAI_EXCHANGE_CHANNEL))
     .mesh_item(mesh_channel(EVIDENCE_REQUEST_CHANNEL))
     .mesh_item(mesh_channel(record_push_bridge::RECORD_PUSH_CHANNEL))

@@ -1,2 +1,4 @@
 /target
 /admission-policy-data
+# Built by web-ui/ (`pnpm build`); the release workflow builds and packages it.
+/bundle
