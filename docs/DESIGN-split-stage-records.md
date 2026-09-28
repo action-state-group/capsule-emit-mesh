@@ -618,3 +618,18 @@ The decisions in §10 are built as recommended.
   (checkpoint cadence off) cannot carry stage records.
 - **Addressing.** A stage pushes to `coordinator_node_id` as a mesh peer id. That the stage
   runtime's coordinator node id is the id plugins address streams to is a host question.
+
+### 12.2 Console
+
+- **Where it lands.** The Evidence page now ships as the plugin's own web UI bundle
+  (`plugins/admission-policy/web-ui/`, ported from the fork console's tab), so the strip is built
+  there. Porting it back to the fork tab is a file copy.
+- **Built:** the stage strip under a split row (§7.2), with cells, the hand-offs line folded to
+  the worst lane per hop and the terminal state beside it. Also the stage node's own row line
+  (§7.4), the Peers group "Nodes that served you through a split" (§7.3, shown only when
+  non-empty), and tooltip-census entries for all three. The page runs its own copy of the
+  requester's check, and it passes the same fixtures as the Rust and Python ones.
+- **Not built yet:** nesting parent and child rows by bracket key (§7.1, Q-D7) and the role
+  filter chips. The coordinator's `you delegated` child rows need a pane that emits
+  stage-exchange rows, and no pane serves `split` yet (`DATA-ROUTES.md`). Until then the strip
+  under the parent row carries the per-stage view, and twins keep today's adjacency grouping.

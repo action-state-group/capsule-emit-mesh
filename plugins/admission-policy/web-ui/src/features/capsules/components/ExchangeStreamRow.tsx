@@ -49,6 +49,7 @@ import {
   tokenFlowText
 } from '@/features/capsules/lib/serving-provenance'
 import { shortId } from '@/features/capsules/lib/short-id'
+import { StageStrip } from '@/features/capsules/components/StageStrip'
 import { copyStateLabel } from '@/lib/copyStateLabel'
 import { useClipboardCopy } from '@/lib/useClipboardCopy'
 
@@ -378,6 +379,7 @@ export function ExchangeStreamRow({
           </div>
         </div>
         <ExchangeRowChips checks={checksRows} onChipActivate={handleChipActivate} />
+        {row.raw.split ? <StageStrip split={row.raw.split} /> : null}
         {/* v3 §2's row footer: two independent
            disclosure toggles, never a modal. Always present, regardless of
            the right-cell state. */}

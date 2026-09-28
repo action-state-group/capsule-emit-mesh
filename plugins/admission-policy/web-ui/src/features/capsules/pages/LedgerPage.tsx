@@ -27,6 +27,7 @@ import { LedgerPeersTable } from '@/features/capsules/components/LedgerPeersTabl
 import { InfoHover } from '@/features/capsules/components/InfoHover'
 import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
 import { TwinBracket } from '@/features/capsules/components/TwinBracket'
+import { peersThroughSplit } from '@/features/capsules/lib/split-stage'
 import {
   buildExchangeCounterpartyIndex,
   buildExchangeLedgerRows,
@@ -294,6 +295,9 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
         exchangeSourcesFor={(peerId) => sourcesByPeerId.get(peerId) ?? []}
         meshStatus={meshStatus}
         recordsById={effectiveRecordsById}
+        throughSplit={peersThroughSplit(
+          (paneCQuery.data?.rows ?? []).flatMap((row) => (row.split ? [row.split] : []))
+        )}
       />
     </div>
   )

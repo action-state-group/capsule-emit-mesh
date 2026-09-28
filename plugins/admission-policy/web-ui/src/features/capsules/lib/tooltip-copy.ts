@@ -147,3 +147,13 @@ export const CHECK_CHIP_TOOLTIPS: Record<string, string> = {
 export function checkChipTooltipKey(propertyKey: string, factKey?: 'binding' | 'authority'): string {
   return factKey ? `${propertyKey}:${factKey}` : propertyKey
 }
+
+/** A split request's stage strip (docs/DESIGN-split-stage-records.md §7.2).
+ *  Face copy: plain words, and `agree` never claims more than the records do. */
+export const SPLIT_TOOLTIPS = {
+  stageCell:
+    'Each node signed its own record of the layers it ran. A tick means that record matches what the coordinator assigned it.',
+  handoffs:
+    'Both ends of each hand-off recorded the same data. It says the two records agree, not that the nodes are independent or that any layer was computed correctly.',
+  throughSplit: 'Nodes that ran part of a request you sent to a coordinator. You never dealt with them directly.'
+} as const
