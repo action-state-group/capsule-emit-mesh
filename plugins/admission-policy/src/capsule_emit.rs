@@ -892,9 +892,86 @@ impl CapsuleState {
         result
     }
 
+    /// The coordinator's main record of a split request: the same observed
+    /// exchange record [`Self::emit_for_observed_host_exchange`] seals, with
+    /// the split added. Its stage-exchange records are appended first, under
+    /// the same ledger lock, so the main record chains straight after them
+    /// and cites each one `split_stage`.
+    pub fn emit_for_observed_split_exchange(
+        &self,
+        observed: &ObservedHostExchange,
+        plan: &crate::split_stage::SplitPlan,
+    ) -> anyhow::Result<EmittedCapsule> {
+        let result = self.seal_observed_host_exchange_with(observed, Some(plan));
+        if let Err(error) = &result {
+            let count = self
+                .observed_not_sealed
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
+            tracing::warn!(%error, observed_not_sealed = count, "observed split exchange NOT sealed");
+        }
+        result
+    }
+
+    /// A stage node's own record of one request (`side: stage`), through the
+    /// single-writer path every local record uses.
+    pub fn emit_stage_record(
+        &self,
+        block: &capsule_producer::stage::StageBlock,
+    ) -> anyhow::Result<EmittedCapsule> {
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.append_stage_record(&mut ledger, block, None)
+    }
+
+    fn append_stage_record(
+        &self,
+        ledger: &mut Ledger,
+        block: &capsule_producer::stage::StageBlock,
+        stage_record_id: Option<&str>,
+    ) -> anyhow::Result<EmittedCapsule> {
+        let capsule = capsule_producer::stage::seal_stage_record(
+            block,
+            stage_record_id,
+            ledger.chain_head(),
+            &self.keys.signing_key,
+        )?;
+        let capsule_id = capsule["capsule_id"]
+            .as_str()
+            .expect("seal_stage_record always sets capsule_id")
+            .to_string();
+        self.append_local(ledger, &capsule, &capsule_id)?;
+        Ok(EmittedCapsule { capsule_id, capsule })
+    }
+
+    fn append_local(&self, ledger: &mut Ledger, capsule: &Value, capsule_id: &str) -> anyhow::Result<()> {
+        let payload = capsule_producer::capsule::payload_bytes(capsule);
+        let statement = build_signed_statement(
+            &SignedStatementInput {
+                payload: &payload,
+                issuer: &self.node_id,
+                subject: capsule_id,
+                content_type: CAPSULE_CONTENT_TYPE,
+            },
+            &self.keys.signing_key,
+        );
+        ledger.append(capsule, &statement)?;
+        Ok(())
+    }
+
     fn seal_observed_host_exchange(
         &self,
         observed: &ObservedHostExchange,
+    ) -> anyhow::Result<EmittedCapsule> {
+        self.seal_observed_host_exchange_with(observed, None)
+    }
+
+    fn seal_observed_host_exchange_with(
+        &self,
+        observed: &ObservedHostExchange,
+        split: Option<&crate::split_stage::SplitPlan>,
     ) -> anyhow::Result<EmittedCapsule> {
         let ObservedHostExchange {
             model,
@@ -952,6 +1029,9 @@ impl CapsuleState {
             host.served_by_node_id.as_deref(),
             learned_self.as_deref(),
         );
+        if split.is_some() && role != "served" {
+            anyhow::bail!("a split's main record is the coordinator's served record, not {role:?}");
+        }
 
         // agent_input_digest: the host-forwarded canonical request-body digest
         // when present; an explicit honest sentinel otherwise (never fabricated).
@@ -985,6 +1065,23 @@ impl CapsuleState {
             .ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A split's stage-exchange records go on the chain first, so the main
+        // record below chains after them and can cite them.
+        let split = match split {
+            Some(plan) => {
+                let mut stage_exchange_records = Vec::new();
+                for (block, stage_record_id) in &plan.exchanges {
+                    let emitted = self.append_stage_record(&mut ledger, block, stage_record_id.as_deref())?;
+                    stage_exchange_records.push((block.stage_index, emitted.capsule_id));
+                }
+                Some(capsule_producer::stage::SplitMainExtension {
+                    own_slice: plan.own_slice.clone(),
+                    receipt: plan.receipt.clone(),
+                    stage_exchange_records,
+                })
+            }
+            None => None,
+        };
         let chain = ledger.chain_head().map(|parent| ChainLink {
             parent_capsule_id: parent.to_string(),
             relation: "follows".to_string(),
@@ -1149,7 +1246,10 @@ impl CapsuleState {
             store_nonce: capsule_producer::capsule::fresh_store_nonce(),
         };
 
-        let mut capsule = seal(&input)?;
+        let mut capsule = match &split {
+            Some(split) => capsule_producer::stage::seal_split_main_record(&input, split)?,
+            None => seal(&input)?,
+        };
         let capsule_id = capsule["capsule_id"]
             .as_str()
             .expect("seal() always sets capsule_id")
@@ -2659,6 +2759,166 @@ mod tests {
             peer_capsule_id_provenance: None,
             twin_bracket_id: None,
         }
+    }
+
+    fn split_case(name: &str) -> Value {
+        let cases: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/split-stage/hop-cases.json"
+        ))
+        .unwrap();
+        cases.as_array().unwrap().iter().find(|c| c["name"] == name).unwrap().clone()
+    }
+
+    /// A released split for `name`, with every stage record sealed under its
+    /// own key and handed to the collector.
+    fn released_split(name: &str) -> (crate::split_stage::SplitPlan, Vec<Value>) {
+        use crate::split_stage::{plan_split, SplitCollector, StageEvent};
+        use capsule_producer::stage::{seal_stage_record, CoordinatorReceipt, StageBlock};
+        let case = split_case(name);
+        let receipt = CoordinatorReceipt::from_value(&case["receipt"]).unwrap();
+        let collector = SplitCollector::<()>::default();
+        collector
+            .on_stage_zero(
+                StageEvent {
+                    block: StageBlock::from_value(&case["own"]).unwrap(),
+                    exchange_id: Some("e".into()),
+                    coordinator_term: Some(7),
+                    topology: Some(receipt.topology.iter().map(|t| t.assignment.clone().unwrap()).collect()),
+                },
+                0,
+            )
+            .unwrap();
+        collector.hold(Some("e"), ());
+        let records: Vec<Value> = case["carried"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| {
+                let key = KeyPair::generate();
+                seal_stage_record(&StageBlock::from_value(&c["block"]).unwrap(), None, None, &key.signing_key)
+                    .unwrap()
+            })
+            .collect();
+        for r in &records {
+            collector.on_stage_record(r, 1);
+        }
+        let ready = collector.take_due(2, 2_000).pop().unwrap();
+        (plan_split(&ready, 2_000).unwrap(), records)
+    }
+
+    #[test]
+    fn a_split_main_record_chains_after_its_stage_exchange_records_and_cites_them() {
+        let dir = std::env::temp_dir().join(format!("cap-split-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let (plan, records) = released_split("relayed_all_agree");
+        let main = state
+            .emit_for_observed_split_exchange(&observed_with(DispatchPath::RawProxy, None), &plan)
+            .expect("seal split");
+        let lines: Vec<Value> = std::fs::read_to_string(dir.join("ledger").join("capsules.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 3, "two stage-exchange records, then the main record");
+        let (ex1, ex2, last) = (&lines[0], &lines[1], &lines[2]);
+        assert_eq!(last["capsule_id"], Value::from(main.capsule_id.as_str()));
+        assert_eq!(ex2["chain"]["parent_capsule_id"], ex1["capsule_id"]);
+        assert_eq!(last["chain"]["parent_capsule_id"], ex2["capsule_id"]);
+        assert_eq!(last["references"][0]["digest"], ex1["capsule_id"]);
+        assert_eq!(last["references"][1]["digest"], ex2["capsule_id"]);
+        assert_eq!(ex1["references"][0]["digest"], records[0]["capsule_id"]);
+        assert_eq!(ex1["references"][0]["citation_purpose"], Value::from("counterparty_half"));
+        // The ledger reopens clean over the new record kinds.
+        drop(state);
+        let (_, report) = Ledger::open(&dir.join("ledger")).expect("reopen");
+        assert_eq!(report.valid_entries, 3);
+        // And the requester's check over exactly what was sealed agrees.
+        let verdict = capsule_producer::stage_verify::verify_split_records(&main.capsule, &plan.carried).unwrap();
+        assert!(verdict.handoffs_agree, "{verdict:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The coordinator's push body for a split: the main record, covered by
+    /// a real checkpoint, with the stage records it cites.
+    fn real_split_bundle(dir: &Path) -> Value {
+        use capsule_producer::anchor::AnchorClient;
+        use capsule_producer::checkpoint::{CheckpointCadenceConfig, CheckpointState};
+        let state = CapsuleState::open(dir, "rust-node").expect("open state");
+        let (plan, _) = released_split("relayed_all_agree");
+        let main = state
+            .emit_for_observed_split_exchange(&observed_with(DispatchPath::RawProxy, None), &plan)
+            .expect("seal split");
+        let (mut checkpoints, _) =
+            CheckpointState::load(&dir.join("ledger"), "rust-node", CheckpointCadenceConfig::default())
+                .expect("load checkpoint state");
+        let coverage = checkpoints
+            .checkpoint_covering(&main.capsule_id, state.signing_key(), &AnchorClient::new("http://127.0.0.1:1"))
+            .expect("cover the main record");
+        crate::record_push_bridge::split_bundle_body(&main.capsule, &coverage, &plan.carried)
+    }
+
+    #[test]
+    fn a_split_bundle_carries_exactly_the_stage_records_its_receipt_names() {
+        let dir = std::env::temp_dir().join(format!("cap-split-bundle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let body = real_split_bundle(&dir);
+        let carried = body[crate::record_push_bridge::SPLIT_STAGE_RECORDS].as_array().unwrap();
+        let receipt = &body["capsule"]["model_attestation"]["compute_attestation"]["x-mesh-coordinator-receipt-v1"];
+        let named: Vec<&Value> = receipt["stages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s.get("bundle_ref"))
+            .map(|r| &r["digest"])
+            .collect();
+        let carried_ids: Vec<&Value> = carried.iter().map(|r| &r["capsule_id"]).collect();
+        assert_eq!(named, carried_ids);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Writes `tests/fixtures/split-stage/rust-split-bundle.json`, which the
+    /// Python door's split test verifies. Run to regenerate:
+    ///   cargo test writes_the_split_bundle_fixture -- --ignored
+    #[test]
+    #[ignore = "regenerates a committed fixture"]
+    fn writes_the_split_bundle_fixture() {
+        let dir = std::env::temp_dir().join(format!("split-bundle-fixture-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let body = real_split_bundle(&dir);
+        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/split-stage/rust-split-bundle.json");
+        std::fs::write(&out, serde_json::to_string_pretty(&body).unwrap() + "\n").unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_split_is_refused_on_a_record_that_is_not_served_and_nothing_is_appended() {
+        let dir = std::env::temp_dir().join(format!("cap-split-refuse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let (plan, _) = released_split("relayed_all_agree");
+        let refused = state.emit_for_observed_split_exchange(&observed_with(DispatchPath::RemoteMesh, None), &plan);
+        assert!(refused.is_err());
+        assert!(state.chain_head().is_none(), "no stage-exchange record without its main record");
+        assert_eq!(state.observed_not_sealed(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stage_record_is_sealed_through_the_single_writer_path() {
+        let dir = std::env::temp_dir().join(format!("cap-stage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let case = split_case("relayed_all_agree");
+        let block = capsule_producer::stage::StageBlock::from_value(&case["carried"][0]["block"]).unwrap();
+        let emitted = state.emit_stage_record(&block).expect("seal stage record");
+        assert_eq!(state.chain_head().as_deref(), Some(emitted.capsule_id.as_str()));
+        assert_eq!(
+            emitted.capsule["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["role"],
+            Value::from("stage")
+        );
+        assert!(emitted.capsule.get("signature").is_some(), "enveloped like every pushed record");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// THE BUG THIS RULING CLOSES: a `RemoteMesh`-routed exchange (this node

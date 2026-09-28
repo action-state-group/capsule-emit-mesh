@@ -99,6 +99,23 @@ pub fn bundle_body(capsule_json: &serde_json::Value, coverage: &Coverage) -> ser
     })
 }
 
+/// The bundle member that carries a split's stage records from the
+/// coordinator to the requester (`docs/DESIGN-split-stage-records.md` §6.3).
+/// The door checks each one and holds it; the requester's hop check then runs
+/// offline, without contacting any stage.
+pub const SPLIT_STAGE_RECORDS: &str = "split_stage_records";
+
+/// [`bundle_body`] plus the stage records a split's main record cites.
+pub fn split_bundle_body(
+    capsule_json: &serde_json::Value,
+    coverage: &Coverage,
+    stage_records: &[serde_json::Value],
+) -> serde_json::Value {
+    let mut body = bundle_body(capsule_json, coverage);
+    body[SPLIT_STAGE_RECORDS] = serde_json::Value::Array(stage_records.to_vec());
+    body
+}
+
 /// The pushed half inside a push body: the bundle's `capsule`, or the body
 /// itself for a bare push.
 fn pushed_half(body: &serde_json::Value) -> &serde_json::Value {
@@ -189,6 +206,7 @@ pub async fn handle_open_stream(
     request: OpenStreamRequest,
     _context: &mut PluginContext<'_>,
     capsules: Arc<CapsuleState>,
+    splits: Arc<crate::split_stage::SplitCollector<crate::lifecycle_channel::OpenAiExchangeEnvelope>>,
 ) -> PluginResult<Option<OpenStreamResponse>> {
     let listener = bind_side_stream(crate::PLUGIN_ID, &request.stream_id)
         .await
@@ -204,7 +222,7 @@ pub async fn handle_open_stream(
     // the peer WITHOUT an ack -- so it retries -- never with an ack for a
     // half our chain did not cite.
     tokio::spawn(async move {
-        if let Err(error) = bridge_inbound_record_push(listener, capsules).await {
+        if let Err(error) = bridge_inbound_record_push(listener, capsules, splits).await {
             tracing::warn!(%error, "mesh record-push responder bridge failed");
         }
     });
@@ -248,6 +266,7 @@ fn foreign_digest<'a>(capsule: &'a serde_json::Value, field: &str) -> Option<&'a
 async fn bridge_inbound_record_push(
     listener: LocalListener,
     capsules: Arc<CapsuleState>,
+    splits: Arc<crate::split_stage::SplitCollector<crate::lifecycle_channel::OpenAiExchangeEnvelope>>,
 ) -> anyhow::Result<()> {
     let local = listener.accept().await?;
     let (mut read_half, mut write_half) = local.into_split();
@@ -291,7 +310,10 @@ async fn bridge_inbound_record_push(
     let reply_bytes = match door_reply {
         Some(reply) if door_accepted(&reply) => {
             match seal_citing_records_for_push(&capsules, &sender_peer_id, &capsule_bytes, &reply).await {
-                Ok(()) => response_bytes.to_vec(),
+                Ok(()) => {
+                    collect_stage_record(&splits, &capsule_bytes);
+                    response_bytes.to_vec()
+                }
                 Err(error) => {
                     tracing::warn!(%error, received_from = %sender_peer_id, "door stored the pushed half but a citing-record seal failed -- refusing instead of acking");
                     seal_failed_refusal()
@@ -305,6 +327,23 @@ async fn bridge_inbound_record_push(
     write_half.write_all(&reply_bytes).await?;
     write_half.shutdown().await?;
     Ok(())
+}
+
+/// A received stage record of a split this node coordinates goes to the
+/// collector as well: its stage-exchange record will cite it. Its ordinary
+/// citing record is already on the chain (seal-before-ack), and is the
+/// follow-up when the split was sealed before it arrived.
+fn collect_stage_record(
+    splits: &crate::split_stage::SplitCollector<crate::lifecycle_channel::OpenAiExchangeEnvelope>,
+    body_bytes: &[u8],
+) {
+    let Ok(body) = serde_json::from_slice::<serde_json::Value>(body_bytes) else {
+        return;
+    };
+    let arrival = splits.on_stage_record(pushed_half(&body), crate::split_stage::now_ms());
+    if arrival == crate::split_stage::Arrival::Late {
+        tracing::info!("stage record arrived after its split was sealed -- its citing record is the follow-up");
+    }
 }
 
 /// On door success: the half's `counterparty_half` citing record, then --
@@ -503,17 +542,26 @@ pub async fn push_capsule_to_peer(
     self_peer_id: &str,
     capsule_json: &serde_json::Value,
     coverage: Option<&Coverage>,
+    split_stage_records: &[serde_json::Value],
 ) -> anyhow::Result<()> {
     let response = match coverage {
-        Some(coverage) => {
-            let bundle = bundle_body(capsule_json, coverage);
+        Some(coverage) if !split_stage_records.is_empty() => {
+            let bundle = split_bundle_body(capsule_json, coverage, split_stage_records);
             let response = send_push(context, peer_id, self_peer_id, &bundle).await?;
-            if refused_as_older_door(&response) {
-                tracing::info!(%peer_id, "peer door predates bundles -- re-pushing the bare record");
-                send_push(context, peer_id, self_peer_id, capsule_json).await?
+            if refused_as_bundle_malformed(&response) {
+                // A door that reads bundles but not split stage records
+                // refuses the unknown member. The main record still goes;
+                // the requester then reads those stages as not received.
+                tracing::info!(%peer_id, "peer door does not take split stage records -- re-pushing the plain bundle");
+                push_plain_bundle(context, peer_id, self_peer_id, capsule_json, coverage).await?
             } else {
                 response
             }
+        }
+        Some(coverage) => push_plain_bundle(context, peer_id, self_peer_id, capsule_json, coverage).await?,
+        None if !split_stage_records.is_empty() => {
+            tracing::warn!(%peer_id, "no checkpoint coverage, so the split's stage records cannot be carried -- pushing the bare record");
+            send_push(context, peer_id, self_peer_id, capsule_json).await?
         }
         None => send_push(context, peer_id, self_peer_id, capsule_json).await?,
     };
@@ -521,6 +569,28 @@ pub async fn push_capsule_to_peer(
         anyhow::bail!("peer {peer_id} refused record-push: {response}");
     }
     Ok(())
+}
+
+fn refused_as_bundle_malformed(response: &serde_json::Value) -> bool {
+    response.get("reason").and_then(|r| r.as_str()) == Some("bundle_malformed")
+}
+
+/// Push the half as a bundle; a door that predates bundles gets the bare
+/// record once more.
+async fn push_plain_bundle(
+    context: &mut PluginContext<'_>,
+    peer_id: &str,
+    self_peer_id: &str,
+    capsule_json: &serde_json::Value,
+    coverage: &Coverage,
+) -> anyhow::Result<serde_json::Value> {
+    let bundle = bundle_body(capsule_json, coverage);
+    let response = send_push(context, peer_id, self_peer_id, &bundle).await?;
+    if refused_as_older_door(&response) {
+        tracing::info!(%peer_id, "peer door predates bundles -- re-pushing the bare record");
+        return send_push(context, peer_id, self_peer_id, capsule_json).await;
+    }
+    Ok(response)
 }
 
 /// A bundle refused `request_malformed` came from a door that reads the body

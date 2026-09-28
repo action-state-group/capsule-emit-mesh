@@ -13,6 +13,7 @@ mod self_peer;
 #[allow(dead_code)]
 mod peer_root_ledger;
 mod share_policy;
+mod split_stage;
 mod web_ui_manifest;
 
 use axum::{
@@ -159,6 +160,25 @@ fn token_usage_from(usage: MirrorUsage) -> TokenUsage {
 /// caller of this function predates that need and only used the side effect,
 /// so returning the value here is additive, not a behavior change for them.
 fn seal_observed_host_exchange(capsules: &CapsuleState, envelope: &OpenAiExchangeEnvelope) -> Option<Value> {
+    seal_observed(capsules, envelope, None)
+}
+
+/// [`seal_observed_host_exchange`] for the coordinator's main record of a
+/// split: the same exchange record, with the split's stage-exchange records
+/// sealed first and cited from it.
+fn seal_observed_split_exchange(
+    capsules: &CapsuleState,
+    envelope: &OpenAiExchangeEnvelope,
+    plan: &split_stage::SplitPlan,
+) -> Option<Value> {
+    seal_observed(capsules, envelope, Some(plan))
+}
+
+fn seal_observed(
+    capsules: &CapsuleState,
+    envelope: &OpenAiExchangeEnvelope,
+    split: Option<&split_stage::SplitPlan>,
+) -> Option<Value> {
     let host_provenance = envelope
         .serving_provenance
         .clone()
@@ -186,7 +206,11 @@ fn seal_observed_host_exchange(capsules: &CapsuleState, envelope: &OpenAiExchang
         peer_capsule_id_provenance: peer_capsule_id_for_seal(envelope).map(|(_, prov)| prov),
         twin_bracket_id: envelope.twin_bracket_id.as_deref(),
     };
-    match capsules.emit_for_observed_host_exchange(&observed) {
+    let emitted = match split {
+        Some(plan) => capsules.emit_for_observed_split_exchange(&observed, plan),
+        None => capsules.emit_for_observed_host_exchange(&observed),
+    };
+    match emitted {
         Ok(emitted) => {
             tracing::info!(
                 capsule_id = %emitted.capsule_id,
@@ -258,6 +282,7 @@ async fn push_at_completion_if_configured(
     capsule_json: Value,
     checkpoints: Option<&checkpoint_cadence::CheckpointHandle>,
     self_peer: &self_peer::SelfPeer,
+    split_stage_records: &[Value],
 ) {
     // Learned from the host's mesh events (see `self_peer`), unless the
     // operator overrides it. `None` means the host has not reported it yet.
@@ -293,6 +318,7 @@ async fn push_at_completion_if_configured(
         self_id,
         &capsule_json,
         coverage.as_ref(),
+        split_stage_records,
     )
     .await
     {
@@ -302,6 +328,149 @@ async fn push_at_completion_if_configured(
         Err(error) => {
             tracing::warn!(%error, %peer_id, "record-push at completion failed");
         }
+    }
+}
+
+/// The shared split state: the collector, and main records sealed on the
+/// background tick whose push waits for the next handler with a host context
+/// (a push needs one, and the tick has none).
+#[derive(Clone)]
+struct Splits {
+    collector: Arc<split_stage::SplitCollector<OpenAiExchangeEnvelope>>,
+    pushes: Arc<std::sync::Mutex<Vec<SplitPush>>>,
+}
+
+struct SplitPush {
+    envelope: OpenAiExchangeEnvelope,
+    main: Value,
+    carried: Vec<Value>,
+}
+
+impl Splits {
+    fn new() -> Self {
+        Splits { collector: Arc::default(), pushes: Arc::default() }
+    }
+
+    fn take_pushes(&self) -> Vec<SplitPush> {
+        std::mem::take(&mut *self.pushes.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+}
+
+/// Seal every split the collector releases: its stage-exchange records and
+/// main record, or -- when the plan cannot be built -- the ordinary exchange
+/// record, so the requester's exchange is never left unsealed.
+fn seal_released_splits(capsules: &CapsuleState, splits: &Splits, lifecycle_events: &ObservedLifecycleEvents) {
+    let deadline_ms = split_stage::stage_deadline_ms();
+    for ready in splits.collector.take_due(split_stage::now_ms(), deadline_ms) {
+        let (sealed, carried) = match split_stage::plan_split(&ready, deadline_ms) {
+            Ok(plan) => (seal_observed_split_exchange(capsules, &ready.envelope, &plan), plan.carried),
+            Err(error) => {
+                tracing::warn!(%error, "split plan refused -- sealing the ordinary exchange record");
+                (seal_observed_host_exchange(capsules, &ready.envelope), Vec::new())
+            }
+        };
+        if let Some(main) = sealed {
+            splits
+                .pushes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(SplitPush { envelope: ready.envelope.clone(), main, carried });
+        }
+        lifecycle_events.record(ready.envelope);
+    }
+}
+
+fn spawn_split_tick(capsules: Arc<CapsuleState>, splits: Splits, lifecycle_events: Arc<ObservedLifecycleEvents>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(200));
+        loop {
+            tick.tick().await;
+            let (capsules, splits, lifecycle_events) = (capsules.clone(), splits.clone(), lifecycle_events.clone());
+            if let Err(join_error) = tokio::task::spawn_blocking(move || {
+                seal_released_splits(&capsules, &splits, &lifecycle_events);
+            })
+            .await
+            {
+                tracing::warn!(%join_error, "split seal task did not complete");
+            }
+        }
+    });
+}
+
+/// Push the main records sealed since the last handler ran, with the stage
+/// records they cite.
+async fn drain_split_pushes(
+    context: &mut mesh_llm_plugin::PluginContext<'_>,
+    splits: &Splits,
+    checkpoints: Option<&checkpoint_cadence::CheckpointHandle>,
+    self_peer: &self_peer::SelfPeer,
+) {
+    for push in splits.take_pushes() {
+        push_at_completion_if_configured(context, &push.envelope, push.main, checkpoints, self_peer, &push.carried)
+            .await;
+    }
+}
+
+/// One `skippy.stage.v1` event. A stage seals its record and pushes it to
+/// the coordinator; stage 0 opens the split in the collector.
+async fn handle_stage_event(
+    context: &mut mesh_llm_plugin::PluginContext<'_>,
+    body: &[u8],
+    capsules: &Arc<CapsuleState>,
+    splits: &Splits,
+    checkpoints: Option<&checkpoint_cadence::CheckpointHandle>,
+    self_peer: &self_peer::SelfPeer,
+) {
+    let event = match split_stage::StageEvent::parse(body) {
+        Ok(event) => event,
+        Err(error) => {
+            tracing::warn!(%error, "refused skippy.stage.v1 event");
+            return;
+        }
+    };
+    if event.block.side == capsule_producer::stage::Side::Coordinator {
+        if let Err(error) = splits.collector.on_stage_zero(event, split_stage::now_ms()) {
+            tracing::warn!(%error, dropped = splits.collector.dropped(), "stage-0 event not taken");
+        }
+        return;
+    }
+    let block = event.block;
+    let coordinator = block.coordinator_node_id.clone();
+    let capsules = capsules.clone();
+    let sealed = match tokio::task::spawn_blocking(move || capsules.emit_stage_record(&block)).await {
+        Ok(Ok(emitted)) => emitted,
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "stage record NOT sealed");
+            return;
+        }
+        Err(join_error) => {
+            tracing::warn!(%join_error, "stage record seal task did not complete");
+            return;
+        }
+    };
+    tracing::info!(capsule_id = %sealed.capsule_id, "SEALED stage record of a split");
+    if share_policy::record_at_completion_is_off() {
+        return;
+    }
+    let Some(self_id) = self_peer.current() else {
+        tracing::warn!(%coordinator, "stage record not pushed: this node's own peer id is unknown");
+        return;
+    };
+    let coverage = match checkpoints {
+        Some(handle) => handle.coverage_for(&sealed.capsule_id).await.ok(),
+        None => None,
+    };
+    if let Err(error) = record_push_bridge::push_capsule_to_peer(
+        context,
+        &coordinator,
+        &self_id,
+        &sealed.capsule,
+        coverage.as_ref(),
+        &[],
+    )
+    .await
+    {
+        tracing::warn!(%error, %coordinator, "stage record push to the coordinator failed");
     }
 }
 
@@ -521,6 +690,10 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(serve_admission_http(listener, app_state));
 
     let lifecycle_events_for_handler = lifecycle_events.clone();
+    let splits = Splits::new();
+    spawn_split_tick(capsules_for_handler.clone(), splits.clone(), lifecycle_events.clone());
+    let splits_for_handler = splits.clone();
+    let splits_for_stream = splits.clone();
 
     let mut evidence_operations = OperationRouter::new();
     evidence_operations.add_json(
@@ -563,7 +736,14 @@ async fn main() -> anyhow::Result<()> {
             let capsules = capsules_for_handler.clone();
             let checkpoints = checkpoints_for_handler.clone();
             let self_peer = self_peer.clone();
+            let splits = splits_for_handler.clone();
             Box::pin(async move {
+                drain_split_pushes(context, &splits, checkpoints.as_ref(), &self_peer).await;
+                if message.channel == split_stage::SKIPPY_STAGE_CHANNEL {
+                    handle_stage_event(context, &message.body, &capsules, &splits, checkpoints.as_ref(), &self_peer)
+                        .await;
+                    return Ok(());
+                }
                 if message.channel == OPENAI_EXCHANGE_CHANNEL {
                     match serde_json::from_slice::<OpenAiExchangeEnvelope>(&message.body) {
                         Ok(envelope) => {
@@ -585,6 +765,18 @@ async fn main() -> anyhow::Result<()> {
                             // sealed nothing at all. Mutually exclusive with
                             // the host-served branch above (see
                             // `is_sealable_host_served`'s doc comment).
+                            // The coordinator of a split holds its terminal
+                            // event until the stage records are in (see
+                            // `split_stage`); the background tick seals it.
+                            let envelope = if ObservedLifecycleEvents::is_sealable_host_served(&envelope) {
+                                let exchange_id = envelope.exchange_id.clone();
+                                match splits.collector.hold(exchange_id.as_deref(), envelope) {
+                                    Some(envelope) => envelope,
+                                    None => return Ok(()),
+                                }
+                            } else {
+                                envelope
+                            };
                             if ObservedLifecycleEvents::is_sealable_host_served(&envelope)
                                 || ObservedLifecycleEvents::is_sealable_requester_side(&envelope)
                             {
@@ -616,6 +808,7 @@ async fn main() -> anyhow::Result<()> {
                                                 capsule_json,
                                                 checkpoints.as_ref(),
                                                 &self_peer,
+                                                &[],
                                             )
                                             .await;
                                         }
@@ -652,6 +845,7 @@ async fn main() -> anyhow::Result<()> {
         let capsules_for_stream = capsules_for_stream.clone();
         plugin.on_open_stream(move |request, context| {
             let capsules = capsules_for_stream.clone();
+            let collector = splits_for_stream.collector.clone();
             Box::pin(async move {
                 // Seam A1: `OpenStreamRequest`
                 // carries no channel name (see `record_push_bridge`'s module
@@ -659,7 +853,7 @@ async fn main() -> anyhow::Result<()> {
                 // `content_type`, the one field both carriers set to a
                 // distinct, stable value for exactly this purpose.
                 if request.content_type.as_deref() == Some(record_push_bridge::RECORD_PUSH_CONTENT_TYPE) {
-                    record_push_bridge::handle_open_stream(request, context, capsules).await
+                    record_push_bridge::handle_open_stream(request, context, capsules, collector).await
                 } else {
                     mesh_evidence_bridge::handle_open_stream(request, context).await
                 }

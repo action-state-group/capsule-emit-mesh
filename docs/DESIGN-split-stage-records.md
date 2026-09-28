@@ -593,3 +593,28 @@ The decisions in §10 are built as recommended.
 - **What the requester's check does not repeat.** It recomputes every `capsule_id`. Signatures
   are checked where records are received, and a stage key is not yet linked to
   `assignment.node_id` (that needs announced keys).
+
+### 12.1 Delivery on the plugin
+
+- **Event shape.** A `skippy.stage.v1` event is `{block, exchange_id?, coordinator_term?,
+  topology?}`. The last three are stage 0's only. The channel is not declared in the manifest,
+  since no host serves it yet.
+- **Ordering the build relies on.** Stage 0's event arrives before the `openai.exchange.v1`
+  terminal event of the same request, because the host holds both. The coordinator then holds
+  that terminal event instead of sealing it. A terminal event that arrives first is sealed as an
+  ordinary exchange, and the late stage-0 event is refused and counted. This goes to the host
+  issue alongside Q-H1 to Q-H5.
+- **Deadline.** `ADMISSION_POLICY_SPLIT_STAGE_DEADLINE_MS`, 2000 ms by default, counted from
+  stage 0's event and recorded in the receipt. A background tick seals released splits. The push
+  to the requester waits for the next handler that has a host context, because pushing needs one.
+- **A received stage record is cited twice.** Its ordinary `counterparty_half` citing record is
+  sealed before the door's ack, as for every pushed record, and the coordinator's stage-exchange
+  record cites it again. For a record that arrives after the seal, the ordinary citing record is
+  the follow-up.
+- **Carriage.** The coordinator's bundle gains `split_stage_records`. The door refuses the whole
+  push `bundle_malformed` unless every carried record verifies, is a stage-side record of this
+  split, is named by the receipt, and is carried once. The sender then re-pushes the plain
+  bundle, so the main record still arrives and those stages read `◌ not received`. A bare push
+  (checkpoint cadence off) cannot carry stage records.
+- **Addressing.** A stage pushes to `coordinator_node_id` as a mesh peer id. That the stage
+  runtime's coordinator node id is the id plugins address streams to is a host question.
