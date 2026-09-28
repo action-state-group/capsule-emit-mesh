@@ -1285,6 +1285,60 @@ impl CapsuleState {
         ledger.append(&capsule, &statement)?;
         Ok(Some(EmittedCapsule { capsule_id, capsule }))
     }
+
+    /// Seal a local routing choice (block or unblock) onto the same
+    /// single-writer chain, committing to the peer with the caller's salt. The
+    /// caller keeps that salt; it is the only way to say later which peer the
+    /// record's commitment names.
+    pub fn emit_local_routing_choice(
+        &self,
+        change: capsule_producer::capsule::RoutingChoiceChange,
+        peer_id: &str,
+        until: Option<&str>,
+        salt: &[u8; 32],
+    ) -> anyhow::Result<EmittedRoutingChoice> {
+        let choice = capsule_producer::capsule::LocalRoutingChoice {
+            change,
+            peer_id,
+            salt,
+            until,
+        };
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let capsule = capsule_producer::capsule::seal_local_routing_choice(
+            &choice,
+            ledger.chain_head(),
+            &self.keys.signing_key,
+        )?;
+        let capsule_id = capsule["capsule_id"]
+            .as_str()
+            .expect("seal_local_routing_choice always sets capsule_id")
+            .to_string();
+        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let statement = build_signed_statement(
+            &SignedStatementInput {
+                payload: &payload,
+                issuer: &self.node_id,
+                subject: &capsule_id,
+                content_type: CAPSULE_CONTENT_TYPE,
+            },
+            &self.keys.signing_key,
+        );
+        ledger.append(&capsule, &statement)?;
+        Ok(EmittedRoutingChoice {
+            capsule_id,
+            peer_commitment: capsule_producer::capsule::peer_commitment(peer_id, salt),
+        })
+    }
+}
+
+/// What [`CapsuleState::emit_local_routing_choice`] hands back to the host's
+/// block store.
+pub struct EmittedRoutingChoice {
+    pub capsule_id: String,
+    pub peer_commitment: String,
 }
 
 /// See `capsule_producer::capsule::InclusionCitation`.
@@ -1313,6 +1367,51 @@ mod tests {
             reasoning_digest.is_none(),
             "a non-reasoning model must yield an absent reasoning digest, not a fabricated one"
         );
+    }
+
+    /// A block then an unblock both land on the chain, in order (the unblock
+    /// chains onto the block), each carrying the commitment the caller's salt
+    /// gives.
+    #[test]
+    fn routing_choices_chain_in_order_with_the_callers_salt() {
+        use capsule_producer::capsule::{peer_commitment, RoutingChoiceChange};
+        let dir = std::env::temp_dir().join(format!("cap-route-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let peer = "e5ba9d1001".repeat(6);
+        let (block_salt, unblock_salt) = ([1u8; 32], [2u8; 32]);
+
+        let block = state
+            .emit_local_routing_choice(
+                RoutingChoiceChange::Block,
+                &peer,
+                Some("2026-10-04T00:00:00Z"),
+                &block_salt,
+            )
+            .expect("seal block");
+        let unblock = state
+            .emit_local_routing_choice(RoutingChoiceChange::Unblock, &peer, None, &unblock_salt)
+            .expect("seal unblock");
+
+        let ledger = std::fs::read_to_string(dir.join("ledger").join("capsules.jsonl")).expect("ledger");
+        let unblock_line: Value = ledger
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|record| record["capsule_id"] == unblock.capsule_id.as_str())
+            .expect("the unblock record is on the chain");
+        assert_eq!(
+            unblock_line["chain"]["parent_capsule_id"].as_str(),
+            Some(block.capsule_id.as_str()),
+            "the unblock chains onto the block"
+        );
+        assert_eq!(state.chain_head().as_deref(), Some(unblock.capsule_id.as_str()));
+        assert_eq!(block.peer_commitment, peer_commitment(&peer, &block_salt));
+        assert_eq!(unblock.peer_commitment, peer_commitment(&peer, &unblock_salt));
+
+        drop(state);
+        let reopened = CapsuleState::open(&dir, "node-under-test").expect("reopen state");
+        assert_eq!(reopened.chain_head().as_deref(), Some(unblock.capsule_id.as_str()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `emit_citing_record` seals a

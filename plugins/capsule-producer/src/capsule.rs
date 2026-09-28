@@ -1215,6 +1215,141 @@ pub fn seal_inclusion_citing_record(
     )
 }
 
+/// Which way a local routing choice went: the person stopped routing to a
+/// peer, or undid that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoutingChoiceChange {
+    Block,
+    Unblock,
+}
+
+impl RoutingChoiceChange {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Block => "block",
+            Self::Unblock => "unblock",
+        }
+    }
+}
+
+/// The facts of one local routing choice. The peer id is an input to the
+/// commitment only; it is never written into the sealed record.
+pub struct LocalRoutingChoice<'a> {
+    pub change: RoutingChoiceChange,
+    /// The peer's endpoint id, as the host keys its local block store.
+    pub peer_id: &'a str,
+    /// Fresh per record, chosen and kept by the host's local block store;
+    /// never sealed.
+    pub salt: &'a [u8; 32],
+    /// When a block lapses (RFC 3339), or `None` for "until I undo" and for
+    /// every unblock.
+    pub until: Option<&'a str>,
+}
+
+/// `sha256(salt || peer_id)`, lowercase hex, where `peer_id` is the endpoint id
+/// as hex text (the bytes of the string, not the decoded key). Only a holder of
+/// the salt (this node's local block store) can say which peer a routing-choice
+/// record names. The host computes the same value to confirm a seal; both pin
+/// one vector (`peer_commitment_matches_the_host_vector`).
+pub fn peer_commitment(peer_id: &str, salt: &[u8; 32]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(salt);
+    hasher.update(peer_id.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Seal the record of a local routing choice (block or unblock), chained onto
+/// `chain_head` like every other local record.
+///
+/// The record names the peer only by [`peer_commitment`]. A `range` answer
+/// from this node's evidence door returns whole records to any asker, so a
+/// record that named the peer in clear would tell the peer, and everyone else,
+/// who was blocked; the commitment keeps "nobody else is told" true for the
+/// record itself (`routing_choice_names_the_peer_only_by_commitment`).
+pub fn seal_local_routing_choice(
+    choice: &LocalRoutingChoice<'_>,
+    chain_head: Option<&str>,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> Result<Value, crate::jcs::JcsError> {
+    let chain = chain_head.map(|parent| ChainLink {
+        parent_capsule_id: parent.to_string(),
+        relation: CHAIN_RELATION_FOLLOWS.to_string(),
+    });
+    let commitment = peer_commitment(choice.peer_id, choice.salt);
+
+    let mut body = Map::new();
+    body.insert("spec_version".into(), json!(SPEC_VERSION));
+    body.insert("format_version".into(), json!(FORMAT_VERSION));
+    body.insert("canonicalization_id".into(), json!(CANONICALIZATION_ID));
+    body.insert(
+        "action_id".into(),
+        json!(format!(
+            "mesh-poc/local-routing-choice/{}/{commitment}",
+            choice.change.as_str()
+        )),
+    );
+    body.insert("action_type".into(), json!("decide"));
+    body.insert("operator".into(), json!("capsule-emit-mesh-poc-rust"));
+    body.insert("developer".into(), json!("capsule-producer/0.2.0"));
+    // The same seal path as every other record (Evidence Layer -00 §12.1):
+    // committed times truncated to the minute, and a fresh store nonce.
+    body.insert("timestamp".into(), json!(crate::timestamp::utc_now_minute()));
+    body.insert("domain".into(), json!("action"));
+    body.insert("provenance".into(), json!("collector"));
+    body.insert(
+        "model_attestation".into(),
+        json!({
+            "model_id": "n/a-local-routing-choice",
+            "provider": "mesh-llm",
+            "compute_attestation": {
+                "local_routing_choice": {
+                    "change": choice.change.as_str(),
+                    "peer_commitment": {"alg": "SHA-256", "digest": commitment},
+                    "requested_via": "host_local_api",
+                    "until": choice.until.map(committed_time),
+                    "scope": "this_node_only",
+                },
+                STORE_NONCE_FIELD: fresh_store_nonce(),
+            },
+        }),
+    );
+    body.insert(
+        "assurance".into(),
+        json!({
+            "attestation_mode": "self_attested",
+            // The record is the decision; the host's router enforces it.
+            "effect_mode": "not_applicable",
+            "ledger_mode": if chain.is_some() { "chained" } else { "standalone" },
+        }),
+    );
+    // The host's local operator API asked for this. A local API call does not
+    // prove a person made it, so the record does not claim one did.
+    body.insert(
+        "disposition".into(),
+        json!({
+            "decision": "accept",
+            "approver": "policy",
+            "human_disposed": false,
+            "verdict_class": "executed",
+        }),
+    );
+    if let Some(chain) = &chain {
+        body.insert("chain".into(), chain.to_value());
+    }
+
+    let capsule_id = compute_capsule_id(&Value::Object(body.clone()))?;
+    let mut sealed = Map::new();
+    sealed.insert("capsule_id".into(), json!(capsule_id));
+    for (k, v) in body {
+        sealed.entry(k).or_insert(v);
+    }
+    let mut capsule = Value::Object(sealed);
+    attach_producer_envelope(&mut capsule, signing_key)
+        .expect("routing-choice record always carries a hex capsule_id");
+    Ok(capsule)
+}
+
 /// Why [`attach_producer_envelope`] could not attach an inline signature — all
 /// three are caller mistakes (a non-sealed value), never a signing failure
 /// (signing itself is infallible for a valid key).
@@ -1949,6 +2084,125 @@ mod tests {
     // -------------------------------------------------------------------
     // seal_citing_record
     // -------------------------------------------------------------------
+
+    #[test]
+    fn routing_choice_names_the_peer_only_by_commitment() {
+        let key = crate::keys::KeyPair::generate();
+        let peer = "a70d3967bea3b22f".repeat(4);
+        let salt = [7u8; 32];
+        let choice = LocalRoutingChoice {
+            change: RoutingChoiceChange::Block,
+            peer_id: &peer,
+            salt: &salt,
+            until: Some("2026-10-04T00:00:00Z"),
+        };
+        let head = "c".repeat(64);
+        let capsule = seal_local_routing_choice(&choice, Some(&head), &key.signing_key).unwrap();
+
+        assert_eq!(
+            capsule["capsule_id"].as_str().unwrap(),
+            compute_capsule_id(&capsule).unwrap()
+        );
+        assert_eq!(capsule["chain"]["parent_capsule_id"], json!(head));
+        let fact = &capsule["model_attestation"]["compute_attestation"]["local_routing_choice"];
+        assert_eq!(fact["change"], json!("block"));
+        // `until` is committed at minute granularity, like every sealed time.
+        assert_eq!(fact["until"], json!("2026-10-04T00:00:00.000Z"));
+        assert_eq!(
+            fact["peer_commitment"]["digest"],
+            json!(peer_commitment(&peer, &salt))
+        );
+        // A local API call is not proof a person made it: no human claim.
+        assert_eq!(capsule["disposition"]["approver"], json!("policy"));
+        assert_eq!(capsule["disposition"]["human_disposed"], json!(false));
+        // The peer id itself appears nowhere in the sealed bytes.
+        assert!(!serde_json::to_string(&capsule).unwrap().contains(&peer));
+        assert!(capsule.get("signature").is_some());
+    }
+
+    /// A routing-choice record takes the same seal path as every other record
+    /// (Evidence Layer -00 §12.1): a fresh 256-bit store nonce, and committed
+    /// times (the record timestamp and the block's `until`) truncated to the
+    /// minute.
+    #[test]
+    fn routing_choice_carries_a_store_nonce_and_minute_times() {
+        let key = crate::keys::KeyPair::generate();
+        let peer = "a70d3967bea3b22f".repeat(4);
+        let salt = [7u8; 32];
+        let choice = LocalRoutingChoice {
+            change: RoutingChoiceChange::Block,
+            peer_id: &peer,
+            salt: &salt,
+            until: Some("2026-10-04T00:00:37.250Z"),
+        };
+        let first = seal_local_routing_choice(&choice, None, &key.signing_key).unwrap();
+        let second = seal_local_routing_choice(&choice, None, &key.signing_key).unwrap();
+
+        let compute = &first["model_attestation"]["compute_attestation"];
+        let nonce = compute[STORE_NONCE_FIELD].as_str().expect("store_nonce is sealed");
+        assert_eq!(nonce.len(), 64);
+        assert!(nonce.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert_ne!(
+            second["model_attestation"]["compute_attestation"][STORE_NONCE_FIELD],
+            compute[STORE_NONCE_FIELD],
+            "a fresh nonce per record"
+        );
+        assert_ne!(first["capsule_id"], second["capsule_id"]);
+
+        assert_eq!(compute["local_routing_choice"]["until"], json!("2026-10-04T00:00:00.000Z"));
+        let timestamp = first["timestamp"].as_str().unwrap();
+        assert_eq!(
+            crate::timestamp::coarsen_to_minute(timestamp).as_deref(),
+            Some(timestamp),
+            "the record timestamp is already whole minutes"
+        );
+        let unblock = LocalRoutingChoice { change: RoutingChoiceChange::Unblock, until: None, ..choice };
+        let sealed = seal_local_routing_choice(&unblock, None, &key.signing_key).unwrap();
+        assert_eq!(
+            sealed["model_attestation"]["compute_attestation"]["local_routing_choice"]["until"],
+            Value::Null
+        );
+    }
+
+    /// Cross-implementation vector: the mesh-llm host's
+    /// `network::peer_blocks::peer_commitment` pins the same inputs and output
+    /// (`commitment_matches_the_plugin_vector`); computed independently with
+    /// Python's hashlib.
+    #[test]
+    fn peer_commitment_matches_the_host_vector() {
+        let peer = "a70d3967bea3b22fa48a28f77c5d2b3764fc8bd5204a82c09ff8430f3f2a0a00";
+        assert_eq!(
+            peer_commitment(peer, &[7u8; 32]),
+            "265aff057ebdeba261253f6ce9d8eea274ef65bab0aadfbf99a5ddb2facd7e74"
+        );
+    }
+
+    #[test]
+    fn peer_commitment_binds_salt_and_peer() {
+        let peer = "a".repeat(64);
+        let base = peer_commitment(&peer, &[1u8; 32]);
+        assert_ne!(base, peer_commitment(&peer, &[2u8; 32]));
+        assert_ne!(base, peer_commitment(&"b".repeat(64), &[1u8; 32]));
+        assert_eq!(base, peer_commitment(&peer, &[1u8; 32]));
+    }
+
+    #[test]
+    fn unblock_record_is_standalone_without_head_and_has_no_until() {
+        let key = crate::keys::KeyPair::generate();
+        let peer = "b".repeat(64);
+        let choice = LocalRoutingChoice {
+            change: RoutingChoiceChange::Unblock,
+            peer_id: &peer,
+            salt: &[3u8; 32],
+            until: None,
+        };
+        let capsule = seal_local_routing_choice(&choice, None, &key.signing_key).unwrap();
+        assert!(capsule.get("chain").is_none());
+        assert_eq!(capsule["assurance"]["ledger_mode"], json!("standalone"));
+        let fact = &capsule["model_attestation"]["compute_attestation"]["local_routing_choice"];
+        assert_eq!(fact["change"], json!("unblock"));
+        assert_eq!(fact["until"], Value::Null);
+    }
 
     fn sample_prov<'a>(foreign_capsule_id: &'a str) -> ReceivedHalfProvenance<'a> {
         ReceivedHalfProvenance {

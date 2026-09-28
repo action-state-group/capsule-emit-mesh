@@ -4,6 +4,7 @@ mod decision;
 mod lifecycle_channel;
 mod mesh_evidence_bridge;
 mod record_push_bridge;
+mod routing_choice_bridge;
 mod self_peer;
 /// Not wired into `on_mesh_event` yet -- see the module doc for why
 /// (`mesh-llm-plugin = "0.75"` predates the `checkpoint` field this needs to
@@ -508,6 +509,8 @@ async fn main() -> anyhow::Result<()> {
     let checkpoints_for_handler = checkpoints.clone();
 
     let capsules_for_handler = capsules.clone();
+    // Local routing choices seal onto the same single-writer chain.
+    let capsules_for_routing_choice = capsules.clone();
     // the record-push responder's
     // citing-record seal writes to the SAME single-writer ledger -- one
     // `CapsuleState`, shared by Arc, never a second writer.
@@ -531,6 +534,19 @@ async fn main() -> anyhow::Result<()> {
              (e.g. relay-only). Returns the peer's own Artifact-or-Refusal JSON unchanged.",
         ),
         |args, context| Box::pin(mesh_evidence_bridge::handle_mesh_evidence_request(args, context)),
+    );
+    evidence_operations.add_json(
+        json_schema_operation::<routing_choice_bridge::LocalRoutingChoiceArgs>(
+            routing_choice_bridge::LOCAL_ROUTING_CHOICE_OPERATION,
+            "Seal a record that this node stopped (or resumed) routing to a peer. The record \
+             names the peer only by a salted commitment; the salt is returned to the caller.",
+        ),
+        move |args, _context| {
+            let capsules = capsules_for_routing_choice.clone();
+            Box::pin(async move {
+                routing_choice_bridge::handle_local_routing_choice(&capsules, args)
+            })
+        },
     );
 
     let plugin = DeclarativePluginBuilder::new(PluginMetadata::new(
