@@ -383,6 +383,20 @@ describe('peerAliasLine — D3: aliases on ONE row, never extra peers', () => {
     expect(peerAliasLine(row)).toBe('signed by 71eb26f8e583ccc9 · endpoint e5ba9d1001')
   })
 
+  it('never puts a 64-hex endpoint id on the row face: 16 characters and an ellipsis', () => {
+    const endpoint = 'c6839699559fd005'.repeat(4)
+    const row = baseRow({
+      peer_id: 'key:71eb26f8e583ccc9',
+      identity: {
+        signing_key_id: '71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d',
+        endpoint_id: endpoint,
+        node_id: null
+      }
+    })
+    expect(peerAliasLine(row)).toBe('signed by 71eb26f8e583ccc9 · endpoint c6839699559fd005…')
+    expect(peerAliasLine(row)).not.toMatch(/[0-9a-f]{64}/)
+  })
+
   it('adds the node alias only when the evidence carries one (the bridged case)', () => {
     const row = baseRow({
       peer_id: 'key:71eb26f8e583ccc9',

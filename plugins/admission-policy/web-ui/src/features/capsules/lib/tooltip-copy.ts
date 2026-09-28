@@ -171,3 +171,6 @@ export const ROUTING_NOT_ON_THIS_PAGE = {
   sectionTitle: 'Routing to this peer',
   text: 'This page can’t stop routing to a peer. It shows your records and changes nothing about routing.'
 } as const
+
+/** The hero line's words when no witness holds a checkpoint (console copy). */
+export const WITNESS_OFF = 'witness off — your choice'

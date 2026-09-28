@@ -6,6 +6,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
 import { exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
+import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import { ASK_FOR_RECORD_AFTER_MS, type RightCellStateKind } from '@/features/capsules/lib/exchange-row-state'
 import { durationText, formatModelIdentity, tokenFlowText } from '@/features/capsules/lib/serving-provenance'
@@ -880,12 +881,27 @@ describe('ExchangeStreamRow — §3A one colour per state', () => {
   })
 })
 
+describe('ExchangeStreamRow — row time', () => {
+  it('shows the exchange time in local time, never an ISO/UTC stamp', () => {
+    const { container } = render(
+      <ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />
+    )
+    const time = container.querySelector('time')
+    expect(time?.getAttribute('datetime')).toBe('2026-09-08T16:58:05Z')
+    expect(time?.textContent).toBe(formatExchangeTimestamp('2026-09-08T16:58:05Z'))
+    expect(container.textContent).not.toMatch(/\d{4}-\d\d-\d\d[T ]\d\d:\d\d|\bUTC\b|\d\dZ\b/)
+  })
+})
+
 describe('ExchangeStreamRow — §3A chip strip -> checks jump', () => {
-  it('renders the five chips content · sig · inclusion · registered · theirs', () => {
-    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_asked')} />)
-    for (const chip of ['content', 'sig', 'inclusion', 'registered', 'theirs']) {
-      expect(screen.getByLabelText(`${chip}: jump to the ${chip} check`)).toBeInTheDocument()
+  it('renders the five chips in plain words, never sig / inclusion / registered', () => {
+    const { container } = render(
+      <ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_asked')} />
+    )
+    for (const label of ['words match', 'signed', 'in a checkpoint', 'witnessed', 'their record']) {
+      expect(screen.getByLabelText(`${label}: jump to that check`)).toBeInTheDocument()
     }
+    expect(container.textContent).not.toMatch(/\bsig\b|\binclusion\b|\bregistered\b/)
   })
 
   it('a chip is a link, never counted among the row action buttons', () => {
@@ -895,7 +911,7 @@ describe('ExchangeStreamRow — §3A chip strip -> checks jump', () => {
     // toggles are the entire detail surface" -- chips jump to detail already
     // on the page, they don't add a row action).
     expect(screen.getAllByRole('button')).toHaveLength(4)
-    expect(screen.getByLabelText('sig: jump to the sig check')).toHaveAttribute('role', 'link')
+    expect(screen.getByLabelText('signed: jump to that check')).toHaveAttribute('role', 'link')
   })
 
   it('a chip click on a collapsed panel expands checks, then scrolls to and highlights the matching property once it mounts', async () => {
@@ -913,7 +929,7 @@ describe('ExchangeStreamRow — §3A chip strip -> checks jump', () => {
         row={row}
       />
     )
-    await user.click(screen.getByLabelText('sig: jump to the sig check'))
+    await user.click(screen.getByLabelText('signed: jump to that check'))
     expect(onToggleChecks).toHaveBeenCalledWith(row)
     expect(scrollSpy).not.toHaveBeenCalled()
 
@@ -948,7 +964,7 @@ describe('ExchangeStreamRow — §3A chip strip -> checks jump', () => {
         row={makeRow('open_not_asked')}
       />
     )
-    await user.click(screen.getByLabelText('content: jump to the content check'))
+    await user.click(screen.getByLabelText('words match: jump to that check'))
     expect(onToggleChecks).not.toHaveBeenCalled()
     expect(scrollSpy).toHaveBeenCalled()
     scrollSpy.mockRestore()

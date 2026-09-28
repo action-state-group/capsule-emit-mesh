@@ -8,7 +8,7 @@
 // internal item IDs, or any branded service name. Comments are exempt.
 import { Fragment, type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeftRight, Search as SearchIcon, ShieldCheck, Users } from 'lucide-react'
+import { ArrowLeftRight, Search as SearchIcon, ShieldCheck, Trash2, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/EmptyState'
@@ -42,6 +42,9 @@ import {
   dayTallyLine
 } from '@/features/capsules/lib/exchange-day-groups'
 import { EVIDENCE_SOURCE_LABEL, evidenceSource } from '@/features/capsules/lib/evidence-source'
+import { heroStatusLine } from '@/features/capsules/lib/your-records'
+import { useRecordsStatus } from '@/features/capsules/lib/use-your-records'
+import { CleanUpRecordsDialog } from '@/features/capsules/components/CleanUpRecordsDialog'
 import {
   exceptionsFirstLine,
   exceptionsFirstTally,
@@ -1351,6 +1354,30 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
   // Look finding 6: a replayed fixture run reads "Sample data", never "Live".
   const source = evidenceSource(sidecarConnected, import.meta.env.VITE_EVIDENCE_FIXTURES as string | undefined)
 
+  // The hero line reads the SAME counts as the Integrity tiles (same queries,
+  // shared cache; same `deriveRightCellState` predicate), so the hero and
+  // Integrity can't disagree. Ported from the console's hero.
+  const { mode } = useDataMode()
+  const harnessMode = mode === 'harness'
+  const paneCHeroQuery = useQuery({
+    queryKey: ['ledger', 'pane-c'],
+    queryFn: () => (harnessMode ? Promise.resolve(HARNESS_PANE_C_PAYLOAD) : fetchPaneCList()),
+    refetchInterval: 15_000,
+    retry: false
+  })
+  const heroLine =
+    paneAStatusQuery.isSuccess && paneCHeroQuery.isSuccess
+      ? heroStatusLine({
+          records: paneAStatusQuery.data.rows.length,
+          confirmed: paneCHeroQuery.data.rows.filter((row) => deriveRightCellState(row).kind === 'closed').length,
+          disagreements: paneCHeroQuery.data.rows.filter((row) => deriveRightCellState(row).kind === 'contradicted')
+            .length,
+          witnessed: checkpointRegistration(paneAStatusQuery.data.card ?? null).registered
+        })
+      : null
+  const recordsStatus = useRecordsStatus({ sample: source === 'sample' })
+  const [cleanUpOpen, setCleanUpOpen] = useState(false)
+
   return (
     <TooltipProvider delayDuration={250} skipDelayDuration={120}>
       <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-[calc(var(--shell-normal)*2)]">
@@ -1379,6 +1406,31 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
           title="Evidence"
           titleId="evidence-title"
           titleLevel="h1"
+          annotation={
+            heroLine ? (
+              <p className="type-caption mt-1 text-fg-dim" data-testid="hero-status-line">
+                {heroLine}
+              </p>
+            ) : null
+          }
+          action={
+            <Button
+              className="ui-control-destructive h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
+              onClick={() => setCleanUpOpen(true)}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              <Trash2 aria-hidden="true" className="size-3.5" />
+              Clean up records
+            </Button>
+          }
+        />
+        <CleanUpRecordsDialog
+          onOpenChange={setCleanUpOpen}
+          open={cleanUpOpen}
+          sample={source === 'sample'}
+          status={recordsStatus}
         />
 
         <Card className="overflow-clip rounded-[var(--radius-lg)] border-border bg-panel p-4 shadow-none">

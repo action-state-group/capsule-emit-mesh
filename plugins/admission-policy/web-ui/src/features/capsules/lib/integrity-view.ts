@@ -18,6 +18,7 @@
 // same field `status-adapter.ts`'s `resolveOwner` reads for the Network
 // dashboard), so that one fact is real today, not aspirational.
 import type { JsonRecord } from '@/features/capsules/api/types'
+import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 import {
   CHAIN_STRIP_TOOLTIP,
   INTEGRITY_TILE_TOOLTIPS,
@@ -83,7 +84,7 @@ export const OWNER_LINKED_SENTENCE = `Your records are signed by this node’s k
 /** The honest rung-1/witness-line copy for a checkpoint no witness holds. */
 // Finding 7: "witness: off" is the witness tile's to say ("off — your
 // choice"); the step says only what this step's state is.
-export const CHECKPOINTED_NOT_REGISTERED_STATUS = 'checkpointed locally · not registered'
+export const CHECKPOINTED_NOT_REGISTERED_STATUS = 'checkpointed locally · no witness'
 
 // ---------------------------------------------------------------------------
 // Setup checklist (ledger-ux-from-the-user-2026-09-09 §6) -- three steps in
@@ -133,7 +134,7 @@ export function buildSetupSteps(
       title: 'Register your checkpoints',
       done: registration.registered,
       status: registration.registered
-        ? 'registered'
+        ? 'witnessed'
         : registration.checkpointedLocally
           ? CHECKPOINTED_NOT_REGISTERED_STATUS
           : registration.reported
@@ -153,7 +154,7 @@ export function buildSetupSteps(
       // UX §4: "bound" alone overclaims -- the done state says what it is.
       body: bound
         ? OWNER_LINKED_SENTENCE
-        : '`mesh-llm auth init` binds your records to a key you hold, so a later denial is harder. It is self-asserted: it does not prove who you are.'
+        : 'Binding your records to a key you hold (mesh-llm auth init) makes a later denial harder. It is only your own claim about who you are.'
     },
     {
       key: 'ask_peer',
@@ -207,21 +208,23 @@ export function buildRegistrationCopy(card: JsonRecord | null | undefined): Regi
 
   const witnesses: unknown[] = Array.isArray(card?.witnesses) ? (card.witnesses as unknown[]) : []
   const nonProducerCount = nonProducerWitnessCount(witnesses)
-  const timestamp = typeof card?.registered_no_later_than === 'string' ? card.registered_no_later_than : null
+  // Local time, never an ISO/UTC stamp on screen.
+  const timestamp =
+    typeof card?.registered_no_later_than === 'string' ? formatExchangeTimestamp(card.registered_no_later_than) : null
 
   // An unwitnessed checkpoint is a LOCAL fact -- "registered" (and
   // "registered no later than") would claim a witness holds it. Same ONE
   // fact rung 1 renders (D1).
   if (!registration.registered) {
     return {
-      witnessSummary: 'Checkpointed locally · not registered (witness: off)',
+      witnessSummary: 'Checkpointed locally · no witness (witness: off)',
       registeredNoLaterThan: timestamp ? `checkpointed no later than ${timestamp}` : null
     }
   }
 
   return {
-    witnessSummary: `Registered with ${witnesses.length} witness${witnesses.length === 1 ? '' : 'es'} (${nonProducerCount} not operated by this node)`,
-    registeredNoLaterThan: timestamp ? `registered no later than ${timestamp}` : null
+    witnessSummary: `Held by ${witnesses.length} witness${witnesses.length === 1 ? '' : 'es'} (${nonProducerCount} not operated by this node)`,
+    registeredNoLaterThan: timestamp ? `witnessed no later than ${timestamp}` : null
   }
 }
 
@@ -265,7 +268,7 @@ export function chainStripCaption(
   // against -- Integrity is the highest-cost tab for a false absence.
   return checkpointCount === null
     ? `${entries} · checkpoint status not reported`
-    : `${entries} · no checkpoint yet · nothing here is registered`
+    : `${entries} · no checkpoint yet · no witness holds any of it`
 }
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ import {
   RETENTION_FACT
 } from '@/features/capsules/lib/integrity-view'
 import { ownerLinked } from '@/features/capsules/lib/integrity-view'
+import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 import type { RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 import { buildChecksRows } from '@/features/capsules/lib/security-checks-view'
 
@@ -34,7 +35,8 @@ describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value 
     expect(steps[2].status).toBe('none received yet')
     // Each explains what it buys and what it does not.
     expect(steps[0].body).toMatch(/does not make your records true/)
-    expect(steps[1].body).toMatch(/does not prove who you are/)
+    expect(steps[1].body).toMatch(/only your own claim about who you are/)
+    expect(steps[1].body).not.toMatch(/prove|`/)
     expect(steps[2].body).toMatch(/usually arrives on its own/)
     expect(steps[2].body).not.toMatch(/corroboration|half/i)
     // The retired "never asked" framing is gone -- a half can arrive by push.
@@ -69,23 +71,23 @@ describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value 
     expect(checkpointedOnly[0].status).toBe(CHECKPOINTED_NOT_REGISTERED_STATUS)
   })
 
-  it('D1: a local checkpoint with ZERO witnesses NEVER reads "registered" — the exact §7 overclaim', () => {
+  it('D1: a local checkpoint with ZERO witnesses NEVER reads "witnessed" — the exact §7 overclaim', () => {
     // The live shot: rung 1 said "registered" while the same pane said
     // "Registered with 0 witnesses" and Exchanges said "not registered".
     // Local checkpointing is NOT registration.
     const steps = buildSetupSteps({ checkpoint_count: 3, witnesses: [] }, null)
     expect(steps[0].done).toBe(false)
-    expect(steps[0].status).toBe('checkpointed locally · not registered')
-    expect(steps[0].status).not.toBe('registered')
+    expect(steps[0].status).toBe('checkpointed locally · no witness')
+    expect(steps[0].status).not.toBe('witnessed')
     // The step still explains what registration would buy -- the reader is
     // exactly the person deciding whether to do it.
     expect(steps[0].body).toMatch(/does not make your records true/)
   })
 
-  it('step 1 flips to "registered" ONLY once a witness actually holds a checkpoint, and drops its explanatory body', () => {
+  it('step 1 flips to "witnessed" ONLY once a witness actually holds a checkpoint, and drops its explanatory body', () => {
     const steps = buildSetupSteps({ checkpoint_count: 3, witnesses: [{}] }, null)
     expect(steps[0].done).toBe(true)
-    expect(steps[0].status).toBe('registered')
+    expect(steps[0].status).toBe('witnessed')
     expect(steps[0].body).toBeNull()
   })
 
@@ -95,13 +97,13 @@ describe('buildSetupSteps — ledger-ux-from-the-user §6, three steps in value 
     const registration = checkpointRegistration(unwitnessed)
     expect(registration.registered).toBe(false)
     expect(registration.checkpointedLocally).toBe(true)
-    expect(buildSetupSteps(unwitnessed, null)[0].status).toContain('not registered')
-    expect(buildRegistrationCopy(unwitnessed)?.witnessSummary).toContain('not registered')
+    expect(buildSetupSteps(unwitnessed, null)[0].status).toContain('no witness')
+    expect(buildRegistrationCopy(unwitnessed)?.witnessSummary).toContain('no witness')
 
     const witnessed = { checkpoint_count: 5, witnesses: [{}] }
     expect(checkpointRegistration(witnessed).registered).toBe(true)
-    expect(buildSetupSteps(witnessed, null)[0].status).toBe('registered')
-    expect(buildRegistrationCopy(witnessed)?.witnessSummary).toMatch(/^Registered with 1 witness/)
+    expect(buildSetupSteps(witnessed, null)[0].status).toBe('witnessed')
+    expect(buildRegistrationCopy(witnessed)?.witnessSummary).toMatch(/^Held by 1 witness/)
   })
 
   it('step 2 says what binding established once the live owner is verified -- never "bound" alone (UX §4)', () => {
@@ -162,33 +164,35 @@ describe('buildRegistrationCopy — only renders once a checkpoint exists', () =
     expect(buildRegistrationCopy({ checkpoint_count: null })).toBeNull()
   })
 
-  it('renders "Registered with N witnesses (M not operated by this node)"', () => {
+  it('renders "Held by N witnesses (M not operated by this node)"', () => {
     const copy = buildRegistrationCopy({
       checkpoint_count: 2,
       witnesses: [{ operated_by_producer: true }, { operated_by_producer: false }, {}]
     })
     expect(copy).not.toBeNull()
-    expect(copy?.witnessSummary).toBe('Registered with 3 witnesses (2 not operated by this node)')
+    expect(copy?.witnessSummary).toBe('Held by 3 witnesses (2 not operated by this node)')
   })
 
   it('a witness with no operated_by_producer field counts toward M (errs independent-claim-is-wrong)', () => {
     const copy = buildRegistrationCopy({ checkpoint_count: 1, witnesses: [{}] })
-    expect(copy?.witnessSummary).toBe('Registered with 1 witness (1 not operated by this node)')
+    expect(copy?.witnessSummary).toBe('Held by 1 witness (1 not operated by this node)')
   })
 
-  it('D1: an unwitnessed checkpoint reads "checkpointed locally", NEVER "Registered with 0 witnesses"', () => {
+  it('D1: an unwitnessed checkpoint reads "checkpointed locally", NEVER "Held by 0 witnesses"', () => {
     const copy = buildRegistrationCopy({ checkpoint_count: 2, witnesses: [] })
-    expect(copy?.witnessSummary).toBe('Checkpointed locally · not registered (witness: off)')
-    expect(copy?.witnessSummary).not.toMatch(/Registered with 0/)
+    expect(copy?.witnessSummary).toBe('Checkpointed locally · no witness (witness: off)')
+    expect(copy?.witnessSummary).not.toMatch(/Held by 0/)
   })
 
-  it('adds "registered no later than T" only when a witness holds the checkpoint; unwitnessed says "checkpointed no later than"', () => {
+  it('adds "witnessed no later than T" (local time) only when a witness holds the checkpoint; unwitnessed says "checkpointed no later than"', () => {
     const registered = buildRegistrationCopy({
       checkpoint_count: 1,
       witnesses: [{}],
       registered_no_later_than: '2026-09-10T00:00:00Z'
     })
-    expect(registered?.registeredNoLaterThan).toBe('registered no later than 2026-09-10T00:00:00Z')
+    const local = formatExchangeTimestamp('2026-09-10T00:00:00Z')
+    expect(registered?.registeredNoLaterThan).toBe(`witnessed no later than ${local}`)
+    expect(registered?.registeredNoLaterThan).not.toMatch(/T00:00|Z\b/)
 
     // The card field name is the wire's; the COPY must not overclaim -- an
     // unwitnessed checkpoint's timestamp is a local fact, not a registration.
@@ -197,7 +201,7 @@ describe('buildRegistrationCopy — only renders once a checkpoint exists', () =
       witnesses: [],
       registered_no_later_than: '2026-09-10T00:00:00Z'
     })
-    expect(unwitnessed?.registeredNoLaterThan).toBe('checkpointed no later than 2026-09-10T00:00:00Z')
+    expect(unwitnessed?.registeredNoLaterThan).toBe(`checkpointed no later than ${local}`)
 
     const withoutDate = buildRegistrationCopy({ checkpoint_count: 1, witnesses: [] })
     expect(withoutDate?.registeredNoLaterThan).toBeNull()
@@ -235,7 +239,7 @@ describe('chainStripCaption — leaf pluralization + the three absence states', 
 
   it('keeps the three-state absence handling: null card is "not reported", never a false "no checkpoint yet"', () => {
     expect(chainStripCaption(2, null, null)).toBe('2 entries, all sealed · checkpoint status not reported')
-    expect(chainStripCaption(1, 0, null)).toBe('1 entry, all sealed · no checkpoint yet · nothing here is registered')
+    expect(chainStripCaption(1, 0, null)).toBe('1 entry, all sealed · no checkpoint yet · no witness holds any of it')
   })
 })
 
@@ -292,7 +296,7 @@ describe('once-per-node facts — never fabricated, never per-row', () => {
   })
 })
 
-describe('banned vocabulary — never "timestamped", never bare "witnessed"', () => {
+describe('banned vocabulary — never "timestamped", never "registered", and "witnessed" only when a witness holds it', () => {
   const allStrings = [
     RETENTION_FACT,
     CAPTURE_BOUNDARY_FACT,
@@ -312,7 +316,17 @@ describe('banned vocabulary — never "timestamped", never bare "witnessed"', ()
     for (const text of allStrings) expect(text.toLowerCase()).not.toMatch(/timestamped/)
   })
 
-  it('never renders bare "witnessed" (registration copy says "witnesses", not "witnessed")', () => {
-    for (const text of allStrings) expect(text.toLowerCase()).not.toMatch(/\bwitnessed\b/)
+  it('never renders "registered" (UX: jargon; the plain word is "witnessed")', () => {
+    for (const text of allStrings) expect(text.toLowerCase()).not.toMatch(/\bregistered\b/)
+  })
+
+  it('says "witnessed" only when a witness holds a checkpoint, never for a local one', () => {
+    const unwitnessed = { checkpoint_count: 1, witnesses: [], registered_no_later_than: '2026-09-10T00:00:00Z' }
+    const local = [
+      ...buildSetupSteps(unwitnessed, null).flatMap((step) => [step.title, step.status, step.body ?? '']),
+      buildRegistrationCopy(unwitnessed)?.witnessSummary ?? '',
+      buildRegistrationCopy(unwitnessed)?.registeredNoLaterThan ?? ''
+    ]
+    for (const text of local) expect(text.toLowerCase()).not.toMatch(/\bwitnessed\b/)
   })
 })

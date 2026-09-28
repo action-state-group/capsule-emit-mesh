@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/SharedModal'
 import { toneForState } from '@/features/capsules/lib/assurance-tone'
 import type { PeerTimelinePoint } from '@/features/capsules/lib/peer-exchange-timeline'
+import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 
 export type PeerExchangeInspectorProps = {
   point: PeerTimelinePoint | null
@@ -34,7 +35,7 @@ export function PeerExchangeInspector({ point, onClose }: PeerExchangeInspectorP
           <SharedModalHeader>
             <SharedModalTitle className="font-mono">{point.exchangeId}</SharedModalTitle>
             <SharedModalDescription>
-              {point.timestamp ?? 'timestamp unavailable'} ·{' '}
+              {formatExchangeTimestamp(point.timestamp)} ·{' '}
               {point.direction === 'requested' ? 'you → them' : 'them → you'}
             </SharedModalDescription>
           </SharedModalHeader>

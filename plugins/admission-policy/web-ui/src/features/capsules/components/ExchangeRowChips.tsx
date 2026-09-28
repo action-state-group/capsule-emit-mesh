@@ -11,6 +11,7 @@
 import {
   entryRowChipMark,
   entryRowChipPropertyKey,
+  ENTRY_ROW_CHIP_LABEL,
   ENTRY_ROW_CHIP_ORDER
 } from '@/features/capsules/lib/entry-row-chips'
 import type { EntryRowChipMark } from '@/features/capsules/lib/entry-row-chips'
@@ -39,12 +40,13 @@ export function ExchangeRowChips({
     <div aria-label="checks summary" className="flex flex-wrap items-center gap-2.5" role="group">
       {ENTRY_ROW_CHIP_ORDER.map((chip) => {
         const mark = entryRowChipMark(checks, chip)
+        const label = ENTRY_ROW_CHIP_LABEL[chip]
         const propertyKey = entryRowChipPropertyKey(chip)
         // Hover for the meaning, click for the full check (UX §8 rule 2).
         return (
           <HoverChip census={`entry_chip:${chip}`} key={chip} label={ENTRY_CHIP_TOOLTIPS[chip]}>
             <span
-              aria-label={`${chip}: jump to the ${chip} check`}
+              aria-label={`${label}: jump to that check`}
               className="ui-control-ghost inline-flex cursor-pointer items-center gap-1 font-mono text-xs"
               onClick={() => onChipActivate(propertyKey)}
               onKeyDown={(event) => {
@@ -55,7 +57,7 @@ export function ExchangeRowChips({
               role="link"
               tabIndex={0}
             >
-              <span className="text-fg-dim">{chip}</span>
+              <span className="text-fg-dim">{label}</span>
               <span style={{ color: MARK_COLOR[mark] }}>{mark}</span>
             </span>
           </HoverChip>

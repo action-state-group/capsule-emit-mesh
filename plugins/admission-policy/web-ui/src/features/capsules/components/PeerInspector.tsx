@@ -40,6 +40,7 @@ import {
   YOUR_DEALINGS_TITLE
 } from '@/features/capsules/lib/tooltip-copy'
 import { PeerTimeline } from '@/features/capsules/components/PeerTimeline'
+import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 
 export type PeerInspectorProps = {
   open: boolean
@@ -115,7 +116,7 @@ function PeerExchangesTab({
               <StatusPill dot label={point.reconciliation} tone={toneForState(point.reconciliation)} />
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-1.5 text-fg-faint">
-              <span>{point.timestamp ?? 'timestamp unavailable'}</span>
+              <span>{formatExchangeTimestamp(point.timestamp)}</span>
               <span aria-hidden="true">·</span>
               <span>{point.direction === 'requested' ? 'you → them' : 'them → you'}</span>
               {point.direction === 'requested' ? (

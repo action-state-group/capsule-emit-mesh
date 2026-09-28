@@ -75,7 +75,8 @@ export function peerAliasLine(row: PaneBRow): string | null {
   }
   const parts = [`signed by ${signingKeyId.slice(0, 16)}`]
   if (nodeId) parts.push(`node ${nodeId.slice(0, 16)}…`)
-  if (endpointId) parts.push(`endpoint ${endpointId}`)
+  // Never a 64-hex id on the row face (§7.4): the full id is in the drill.
+  if (endpointId) parts.push(`endpoint ${endpointId.length > 16 ? `${endpointId.slice(0, 16)}…` : endpointId}`)
   return parts.join(' · ')
 }
 

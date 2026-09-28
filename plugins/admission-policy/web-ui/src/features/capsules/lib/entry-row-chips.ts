@@ -10,6 +10,16 @@ export type EntryRowChipMark = '✓' | '✗' | '–'
 
 export const ENTRY_ROW_CHIP_ORDER: readonly EntryRowChipKey[] = ['content', 'sig', 'inclusion', 'registered', 'theirs']
 
+/** The words each chip shows on the row face: plain, never the property's
+ *  engineer name (UX §7.6-2). Console copy. */
+export const ENTRY_ROW_CHIP_LABEL: Record<EntryRowChipKey, string> = {
+  content: 'words match',
+  sig: 'signed',
+  inclusion: 'in a checkpoint',
+  registered: 'witnessed',
+  theirs: 'their record'
+}
+
 // The one property each chip names, verbatim design §3A -- never re-derive
 // this mapping ad hoc at a call site.
 const CHIP_PROPERTY_KEY: Record<EntryRowChipKey, string> = {

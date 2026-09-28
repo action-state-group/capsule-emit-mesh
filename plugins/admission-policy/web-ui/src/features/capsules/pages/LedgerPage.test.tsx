@@ -23,6 +23,7 @@ import { fetchDoorStatus } from '@/features/capsules/api/sidecarClient'
 import { setPluginHost } from '@/plugin-host/host'
 import { createStandaloneHost } from '@/plugin-host/standalone-host'
 import { CHAIN_BAR_INFO, INTEGRITY_TILE_INFO } from '@/features/capsules/lib/integrity-view'
+import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 
 // ---------------------------------------------------------------------------
 // Mock all network fetchers — tests must never hit the real network.
@@ -125,6 +126,24 @@ describe('LedgerPageContent', () => {
     expect(
       await screen.findByText(/Confirmation unavailable: the evidence door isn't running at http:\/\/127\.0\.0\.1:8091/)
     ).toBeInTheDocument()
+  })
+
+  it('the hero says in one line how many records, how many the other side confirmed, and disagreements', async () => {
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    expect(await screen.findByTestId('hero-status-line')).toHaveTextContent(
+      '0 records · 0 confirmed by the other side · 0 disagreements · checkable only by you (witness off — your choice)'
+    )
+  })
+
+  it('"Clean up records" opens the three-choice dialog, and Close shuts it without acting', async () => {
+    const user = userEvent.setup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await user.click(screen.getByRole('button', { name: 'Clean up records' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Start a new log')).toBeInTheDocument()
+    const closeButtons = within(dialog).getAllByRole('button', { name: /^close$/i })
+    await user.click(closeButtons[closeButtons.length - 1])
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
   it('shows the premise line', () => {
@@ -369,7 +388,8 @@ describe('LedgerPageContent', () => {
     // none of these three rows carry a real fetch, so `confirmed` is
     // honestly 0, not 1 (the old count treated exc-1's bare `theirs.state:
     // 'present'` as a confirmation).
-    const headerEl = await screen.findByText(/confirmed by the other side/i)
+    // The Exchanges headline (the hero line above says the same counts).
+    const headerEl = await screen.findByTestId('exchanges-headline')
     expect(headerEl.textContent).toMatch(/3 exchange/)
     expect(headerEl.textContent).toMatch(/0 confirmed by the other side/)
 
@@ -439,13 +459,13 @@ describe('LedgerPageContent', () => {
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
-    await screen.findByText(/confirmed by the other side/i)
+    await screen.findByTestId('exchanges-headline')
 
     await user.click(screen.getByRole('button', { name: 'Get the other side’s record' }))
     expect(await screen.findByText('Chain integrity')).toBeInTheDocument()
 
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
-    await screen.findByText(/confirmed by the other side/i)
+    await screen.findByTestId('exchanges-headline')
     await user.click(screen.getByRole('button', { name: 'Register a checkpoint' }))
     expect(await screen.findByText('Chain integrity')).toBeInTheDocument()
   })
@@ -1090,7 +1110,7 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     expect(screen.getByText(/Get the other side’s record/)).toBeInTheDocument()
     expect(screen.getByText(/Their record usually arrives on its own/)).toBeInTheDocument()
     expect(screen.getByText(/does not make your records true/)).toBeInTheDocument()
-    expect(screen.getByText(/does not prove who you are/)).toBeInTheDocument()
+    expect(screen.getByText(/only your own claim about who you are/)).toBeInTheDocument()
   })
 
   it('Integrity reads a NULL card as "checkpoint status not reported", never a false "no checkpoint yet"', async () => {
@@ -1117,7 +1137,7 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     expect(screen.queryByText(/no checkpoint yet/)).not.toBeInTheDocument()
   })
 
-  it('flips step 1 to "registered" and shows registration copy once a checkpoint exists', async () => {
+  it('flips step 1 to "witnessed" and shows the witness copy once a checkpoint exists', async () => {
     const { fetchPaneA } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneA).mockResolvedValue({
       operator: null,
@@ -1134,8 +1154,8 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /integrity/i }))
 
-    expect(await screen.findByText('Registered with 2 witnesses (1 not operated by this node)')).toBeInTheDocument()
-    expect(screen.getByText('registered no later than 2026-09-10')).toBeInTheDocument()
+    expect(await screen.findByText('Held by 2 witnesses (1 not operated by this node)')).toBeInTheDocument()
+    expect(screen.getByText(`witnessed no later than ${formatExchangeTimestamp('2026-09-10')}`)).toBeInTheDocument()
     // Step 1 no longer shows the "what it does not buy" sentence once done.
     expect(screen.queryByText(/does not make your records true/)).not.toBeInTheDocument()
   })
@@ -1200,7 +1220,7 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     ).toBeInTheDocument()
     // Finding 7: the unwitnessed checkpoint is said by step 1 -- not again as
     // a separate "Checkpointed locally" line.
-    expect(screen.getAllByText(/not registered/i)).toHaveLength(1)
+    expect(screen.getAllByText(/no witness/i)).toHaveLength(1)
     expect(screen.queryByText(/witness: off/)).not.toBeInTheDocument()
     const details = screen.getByTestId('integrity-details')
     expect(details.tagName).toBe('DETAILS')
@@ -1216,7 +1236,7 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     expect(await screen.findByRole('button', { name: /save evidence file/i })).toBeInTheDocument()
   })
 
-  it('never renders "timestamped" or bare "witnessed" anywhere on the Integrity section', async () => {
+  it('never renders "timestamped", "registered" or an ISO time anywhere on the Integrity section', async () => {
     const { fetchPaneA } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneA).mockResolvedValue({
       operator: null,
@@ -1235,11 +1255,12 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
     const user = userEvent.setup()
     const { container } = render(<LedgerPageContent />, { wrapper: makeWrapper() })
     await user.click(screen.getByRole('tab', { name: /integrity/i }))
-    await screen.findByText('registered no later than 2026-09-10')
+    await screen.findByText(`witnessed no later than ${formatExchangeTimestamp('2026-09-10')}`)
 
     const sectionText = (container.textContent ?? '').toLowerCase()
     expect(sectionText).not.toMatch(/timestamped/)
-    expect(sectionText).not.toMatch(/\bwitnessed\b/)
+    expect(sectionText).not.toMatch(/\bregistered\b/)
+    expect(sectionText).not.toMatch(/\d{4}-\d\d-\d\dt\d\d:\d\d/)
   })
 })
 

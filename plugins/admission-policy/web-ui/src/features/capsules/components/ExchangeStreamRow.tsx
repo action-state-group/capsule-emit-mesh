@@ -52,6 +52,7 @@ import { shortId } from '@/features/capsules/lib/short-id'
 import { StageStrip } from '@/features/capsules/components/StageStrip'
 import { copyStateLabel } from '@/lib/copyStateLabel'
 import { useClipboardCopy } from '@/lib/useClipboardCopy'
+import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 
 /** The gated cell text (Do (2)) when an ask
  *  action's row carries no recorded counterparty. This splits by which of two
@@ -75,12 +76,6 @@ function useNowMs(): number {
     return () => window.clearInterval(timer)
   }, [])
   return nowMs
-}
-
-function formatExchangeTimestamp(timestamp: string | null): string {
-  if (!timestamp) return 'timestamp unavailable'
-  const match = timestamp.match(/T(\d{2}:\d{2}:\d{2})Z?/)
-  return match ? `${timestamp.slice(0, 10)} ${match[1]}Z` : timestamp
 }
 
 function roleText(roleTag: string): string {
