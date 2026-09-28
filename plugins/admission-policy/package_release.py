@@ -21,8 +21,11 @@ in Mesh-LLM/mesh-llm, checked against mesh-llm-plugin-manager's extractor):
         plugin-manifest.json       printed by the binary (--print-package-manifest)
         bundle/register-mesh-plugin-ui.js
         README.md                  INSTALL.md from this directory
+        DEMO.md                    the five-minute demo (required: INSTALL.md links it)
         LICENSE, NOTICE
-        DEMO.md                    only if present in this directory
+        door/                      the evidence door: evidence_server.py, every
+                                   repository module it imports, requirements.lock
+                                   (hash-pinned) and run-door.sh
 
 Unix targets ship .tar.gz only: mesh-llm's .zip extractor does not restore
 the executable bit, so a .zip would install a plugin the host cannot start.
@@ -36,6 +39,7 @@ executable produces the same archive digest.
 from __future__ import annotations
 
 import argparse
+import ast
 import gzip
 import hashlib
 import io
@@ -52,6 +56,11 @@ from pathlib import Path
 
 PLUGIN_NAME = "capsule-emit-mesh"
 BUNDLE_ENTRY = "register-mesh-plugin-ui.js"
+DOOR_ENTRY_MODULES = ("evidence_server", "door_auth")
+DOOR_LAUNCHER = "run-door.sh"
+# The plugin half of door_auth.py's protocol creates this file; INSTALL.md
+# documents that behaviour, so a binary without it must not ship.
+DOOR_TOKEN_FILENAME = b"evidence-door.token"
 UNIX_TARGETS = (
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
@@ -117,12 +126,59 @@ def print_manifest(binary: Path) -> bytes:
     return result.stdout
 
 
+def check_door_auth(binary: Path) -> None:
+    if DOOR_TOKEN_FILENAME not in binary.read_bytes():
+        raise PackageError(
+            f"{binary} does not reference {DOOR_TOKEN_FILENAME.decode()}: this plugin "
+            "build does not authenticate its evidence door, which INSTALL.md says it does"
+        )
+
+
 def check_bundle(bundle: Path) -> None:
     if not bundle.is_dir():
         raise PackageError(f"{bundle} is missing; run `pnpm build` in web-ui/ first")
     entries = sorted(p.name for p in bundle.iterdir())
     if entries != [BUNDLE_ENTRY]:
         raise PackageError(f"bundle/ must hold exactly {BUNDLE_ENTRY}, found {entries}")
+
+
+def door_modules() -> list[str]:
+    """Every repository-root module the door imports, directly or not.
+
+    Computed from the source at package time so the shipped door cannot
+    drift from what evidence_server.py actually needs. Imports inside
+    functions count too: a lazily imported module missing from the package
+    would fail only on the request that reaches it.
+    """
+    local = {path.stem for path in REPO_ROOT.glob("*.py")}
+    seen: set[str] = set()
+    pending = list(DOOR_ENTRY_MODULES)
+    while pending:
+        module = pending.pop()
+        if module in seen:
+            continue
+        seen.add(module)
+        tree = ast.parse((REPO_ROOT / f"{module}.py").read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            match node:
+                case ast.Import(names=aliases):
+                    names = [alias.name for alias in aliases]
+                case ast.ImportFrom(module=str(name), level=0):
+                    names = [name]
+                case _:
+                    continue
+            pending.extend(n.split(".")[0] for n in names if n.split(".")[0] in local)
+    return sorted(seen)
+
+
+def stage_door(door: Path) -> None:
+    door.mkdir()
+    for module in door_modules():
+        shutil.copyfile(REPO_ROOT / f"{module}.py", door / f"{module}.py")
+    shutil.copyfile(
+        PLUGIN_DIR / "door" / "requirements.lock", door / "requirements.lock"
+    )
+    shutil.copyfile(PLUGIN_DIR / "door" / DOOR_LAUNCHER, door / DOOR_LAUNCHER)
 
 
 def stage(root: Path, binary: Path, manifest: bytes) -> None:
@@ -134,8 +190,10 @@ def stage(root: Path, binary: Path, manifest: bytes) -> None:
     shutil.copyfile(PLUGIN_DIR / "INSTALL.md", root / "README.md")
     shutil.copyfile(REPO_ROOT / "LICENSE", root / "LICENSE")
     shutil.copyfile(REPO_ROOT / "NOTICE", root / "NOTICE")
-    if (PLUGIN_DIR / "DEMO.md").is_file():
-        shutil.copyfile(PLUGIN_DIR / "DEMO.md", root / "DEMO.md")
+    if not (PLUGIN_DIR / "DEMO.md").is_file():
+        raise PackageError("DEMO.md is missing; INSTALL.md links it, so it must ship")
+    shutil.copyfile(PLUGIN_DIR / "DEMO.md", root / "DEMO.md")
+    stage_door(root / "door")
 
     # Fail closed on anything beyond the contract's files: never keys,
     # ledgers, or demo data.
@@ -148,6 +206,7 @@ def stage(root: Path, binary: Path, manifest: bytes) -> None:
         "LICENSE",
         "NOTICE",
         "DEMO.md",
+        "door",
     }
     unexpected = sorted(p.name for p in root.iterdir() if p.name not in allowed)
     if unexpected:
@@ -163,7 +222,10 @@ def write_archive(staging: Path, archive: Path, mtime: int) -> None:
             info.uid = info.gid = 0
             info.uname = info.gname = ""
             info.mtime = mtime
-            executable = path.is_dir() or rel == f"{PLUGIN_NAME}/{PLUGIN_NAME}"
+            executable = path.is_dir() or rel in {
+                f"{PLUGIN_NAME}/{PLUGIN_NAME}",
+                f"{PLUGIN_NAME}/door/{DOOR_LAUNCHER}",
+            }
             info.mode = 0o755 if executable else 0o644
             if path.is_file():
                 with path.open("rb") as handle:
@@ -177,13 +239,22 @@ def write_archive(staging: Path, archive: Path, mtime: int) -> None:
         gz.write(buffer.getvalue())
 
 
-def build_package(version: str, target: str, binary: Path, out_dir: Path) -> Package:
+def build_package(
+    version: str,
+    target: str,
+    binary: Path,
+    out_dir: Path,
+    *,
+    check_door: bool = True,
+) -> Package:
     if target not in UNIX_TARGETS:
         raise PackageError(
             f"unsupported target {target}; expected one of {UNIX_TARGETS}"
         )
     check_plugin_toml_version(version)
     check_bundle(PLUGIN_DIR / "bundle")
+    if check_door:
+        check_door_auth(binary)
     manifest = print_manifest(binary)
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -212,9 +283,20 @@ def main() -> int:
         "--binary", required=True, type=Path, help="built plugin executable"
     )
     parser.add_argument("--out-dir", required=True, type=Path)
+    parser.add_argument(
+        "--skip-door-auth-check",
+        action="store_true",
+        help="dry runs only: package a plugin build that predates the door token",
+    )
     args = parser.parse_args()
     try:
-        package = build_package(args.version, args.target, args.binary, args.out_dir)
+        package = build_package(
+            args.version,
+            args.target,
+            args.binary,
+            args.out_dir,
+            check_door=not args.skip_door_auth_check,
+        )
     except PackageError as error:
         print(f"package_release: {error}", file=sys.stderr)
         return 1

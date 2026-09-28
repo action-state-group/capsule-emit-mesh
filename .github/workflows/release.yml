@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Plugin release — builds the admission-policy-plugin binary (statically
 # linking capsule-producer) for each target mesh-llm's plugin installer
-# resolves, packages it with its web UI bundle, and uploads a per-target
-# archive plus one SHA256SUMS file to the GitHub Release.
+# resolves, packages it with its web UI bundle and its evidence door, and
+# uploads a per-target archive, one SHA256SUMS file, and build provenance
+# attestations to the GitHub Release.
 #
 # Staging and archiving live in plugins/admission-policy/package_release.py,
 # so a local dry run builds exactly the package this workflow publishes. The
@@ -15,23 +16,31 @@
 #   - inside the root: plugin.toml, the executable renamed to <plugin-name>,
 #     plugin-manifest.json (printed by the built binary itself and required to
 #     equal the reviewed plugin.package.json), bundle/ (the Evidence page, built
-#     from web-ui/), README.md (INSTALL.md), LICENSE, NOTICE, and DEMO.md when
-#     present. Anything else fails the build (never keys, ledgers, or demo data).
+#     from web-ui/), door/ (evidence_server.py, the repository modules it
+#     imports, a hash-pinned requirements.lock and run-door.sh), README.md
+#     (INSTALL.md), DEMO.md, LICENSE, NOTICE. Anything else fails the build
+#     (never keys, ledgers, or demo data).
 # `<plugin-name>` is `capsule-emit-mesh` throughout (this repo's name, the
 # GitHub owner/repo installers key off, and PLUGIN_ID in src/main.rs).
 #
 # Unix targets ship .tar.gz only: mesh-llm's .zip extractor does not restore
 # the executable bit.
 #
-# Rebuildable from the tag: the toolchain is pinned below, cargo runs with
-# --locked, pnpm with --frozen-lockfile, and the archive itself is
-# deterministic (SOURCE_DATE_EPOCH = the tagged commit's time).
+# Only this workflow's CI builds are published. A locally built package is a
+# dry run: its executable embeds the build machine's paths.
 #
-# Triggered on a `v*` tag push; a tag with a pre-release suffix (e.g.
-# v0.2.0-rc.1) publishes a GitHub pre-release. This workflow does not create or
-# push a tag. `workflow_dispatch` re-runs the build for an existing tag (e.g.
-# after a runner-side failure) without pushing a new one; it checks out that
-# tag, not the default branch.
+# Rebuildable from the tag: every action is pinned to a commit, the toolchain
+# is pinned, cargo runs with --locked and path prefixes remapped, pnpm with
+# --frozen-lockfile, and the archive itself is deterministic
+# (SOURCE_DATE_EPOCH = the tagged commit's time). Linux builds on Ubuntu 22.04
+# so the executable needs glibc 2.35 or newer (checked below); macOS targets
+# macOS 11 or newer.
+#
+# Triggered on a tag push matching vMAJOR.MINOR.PATCH or
+# vMAJOR.MINOR.PATCH-rc.N; an -rc tag publishes a GitHub pre-release. This
+# workflow never creates or moves a tag. `workflow_dispatch` re-runs the build
+# for a tag that already exists (e.g. after a runner-side failure); it builds
+# the commit that tag points to, never the dispatching branch.
 name: release
 
 on:
@@ -44,17 +53,52 @@ on:
         description: "Existing tag to build and attach assets to (e.g. v0.2.0-rc.1)"
         required: true
 
-permissions:
-  contents: write
+permissions: {}
 
 env:
   PLUGIN_NAME: capsule-emit-mesh
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
   RUST_TOOLCHAIN: "1.97.1"
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+  MAX_GLIBC: "2.35"
 
 jobs:
+  tag:
+    name: validate the tag
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: The tag is a release tag and is what was checked out
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "::error::'$RELEASE_TAG' is not vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N"
+            exit 1
+          fi
+          tagged="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          head="$(git rev-parse HEAD)"
+          if [ "$tagged" != "$head" ]; then
+            echo "::error::checked out $head, but $RELEASE_TAG points to $tagged"
+            exit 1
+          fi
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+
   build:
     name: build (${{ matrix.target }})
+    needs: tag
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -62,24 +106,25 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-14
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
+            os: ubuntu-22.04-arm
     runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: plugins/admission-policy
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -87,14 +132,41 @@ jobs:
             plugins/admission-policy/target
           key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-${{ env.RUST_TOOLCHAIN }}-${{ matrix.target }}-${{ hashFiles('plugins/admission-policy/Cargo.lock') }}
 
-      - name: Build (release)
-        run: cargo build --locked --release --target ${{ matrix.target }} --bin admission-policy-plugin
+      - name: Build (release, local paths remapped)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=/build --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=${HOME}=/home"
+          cargo build --locked --release --target ${{ matrix.target }} --bin admission-policy-plugin
 
-      - uses: pnpm/action-setup@v4
+      - name: No build-machine paths in the executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/admission-policy-plugin"
+          if strings "$bin" | grep -F -e "$GITHUB_WORKSPACE" -e "$HOME/"; then
+            echo "::error::the executable embeds a build-machine path"
+            exit 1
+          fi
+
+      - name: glibc floor (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/admission-policy-plugin"
+          needed="$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -1)"
+          echo "highest glibc symbol version: $needed"
+          if [ "$(printf '%s\n%s\n' "$needed" "$MAX_GLIBC" | sort -V | tail -1)" != "$MAX_GLIBC" ]; then
+            echo "::error::needs glibc $needed, above the stated floor $MAX_GLIBC"
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           package_json_file: plugins/admission-policy/web-ui/package.json
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
           cache: pnpm
@@ -106,29 +178,25 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
 
-      - name: Resolve version and source date from the tag
-        id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
-          echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
-
       # Every matrix target builds on a runner of its own OS/arch, so the
       # just-built binary runs here and prints its own package manifest.
       - name: Package
         id: package
         shell: bash
+        env:
+          VERSION: ${{ needs.tag.outputs.version }}
         run: |
           set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
           python3 package_release.py \
-            --version "${{ steps.version.outputs.version }}" \
+            --version "$VERSION" \
             --target "${{ matrix.target }}" \
             --binary "target/${{ matrix.target }}/release/admission-policy-plugin" \
             --out-dir dist
-          echo "asset=${PLUGIN_NAME}-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "asset=${PLUGIN_NAME}-${VERSION}-${{ matrix.target }}.tar.gz" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: package-${{ matrix.target }}
           path: |
@@ -137,15 +205,20 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: publish (SHA256SUMS + release assets)
-    needs: build
-    runs-on: ubuntu-latest
+    name: publish (SHA256SUMS, attestations, release assets)
+    needs: [tag, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: package-*
           path: dist
@@ -161,11 +234,16 @@ jobs:
           archives=(./*.tar.gz)
           test "$(wc -l < SHA256SUMS)" -eq "${#archives[@]}"
 
-      - name: Upload release assets
-        uses: softprops/action-gh-release@v2
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
+          prerelease: ${{ contains(env.RELEASE_TAG, '-rc.') }}
           body_path: plugins/admission-policy/INSTALL.md
           files: |
             dist/*.tar.gz

@@ -154,6 +154,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from adjudication_delivery import handle_delivery
+from door_auth import AUTH_HEADER, NONCE_HEADER, PROOF_HEADER, DoorAuth, DoorTokenError
 from evidence_responder import augment_evidence_answer_dict, handle_evidence_request
 from record_push import handle_record_push
 from share_policy import SharePolicy, share_policy_from_env
@@ -202,6 +203,10 @@ class EvidenceServerState:
     signing_key_path: Path
     share_policy: SharePolicy | None = None
     received_log_dir: Path | None = None
+    # door_auth.py: when set, every request must prove the shared token and
+    # every reply proves it back. None keeps the door open to its existing
+    # direct Python callers.
+    door_auth: DoorAuth | None = None
 
 
 def _merged_evidence_view(ledger_dir: Path) -> Path:
@@ -281,18 +286,45 @@ def make_evidence_handler(state: EvidenceServerState):
     class EvidenceHandler(BaseHTTPRequestHandler):
         server_version = "capsule-evidence-server/0.1"
 
-        def _write_json(self, status: int, payload: dict[str, Any]) -> None:
-            body = json.dumps(payload).encode("utf-8")
+        # The authenticated request's nonce, set by _authenticated(); the
+        # reply to it carries a proof over this nonce.
+        _door_nonce: str | None = None
+
+        def _send(self, status: int, content_type: str, body: bytes) -> None:
             self.send_response(status)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            if state.door_auth is not None and self._door_nonce is not None:
+                self.send_header(
+                    PROOF_HEADER, state.door_auth.reply_proof(self._door_nonce, status, body)
+                )
             self.end_headers()
             self.wfile.write(body)
+
+        def _write_json(self, status: int, payload: dict[str, Any]) -> None:
+            self._send(status, "application/json", json.dumps(payload).encode("utf-8"))
+
+        def _authenticated(self) -> bool:
+            """True when the door is open (no token) or the request proves the
+            token; otherwise answers 401 and the caller must stop."""
+            self._door_nonce = None
+            if state.door_auth is None:
+                return True
+            nonce = self.headers.get(NONCE_HEADER)
+            if state.door_auth.check_request(
+                self.command, self.path, nonce, self.headers.get(AUTH_HEADER)
+            ):
+                self._door_nonce = nonce
+                return True
+            self._write_json(401, {"error": "door_auth_failed"})
+            return False
 
         def do_POST(self) -> None:  # BaseHTTPRequestHandler API names this do_POST
             path = self.path.strip("/")
             length = int(self.headers.get("Content-Length", "0") or "0")
             request_bytes = self.rfile.read(length) if length else b""
+            if not self._authenticated():
+                return
 
             if path == "evidence-request":
                 # the caller's self-declared
@@ -377,12 +409,9 @@ def make_evidence_handler(state: EvidenceServerState):
             self._write_json(404, {"error": "not_found", "path": self.path})
 
         def do_GET(self) -> None:
-            body = b"capsule-evidence-server: ready\n"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            if not self._authenticated():
+                return
+            self._send(200, "text/plain", b"capsule-evidence-server: ready\n")
 
         def log_message(self, fmt: str, *args: Any) -> None:  # quiet by default
             pass
@@ -424,7 +453,21 @@ def main(argv: list[str] | None = None) -> int:
         "point this at a directory this process actually owns, e.g. beside (never inside) the "
         "Rust plugin's ledger dir.",
     )
+    parser.add_argument(
+        "--token-file",
+        default=None,
+        help="require every request to prove this shared token and prove it back on "
+        "every reply (door_auth.py) -- the plugin's <data dir>/evidence-door.token. "
+        "Unset keeps the door open to direct callers.",
+    )
     args = parser.parse_args(argv)
+
+    door_auth = None
+    if args.token_file:
+        try:
+            door_auth = DoorAuth.from_file(Path(args.token_file))
+        except DoorTokenError as error:
+            parser.error(str(error))
 
     state = EvidenceServerState(
         ledger_dir=Path(args.ledger_dir),
@@ -435,11 +478,14 @@ def main(argv: list[str] | None = None) -> int:
         # "backward-compatible by construction" note.
         share_policy=share_policy_from_env(),
         received_log_dir=Path(args.received_log_dir) if args.received_log_dir else None,
+        door_auth=door_auth,
     )
     server = run_evidence_server(host=args.listen_host, port=args.listen_port, state=state)
     print(
         f"capsule evidence server listening on http://{args.listen_host}:{args.listen_port} "
-        f"ledger={state.ledger_dir}"
+        f"ledger={state.ledger_dir} "
+        f"auth={'token' if door_auth is not None else 'off'}",
+        flush=True,
     )
     server.serve_forever()
     return 0
