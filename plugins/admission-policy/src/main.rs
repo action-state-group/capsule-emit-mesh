@@ -636,11 +636,12 @@ fn with_evidence_operations(
                  (e.g. relay-only). Returns the peer's own Artifact-or-Refusal JSON unchanged.",
             )
             .input::<MeshEvidenceRequestArgs>()
-            .handle(
-                |args, context| {
-                    Box::pin(mesh_evidence_bridge::handle_mesh_evidence_request(args, context))
-                },
-            ),
+            .handle({
+                let ledger_dir = capsules_for_delivery.ledger_dir().to_path_buf();
+                move |args, context| {
+                    Box::pin(mesh_evidence_bridge::handle_mesh_evidence_request(args, context, ledger_dir.clone()))
+                }
+            }),
     );
     builder = builder.mcp_item(
         mcp::tool(routing_choice_bridge::LOCAL_ROUTING_CHOICE_OPERATION)
@@ -667,7 +668,7 @@ fn with_evidence_operations(
             )
             .input::<adjudication_records::DeliverAdjudicationArgs>()
             .handle({
-                let capsules = capsules_for_delivery;
+                let capsules = capsules_for_delivery.clone();
                 let self_peer = self_peer.clone();
                 move |args, context| {
                     let capsules = capsules.clone();

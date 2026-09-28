@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import os
 
-__all__ = ["ENV_PEER_KEYS", "announced_key_for"]
+__all__ = ["ENV_PEER_KEYS", "announced_key_for", "peer_id_for_key"]
 
 ENV_PEER_KEYS = "ADMISSION_POLICY_PEER_KEYS"
 
@@ -51,3 +51,19 @@ def announced_key_for(peer_id: str | None) -> str | None:
         return None
     key_id = registry.get(peer_id)
     return key_id if isinstance(key_id, str) and key_id else None
+
+
+def peer_id_for_key(key_id: str | None) -> str | None:
+    """The one announced peer whose key is ``key_id`` -- e.g. this node's own
+    id from its own key. ``None`` when no peer, or more than one, announces
+    it: never a guess."""
+    if not key_id:
+        return None
+    try:
+        registry = json.loads(os.environ.get(ENV_PEER_KEYS) or "{}")
+    except Exception:
+        return None
+    if not isinstance(registry, dict):
+        return None
+    names = [peer for peer, key in registry.items() if key == key_id]
+    return names[0] if len(names) == 1 else None

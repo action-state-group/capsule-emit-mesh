@@ -28,6 +28,10 @@ What this node checks before it signs anything:
      ``response_digest`` is the answer's digest. That record is cited, so a
      reader can find the referee's own record of the call.
   5. This node is neither twin.
+  6. Both twins served the same model weights, as their signed records say
+     (``serving_provenance.model.weights_digest``); otherwise, or when either
+     does not say, the ruling is ``not_comparable``
+     (``not_comparable_because``), never a contradiction.
 
 Then the same verdict rule the requester-side referee uses
 (``live_referee.referee_verdict``) decides, and the verdict record is
@@ -60,7 +64,7 @@ from capsule_emit.signing import resolve_signer, sign_producer_envelope, verify_
 from capsule_sidecar import digest_json
 from ledger_store_backend import read_all_capsules
 from live_referee import referee_verdict
-from peer_keys import ENV_PEER_KEYS, announced_key_for
+from peer_keys import announced_key_for, peer_id_for_key
 from twin_adjudicator import (
     NO_VERDICT_NOT_COMPARABLE,
     NO_VERDICT_REFEREE_UNREACHABLE,
@@ -92,6 +96,11 @@ ISSUED_ADJUDICATIONS_FILENAME = "issued-adjudications.jsonl"
 
 #: The referee's prompt is the requester's word (see the module doc).
 REFEREE_PROMPT_REQUESTER_ATTESTED = "requester_attested"
+
+#: Why a pair is not comparable (`not_comparable_because` in the verdict).
+NOT_COMPARABLE_SAMPLED = "sampled"
+NOT_COMPARABLE_WEIGHTS_DIFFER = "weights_differ"
+NOT_COMPARABLE_WEIGHTS_UNKNOWN = "weights_unknown"
 
 REASON_REQUEST_MALFORMED = "request_malformed"
 REASON_HALF_UNVERIFIED = "half_unverified"
@@ -154,16 +163,7 @@ def _self_node_id(own_key_id: str) -> str | None:
     """This node's own id: the one announced peer whose key is this node's
     key. ``None`` when the announced keys do not name this node -- then it
     cannot say who it is, so it signs no verdict."""
-    import os
-
-    try:
-        registry = json.loads(os.environ.get(ENV_PEER_KEYS) or "{}")
-    except Exception:
-        return None
-    if not isinstance(registry, dict):
-        return None
-    names = [peer for peer, key in registry.items() if key == own_key_id]
-    return names[0] if len(names) == 1 else None
+    return peer_id_for_key(own_key_id)
 
 
 def _signed_by_its_server(record: Any) -> str | None:
@@ -311,14 +311,37 @@ def handle_adjudicate_request(state: Any, request_bytes: bytes) -> dict[str, Any
             identity=RefereeIdentity(referee_id=self_id, referee_capsule_id=record["capsule_id"]),
         )
 
+    # Twins can only be compared when both served the same model weights, as
+    # their own signed records say: different weights (or quantization) can
+    # give different greedy answers with neither provider at fault.
+    not_comparable_because = None
+    if not (half_a.weights_digest and half_a.weights_digest == half_b.weights_digest):
+        not_comparable_because = (
+            NOT_COMPARABLE_WEIGHTS_DIFFER
+            if half_a.weights_digest and half_b.weights_digest
+            else NOT_COMPARABLE_WEIGHTS_UNKNOWN
+        )
+        # Structural checks still run first: a forged half is refused, never
+        # ruled on.
+        half_a = dataclasses.replace(half_a, weights_digest=None)
+        half_b = dataclasses.replace(half_b, weights_digest=None)
     try:
-        outcome = adjudicate(half_a, half_b, referee=_referee, referee_owner_id=self_id)
+        outcome = adjudicate(
+            half_a,
+            half_b,
+            referee=None if not_comparable_because else _referee,
+            referee_owner_id=self_id,
+        )
     except PreimageDigestMismatchError as exc:
         return _refuse(state, request_digest, REASON_HALF_UNVERIFIED, detail=str(exc))
     if outcome.no_verdict_reason == NO_VERDICT_NOT_COMPARABLE:
+        not_comparable_because = NOT_COMPARABLE_SAMPLED
+    if not_comparable_because is not None:
         # A signed ruling that the twins cannot be compared -- never a
         # corroboration or a contradiction.
-        outcome = dataclasses.replace(outcome, verdict=VERDICT_NOT_COMPARABLE, no_verdict_reason=None)
+        outcome = dataclasses.replace(
+            outcome, verdict=VERDICT_NOT_COMPARABLE, no_verdict_reason=None, referee_called=False
+        )
     elif outcome.verdict is None:
         if outcome.no_verdict_reason == NO_VERDICT_REFEREE_UNREACHABLE and record is None:
             return _refuse(state, request_digest, REASON_REFEREE_RECORD_NOT_FOUND)
@@ -331,6 +354,8 @@ def handle_adjudicate_request(state: Any, request_bytes: bytes) -> dict[str, Any
         "twins_request_digest": request_a,
         "referee_prompt": REFEREE_PROMPT_REQUESTER_ATTESTED,
     }
+    if not_comparable_because is not None:
+        extra["not_comparable_because"] = not_comparable_because
     if outcome.referee_called and answer_body is not None:
         extra["referee_answer_digest"] = digest_json(answer_body)
     if bracket:

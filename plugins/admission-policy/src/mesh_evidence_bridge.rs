@@ -232,9 +232,17 @@ pub struct MeshEvidenceRequestArgs {
 pub async fn handle_mesh_evidence_request(
     args: MeshEvidenceRequestArgs,
     context: &mut PluginContext<'_>,
+    ledger_dir: std::path::PathBuf,
 ) -> PluginResult<serde_json::Value> {
     if args.peer_id.trim().is_empty() {
         return Err(PluginError::invalid_params("peer_id must not be empty"));
+    }
+    // An adjudicate request names the referee this node CHOSE for a pair:
+    // recorded before it is sent, so this node's door holds a verdict from
+    // that referee about that pair, and from no one else (`adjudication_hold`).
+    if let Some(asked) = requested_adjudication(&args.peer_id, &args.request) {
+        record_requested_adjudication(&ledger_dir, &asked)
+            .map_err(|e| PluginError::internal(format!("could not record the adjudication request: {e}")))?;
     }
 
     let open_request = OpenMeshStreamRequest {
@@ -280,6 +288,44 @@ pub async fn handle_mesh_evidence_request(
         .map_err(|error| PluginError::internal(format!("peer returned malformed response: {error}")))
 }
 
+/// The file beside the ledger that lists every adjudicate request this node
+/// sent (`adjudication_hold.REQUESTED_ADJUDICATIONS_FILENAME`).
+pub const REQUESTED_ADJUDICATIONS_FILENAME: &str = "requested-adjudications.jsonl";
+
+/// `{referee, halves, twin_bracket_id, asked_at}` for an adjudicate request,
+/// or `None` for any other evidence request.
+pub fn requested_adjudication(peer_id: &str, request: &serde_json::Value) -> Option<serde_json::Value> {
+    if request.pointer("/subject/kind").and_then(|k| k.as_str()) != Some("adjudicate") {
+        return None;
+    }
+    let halves: Vec<&str> = request
+        .get("halves")?
+        .as_array()?
+        .iter()
+        .map(|h| h.pointer("/capsule/capsule_id").and_then(|id| id.as_str()))
+        .collect::<Option<_>>()?;
+    if halves.len() != 2 {
+        return None;
+    }
+    Some(serde_json::json!({
+        "referee": peer_id,
+        "halves": halves,
+        "twin_bracket_id": request.get("twin_bracket_id").cloned().unwrap_or(serde_json::Value::Null),
+        "asked_at": capsule_producer::timestamp::utc_now_minute(),
+    }))
+}
+
+fn record_requested_adjudication(ledger_dir: &std::path::Path, asked: &serde_json::Value) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(ledger_dir)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(ledger_dir.join(REQUESTED_ADJUDICATIONS_FILENAME))?;
+    writeln!(file, "{asked}")?;
+    file.sync_all()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,4 +347,30 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("side-stream cap"), "{err}");
     }
+
+    #[test]
+    fn an_adjudicate_request_is_recorded_with_its_referee_and_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        let request = serde_json::json!({
+            "subject": {"kind": "adjudicate"},
+            "twin_bracket_id": "bracket-1",
+            "halves": [{"capsule": {"capsule_id": "a"}}, {"capsule": {"capsule_id": "b"}}],
+        });
+        let asked = requested_adjudication("referee-node", &request).expect("an adjudicate request");
+        record_requested_adjudication(dir.path(), &asked).unwrap();
+        let line = std::fs::read_to_string(dir.path().join(REQUESTED_ADJUDICATIONS_FILENAME)).unwrap();
+        let recorded: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(recorded["referee"], serde_json::json!("referee-node"));
+        assert_eq!(recorded["halves"], serde_json::json!(["a", "b"]));
+        assert_eq!(recorded["twin_bracket_id"], serde_json::json!("bracket-1"));
+    }
+
+    #[test]
+    fn any_other_evidence_request_is_not_an_adjudication() {
+        let request = serde_json::json!({"subject": {"kind": "correlation", "by": "nonce", "value": "n"}});
+        assert!(requested_adjudication("peer", &request).is_none());
+        let one_half = serde_json::json!({"subject": {"kind": "adjudicate"}, "halves": [{"capsule": {"capsule_id": "a"}}]});
+        assert!(requested_adjudication("peer", &one_half).is_none());
+    }
+
 }
