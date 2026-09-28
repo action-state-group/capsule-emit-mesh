@@ -43,6 +43,8 @@ import {
   type PeerTableRowView
 } from '@/features/capsules/lib/peer-row-view'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
+import type { SplitPeer } from '@/features/capsules/lib/split-stage'
+import { SPLIT_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
 import type { Peer } from '@/features/app-tabs/types'
 
 // Plain-language column names (UX §2). One label drives both the header and
@@ -100,6 +102,9 @@ export type LedgerPeersTableProps = {
   meshStatus: PeerMeshStatusIndex
   exchangeSourcesFor: (peerId: string) => readonly PeerExchangeSource[]
   recordsById: ReadonlyMap<string, CapsuleRecord>
+  /** Nodes that ran part of a request this node sent to a split's
+   *  coordinator: a third group, never merged with the other two. */
+  throughSplit?: readonly SplitPeer[]
 }
 
 export function LedgerPeersTable({
@@ -109,7 +114,8 @@ export function LedgerPeersTable({
   advertisedUnusedRawPeers,
   meshStatus,
   exchangeSourcesFor,
-  recordsById
+  recordsById,
+  throughSplit = []
 }: LedgerPeersTableProps) {
   const [search, setSearch] = useState('')
   const [alarmFilter, setAlarmFilter] = useState<Set<string>>(new Set(ALL_ALARM_VALUES))
@@ -133,6 +139,7 @@ export function LedgerPeersTable({
     [advertisedUnused, alarmFilter, trimmedSearch]
   )
   const visibleRows = useMemo(() => [...visibleDealtWith, ...visibleAdvertised], [visibleDealtWith, visibleAdvertised])
+  const visibleThroughSplit = throughSplit.filter((peer) => peer.nodeId.toLowerCase().includes(trimmedSearch))
 
   const alarmOptions: FilterValueOption[] = ALL_ALARM_VALUES.map((value) => ({
     value,
@@ -339,6 +346,28 @@ export function LedgerPeersTable({
             ))
           )}
         </TableBody>
+        {visibleThroughSplit.length > 0 ? (
+          <TableBody data-peer-group="through-split">
+            <GroupHeaderRow
+              columnCount={columnCount}
+              count={visibleThroughSplit.length}
+              label="Nodes that served you through a split"
+            />
+            {visibleThroughSplit.map((peer) => (
+              <TableRow className="border-border-soft" key={peer.nodeId}>
+                <TableCell className="font-mono text-xs text-foreground" colSpan={columnCount}>
+                  <span className="inline-flex items-center gap-2">
+                    {peer.nodeId}
+                    <span className="text-fg-dim">
+                      the coordinator says it ran part of {peer.splits} request{peer.splits === 1 ? '' : 's'} you sent it
+                    </span>
+                    <InfoHover census="peers:through_split" describes="this group" label={SPLIT_TOOLTIPS.throughSplit} />
+                  </span>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        ) : null}
       </Table>
       {/* One legend line under the table: every peer name here is what that
          peer says about itself (UX §2), said once rather than on each row. */}

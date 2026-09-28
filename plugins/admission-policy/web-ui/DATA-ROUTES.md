@@ -23,6 +23,15 @@ the fork served as raw files arrives wrapped in JSON.
 | `panes/pane-c?exchange_id=<id>` | pane C drilldown (`PaneCDrilldownJson`) | `panes/pane-c?exchange_id=` |
 | POST `tools/mesh_ledger_fetch` (a tool, not under `http/`) | the plugin's `mesh_ledger_fetch` tool: `LedgerFetchResponse` (`found` / `not_found` / `error`) | (already a plugin tool route on the fork, addressed to the old plugin name `admission-policy`) |
 
+**Split requests.** A `panes/pane-c` row may carry `split` (`api/sidecarTypes.ts`
+`PaneCRow.split`, `lib/split-stage.ts` `SplitRowJson`):
+`{ "viewer": "requester" | "coordinator", "main": <capsule>, "stage_records": [<capsule>...] }`,
+the coordinator's main record and the stage records it carried (on a requester, from
+`received-capsules.jsonl` and `received-split-stage-records.jsonl`), or
+`{ "viewer": "stage", "stage_block": <x-mesh-stage-v1> }` on a stage node's own row. The page
+runs the hand-off check itself (`verifySplit`) and draws the stage strip under the row. Rows
+without `split` render as before. No pane emits it yet.
+
 Status codes the page tells apart (`LedgerPage.tsx` `describePaneError`):
 **404** means this plugin build serves no panes yet, and **503** means the
 plugin's pane service isn't running. Any other failure gets the generic

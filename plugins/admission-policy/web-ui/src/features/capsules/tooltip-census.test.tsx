@@ -6,6 +6,8 @@
 //   2. that tooltip is short plain copy with no retired or banned phrase;
 //   3. outside Dig (the checks panel), none of the engineer's words either.
 // A chip type that ships without a tooltip, or with a retired phrase, fails.
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -70,7 +72,8 @@ const REQUIRED = {
     'peer:self_reported',
     'peer_attention:disagreements',
     'peer_attention:differingAnswers',
-    'peer_attention:logFailed'
+    'peer_attention:logFailed',
+    'peers:through_split'
   ],
   exchanges: [
     ...ALL_KINDS.map((kind) => `row_state:${kind}`),
@@ -79,7 +82,9 @@ const REQUIRED = {
     'entry_chip:inclusion',
     'entry_chip:registered',
     'entry_chip:theirs',
-    'twin:no_verdict'
+    'twin:no_verdict',
+    'split:stage_cell',
+    'split:handoffs'
   ],
   // The checks panel always shows at least these two (they are always
   // checked in the browser); every other chip it shows must carry one too.
@@ -120,8 +125,13 @@ function row(key: string, overrides: Partial<PaneCRow>): PaneCRow {
   }
 }
 
+// A split request as its requester holds it: the Rust plugin's own bundle.
+const SPLIT_BUNDLE = JSON.parse(
+  readFileSync(resolve(__dirname, '../../../../../../tests/fixtures/split-stage/rust-split-bundle.json'), 'utf8')
+)
+
 const PANE_C: PaneCListJson = {
-  row_count: 10,
+  row_count: 11,
   default_sort: 'timestamp',
   filters: ['all', 'served', 'asked', 'issues'],
   next_after_seq: null,
@@ -147,7 +157,11 @@ const PANE_C: PaneCListJson = {
     row('exch-not-given', { theirs: { state: 'NOT_CHECKED', capsule_id: 'capsule-chatcmpl-1', peer_id: 'peer-1' } }),
     row('exch-not-asked', {}),
     row('exch-twin-a', { twin_bracket_id: 'twin-census', timestamp: '2026-09-26T11:00:00Z' }),
-    row('exch-twin-b', { twin_bracket_id: 'twin-census', timestamp: '2026-09-26T11:00:01Z' })
+    row('exch-twin-b', { twin_bracket_id: 'twin-census', timestamp: '2026-09-26T11:00:01Z' }),
+    row('exch-split', {
+      timestamp: '2026-09-26T12:00:00Z',
+      split: { viewer: 'requester', main: SPLIT_BUNDLE.capsule, stage_records: SPLIT_BUNDLE.split_stage_records }
+    })
   ]
 }
 
@@ -263,6 +277,7 @@ describe('tooltip census -- the copy itself', () => {
       ...Object.values(COPY.CLOSED_CELL_TOOLTIPS),
       ...Object.values(COPY.ENTRY_CHIP_TOOLTIPS),
       COPY.TWIN_NO_VERDICT_TOOLTIP,
+      ...Object.values(COPY.SPLIT_TOOLTIPS),
       ...Object.values(COPY.INTEGRITY_TILE_TOOLTIPS),
       COPY.CHAIN_STRIP_TOOLTIP
     ]

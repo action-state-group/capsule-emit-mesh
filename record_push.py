@@ -150,6 +150,13 @@ from capsule_emit.evidence_request import Refusal
 from capsule_emit.signing import resolve_signer, verify_capsule_signature
 
 from evidence_responder import status_for_refusal_reason
+from mesh_split_stage import (
+    ReceiptError,
+    StageBlockError,
+    split_key,
+    validate_block,
+    validate_receipt,
+)
 from peer_keys import announced_key_for
 from share_policy import DEFAULT_SHARE_POLICY, SharePolicy
 
@@ -237,6 +244,16 @@ _PROOF_FIELDS = ("v", "kind", "size", "leaf_index", "witness", "peaks_left", "pe
 #: The exact member sets of a bundle and its parts. Nothing unsigned rides
 #: along: an extra member is refused, never stored.
 _BUNDLE_FIELDS = frozenset({BUNDLE_MARKER, "capsule", "inclusion", "checkpoint"})
+#: The optional bundle member a split's coordinator carries its stage
+#: records in (docs/DESIGN-split-stage-records.md §6.3). Every record is
+#: checked before anything is stored, and must be one the pushed main
+#: record's receipt names.
+SPLIT_STAGE_RECORDS = "split_stage_records"
+#: The held-artifact store for carried stage records: one line per record,
+#: beside the main record that cites it. Nothing chains or checkpoints it.
+RECEIVED_SPLIT_STAGE_FILENAME = "received-split-stage-records.jsonl"
+#: More stage records than this in one bundle is refused.
+MAX_SPLIT_STAGE_RECORDS = 64
 _INCLUSION_FIELDS = frozenset({"leaf_index", "proof"})
 _CHECKPOINT_FIELDS = frozenset(
     {"v", "kind", "log_id", "mmr_size", "root", "prev_size", "prev_root", "key_id", "timestamp", "signature"}
@@ -319,7 +336,7 @@ def _bundle_members_exact(bundle: dict[str, Any]) -> bool:
     inclusion = bundle.get("inclusion")
     checkpoint = bundle.get("checkpoint")
     return (
-        set(bundle) == _BUNDLE_FIELDS
+        set(bundle) - {SPLIT_STAGE_RECORDS} == _BUNDLE_FIELDS
         and isinstance(inclusion, dict)
         and set(inclusion) == _INCLUSION_FIELDS
         and isinstance(inclusion["proof"], dict)
@@ -375,6 +392,42 @@ def _bundle_types_exact(bundle: dict[str, Any]) -> bool:
         and type(cp["timestamp"]) is str
         and _is_hex(cp["signature"], 128)
     )
+
+
+def _split_stage_records_ok(main: dict[str, Any], records: Any) -> bool:
+    """Every carried stage record verifies on its own, is a valid stage-side
+    block of the main record's split, and is one its receipt names -- with
+    no record carried twice. The stage's key is not linked to a node here:
+    the requester never learned the stages' announced keys."""
+    compute_attestation = (main.get("model_attestation") or {}).get("compute_attestation") or {}
+    receipt = compute_attestation.get("x-mesh-coordinator-receipt-v1")
+    if not isinstance(records, list) or not records or len(records) > MAX_SPLIT_STAGE_RECORDS:
+        return False
+    try:
+        validate_receipt(receipt)
+    except ReceiptError:
+        return False
+    named = {
+        ref["digest"]
+        for stage in receipt["stages"]
+        for ref in ([stage["bundle_ref"]] if "bundle_ref" in stage else []) + stage.get("bundle_refs", [])
+    }
+    key = (receipt["coordinator_node_id"], receipt["run_id"], receipt["request_id"])
+    seen: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict) or record.get("capsule_id") not in named - seen:
+            return False
+        if not verify_capsule(record).ok or not verify_capsule_signature(record):
+            return False
+        block = ((record.get("model_attestation") or {}).get("compute_attestation") or {}).get("x-mesh-stage-v1")
+        try:
+            validate_block(block)
+        except StageBlockError:
+            return False
+        if block["side"] != "stage" or split_key(block) != key:
+            return False
+        seen.add(record["capsule_id"])
+    return True
 
 
 def _effective_policy(policy: SharePolicy | None) -> SharePolicy:
@@ -704,6 +757,14 @@ def handle_record_push(
     # ``capsule_emit.rs``), preserving ONE WRITER per chain. "cite, never
     # mutate."
     inclusion: dict[str, Any] | None = None
+    split_records: list[dict[str, Any]] = []
+    if bundle is not None and SPLIT_STAGE_RECORDS in bundle:
+        if not _split_stage_records_ok(capsule, bundle[SPLIT_STAGE_RECORDS]):
+            _append_rejected_push(
+                state, capsule.get("capsule_id"), sender_peer_id, REASON_BUNDLE_MALFORMED, issued_at
+            )
+            return _refuse(request_digest, REASON_BUNDLE_MALFORMED, state=state, issued_at=issued_at)
+        split_records = bundle[SPLIT_STAGE_RECORDS]
     if bundle is not None:
         inclusion = _verify_bundle_inclusion(capsule, bundle)
         if inclusion is None:
@@ -736,6 +797,12 @@ def handle_record_push(
 
     _append_jsonl(state.ledger_dir, RECEIVED_CAPSULES_FILENAME, capsule)
     _append_provenance(state, capsule, sender_peer_id, issued_at)
+    for record in split_records:
+        _append_jsonl(
+            state.ledger_dir,
+            RECEIVED_SPLIT_STAGE_FILENAME,
+            {"main_capsule_id": capsule["capsule_id"], "received_at": issued_at, "capsule": record},
+        )
     if inclusion is None:
         return {"status": "received"}
 

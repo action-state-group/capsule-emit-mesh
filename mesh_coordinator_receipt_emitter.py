@@ -61,7 +61,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 from agent_action_capsule.emit import emit
 
@@ -73,15 +73,20 @@ __all__ = [
     "default_node_state",
     "capsule_to_bytes",
     "BUNDLE_STATES",
+    "BundleRef",
+    "StageAssignment",
     "TopologyEntry",
     "StageEntry",
     "emit_coordinator_receipt",
 ]
 
-# Three-state `bundle` field (design doc §3.2, §5.3 — flagged [OWNER/DE TO
+# The `bundle` field's states (design doc §3.2, §5.3 — flagged [OWNER/DE TO
 # CONFIRM] at registry-filing time; this is the producer's enforcement of the
 # draft shape, not a claim the enum is finalized).
-BUNDLE_STATES = frozenset({"present", "absent", "not_requested"})
+BUNDLE_STATES = frozenset({"present", "absent", "not_requested", "conflict"})
+# `conflict` (split-stage records, docs/DESIGN-split-stage-records.md §3): two
+# distinct records arrived under one stage key. Both are cited in
+# `bundle_refs`; neither counts as present.
 
 _DIGEST_ALG = "SHA-256"
 _HEX_DIGITS = frozenset("0123456789abcdef")
@@ -113,6 +118,48 @@ def _validate_bundle_ref(bundle_ref: dict[str, Any]) -> None:
         raise ValueError("bundle_ref.digest must be 64-char lowercase hex (SHA-256)")
 
 
+class StageAssignment(TypedDict):
+    """What a split coordinator assigned one stage."""
+
+    node_id: str
+    layer_start: int
+    layer_end: int  # exclusive, as upstream counts layers
+    package_id: str
+
+
+class BundleRef(TypedDict):
+    """A CPB typed digest reference, as `_validate_bundle_ref` checks it."""
+
+    type: str
+    digest_alg: str
+    digest: str
+
+
+def _validate_assignment(assignment: StageAssignment) -> None:
+    """A split stage assignment: which node, which layers, which package."""
+    if not isinstance(assignment, dict) or set(assignment) != {
+        "node_id", "layer_start", "layer_end", "package_id",
+    }:
+        raise ValueError(
+            "assignment must be exactly {node_id, layer_start, layer_end, package_id}"
+        )
+    if not isinstance(assignment["node_id"], str) or not assignment["node_id"]:
+        raise ValueError("assignment.node_id must be a non-empty string")
+    start, end = assignment["layer_start"], assignment["layer_end"]
+    if not all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in (start, end)):
+        raise ValueError("assignment layer bounds must be non-negative integers")
+    if end <= start:
+        raise ValueError("assignment.layer_end is exclusive and must exceed layer_start")
+    package_id = assignment["package_id"]
+    if (
+        not isinstance(package_id, str)
+        or not package_id.startswith("sha256:")
+        or len(package_id) != 71
+        or set(package_id[7:]) - _HEX_DIGITS
+    ):
+        raise ValueError("assignment.package_id must be sha256: + 64 lowercase hex")
+
+
 @dataclass(frozen=True)
 class TopologyEntry:
     """One hop in the coordinator's own claim of what it routed (§3.1).
@@ -130,10 +177,16 @@ class TopologyEntry:
     hop_id: str
     role: str
     observation_point: str | None = None
+    # Split receipts only: what the coordinator assigned this stage --
+    # {node_id, layer_start, layer_end (exclusive), package_id}. The stage
+    # strip compares each stage record against it.
+    assignment: StageAssignment | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.hop_id, str) or not self.hop_id:
             raise ValueError("TopologyEntry.hop_id must be a non-empty string")
+        if self.assignment is not None:
+            _validate_assignment(self.assignment)
         if not isinstance(self.role, str) or not self.role:
             raise ValueError("TopologyEntry.role must be a non-empty string")
         if self.observation_point is not None and self.observation_point not in OBSERVATION_POINTS:
@@ -158,6 +211,7 @@ class StageEntry:
     hop_id: str
     bundle: str
     bundle_ref: dict[str, Any] | None = None
+    bundle_refs: tuple[BundleRef, ...] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.hop_id, str) or not self.hop_id:
@@ -166,6 +220,20 @@ class StageEntry:
             raise ValueError(
                 f"StageEntry.bundle must be one of {sorted(BUNDLE_STATES)} — got {self.bundle!r}"
             )
+        if self.bundle == "conflict":
+            refs = self.bundle_refs or ()
+            if self.bundle_ref is not None or len(refs) < 2:
+                raise ValueError(
+                    "StageEntry.bundle='conflict' cites two or more distinct records "
+                    "in bundle_refs, and carries no bundle_ref"
+                )
+            for ref in refs:
+                _validate_bundle_ref(ref)
+            if len({ref["digest"] for ref in refs}) != len(refs):
+                raise ValueError("StageEntry.bundle_refs must name distinct records")
+            return
+        if self.bundle_refs is not None:
+            raise ValueError("StageEntry.bundle_refs is for bundle='conflict' only")
         if self.bundle == "present":
             if self.bundle_ref is None:
                 raise ValueError(
@@ -235,6 +303,7 @@ def emit_coordinator_receipt(
                 "hop_id": t.hop_id,
                 "role": t.role,
                 "observation_point": t.observation_point,
+                **({"assignment": t.assignment} if t.assignment is not None else {}),
             }
             for t in topology
         ],
@@ -243,6 +312,7 @@ def emit_coordinator_receipt(
                 "hop_id": s.hop_id,
                 "bundle": s.bundle,
                 **({"bundle_ref": s.bundle_ref} if s.bundle_ref is not None else {}),
+                **({"bundle_refs": list(s.bundle_refs)} if s.bundle_refs is not None else {}),
             }
             for s in stages
         ],
