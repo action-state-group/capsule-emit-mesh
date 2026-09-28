@@ -2075,6 +2075,9 @@ pub(crate) fn build_pane_c_list(
             // treats a missing key the same as an explicit `null`.
             "twin_bracket_id": twin_bracket_id(anchor),
         }));
+        if is_referee_call(anchor) {
+            rows.last_mut().expect("just pushed")["referee_call"] = json!(true);
+        }
         let provider_half = theirs_sibling.or_else(|| (label_role(anchor) == "served").then_some(anchor));
         twin_facts.push((
             twin_bracket_id(anchor).map(str::to_string),
@@ -2090,6 +2093,15 @@ pub(crate) fn build_pane_c_list(
         "next_after_seq": Value::Null,
         "archived_segments": [],
     })
+}
+
+/// The referee's own record of a referee call: its sealed client nonce carries
+/// the referee prefix (`live_referee.REFEREE_NONCE_PREFIX`).
+fn is_referee_call(record: &Value) -> bool {
+    poc_block(record)
+        .and_then(|poc| poc.get("client_nonce"))
+        .and_then(Value::as_str)
+        .is_some_and(|n| n.starts_with("referee-"))
 }
 
 /// The host's digest of the answer text a record carries
@@ -3408,6 +3420,16 @@ mod tests {
         assert!(twins(&differ).iter().all(|x| x["same_answer"] == json!(false)));
         let missing = build(Some(&same), None);
         assert!(twins(&missing).iter().all(|x| x["same_answer"].is_null()));
+    }
+
+    #[test]
+    fn a_referee_call_row_is_marked_and_an_ordinary_row_is_not() {
+        let mut served = mesh_half_served_by("a".repeat(64).as_str(), "served", &"d".repeat(64), &"e".repeat(64), "x-1", "me");
+        let plain = mesh_half_served_by("b".repeat(64).as_str(), "served", &"f".repeat(64), &"0".repeat(64), "x-2", "me");
+        served["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["client_nonce"] = json!("referee-phase-c-1");
+        let pane = build_pane_c_list(&[served, plain], &no_provenance());
+        let flags: Vec<bool> = pane["rows"].as_array().unwrap().iter().map(|r| r.get("referee_call") == Some(&json!(true))).collect();
+        assert_eq!(flags.iter().filter(|f| **f).count(), 1, "{pane}");
     }
 
     /// A node id from a record we RECEIVED never counts as ours, even on a

@@ -301,6 +301,11 @@ export function ExchangeStreamRow({
         <div className="grid grid-cols-2 gap-0 rounded border border-border-soft">
           <div className="flex flex-col gap-1 border-r border-border-soft px-3 py-2">
             <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-fg-dim">
+              {row.raw.referee_call ? (
+                <span className="rounded border border-border-soft px-1 text-[10px] uppercase tracking-wide text-fg-dim" data-referee-call="true">
+                  referee answer
+                </span>
+              ) : null}
               <time className="font-mono tabular-nums" dateTime={row.timestamp ?? undefined}>
                 {formatExchangeTimestamp(row.timestamp)}
               </time>

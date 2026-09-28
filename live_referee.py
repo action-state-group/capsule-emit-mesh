@@ -154,6 +154,9 @@ class RefereeRecordResolution:
     capsule_id: str | None = None
 
 
+#: The prefix of every referee call's client nonce (see `live_referee`).
+REFEREE_NONCE_PREFIX = "referee-"
+
 def _referee_nonce_correlation_request(nonce: str) -> dict[str, Any]:
     """The E15 request map for `correlation{by: "nonce", value: nonce}` --
     same shape `ask_history.py`'s own (private) `_build_request_map` emits
@@ -358,6 +361,11 @@ def live_referee(
     call is deliberately always greedy (`temperature: 0`), unrelated to what
     the original exchange sampled at -- see the module docstring.
     """
+    # Every referee call's client nonce carries this prefix, so the referee's
+    # own sealed record of the call (its plugin seals the nonce) is findable
+    # and labelled "referee answer" on the referee's page.
+    if not nonce.startswith(REFEREE_NONCE_PREFIX):
+        nonce = f"{REFEREE_NONCE_PREFIX}{nonce}"
     if comparison.divergence_index is None:
         raise ValueError("live_referee() requires an actual divergence -- comparison.divergence_index is None")
 

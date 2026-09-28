@@ -110,4 +110,47 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
     expect(screen.getByText('Peer A response')).toBeInTheDocument()
     expect(screen.getByText('Peer B response')).toBeInTheDocument()
   })
+
+  it('says "same answer" / "different answers" from the pane twin facts, and keeps "no verdict" until a referee signs one', () => {
+    const facts = (same: boolean | null) => ({ bracket_id: 'twin-xyz', same_answer: same, other_row: null })
+    const { unmount } = render(
+      <TwinBracket bracketId="twin-xyz" rows={[twinRow('a', { twin: facts(true) }), twinRow('b', { twin: facts(true) })]} twinSampleRateDenominator={1}>
+        <p>row a</p>
+      </TwinBracket>
+    )
+    expect(screen.getByText('same answer')).toBeInTheDocument()
+    expect(screen.getByText('no verdict')).toBeInTheDocument()
+    unmount()
+    const second = render(
+      <TwinBracket bracketId="twin-xyz" rows={[twinRow('a', { twin: facts(false) }), twinRow('b', { twin: facts(false) })]} twinSampleRateDenominator={1}>
+        <p>row a</p>
+      </TwinBracket>
+    )
+    expect(screen.getByText('different answers')).toBeInTheDocument()
+    second.unmount()
+    render(
+      <TwinBracket bracketId="twin-xyz" rows={[twinRow('a', { twin: facts(null) }), twinRow('b')]} twinSampleRateDenominator={1}>
+        <p>row a</p>
+      </TwinBracket>
+    )
+    expect(screen.getByText('not compared yet')).toBeInTheDocument()
+  })
+
+  it("shows the referee's signed verdict, and only then drops \"no verdict\"", () => {
+    const withVerdict = {
+      bracket_id: 'twin-xyz',
+      same_answer: false,
+      other_row: null,
+      verdict: 'contradicted:2e981e80899b34248d9af76c6e28ed39',
+      verdict_capsule_id: 'a9a0ca66822384be1f73188ca010620f'
+    }
+    render(
+      <TwinBracket bracketId="twin-xyz" rows={[twinRow('a', { twin: withVerdict }), twinRow('b')]} twinSampleRateDenominator={1}>
+        <p>row a</p>
+      </TwinBracket>
+    )
+    expect(screen.getByText(/referee: contradicted 2e981e8089/)).toBeInTheDocument()
+    expect(screen.queryByText('no verdict')).not.toBeInTheDocument()
+    expect(screen.getByText(/a9a0ca668223/)).toBeInTheDocument()
+  })
 })

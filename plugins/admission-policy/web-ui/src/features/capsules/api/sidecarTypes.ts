@@ -331,6 +331,23 @@ export type PaneCRow = {
   /** The comparison facts for this row's half of the bracket -- see
    *  `TwinComparison`. Present only alongside a real `twin_bracket_id`. */
   twin_comparison?: TwinComparison | null
+  /** Pane C's twin pairing (the plugin pane builder's `attach_twins`): which
+   *  row is the other half, and whether the two providers gave the same
+   *  answer (their sealed answer-text digests; `null` while either is
+   *  missing). `verdict` / `verdict_capsule_id` appear only once a REFEREE
+   *  has signed a verdict for this pair. */
+  twin?: TwinRowFacts | null
+  /** This node's record of a call it answered AS A REFEREE (its client nonce
+   *  carries the referee prefix). */
+  referee_call?: boolean
+}
+
+export type TwinRowFacts = {
+  bracket_id: string
+  same_answer: boolean | null
+  other_row: string | null
+  verdict?: string | null
+  verdict_capsule_id?: string | null
 }
 
 export type PaneCListJson = {

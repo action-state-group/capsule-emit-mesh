@@ -19,7 +19,14 @@ import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import { saveTextFile } from '@/features/capsules/lib/exchange-export'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
 import { TWIN_NO_VERDICT_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
-import { twinComparisonParametersLine, twinDisclosureSentence, twinResponseTexts } from '@/features/capsules/lib/twin-bracket'
+import {
+  TWIN_ANSWER_LABEL,
+  twinAnswerState,
+  twinComparisonParametersLine,
+  twinDisclosureSentence,
+  twinResponseTexts,
+  twinVerdict
+} from '@/features/capsules/lib/twin-bracket'
 
 const diffViewerStyles = {
   diffContainer: {
@@ -54,6 +61,8 @@ export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, childr
   const disclosure = twinDisclosureSentence(twinSampleRateDenominator)
   const [textA, textB] = twinResponseTexts(rows)
   const canCompare = textA !== null && textB !== null
+  const answer = twinAnswerState(rows)
+  const { verdict, capsuleId } = twinVerdict(rows)
 
   const handleSave = () => {
     saveTextFile(`twin-bracket-${bracketId}.json`, JSON.stringify(rows.map((row) => row.raw), null, 2), 'application/json')
@@ -69,10 +78,22 @@ export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, childr
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-soft bg-panel-strong/60 px-3 py-1.5">
         <p className="type-caption font-mono font-medium text-fg-dim">TWIN · {bracketId} · same request, two peers</p>
         <span className="inline-flex items-center gap-1">
-          <StatusBadge size="caption" tone="muted">
-            no verdict
+          {/* A checked fact (the two sealed answer-text digests), never a verdict. */}
+          <StatusBadge size="caption" tone={answer === 'different' ? 'warn' : 'muted'}>
+            {TWIN_ANSWER_LABEL[answer]}
           </StatusBadge>
-          <InfoHover census="twin:no_verdict" describes="the no verdict badge" label={TWIN_NO_VERDICT_TOOLTIP} />
+          {verdict === null ? (
+            <>
+              <StatusBadge size="caption" tone="muted">
+                no verdict
+              </StatusBadge>
+              <InfoHover census="twin:no_verdict" describes="the no verdict badge" label={TWIN_NO_VERDICT_TOOLTIP} />
+            </>
+          ) : (
+            <StatusBadge size="caption" tone={verdict.kind === 'contradicted' ? 'bad' : 'good'}>
+              {verdict.kind === 'contradicted' ? `referee: contradicted ${verdict.party.slice(0, 10)}…` : 'referee: corroborated'}
+            </StatusBadge>
+          )}
         </span>
       </div>
 
@@ -84,9 +105,13 @@ export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, childr
         {/* OBSERVE-ONLY -- this line NEVER renders "identical"/"differs" or
            any other computed verdict, only the honest state of adjudication
            itself. */}
-        <p className="type-caption text-fg-faint">
-          Not yet adjudicated — this comparison is observe-only until verdicts are enabled.
-        </p>
+        {verdict === null ? (
+          <p className="type-caption text-fg-faint">
+            Not yet adjudicated — no referee has signed a verdict for this pair.
+          </p>
+        ) : (
+          <p className="type-caption text-fg-faint">Referee's signed verdict: {capsuleId ? `${capsuleId.slice(0, 12)}…` : 'id not recorded'}</p>
+        )}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="type-caption text-fg-faint">{disclosure}</p>
           <div className="flex items-center gap-1">

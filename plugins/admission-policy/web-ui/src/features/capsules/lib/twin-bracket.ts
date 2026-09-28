@@ -67,3 +67,34 @@ export function twinResponseTexts(rows: readonly ExchangeLedgerRow[]): [string |
   const [a, b] = rows
   return [a?.raw.mine.text ?? null, b?.raw.mine.text ?? null]
 }
+
+/** Whether the two providers gave the same answer, from the pane's twin
+ *  facts (sealed answer-text digests compared, not a verdict). */
+export type TwinAnswerState = 'same' | 'different' | 'not_compared'
+
+export function twinAnswerState(rows: readonly ExchangeLedgerRow[]): TwinAnswerState {
+  const facts = rows.map((row) => row.raw.twin?.same_answer)
+  if (facts.length > 0 && facts.every((f) => f === true)) return 'same'
+  if (facts.some((f) => f === false)) return 'different'
+  return 'not_compared'
+}
+
+export const TWIN_ANSWER_LABEL: Record<TwinAnswerState, string> = {
+  same: 'same answer',
+  different: 'different answers',
+  not_compared: 'not compared yet'
+}
+
+/** A referee's signed verdict for this pair, when one exists. */
+export type TwinVerdict = { kind: 'corroborated' } | { kind: 'contradicted'; party: string } | null
+
+export function twinVerdict(rows: readonly ExchangeLedgerRow[]): { verdict: TwinVerdict; capsuleId: string | null } {
+  for (const row of rows) {
+    const v = row.raw.twin?.verdict
+    if (typeof v !== 'string' || v.length === 0) continue
+    const capsuleId = row.raw.twin?.verdict_capsule_id ?? null
+    if (v === 'corroborated') return { verdict: { kind: 'corroborated' }, capsuleId }
+    if (v.startsWith('contradicted:')) return { verdict: { kind: 'contradicted', party: v.slice('contradicted:'.length) }, capsuleId }
+  }
+  return { verdict: null, capsuleId: null }
+}

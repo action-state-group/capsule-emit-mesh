@@ -233,13 +233,13 @@ def test_live_referee_sends_mesh_target_header_and_agreed_prefix():
         result = live_referee(
             half_a, half_b, comparison,
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=42,
-            nonce="nonce-agreed-prefix",
+            nonce="referee-nonce-agreed-prefix",
         )
     finally:
         node.close()
 
     assert node.last_headers.get("X-Mesh-Target") == "deadbeef" * 8
-    assert node.last_headers.get("X-Capsule-Client-Nonce") == "nonce-agreed-prefix"
+    assert node.last_headers.get("X-Capsule-Client-Nonce") == "referee-nonce-agreed-prefix"
     sent_messages = node.last_body["messages"]
     assert sent_messages == [{"role": "user", "content": "describe the fox"}], "the original request, no prefill"
     assert node.last_body["temperature"] == 0
@@ -254,7 +254,7 @@ def test_live_referee_sends_mesh_target_header_and_agreed_prefix():
     # a silently-dropped citation: the nonce still names the referee call.
     assert result.capsule_id is None
     assert result.referee_record_status == REFEREE_RECORD_UNRESOLVED
-    assert result.referee_record_nonce == "nonce-agreed-prefix"
+    assert result.referee_record_nonce == "referee-nonce-agreed-prefix"
 
 
 def test_a_fresh_reanswer_that_reproduces_the_prefix_decides_at_the_divergence():
@@ -272,7 +272,7 @@ def test_a_fresh_reanswer_that_reproduces_the_prefix_decides_at_the_divergence()
         result = live_referee(
             half_a, half_b, comparison,
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
-            nonce="nonce-doctored",
+            nonce="referee-nonce-doctored",
         )
     finally:
         node.close()
@@ -291,7 +291,7 @@ def test_a_reanswer_that_does_not_reproduce_the_agreed_prefix_is_inconclusive():
         result = live_referee(
             half_a, half_b, comparison,
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
-            nonce="nonce-prefix-differs",
+            nonce="referee-nonce-prefix-differs",
         )
     finally:
         node.close()
@@ -310,7 +310,7 @@ def test_live_referee_defaults_seed_from_half_a_declared_decoding_when_caller_om
         live_referee(
             half_a, half_b, comparison,
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model",
-            nonce="nonce-decoding-fallback",
+            nonce="referee-nonce-decoding-fallback",
         )
     finally:
         node.close()
@@ -332,7 +332,7 @@ def test_live_referee_explicit_seed_overrides_half_a_declared_decoding():
         live_referee(
             half_a, half_b, comparison,
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=7,
-            nonce="nonce-explicit-seed",
+            nonce="referee-nonce-explicit-seed",
         )
     finally:
         node.close()
@@ -353,7 +353,7 @@ def test_live_referee_seed_defaults_to_zero_when_neither_caller_nor_half_a_suppl
         live_referee(
             half_a, half_b, comparison,
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model",
-            nonce="nonce-no-seed-anywhere",
+            nonce="referee-nonce-no-seed-anywhere",
         )
     finally:
         node.close()
@@ -371,7 +371,7 @@ def test_live_referee_matches_twin_b_contradicts_twin_a():
         result = live_referee(
             half_a, half_b, comparison,
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
-            nonce="nonce-b",
+            nonce="referee-nonce-b",
         )
     finally:
         node.close()
@@ -389,7 +389,7 @@ def test_live_referee_matches_neither_is_inconclusive():
         result = live_referee(
             half_a, half_b, comparison,
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
-            nonce="nonce-c",
+            nonce="referee-nonce-c",
         )
     finally:
         node.close()
@@ -407,7 +407,7 @@ def test_live_referee_logprobs_absent_when_runtime_omits_them():
         result = live_referee(
             half_a, half_b, comparison,
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
-            nonce="nonce-d",
+            nonce="referee-nonce-d",
         )
     finally:
         node.close()
@@ -430,7 +430,7 @@ def test_live_referee_reads_logprob_margin_when_present():
         result = live_referee(
             half_a, half_b, comparison,
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
-            nonce="nonce-e",
+            nonce="referee-nonce-e",
         )
     finally:
         node.close()
@@ -450,7 +450,7 @@ def test_live_referee_raises_on_http_error_never_a_silent_verdict():
             live_referee(
                 half_a, half_b, comparison,
                 local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
-                nonce="nonce-f",
+                nonce="referee-nonce-f",
             )
     finally:
         node.close()
@@ -466,7 +466,7 @@ def test_live_referee_requires_a_real_divergence():
         live_referee(
             half_a, half_b, comparison,
             local_api_base_url="http://127.0.0.1:1", target_peer_id="deadbeef" * 8, model="test-model", seed=1,
-            nonce="nonce-g",
+            nonce="referee-nonce-g",
         )
 
 
@@ -482,7 +482,7 @@ def test_build_live_referee_wires_end_to_end_through_adjudicate():
     try:
         referee = build_live_referee(
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=7,
-            nonce="nonce-h",
+            nonce="referee-nonce-h",
         )
         outcome = adjudicate(half_a, half_b, referee=referee, referee_owner_id="owner-c")
     finally:
@@ -494,7 +494,7 @@ def test_build_live_referee_wires_end_to_end_through_adjudicate():
     assert outcome.references == (
         {
             "kind": "referee_capsule",
-            "nonce": "nonce-h",
+            "nonce": "referee-nonce-h",
             "status": REFEREE_RECORD_UNRESOLVED,
             "capsule_id": None,
             # [mesh-fabric-vocab-alignment] additive field -- see
@@ -523,16 +523,16 @@ def test_live_referee_resolves_capsule_id_via_nonce_correlation(monkeypatch):
         result = live_referee(
             half_a, half_b, comparison,
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
-            nonce="live-nonce-1", evidence_door_base_url=door.base_url,
+            nonce="referee-live-nonce-1", evidence_door_base_url=door.base_url,
         )
     finally:
         node.close()
         door.close()
 
-    assert door.last_request_map["subject"] == {"kind": "correlation", "by": "nonce", "value": "live-nonce-1"}
+    assert door.last_request_map["subject"] == {"kind": "correlation", "by": "nonce", "value": "referee-live-nonce-1"}
     assert result.referee_record_status == REFEREE_RECORD_RESOLVED
     assert result.capsule_id == "referee-cap-live"
-    assert result.referee_record_nonce == "live-nonce-1"
+    assert result.referee_record_nonce == "referee-live-nonce-1"
 
 
 def test_live_referee_mutant_door_returns_different_capsule_is_citation_unverified(monkeypatch):
@@ -557,7 +557,7 @@ def test_live_referee_mutant_door_returns_different_capsule_is_citation_unverifi
         result = live_referee(
             half_a, half_b, comparison,
             local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
-            nonce="live-nonce-2", evidence_door_base_url=door.base_url,
+            nonce="referee-live-nonce-2", evidence_door_base_url=door.base_url,
         )
     finally:
         node.close()
@@ -565,7 +565,7 @@ def test_live_referee_mutant_door_returns_different_capsule_is_citation_unverifi
 
     assert result.referee_record_status == REFEREE_RECORD_CITATION_UNVERIFIED
     assert result.capsule_id is None
-    assert result.referee_record_nonce == "live-nonce-2"
+    assert result.referee_record_nonce == "referee-live-nonce-2"
 
 
 def test_resolve_referee_record_no_transport_is_unresolved():
@@ -658,3 +658,22 @@ def test_peer_info_from_status_never_reads_weights_digest_from_status_json():
 
     peer_with_digest = peer_info_from_status(peer_json, weights_digest="sha256-rehearsal-shared")
     assert peer_with_digest.weights_digest == "sha256-rehearsal-shared"
+
+
+def test_every_referee_call_nonce_carries_the_referee_prefix():
+    """The referee's own sealed record of the call is labelled "referee answer"
+    on its page by this prefix; a caller's plain nonce gets it added."""
+    half_a = _half("the quick brown fox jumps", owner_id="owner-a")
+    half_b = _half("the quick brown wolf jumps", owner_id="owner-b")
+    comparison = compare_transcripts(half_a.response_text, half_b.response_text)
+    node = _FakeRefereeNode(response_text="fox")
+    try:
+        result = live_referee(
+            half_a, half_b, comparison,
+            local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
+            nonce="plain-nonce",
+        )
+    finally:
+        node.close()
+    assert node.last_headers.get("X-Capsule-Client-Nonce") == "referee-plain-nonce"
+    assert result.referee_record_nonce == "referee-plain-nonce"
