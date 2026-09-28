@@ -1992,6 +1992,8 @@ pub(crate) fn build_pane_c_list(
     // Per row: (twin bracket, the provider half's answer-text digest), for
     // the twin pass after the loop.
     let mut twin_facts: Vec<(Option<String>, Option<String>)> = Vec::new();
+    // Per row: (this node's own half, the other side's held half), by id.
+    let mut row_halves: Vec<(Option<String>, Option<String>)> = Vec::new();
     for (exchange_key, mine, theirs_sibling) in exchanges {
         // The row anchors on the local half when there is one; a received
         // sibling with no local half of its own still renders (its own column
@@ -2078,6 +2080,8 @@ pub(crate) fn build_pane_c_list(
         if is_referee_call(anchor) {
             rows.last_mut().expect("just pushed")["referee_call"] = json!(true);
         }
+        let id_of = |r: Option<&Value>| r.and_then(|r| r.get("capsule_id")).and_then(Value::as_str).map(str::to_string);
+        row_halves.push((id_of(mine), id_of(theirs_sibling)));
         let provider_half = theirs_sibling.or_else(|| (label_role(anchor) == "served").then_some(anchor));
         twin_facts.push((
             twin_bracket_id(anchor).map(str::to_string),
@@ -2085,6 +2089,7 @@ pub(crate) fn build_pane_c_list(
         ));
     }
     attach_twins(&mut rows, &twin_facts);
+    attach_adjudications(&mut rows, &row_halves, records, received_provenance);
     json!({
         "row_count": rows.len(),
         "default_sort": "timestamp",
@@ -2139,6 +2144,76 @@ fn attach_twins(rows: &mut [Value], facts: &[(Option<String>, Option<String>)]) 
                 _ => (Value::Null, Value::Null),
             };
             rows[i]["twin"] = json!({ "bracket_id": bracket, "same_answer": same_answer, "other_row": other_row });
+        }
+    }
+}
+
+/// The referee-signed verdicts this node's OWN chain records, onto the rows
+/// they concern (a received sibling's content is never read here):
+///
+/// - `adjudication_issued` (this node was the referee): the row of its own
+///   record of the deciding answer gets `adjudication_issued` and
+///   `referee_call: true`.
+/// - `adjudication_received` (delivered here): a row holding one of the
+///   judged halves -- its own served half, or the other side's held half --
+///   gets `adjudication`; `about_this_node` is true only when the verdict
+///   contradicts this row's own half. A twin row's `twin` gains the verdict.
+fn attach_adjudications(
+    rows: &mut [Value],
+    row_halves: &[(Option<String>, Option<String>)],
+    records: &[Value],
+    received_provenance: &HashMap<String, ReceivedProvenance>,
+) {
+    let mut issued: HashMap<String, &Value> = HashMap::new();
+    let mut received: HashMap<String, (&Value, usize)> = HashMap::new();
+    for record in records.iter().filter(|r| !is_received_record(r, received_provenance)) {
+        let Some(attestation) = record.pointer("/model_attestation/compute_attestation") else {
+            continue;
+        };
+        if let Some(block) = attestation.get(capsule_producer::capsule::ADJUDICATION_ISSUED_BLOCK) {
+            if let Some(referee) = block.get("referee_capsule_id").and_then(Value::as_str) {
+                issued.insert(referee.to_string(), block);
+            }
+        }
+        if let Some(block) = attestation.get(capsule_producer::capsule::ADJUDICATION_RECEIVED_BLOCK) {
+            for (i, half) in block.get("halves").and_then(Value::as_array).into_iter().flatten().enumerate() {
+                if let Some(half) = half.as_str() {
+                    received.insert(half.to_string(), (block, i));
+                }
+            }
+        }
+    }
+    for (row, (mine, theirs)) in rows.iter_mut().zip(row_halves) {
+        if let Some(block) = mine.as_deref().and_then(|id| issued.get(id)) {
+            row["referee_call"] = json!(true);
+            row["adjudication_issued"] = json!({
+                "verdict": block["verdict"],
+                "verdict_capsule_id": block["verdict_capsule_id"],
+                "bracket_id": block.get("twin_bracket_id").cloned().unwrap_or(Value::Null),
+                "halves": block["halves"],
+            });
+        }
+        let hit = [(mine, true), (theirs, false)]
+            .into_iter()
+            .find_map(|(id, own)| id.as_deref().and_then(|id| received.get(id)).map(|hit| (hit, own)));
+        let Some(((block, index), own)) = hit else {
+            continue;
+        };
+        let judged_node = block.pointer(&format!("/half_node_ids/{index}")).and_then(Value::as_str);
+        let verdict = block["verdict"].as_str().unwrap_or_default();
+        let about_this_node = own
+            && judged_node.is_some_and(|node| verdict == format!("contradicted:{node}"));
+        row["adjudication"] = json!({
+            "verdict": block["verdict"],
+            "verdict_capsule_id": block["verdict_capsule_id"],
+            "referee_node_id": block["referee_node_id"],
+            "received_at": block["received_at"],
+            "about_this_node": about_this_node,
+        });
+        if let Some(twin) = row.get_mut("twin").and_then(Value::as_object_mut) {
+            twin.insert("verdict".into(), block["verdict"].clone());
+            twin.insert("verdict_capsule_id".into(), block["verdict_capsule_id"].clone());
+            twin.insert("referee_node_id".into(), block["referee_node_id"].clone());
         }
     }
 }
@@ -3420,6 +3495,129 @@ mod tests {
         assert!(twins(&differ).iter().all(|x| x["same_answer"] == json!(false)));
         let missing = build(Some(&same), None);
         assert!(twins(&missing).iter().all(|x| x["same_answer"].is_null()));
+    }
+
+    fn verdict_facts<'a>(halves: [&'a str; 2], nodes: [&'a str; 2], verdict: &'a str) -> capsule_producer::capsule::VerdictFacts<'a> {
+        capsule_producer::capsule::VerdictFacts {
+            verdict,
+            verdict_capsule_id: "vvvv26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d",
+            referee_node_id: "c0c0c0",
+            halves,
+            half_node_ids: nodes,
+            twin_bracket_id: Some("twin-1"),
+        }
+    }
+
+    fn test_key() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[9u8; 32])
+    }
+
+    /// The verdict reaches the rows it concerns, from this node's own sealed
+    /// records only, and the adjudication records themselves add no row.
+    #[test]
+    fn a_delivered_verdict_marks_the_twin_rows_on_the_requester() {
+        let (node_a, node_b) = (format!("a0a0{}", "1".repeat(60)), format!("b0b0{}", "2".repeat(60)));
+        let (h_a, h_b) = ("3".repeat(64), "4".repeat(64));
+        let req = "d".repeat(64);
+        let mut asked_a = mesh_half_served_by(&"1".repeat(64), "requested", &req, &"5".repeat(64), "me-a", &node_a);
+        let mut asked_b = mesh_half_served_by(&"2".repeat(64), "requested", &req, &"6".repeat(64), "me-b", &node_b);
+        for r in [&mut asked_a, &mut asked_b] {
+            r["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["serving_provenance"]["twin_bracket_id"] = json!("twin-1");
+        }
+        let half_a = mesh_half_served_by(&h_a, "served", &req, &"5".repeat(64), "a-1", &node_a);
+        let half_b = mesh_half_served_by(&h_b, "served", &req, &"6".repeat(64), "b-1", &node_b);
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for(&h_a, &node_a), provenance_for(&h_b, &node_b)].into_iter().collect();
+        let verdict = format!("contradicted:{node_b}");
+        let received = capsule_producer::capsule::seal_adjudication_received_record(
+            &verdict_facts([&h_a, &h_b], [&node_a, &node_b], &verdict),
+            &h_a,
+            "courier",
+            "2026-09-28T15:00:00Z",
+            None,
+            &test_key(),
+        )
+        .unwrap();
+        let without = build_pane_c_list(&[asked_a.clone(), asked_b.clone(), half_a.clone(), half_b.clone()], &provenance);
+        let pane = build_pane_c_list(&[asked_a, asked_b, half_a, half_b, received], &provenance);
+        assert_eq!(pane["row_count"], without["row_count"], "the record adds no row");
+        let rows = pane["rows"].as_array().unwrap();
+        let twins: Vec<&Value> = rows.iter().filter(|r| r.get("twin").is_some()).collect();
+        assert_eq!(twins.len(), 2, "{pane}");
+        for row in twins {
+            assert_eq!(row["twin"]["verdict"], json!(verdict));
+            assert_eq!(row["twin"]["referee_node_id"], json!("c0c0c0"));
+            assert_eq!(row["adjudication"]["about_this_node"], json!(false), "the requester was not judged");
+        }
+    }
+
+    #[test]
+    fn a_judged_node_sees_whether_the_verdict_is_about_its_own_half() {
+        let (node_a, node_b) = ("a0a0", "b0b0");
+        let (h_a, h_b) = ("3".repeat(64), "4".repeat(64));
+        let own_b = mesh_half_served_by(&h_b, "served", &"d".repeat(64), &"6".repeat(64), "b-1", node_b);
+        let seal = |verdict: &str| {
+            capsule_producer::capsule::seal_adjudication_received_record(
+                &verdict_facts([&h_a, &h_b], [node_a, node_b], verdict),
+                &h_b,
+                "courier",
+                "2026-09-28T15:00:00Z",
+                None,
+                &test_key(),
+            )
+            .unwrap()
+        };
+        for (verdict, about) in [("contradicted:b0b0", true), ("contradicted:a0a0", false), ("corroborated", false)] {
+            let pane = build_pane_c_list(&[own_b.clone(), seal(verdict)], &no_provenance());
+            let row = &pane["rows"][0];
+            assert_eq!(row["adjudication"]["verdict"], json!(verdict));
+            assert_eq!(row["adjudication"]["about_this_node"], json!(about), "{verdict}");
+        }
+    }
+
+    #[test]
+    fn the_referee_row_shows_the_verdict_it_issued() {
+        let referee_record = "9".repeat(64);
+        let answer = mesh_half_served_by(&referee_record, "served", &"f".repeat(64), &"0".repeat(64), "r-1", "c0c0c0");
+        let other = mesh_half_served_by(&"8".repeat(64), "served", &"e".repeat(64), &"1".repeat(64), "r-2", "c0c0c0");
+        let (h_a, h_b) = ("3".repeat(64), "4".repeat(64));
+        let issued = capsule_producer::capsule::seal_adjudication_issued_record(
+            &verdict_facts([&h_a, &h_b], ["a0a0", "b0b0"], "contradicted:b0b0"),
+            Some(&referee_record),
+            "2026-09-28T15:00:00Z",
+            None,
+            &test_key(),
+        )
+        .unwrap();
+        let pane = build_pane_c_list(&[answer, other, issued], &no_provenance());
+        let rows = pane["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "{pane}");
+        let marked: Vec<&Value> = rows.iter().filter(|r| r.get("adjudication_issued").is_some()).collect();
+        assert_eq!(marked.len(), 1);
+        assert_eq!(marked[0]["referee_call"], json!(true));
+        assert_eq!(marked[0]["adjudication_issued"]["verdict"], json!("contradicted:b0b0"));
+        assert_eq!(marked[0]["adjudication_issued"]["bracket_id"], json!("twin-1"));
+        assert_eq!(marked[0]["adjudication_issued"]["halves"], json!([h_a, h_b]));
+    }
+
+    /// A verdict record that arrived as someone else's record is never read.
+    #[test]
+    fn a_received_adjudication_record_is_not_this_nodes_verdict() {
+        let (h_a, h_b) = ("3".repeat(64), "4".repeat(64));
+        let own_b = mesh_half_served_by(&h_b, "served", &"d".repeat(64), &"6".repeat(64), "b-1", "b0b0");
+        let foreign = capsule_producer::capsule::seal_adjudication_received_record(
+            &verdict_facts([&h_a, &h_b], ["a0a0", "b0b0"], "contradicted:b0b0"),
+            &h_b,
+            "courier",
+            "2026-09-28T15:00:00Z",
+            None,
+            &test_key(),
+        )
+        .unwrap();
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for(foreign["capsule_id"].as_str().unwrap(), "someone")].into_iter().collect();
+        let pane = build_pane_c_list(&[own_b, foreign], &provenance);
+        assert!(pane["rows"].as_array().unwrap().iter().all(|r| r.get("adjudication").is_none()), "{pane}");
     }
 
     #[test]
