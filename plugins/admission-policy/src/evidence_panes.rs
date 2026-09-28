@@ -437,7 +437,7 @@ fn their_log_position(record: &Value) -> Option<(String, Value)> {
     ))
 }
 
-fn is_local_routing_choice(record: &Value) -> bool {
+pub(crate) fn is_local_routing_choice(record: &Value) -> bool {
     record
         .pointer("/model_attestation/compute_attestation/local_routing_choice")
         .is_some()
@@ -1485,7 +1485,7 @@ fn peer_row_key(identity: &PeerIdentity) -> Option<String> {
 /// same fields `counterparty_peer_label` reads (tier 2/3) -- kept full-length
 /// so a row can carry it as identity evidence (aliases are exact ids, never
 /// truncations). `None` when the record names no distinct node.
-fn full_counterparty_node_id(record: &Value) -> Option<String> {
+pub(crate) fn full_counterparty_node_id(record: &Value) -> Option<String> {
     let poc = poc_block(record)?;
     let sp = poc.get("serving_provenance")?;
     let requested = poc.get("role").and_then(Value::as_str) == Some("requested");

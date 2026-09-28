@@ -66,6 +66,13 @@ A disallowed request is refused `not_authorized` — signed with this node's own
 key, like every other refusal this door makes. `range` requests are
 deliberately never gated by this switch.
 
+**The plugin's `ledger-fetch/1` door** (a peer asks for one record by id)
+reads the same switch from `ADMISSION_POLICY_SHARE_HISTORY_SEGMENTS`: `off`
+serves nothing; `peers` serves any record; any other value (the default)
+serves a record only to the node it names as the other side of its exchange,
+as that node states its own peer id. A local block and an owner-maintenance
+record are never served. A declined fetch answers `not_authorized`.
+
 ## The record exchange at completion (`record_at_completion`)
 
 **What:** when an exchange ends, each side pushes its own **sealed record** to

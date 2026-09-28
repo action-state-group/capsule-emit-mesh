@@ -44,6 +44,26 @@ fn record_at_completion_is_off_for(raw: Option<&str>) -> bool {
     raw == Some("off")
 }
 
+/// This process's own env var for `share_history_segments`, same as
+/// `share_policy.py`'s `ENV_HISTORY_SEGMENTS`.
+pub const ENV_HISTORY_SEGMENTS: &str = "ADMISSION_POLICY_SHARE_HISTORY_SEGMENTS";
+
+/// Who may read one of this node's records back: `off`, `counterparties`,
+/// `prospective` or `peers`. Unset or unknown is the documented default,
+/// `prospective`.
+pub fn history_segments() -> &'static str {
+    history_segments_for(std::env::var(ENV_HISTORY_SEGMENTS).ok().as_deref())
+}
+
+fn history_segments_for(raw: Option<&str>) -> &'static str {
+    match raw {
+        Some("off") => "off",
+        Some("counterparties") => "counterparties",
+        Some("peers") => "peers",
+        _ => "prospective",
+    }
+}
+
 const CATEGORY_ID: &str = "share";
 const CATEGORY_LABEL: &str = "Sharing policy";
 const CATEGORY_SUMMARY: &str = "What this node shares, with whom, by default. Every default keys \
@@ -126,6 +146,15 @@ mod tests {
             keys,
             vec![RECORD_AT_COMPLETION_KEY, HISTORY_SEGMENTS_KEY, ADJUDICATIONS_KEY, WITNESS_KEY]
         );
+    }
+
+    #[test]
+    fn history_segments_defaults_to_prospective_and_reads_the_four_tiers() {
+        assert_eq!(history_segments_for(None), "prospective");
+        assert_eq!(history_segments_for(Some("bogus")), "prospective");
+        for tier in ["off", "counterparties", "prospective", "peers"] {
+            assert_eq!(history_segments_for(Some(tier)), tier);
+        }
     }
 
     #[test]

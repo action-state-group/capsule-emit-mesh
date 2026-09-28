@@ -110,6 +110,11 @@ pub async fn handle_open_stream(
 #[derive(Debug, Deserialize)]
 struct LedgerFetchRequest {
     capsule_id: String,
+    /// The asking node's own mesh peer id, as it states it. The host does not
+    /// tell a stream's responder who opened it, so this is the asker's word:
+    /// it narrows who is answered, it is not access control.
+    #[serde(default)]
+    requester_id: Option<String>,
 }
 
 /// Every shape the responder can answer with -- deliberately explicit rather
@@ -127,6 +132,11 @@ enum LedgerFetchResponse {
         node_pub_key_pem: String,
     },
     NotFound {
+        capsule_id: String,
+    },
+    /// The record exists or not; either way this node does not give it to
+    /// this asker (see [`may_serve`]).
+    NotAuthorized {
         capsule_id: String,
     },
     Error {
@@ -151,7 +161,7 @@ async fn bridge_inbound_ledger_fetch_stream(
     )
     .await??;
 
-    let response = answer(&capsules, &request_bytes);
+    let response = answer(&capsules, &request_bytes, crate::share_policy::history_segments());
 
     let response_bytes = serde_json::to_vec(&response)?;
     tokio::time::timeout(responder_timeout(), async {
@@ -165,7 +175,29 @@ async fn bridge_inbound_ledger_fetch_stream(
 /// The pure lookup-to-response step, split out of the async I/O wrapper so
 /// it is directly unit-testable (found / not-found / malformed) without a
 /// live mesh stream.
-fn answer(capsules: &CapsuleState, request_bytes: &[u8]) -> LedgerFetchResponse {
+/// Whether `record` goes to the asker under the node's `history_segments`
+/// switch. `off` serves nothing. A local block and an owner-maintenance
+/// record never leave this node. Under `peers` any other record goes to any
+/// node; otherwise a record goes only to the node it names as the other side
+/// of its exchange, so a record that names no other side is not served.
+fn may_serve(record: &Value, requester_id: Option<&str>, history_segments: &str) -> bool {
+    if history_segments == "off"
+        || crate::evidence_panes::is_local_routing_choice(record)
+        || record
+            .pointer("/model_attestation/compute_attestation")
+            .and_then(|c| c.get(capsule_producer::capsule::OWNER_MAINTENANCE_BLOCK))
+            .is_some()
+    {
+        return false;
+    }
+    if history_segments == "peers" {
+        return true;
+    }
+    crate::evidence_panes::full_counterparty_node_id(record)
+        .is_some_and(|other_side| requester_id.map(str::trim) == Some(other_side.as_str()))
+}
+
+fn answer(capsules: &CapsuleState, request_bytes: &[u8], history_segments: &str) -> LedgerFetchResponse {
     let parsed = match serde_json::from_slice::<LedgerFetchRequest>(request_bytes) {
         Ok(parsed) => parsed,
         Err(error) => {
@@ -176,6 +208,11 @@ fn answer(capsules: &CapsuleState, request_bytes: &[u8]) -> LedgerFetchResponse 
     };
 
     match capsules.lookup(&parsed.capsule_id) {
+        Ok(Some(entry)) if !may_serve(&entry.capsule, parsed.requester_id.as_deref(), history_segments) => {
+            LedgerFetchResponse::NotAuthorized {
+                capsule_id: parsed.capsule_id,
+            }
+        }
         Ok(Some(entry)) => LedgerFetchResponse::Found {
             capsule: entry.capsule,
             signed_statement_b64: base64::engine::general_purpose::STANDARD
@@ -214,6 +251,7 @@ pub struct MeshLedgerFetchArgs {
 pub async fn handle_mesh_ledger_fetch(
     args: MeshLedgerFetchArgs,
     context: &mut PluginContext<'_>,
+    self_id: Option<String>,
 ) -> PluginResult<Value> {
     if args.peer_id.trim().is_empty() {
         return Err(PluginError::invalid_params("peer_id must not be empty"));
@@ -243,7 +281,7 @@ pub async fn handle_mesh_ledger_fetch(
         .map_err(|error| PluginError::internal(format!("could not reach peer: {error}")))?;
     let (mut read_half, mut write_half) = stream.into_split();
 
-    let request_bytes = serde_json::to_vec(&serde_json::json!({ "capsule_id": args.capsule_id }))
+    let request_bytes = serde_json::to_vec(&serde_json::json!({ "capsule_id": args.capsule_id, "requester_id": self_id }))
         .expect("a two-field static-shape object always serializes");
 
     let write_and_read = async {
@@ -287,7 +325,13 @@ mod tests {
         CapsuleState::open(&dir, "ledger-fetch-test").expect("open capsule state")
     }
 
+    const ASKER: &str = "e5ba9d1001e5ba9d1001e5ba9d1001e5ba9d1001e5ba9d1001e5ba9d1001aaaa";
+
     fn seal_one(state: &CapsuleState) -> String {
+        seal_for(state, Some(ASKER))
+    }
+
+    fn seal_for(state: &CapsuleState, requesting_party: Option<&str>) -> String {
         let emitted = state
             .emit_for_exchange(&ExchangeRecord {
                 model: "test-model",
@@ -296,7 +340,7 @@ mod tests {
                 response_bytes: b"{}",
                 latency_ms: 1.0,
                 exchange_id: Some("exchange-1"),
-                requesting_party: None,
+                requesting_party,
                 host_provenance: None,
             })
             .expect("seal one capsule");
@@ -311,8 +355,9 @@ mod tests {
         let state = open_state("found");
         let capsule_id = seal_one(&state);
 
-        let request = serde_json::to_vec(&serde_json::json!({ "capsule_id": capsule_id })).unwrap();
-        let response = answer(&state, &request);
+        let request =
+            serde_json::to_vec(&serde_json::json!({ "capsule_id": capsule_id, "requester_id": ASKER })).unwrap();
+        let response = answer(&state, &request, "prospective");
 
         match response {
             LedgerFetchResponse::Found {
@@ -337,7 +382,7 @@ mod tests {
 
         let request =
             serde_json::to_vec(&serde_json::json!({ "capsule_id": "not-a-real-id" })).unwrap();
-        let response = answer(&state, &request);
+        let response = answer(&state, &request, "prospective");
 
         assert_eq!(
             response,
@@ -345,6 +390,68 @@ mod tests {
                 capsule_id: "not-a-real-id".to_string()
             }
         );
+    }
+
+    fn ask(state: &CapsuleState, capsule_id: &str, requester_id: Option<&str>, tier: &str) -> LedgerFetchResponse {
+        let request =
+            serde_json::to_vec(&serde_json::json!({ "capsule_id": capsule_id, "requester_id": requester_id })).unwrap();
+        answer(state, &request, tier)
+    }
+
+    fn is_found(response: &LedgerFetchResponse) -> bool {
+        matches!(response, LedgerFetchResponse::Found { .. })
+    }
+
+    /// Only the other side of the exchange gets the record: another node, or
+    /// an asker that names no one, is declined. MUTANT: drop the
+    /// counterparty check and any node reads any record.
+    #[test]
+    fn a_record_goes_only_to_the_node_it_names_as_the_other_side() {
+        let state = open_state("counterparty");
+        let id = seal_one(&state);
+        for tier in ["counterparties", "prospective"] {
+            assert!(is_found(&ask(&state, &id, Some(ASKER), tier)));
+            let other = ask(&state, &id, Some("b0b0b0b0"), tier);
+            assert_eq!(other, LedgerFetchResponse::NotAuthorized { capsule_id: id.clone() });
+            assert!(!is_found(&ask(&state, &id, None, tier)));
+        }
+    }
+
+    #[test]
+    fn the_sharing_switch_decides_off_serves_nothing_and_peers_serves_any_node() {
+        let state = open_state("switch");
+        let id = seal_one(&state);
+        assert!(!is_found(&ask(&state, &id, Some(ASKER), "off")));
+        assert!(is_found(&ask(&state, &id, Some("b0b0b0b0"), "peers")));
+        assert!(is_found(&ask(&state, &id, None, "peers")));
+    }
+
+    /// A local block names no other side of an exchange: it never leaves this
+    /// node, not even under `peers`, not even to the blocked node itself.
+    #[test]
+    fn a_local_block_record_is_never_served() {
+        let state = open_state("block");
+        let block = state
+            .emit_local_routing_choice(
+                capsule_producer::capsule::RoutingChoiceChange::Block,
+                ASKER,
+                None,
+                &[3u8; 32],
+            )
+            .expect("seal block");
+        for tier in ["counterparties", "prospective", "peers"] {
+            let response = ask(&state, &block.capsule_id, Some(ASKER), tier);
+            assert_eq!(response, LedgerFetchResponse::NotAuthorized { capsule_id: block.capsule_id.clone() });
+        }
+    }
+
+    /// A record that names no other side (no requesting party) is never
+    /// served under the default.
+    #[test]
+    fn a_record_naming_no_other_side_is_declined() {
+        let state = open_state("no-side");
+        let id = seal_for(&state, None);
+        assert!(!is_found(&ask(&state, &id, Some(ASKER), "prospective")));
     }
 
     /// (negative) Malformed request bytes must produce an explicit `Error`,
@@ -355,7 +462,7 @@ mod tests {
     fn malformed_request_bytes_are_reported_as_error_not_not_found() {
         let state = open_state("malformed");
 
-        let response = answer(&state, b"not json at all");
+        let response = answer(&state, b"not json at all", "prospective");
 
         match response {
             LedgerFetchResponse::Error { message } => {

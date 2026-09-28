@@ -290,13 +290,44 @@ async fn accept_one_remote_peer_connection() -> (UnixListener, std::path::PathBu
     (listener, path)
 }
 
+/// Under the default sharing switch, a record that names no other side is
+/// declined over the real wire, never served to whoever asks.
+#[tokio::test]
+async fn responder_declines_a_record_naming_no_other_side_by_default() {
+    let mut harness = Harness::spawn(&[]).await;
+    let manifest = harness.initialize().await;
+    let capsule_id = harness.seal_one_real_capsule(&manifest).await;
+
+    let stream = harness.open_ledger_fetch_stream().await;
+    let (mut read_half, mut write_half) = stream.into_split();
+    let request_bytes = serde_json::to_vec(
+        &serde_json::json!({ "capsule_id": capsule_id, "requester_id": "b0b0b0b0" }),
+    )
+    .unwrap();
+    write_half.write_all(&request_bytes).await.expect("write ledger-fetch request");
+    write_half.shutdown().await.expect("half-close request");
+
+    let mut response_bytes = Vec::new();
+    timeout(TEST_TIMEOUT, read_half.read_to_end(&mut response_bytes))
+        .await
+        .expect("responder answered before timeout")
+        .expect("read response bytes");
+    let response: serde_json::Value = serde_json::from_slice(&response_bytes).expect("valid JSON");
+    assert_eq!(response["status"], "not_authorized");
+    assert!(response.get("capsule").is_none());
+
+    harness.shutdown_process().await;
+}
+
 /// (A) Responder role, happy path: a mesh-inbound ledger-fetch stream for a
 /// capsule_id THIS node really sealed gets answered with the real capsule,
 /// the real (base64) signed_statement bytes, and this node's real pubkey --
 /// never fabricated, never a second attestation wrapper.
 #[tokio::test]
 async fn responder_answers_a_real_sealed_capsule_over_the_real_wire() {
-    let mut harness = Harness::spawn(&[]).await;
+    // This capsule names no other side (the fake host sends no requester),
+    // so only the `peers` tier serves it; the default declines it (below).
+    let mut harness = Harness::spawn(&[("ADMISSION_POLICY_SHARE_HISTORY_SEGMENTS", "peers")]).await;
     let manifest = harness.initialize().await;
     let capsule_id = harness.seal_one_real_capsule(&manifest).await;
 
@@ -517,7 +548,8 @@ async fn requester_tool_call_round_trips_a_real_dialed_stream() {
         .expect("peer task did not panic");
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&request_bytes).unwrap(),
-        serde_json::json!({"capsule_id": "peer-real-id"})
+        serde_json::json!({"capsule_id": "peer-real-id", "requester_id": null}),
+        "the asker states its own peer id, null until the host has reported it"
     );
 
     harness.shutdown_process().await;

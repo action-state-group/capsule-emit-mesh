@@ -59,6 +59,13 @@ describe('fetchPeerLedgerCapsule', () => {
     expect(outcome).toEqual({ kind: 'not_found' })
   })
 
+  it('reports a declined fetch as the peer declining, never as found or not_found', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ status: 'not_authorized', capsule_id: 'cap-1' })))
+
+    const outcome = await fetchPeerLedgerCapsule('peer-a', 'cap-1')
+    expect(outcome).toEqual({ kind: 'error', message: 'the peer declined to share this record' })
+  })
+
   it('returns kind: error for a responder-side error, carrying the real message', async () => {
     vi.stubGlobal(
       'fetch',

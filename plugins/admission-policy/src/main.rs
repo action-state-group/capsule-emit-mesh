@@ -812,7 +812,13 @@ async fn main() -> anyhow::Result<()> {
              unsigned {capsule, signed_statement_b64, node_pub_key_pem} for independent recompute; \
              never a second attestation.",
         ),
-        |args, context| Box::pin(ledger_fetch_bridge::handle_mesh_ledger_fetch(args, context)),
+        {
+            let self_peer = self_peer.clone();
+            move |args, context| {
+                let self_id = self_peer.current();
+                Box::pin(ledger_fetch_bridge::handle_mesh_ledger_fetch(args, context, self_id))
+            }
+        },
     );
 
     let plugin = DeclarativePluginBuilder::new(PluginMetadata::new(
