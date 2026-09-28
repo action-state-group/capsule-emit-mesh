@@ -162,9 +162,9 @@ impl From<SubstrateError> for CheckpointStateError {
                 actual_root,
                 recorded_root,
             },
-            other @ (SubstrateError::LeafMismatch { .. } | SubstrateError::CutBeyondLog { .. }) => {
-                Self::Checkpoint(other.to_string())
-            }
+            other @ (SubstrateError::LeafMismatch { .. }
+            | SubstrateError::CutBeyondLog { .. }
+            | SubstrateError::StalePrepared { .. }) => Self::Checkpoint(other.to_string()),
         }
     }
 }
@@ -1184,7 +1184,9 @@ mod tests {
         state.reconnect(&signer(), &anchor).unwrap();
 
         // Simulate a mutated ledger: rewrite the persisted checkpoint so it
-        // claims a root the current MMR does not actually have at that size.
+        // claims a root the current MMR does not actually have at that size
+        // (the replace also rewrites that root inside the COSE wire form; only
+        // the JSON record's root matters to the rollback check).
         let path = dir.path().join("checkpoints.jsonl");
         let text = std::fs::read_to_string(&path).unwrap();
         let recorded = state.last_checkpoint().unwrap().root.clone();

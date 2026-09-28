@@ -15,6 +15,15 @@
 //! the one field not pinned; the test re-signs a copy with the timestamp set to
 //! `FIXED_TIMESTAMP` and compares that signature instead.
 //!
+//! Beyond the fixture, the test checks what the live timestamp prevents
+//! pinning: the production signature equals an Ed25519 signature over the live
+//! digest (Ed25519 is deterministic, so this compares the signing path, not
+//! just that some signature verifies), and each checkpoint's persisted
+//! `checkpoints.jsonl` line carries that same record plus a COSE wire form
+//! that verifies offline and decodes to the record's fields. Not covered:
+//! witness registration (no witness URLs are configured) and padding (off);
+//! `tests/checkpoint_padding.rs` covers padding.
+//!
 //! Regenerate only on purpose, and only from a tree whose checkpoint path is
 //! known to be the reference:
 //! `EVIDENCEBOOK_PARITY_REGENERATE=1 cargo test --test evidencebook_parity`.
@@ -152,6 +161,11 @@ fn read_capsule_ids(dir: &Path) -> Vec<String> {
 /// timestamp, plus the signing digest and signature with that timestamp fixed.
 fn pinned(cp: &CheckpointRecord, key: &SigningKey) -> Value {
     assert!(cp.verify_signature_offline(), "live signature must verify");
+    assert_eq!(
+        cp.signature,
+        hex::encode(key.sign(cp.digest().as_bytes()).to_bytes()),
+        "production signature is the Ed25519 signature over the live digest"
+    );
     let mut fixed = cp.clone();
     fixed.timestamp = FIXED_TIMESTAMP.to_string();
     fixed.signature = String::new();
@@ -193,6 +207,43 @@ fn observe() -> Value {
     let (mut state, report) = CheckpointState::load(dir.path(), LOG_ID, cfg).unwrap();
     assert_eq!(report.leaves_indexed_this_load, (TOTAL - FIRST_CUT) as u64);
     let second = state.reconnect(&key, &anchor).unwrap().expect("second cut");
+
+    // The persisted lines: the same records, each with a COSE wire form that
+    // verifies offline and decodes to the record's own fields.
+    let lines = cll::store::read_checkpoints(dir.path().join("checkpoints.jsonl")).unwrap();
+    assert_eq!(lines.len(), 2);
+    for (line, cp) in lines.iter().zip([&first, &second]) {
+        assert_eq!(
+            serde_json::to_value(&line.record).unwrap(),
+            serde_json::to_value(cp).unwrap()
+        );
+        let cose = hex::decode(
+            line.checkpoint_cose_hex
+                .as_ref()
+                .expect("COSE form persisted"),
+        )
+        .unwrap();
+        let verified = cll::checkpoint::verify_checkpoint_cose_offline(&cose);
+        assert!(verified.ok, "{:?}", verified.errors);
+        let decoded = verified.decoded.unwrap();
+        assert_eq!(
+            (
+                decoded.log_id.as_str(),
+                decoded.mmr_size,
+                decoded.root.as_str()
+            ),
+            (cp.log_id.as_str(), cp.mmr_size, cp.root.as_str())
+        );
+        assert_eq!(
+            (
+                decoded.prev_size,
+                decoded.prev_root.as_str(),
+                decoded.key_id.as_str()
+            ),
+            (cp.prev_size, cp.prev_root.as_str(), cp.key_id.as_str())
+        );
+        assert_eq!(decoded.timestamp, cp.timestamp);
+    }
 
     let ids = read_capsule_ids(dir.path());
     let proofs: Vec<Value> = ids

@@ -284,7 +284,7 @@ dependencies = [
 [[package]]
 name = "cll"
 version = "0.1.0"
-source = "git+https://github.com/action-state-group/checkpointed-local-log?rev=ee15b4332f1388caf0135e34ab815d2ba2fffa71#ee15b4332f1388caf0135e34ab815d2ba2fffa71"
+source = "git+https://github.com/action-state-group/checkpointed-local-log?rev=6cf568c4092a71c1bd5ead41e51a109f38ea0ccb#6cf568c4092a71c1bd5ead41e51a109f38ea0ccb"
 dependencies = [
  "coset",
  "ed25519-dalek",
@@ -606,7 +606,7 @@ dependencies = [
 [[package]]
 name = "evidencebook"
 version = "0.1.0"
-source = "git+https://github.com/action-state-group/checkpointed-local-log?rev=ee15b4332f1388caf0135e34ab815d2ba2fffa71#ee15b4332f1388caf0135e34ab815d2ba2fffa71"
+source = "git+https://github.com/action-state-group/checkpointed-local-log?rev=6cf568c4092a71c1bd5ead41e51a109f38ea0ccb#6cf568c4092a71c1bd5ead41e51a109f38ea0ccb"
 dependencies = [
  "cll",
  "ed25519-dalek",
