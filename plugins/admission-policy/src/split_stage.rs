@@ -41,8 +41,16 @@ pub const SKIPPY_STAGE_CHANNEL: &str = "skippy.stage.v1";
 pub const ENV_STAGE_DEADLINE_MS: &str = "ADMISSION_POLICY_SPLIT_STAGE_DEADLINE_MS";
 const DEFAULT_STAGE_DEADLINE_MS: u64 = 2_000;
 /// Splits held at once. A peer can push stage records for splits that never
-/// complete here; past this, the oldest pending split is dropped and counted.
+/// complete here; past this, the oldest split opened by records alone is
+/// dropped and counted. A split holding its terminal envelope is never
+/// dropped for room; when nothing else can go, the newcomer is refused.
 const MAX_PENDING: usize = 256;
+/// Splits one sender may open with stage records before any stage-0 event.
+const MAX_PENDING_PER_SENDER: usize = 8;
+/// Distinct records one sender may supply for one stage of one split: a
+/// second is kept (two signed records for one hop is the `conflict` the
+/// receipt reports), a third is refused.
+const MAX_RECORDS_PER_STAGE_SENDER: usize = 2;
 /// Recently sealed split keys remembered, so a late stage record is routed to
 /// the follow-up path instead of opening a new pending split.
 const MAX_SEALED_MEMORY: usize = 1_024;
@@ -141,19 +149,33 @@ pub struct ReadySplit<E> {
     pub arrived: BTreeMap<u32, BTreeMap<String, Value>>,
 }
 
+/// A held stage record and the mesh peer that pushed it.
+struct Held {
+    sender: String,
+    record: Value,
+}
+
 struct Pending<E> {
     own: Option<StageEvent>,
     /// When the stage-0 event arrived: the deadline counts from here.
     opened_ms: Option<u64>,
     first_seen_ms: u64,
-    arrived: BTreeMap<u32, BTreeMap<String, Value>>,
+    arrived: BTreeMap<u32, BTreeMap<String, Held>>,
     envelope: Option<E>,
+    /// The sender whose stage record opened this split before its stage-0
+    /// event, for the per-sender cap.
+    opened_by: Option<String>,
 }
 
 impl<E> Pending<E> {
-    fn new(now_ms: u64) -> Self {
-        Pending { own: None, opened_ms: None, first_seen_ms: now_ms, arrived: BTreeMap::new(), envelope: None }
+    fn new(now_ms: u64, opened_by: Option<String>) -> Self {
+        Pending { own: None, opened_ms: None, first_seen_ms: now_ms, arrived: BTreeMap::new(), envelope: None, opened_by }
     }
+}
+
+/// The node the coordinator assigned stage `k` to, when stage 0 has named it.
+fn assigned_node(own: &StageEvent, k: u32) -> Option<&str> {
+    own.topology.as_ref()?.get(k as usize).map(|a| a.node_id.as_str())
 }
 
 /// What happened to a stage record handed to the collector.
@@ -166,6 +188,9 @@ pub enum Arrival {
     Late,
     /// Not a stage record of a split, or not one this node coordinates.
     NotStage,
+    /// Refused and counted: not from the node assigned that stage, or past a
+    /// holding cap.
+    Refused,
 }
 
 struct Inner<E> {
@@ -173,6 +198,7 @@ struct Inner<E> {
     by_exchange: HashMap<String, SplitKey>,
     sealed: VecDeque<SplitKey>,
     dropped: u64,
+    refused: u64,
 }
 
 /// The coordinator's in-memory waiting room for split requests. Generic over
@@ -189,6 +215,7 @@ impl<E> Default for SplitCollector<E> {
                 by_exchange: HashMap::new(),
                 sealed: VecDeque::new(),
                 dropped: 0,
+                refused: 0,
             }),
         }
     }
@@ -205,6 +232,12 @@ impl<E> SplitCollector<E> {
         self.lock().dropped
     }
 
+    /// Stage records refused: from a node other than the one assigned that
+    /// stage, or past a holding cap.
+    pub fn refused(&self) -> u64 {
+        self.lock().refused
+    }
+
     /// A stage-0 event: open (or complete) the pending split for its key.
     /// Refused when the split was already sealed or already has one.
     pub fn on_stage_zero(&self, event: StageEvent, now_ms: u64) -> Result<(), StageError> {
@@ -219,16 +252,30 @@ impl<E> SplitCollector<E> {
             inner.dropped += 1;
             return Err(StageError::Block("this split already has its stage-0 event".into()));
         }
-        make_room(&mut inner, &key);
-        let pending = inner.pending.entry(key.clone()).or_insert_with(|| Pending::new(now_ms));
+        if !make_room(&mut inner, &key) {
+            inner.dropped += 1;
+            return Err(StageError::Block("no room to hold another split".into()));
+        }
+        let pending = inner.pending.entry(key.clone()).or_insert_with(|| Pending::new(now_ms, None));
         if pending.own.is_some() {
             inner.dropped += 1;
             return Err(StageError::Block("this split already has its stage-0 event".into()));
         }
-        let stage_count = event.block.stage_count;
-        pending.arrived.retain(|k, _| *k < stage_count);
+        // Records that arrived first are kept only from the node stage 0 now
+        // names for their stage.
+        let before: usize = pending.arrived.values().map(BTreeMap::len).sum();
+        let mut arrived = std::mem::take(&mut pending.arrived);
+        for (k, held) in arrived.iter_mut() {
+            let assigned = (*k >= 1).then(|| assigned_node(&event, *k)).flatten();
+            held.retain(|_, h| Some(h.sender.as_str()) == assigned);
+        }
+        arrived.retain(|_, held| !held.is_empty());
+        let after: usize = arrived.values().map(BTreeMap::len).sum();
+        pending.arrived = arrived;
         pending.own = Some(event);
         pending.opened_ms = Some(now_ms);
+        pending.opened_by = None;
+        inner.refused += (before - after) as u64;
         inner.by_exchange.insert(exchange_id, key);
         Ok(())
     }
@@ -252,8 +299,10 @@ impl<E> SplitCollector<E> {
         }
     }
 
-    /// A stage record the door accepted.
-    pub fn on_stage_record(&self, record: &Value, now_ms: u64) -> Arrival {
+    /// A stage record the door accepted, pushed by mesh peer `sender`. Once
+    /// stage 0 has named the topology, only the node assigned that stage may
+    /// supply its record.
+    pub fn on_stage_record(&self, record: &Value, sender: &str, now_ms: u64) -> Arrival {
         let Ok(Some(block)) = stage_block_of(record) else {
             return Arrival::NotStage;
         };
@@ -268,16 +317,38 @@ impl<E> SplitCollector<E> {
         if inner.sealed.contains(&key) {
             return Arrival::Late;
         }
-        make_room(&mut inner, &key);
-        let pending = inner.pending.entry(key).or_insert_with(|| Pending::new(now_ms));
-        if pending.own.as_ref().is_some_and(|own| block.stage_index >= own.block.stage_count) {
-            return Arrival::NotStage;
+        if !inner.pending.contains_key(&key) {
+            let opened_by_sender = inner
+                .pending
+                .values()
+                .filter(|p| p.own.is_none() && p.opened_by.as_deref() == Some(sender))
+                .count();
+            if opened_by_sender >= MAX_PENDING_PER_SENDER || !make_room(&mut inner, &key) {
+                inner.refused += 1;
+                return Arrival::Refused;
+            }
+            inner.pending.insert(key.clone(), Pending::new(now_ms, Some(sender.to_string())));
         }
-        pending
-            .arrived
-            .entry(block.stage_index)
-            .or_default()
-            .insert(capsule_id.to_string(), record.clone());
+        let pending = inner.pending.get_mut(&key).expect("pending split exists");
+        if let Some(own) = &pending.own {
+            if block.stage_index >= own.block.stage_count {
+                return Arrival::NotStage;
+            }
+            let assigned = (block.stage_index >= 1).then(|| assigned_node(own, block.stage_index)).flatten();
+            if assigned != Some(sender) {
+                inner.refused += 1;
+                return Arrival::Refused;
+            }
+        }
+        let held = pending.arrived.entry(block.stage_index).or_default();
+        if held.contains_key(capsule_id) {
+            return Arrival::Held;
+        }
+        if held.values().filter(|h| h.sender == sender).count() >= MAX_RECORDS_PER_STAGE_SENDER {
+            inner.refused += 1;
+            return Arrival::Refused;
+        }
+        held.insert(capsule_id.to_string(), Held { sender: sender.to_string(), record: record.clone() });
         Arrival::Held
     }
 
@@ -311,7 +382,12 @@ impl<E> SplitCollector<E> {
             let own = pending.own.expect("due split has its stage-0 event");
             inner.by_exchange.retain(|_, k| *k != key);
             remember_sealed(&mut inner, key);
-            ready.push(ReadySplit { own, envelope: pending.envelope.expect("due split holds its envelope"), arrived: pending.arrived });
+            let arrived = pending
+                .arrived
+                .into_iter()
+                .map(|(k, held)| (k, held.into_iter().map(|(id, h)| (id, h.record)).collect()))
+                .collect();
+            ready.push(ReadySplit { own, envelope: pending.envelope.expect("due split holds its envelope"), arrived });
         }
         ready
     }
@@ -329,20 +405,31 @@ fn remember_sealed<E>(inner: &mut Inner<E>, key: SplitKey) {
     inner.sealed.push_back(key);
 }
 
-/// Keep at most [`MAX_PENDING`] splits, dropping the one first seen longest
-/// ago to admit `key`.
-fn make_room<E>(inner: &mut Inner<E>, key: &SplitKey) {
+/// Keep at most [`MAX_PENDING`] splits to admit `key`: drop the oldest split
+/// opened by stage records alone, else the oldest still waiting for its
+/// terminal envelope. A split that holds its envelope is never dropped (its
+/// exchange would never seal). `false` when nothing can go.
+fn make_room<E>(inner: &mut Inner<E>, key: &SplitKey) -> bool {
     if inner.pending.contains_key(key) || inner.pending.len() < MAX_PENDING {
-        return;
+        return true;
     }
-    if let Some(oldest) = inner
-        .pending
-        .iter()
-        .min_by_key(|(_, p)| p.first_seen_ms)
-        .map(|(k, _)| k.clone())
-    {
-        forget(inner, &oldest);
-        inner.dropped += 1;
+    let oldest_where = |inner: &Inner<E>, pick: fn(&Pending<E>) -> bool| {
+        inner
+            .pending
+            .iter()
+            .filter(|(_, p)| pick(p))
+            .min_by_key(|(_, p)| p.first_seen_ms)
+            .map(|(k, _)| k.clone())
+    };
+    let victim = oldest_where(inner, |p| p.own.is_none())
+        .or_else(|| oldest_where(inner, |p| p.envelope.is_none()));
+    match victim {
+        Some(victim) => {
+            forget(inner, &victim);
+            inner.dropped += 1;
+            true
+        }
+        None => false,
     }
 }
 
@@ -499,6 +586,13 @@ mod tests {
             .collect()
     }
 
+    /// The node `case`'s topology assigns `record`'s stage to: the one peer
+    /// allowed to push it.
+    fn sender(case: &Value, record: &Value) -> String {
+        let k = stage_block_of(record).unwrap().unwrap().stage_index as usize;
+        case["receipt"]["topology"][k]["assignment"]["node_id"].as_str().unwrap().to_string()
+    }
+
     #[test]
     fn a_stage_event_carries_no_coordinator_facts() {
         let c = case("relayed_all_agree");
@@ -551,9 +645,9 @@ mod tests {
         collector.on_stage_zero(stage_zero(&c, "exch-1"), 0).unwrap();
         collector.hold(Some("exch-1"), "env");
         let records = stage_records(&c);
-        assert_eq!(collector.on_stage_record(&records[0], 10), Arrival::Held);
+        assert_eq!(collector.on_stage_record(&records[0], &sender(&c, &records[0]), 10), Arrival::Held);
         assert!(collector.take_due(20, 2_000).is_empty(), "stage 2 is still outstanding");
-        assert_eq!(collector.on_stage_record(&records[1], 30), Arrival::Held);
+        assert_eq!(collector.on_stage_record(&records[1], &sender(&c, &records[1]), 30), Arrival::Held);
         let ready = collector.take_due(40, 2_000);
         assert_eq!(ready.len(), 1);
         let plan = plan_split(&ready[0], 2_000).unwrap();
@@ -562,7 +656,7 @@ mod tests {
         assert_eq!(plan.exchanges[0].1.as_deref(), records[0]["capsule_id"].as_str());
         assert_eq!(plan.receipt.stage_seal_deadline_ms, 2_000);
         // A record for the sealed split now is late: the follow-up path.
-        assert_eq!(collector.on_stage_record(&records[1], 50), Arrival::Late);
+        assert_eq!(collector.on_stage_record(&records[1], &sender(&c, &records[1]), 50), Arrival::Late);
     }
 
     #[test]
@@ -571,7 +665,7 @@ mod tests {
         let collector = SplitCollector::<&str>::default();
         collector.on_stage_zero(stage_zero(&c, "exch-1"), 1_000).unwrap();
         collector.hold(Some("exch-1"), "env");
-        collector.on_stage_record(&stage_records(&c)[0], 1_100);
+        { let r = &stage_records(&c)[0]; collector.on_stage_record(r, &sender(&c, r), 1_100) };
         assert!(collector.take_due(2_999, 2_000).is_empty());
         let ready = collector.take_due(3_000, 2_000);
         let plan = plan_split(&ready[0], 2_000).unwrap();
@@ -590,9 +684,9 @@ mod tests {
         collector.hold(Some("exch-1"), "env");
         let records = stage_records(&c);
         let twin = stage_records(&c);
-        collector.on_stage_record(&records[0], 1);
-        collector.on_stage_record(&records[1], 1);
-        collector.on_stage_record(&twin[1], 1);
+        collector.on_stage_record(&records[0], &sender(&c, &records[0]), 1);
+        collector.on_stage_record(&records[1], &sender(&c, &records[1]), 1);
+        collector.on_stage_record(&twin[1], &sender(&c, &twin[1]), 1);
         let plan = plan_split(&collector.take_due(2, 2_000)[0], 2_000).unwrap();
         assert_eq!(plan.receipt.stages[2].bundle, "conflict");
         assert_eq!(plan.receipt.stages[2].bundle_refs.as_ref().unwrap().len(), 2);
@@ -606,7 +700,7 @@ mod tests {
         let collector = SplitCollector::<&str>::default();
         let records = stage_records(&c);
         for r in &records {
-            assert_eq!(collector.on_stage_record(r, 0), Arrival::Held);
+            assert_eq!(collector.on_stage_record(r, &sender(&c, r), 0), Arrival::Held);
         }
         collector.on_stage_zero(stage_zero(&c, "exch-1"), 5).unwrap();
         collector.hold(Some("exch-1"), "env");
@@ -623,7 +717,7 @@ mod tests {
     fn a_split_that_never_completes_expires_and_is_counted() {
         let c = case("relayed_all_agree");
         let collector = SplitCollector::<&str>::default();
-        collector.on_stage_record(&stage_records(&c)[0], 0);
+        { let r = &stage_records(&c)[0]; collector.on_stage_record(r, &sender(&c, r), 0) };
         assert!(collector.take_due(19_999, 2_000).is_empty());
         assert_eq!(collector.dropped(), 0);
         assert!(collector.take_due(20_000, 2_000).is_empty());
@@ -639,9 +733,83 @@ mod tests {
         assert!(collector.on_stage_zero(stage_zero(&c, "exch-1"), 0).is_err());
     }
 
+    /// A stage record under a guessed split key from a node the coordinator
+    /// did not assign that stage never fills `present` nor forces `conflict`:
+    /// refused once stage 0 names the topology, and dropped at stage 0 when
+    /// it came first. MUTANT: skip the sender check and stage 1 reads conflict.
+    #[test]
+    fn only_the_node_assigned_a_stage_may_supply_its_record() {
+        let c = case("relayed_all_agree");
+        let records = stage_records(&c);
+        let forged = stage_records(&c);
+        // Before stage 0: held, then dropped when stage 0 names stage 1's node.
+        let collector = SplitCollector::<&str>::default();
+        assert_eq!(collector.on_stage_record(&forged[0], "intruder", 0), Arrival::Held);
+        collector.on_stage_zero(stage_zero(&c, "exch-1"), 1).unwrap();
+        assert_eq!(collector.refused(), 1);
+        // After stage 0: refused at once.
+        assert_eq!(collector.on_stage_record(&forged[1], "intruder", 2), Arrival::Refused);
+        assert_eq!(collector.refused(), 2);
+        collector.hold(Some("exch-1"), "env");
+        collector.on_stage_record(&records[0], &sender(&c, &records[0]), 3);
+        collector.on_stage_record(&records[1], &sender(&c, &records[1]), 3);
+        let plan = plan_split(&collector.take_due(4, 2_000)[0], 2_000).unwrap();
+        assert!(plan.receipt.stages[1..].iter().all(|s| s.bundle == "present"));
+        assert_eq!(plan.carried.len(), 2, "no forged record is carried");
+    }
+
+    #[test]
+    fn one_sender_supplies_at_most_two_records_per_stage() {
+        let c = case("relayed_all_agree");
+        let collector = SplitCollector::<&str>::default();
+        collector.on_stage_zero(stage_zero(&c, "exch-1"), 0).unwrap();
+        let from = sender(&c, &stage_records(&c)[0]);
+        assert_eq!(collector.on_stage_record(&stage_records(&c)[0], &from, 1), Arrival::Held);
+        assert_eq!(collector.on_stage_record(&stage_records(&c)[0], &from, 1), Arrival::Held);
+        assert_eq!(collector.on_stage_record(&stage_records(&c)[0], &from, 1), Arrival::Refused);
+    }
+
+    fn junk_record(c: &Value, n: usize) -> Value {
+        let mut block = StageBlock::from_value(&c["carried"][0]["block"]).unwrap();
+        block.request_id = (900_000 + n).to_string();
+        seal_stage_record(&block, None, None, &KeyPair::generate().signing_key).unwrap()
+    }
+
+    #[test]
+    fn one_sender_opens_a_bounded_number_of_splits_before_stage_zero() {
+        let c = case("relayed_all_agree");
+        let collector = SplitCollector::<&str>::default();
+        for n in 0..MAX_PENDING_PER_SENDER {
+            assert_eq!(collector.on_stage_record(&junk_record(&c, n), "flooder", 0), Arrival::Held);
+        }
+        assert_eq!(collector.on_stage_record(&junk_record(&c, 999), "flooder", 0), Arrival::Refused);
+        assert_eq!(collector.on_stage_record(&junk_record(&c, 999), "someone-else", 0), Arrival::Held);
+    }
+
+    /// Many senders flooding fake split keys never evict a split that holds
+    /// its terminal envelope: the real split still seals. MUTANT: evict the
+    /// oldest regardless and the real split is gone.
+    #[test]
+    fn a_split_holding_its_envelope_is_never_evicted_for_room() {
+        let c = case("relayed_all_agree");
+        let collector = SplitCollector::<&str>::default();
+        collector.on_stage_zero(stage_zero(&c, "exch-1"), 0).unwrap();
+        assert_eq!(collector.hold(Some("exch-1"), "env"), None);
+        let mut n = 0;
+        for s in 0..(2 * MAX_PENDING / MAX_PENDING_PER_SENDER) {
+            for _ in 0..MAX_PENDING_PER_SENDER {
+                collector.on_stage_record(&junk_record(&c, n), &format!("flooder-{s}"), 1);
+                n += 1;
+            }
+        }
+        let ready = collector.take_due(2_000, 2_000);
+        assert_eq!(ready.len(), 1, "the real split seals");
+        assert_eq!(ready[0].envelope, "env");
+    }
+
     #[test]
     fn records_that_are_not_stage_side_are_not_collected() {
         let collector = SplitCollector::<&str>::default();
-        assert_eq!(collector.on_stage_record(&json!({"capsule_id": "a"}), 0), Arrival::NotStage);
+        assert_eq!(collector.on_stage_record(&json!({"capsule_id": "a"}), "peer", 0), Arrival::NotStage);
     }
 }

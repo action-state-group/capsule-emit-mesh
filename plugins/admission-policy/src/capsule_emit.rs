@@ -2984,7 +2984,9 @@ mod tests {
             })
             .collect();
         for r in &records {
-            collector.on_stage_record(r, 1);
+            let k = r["model_attestation"]["compute_attestation"]["x-mesh-stage-v1"]["stage_index"].as_u64().unwrap() as usize;
+            let sender = receipt.topology[k].assignment.as_ref().unwrap().node_id.clone();
+            collector.on_stage_record(r, &sender, 1);
         }
         let ready = collector.take_due(2, 2_000).pop().unwrap();
         (plan_split(&ready, 2_000).unwrap(), records)

@@ -307,7 +307,7 @@ async fn bridge_inbound_record_push(
         Some(reply) if door_accepted(&reply) => {
             match seal_citing_records_for_push(&capsules, &sender_peer_id, &capsule_bytes, &reply).await {
                 Ok(()) => {
-                    collect_stage_record(&splits, &capsule_bytes);
+                    collect_stage_record(&splits, &sender_peer_id, &capsule_bytes);
                     response_bytes.to_vec()
                 }
                 Err(error) => {
@@ -331,14 +331,22 @@ async fn bridge_inbound_record_push(
 /// follow-up when the split was sealed before it arrived.
 fn collect_stage_record(
     splits: &crate::split_stage::SplitCollector<crate::lifecycle_channel::OpenAiExchangeEnvelope>,
+    sender_peer_id: &str,
     body_bytes: &[u8],
 ) {
     let Ok(body) = serde_json::from_slice::<serde_json::Value>(body_bytes) else {
         return;
     };
-    let arrival = splits.on_stage_record(pushed_half(&body), crate::split_stage::now_ms());
-    if arrival == crate::split_stage::Arrival::Late {
-        tracing::info!("stage record arrived after its split was sealed -- its citing record is the follow-up");
+    match splits.on_stage_record(pushed_half(&body), sender_peer_id, crate::split_stage::now_ms()) {
+        crate::split_stage::Arrival::Late => {
+            tracing::info!("stage record arrived after its split was sealed -- its citing record is the follow-up")
+        }
+        crate::split_stage::Arrival::Refused => tracing::warn!(
+            received_from = %sender_peer_id,
+            refused = splits.refused(),
+            "stage record refused: not from the node assigned that stage, or past a holding cap"
+        ),
+        _ => {}
     }
 }
 
