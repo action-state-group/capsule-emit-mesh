@@ -44,8 +44,8 @@ use mesh_evidence_bridge::{
     MeshEvidenceRequestArgs, EVIDENCE_REQUEST_CHANNEL, EVIDENCE_REQUEST_OPERATION,
 };
 use mesh_llm_plugin::{
-    capability, events, inference, json_schema_operation, mesh_channel, plugin_server_info,
-    DeclarativePluginBuilder, OperationRouter, PluginMetadata, PluginRuntime,
+    capability, events, inference, mcp, mesh_channel, plugin_server_info,
+    DeclarativePluginBuilder, PluginMetadata, PluginRuntime,
 };
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -615,9 +615,75 @@ async fn serve_admission_http(listener: TcpListener, state: AppState) {
         .expect("admission-policy HTTP server crashed");
 }
 
+/// Every operation this plugin serves outside its HTTP routes. Each one goes
+/// in through `mcp_item`, which declares it in the manifest as well as routing
+/// it: a handler added to the router alone is never published by the host
+/// (its tool call is a 404).
+fn with_evidence_operations(
+    builder: DeclarativePluginBuilder,
+    maintenance: Arc<owner_maintenance::Maintenance>,
+    capsules: Arc<CapsuleState>,
+    self_peer: self_peer::SelfPeer,
+) -> DeclarativePluginBuilder {
+    let mut builder = with_owner_maintenance(builder, maintenance);
+    builder = builder.mcp_item(
+        mcp::tool(EVIDENCE_REQUEST_OPERATION)
+            .description(
+                "Ask a mesh peer's admission-policy plugin for E15 evidence (an E14 request map) over \
+                 the plugin mesh stream, for peers with no reachable evidence_server.py HTTP door \
+                 (e.g. relay-only). Returns the peer's own Artifact-or-Refusal JSON unchanged.",
+            )
+            .input::<MeshEvidenceRequestArgs>()
+            .handle(
+                |args, context| {
+                    Box::pin(mesh_evidence_bridge::handle_mesh_evidence_request(args, context))
+                },
+            ),
+    );
+    builder = builder.mcp_item(
+        mcp::tool(routing_choice_bridge::LOCAL_ROUTING_CHOICE_OPERATION)
+            .description(
+                "Seal a record that this node stopped (or resumed) routing to a peer. The record \
+                 names the peer only by a salted commitment; the salt is returned to the caller.",
+            )
+            .input::<routing_choice_bridge::LocalRoutingChoiceArgs>()
+            .handle(
+                move |args, _context| {
+                    let capsules = capsules.clone();
+                    Box::pin(async move {
+                        routing_choice_bridge::handle_local_routing_choice(&capsules, args)
+                    })
+                },
+            ),
+    );
+    builder = builder.mcp_item(
+        mcp::tool(LEDGER_FETCH_OPERATION)
+            .description(
+                "Ask a mesh peer's admission-policy plugin for one of ITS sealed ledger entries by \
+                 capsule_id -- the witness-level fetch half of the two-sided ledger. Returns the raw \
+                 unsigned {capsule, signed_statement_b64, node_pub_key_pem} for independent recompute; \
+                 never a second attestation.",
+            )
+            .input::<MeshLedgerFetchArgs>()
+            .handle(
+                {
+                    let self_peer = self_peer.clone();
+                    move |args, context| {
+                        let self_id = self_peer.current();
+                        Box::pin(ledger_fetch_bridge::handle_mesh_ledger_fetch(args, context, self_id))
+                    }
+                },
+            ),
+    );
+    builder
+}
+
 /// The Evidence tab's `Your records` status and its three cleanups, each on
 /// the blocking pool: they fsync, and a cleanup must not stall a tokio worker.
-fn register_owner_maintenance(router: &mut OperationRouter, maintenance: Arc<owner_maintenance::Maintenance>) {
+fn with_owner_maintenance(
+    mut builder: DeclarativePluginBuilder,
+    maintenance: Arc<owner_maintenance::Maintenance>,
+) -> DeclarativePluginBuilder {
     use owner_maintenance::{NoArgs, StartNewHistoryArgs};
     use mesh_llm_plugin::PluginError;
 
@@ -634,49 +700,54 @@ fn register_owner_maintenance(router: &mut OperationRouter, maintenance: Arc<own
     }
 
     let m = maintenance.clone();
-    router.add_json(
-        json_schema_operation::<NoArgs>(
-            owner_maintenance::STATUS_OPERATION,
-            "This node's own records: where they are, how many, stored text count, and the sharing switches as applied.",
-        ),
-        move |_args: NoArgs, _context| {
-            let m = m.clone();
-            Box::pin(blocking(move || Ok(m.status())))
-        },
+    builder = builder.mcp_item(
+        mcp::tool(owner_maintenance::STATUS_OPERATION)
+            .description("This node's own records: where they are, how many, stored text count, and the sharing switches as applied.")
+            .input::<NoArgs>()
+            .handle(
+                move |_args: NoArgs, _context| {
+                    let m = m.clone();
+                    Box::pin(blocking(move || Ok(m.status())))
+                },
+            ),
     );
     let m = maintenance.clone();
-    router.add_json(
-        json_schema_operation::<NoArgs>(
-            owner_maintenance::DELETE_STORED_TEXT_OPERATION,
-            "Delete stored prompt and answer text. Records keep their digests and stay valid; a record of the deletion is sealed.",
-        ),
-        move |_args: NoArgs, _context| {
-            let m = m.clone();
-            Box::pin(blocking(move || m.delete_stored_text()))
-        },
+    builder = builder.mcp_item(
+        mcp::tool(owner_maintenance::DELETE_STORED_TEXT_OPERATION)
+            .description("Delete stored prompt and answer text. Records keep their digests and stay valid; a record of the deletion is sealed.")
+            .input::<NoArgs>()
+            .handle(
+                move |_args: NoArgs, _context| {
+                    let m = m.clone();
+                    Box::pin(blocking(move || m.delete_stored_text()))
+                },
+            ),
     );
     let m = maintenance.clone();
-    router.add_json(
-        json_schema_operation::<NoArgs>(
-            owner_maintenance::REBUILD_INDEX_OPERATION,
-            "Re-read and re-check every record from disk and rebuild the index. Nothing is lost; a record of the rebuild is sealed.",
-        ),
-        move |_args: NoArgs, _context| {
-            let m = m.clone();
-            Box::pin(blocking(move || m.rebuild_index()))
-        },
+    builder = builder.mcp_item(
+        mcp::tool(owner_maintenance::REBUILD_INDEX_OPERATION)
+            .description("Re-read and re-check every record from disk and rebuild the index. Nothing is lost; a record of the rebuild is sealed.")
+            .input::<NoArgs>()
+            .handle(
+                move |_args: NoArgs, _context| {
+                    let m = m.clone();
+                    Box::pin(blocking(move || m.rebuild_index()))
+                },
+            ),
     );
     let m = maintenance;
-    router.add_json(
-        json_schema_operation::<StartNewHistoryArgs>(
-            owner_maintenance::START_NEW_HISTORY_OPERATION,
-            "Seal a closing record and start a new history the next time this node starts. The current records are kept whole in an archive.",
-        ),
-        move |args: StartNewHistoryArgs, _context| {
-            let m = m.clone();
-            Box::pin(blocking(move || m.start_new_history(args)))
-        },
+    builder = builder.mcp_item(
+        mcp::tool(owner_maintenance::START_NEW_HISTORY_OPERATION)
+            .description("Seal a closing record and start a new history the next time this node starts. The current records are kept whole in an archive.")
+            .input::<StartNewHistoryArgs>()
+            .handle(
+                move |args: StartNewHistoryArgs, _context| {
+                    let m = m.clone();
+                    Box::pin(blocking(move || m.start_new_history(args)))
+                },
+            ),
     );
+    builder
 }
 
 #[tokio::main]
@@ -782,47 +853,6 @@ async fn main() -> anyhow::Result<()> {
         log_id.clone(),
     ));
 
-    let mut evidence_operations = OperationRouter::new();
-    register_owner_maintenance(&mut evidence_operations, maintenance);
-    evidence_operations.add_json(
-        json_schema_operation::<MeshEvidenceRequestArgs>(
-            EVIDENCE_REQUEST_OPERATION,
-            "Ask a mesh peer's admission-policy plugin for E15 evidence (an E14 request map) over \
-             the plugin mesh stream, for peers with no reachable evidence_server.py HTTP door \
-             (e.g. relay-only). Returns the peer's own Artifact-or-Refusal JSON unchanged.",
-        ),
-        |args, context| Box::pin(mesh_evidence_bridge::handle_mesh_evidence_request(args, context)),
-    );
-    evidence_operations.add_json(
-        json_schema_operation::<routing_choice_bridge::LocalRoutingChoiceArgs>(
-            routing_choice_bridge::LOCAL_ROUTING_CHOICE_OPERATION,
-            "Seal a record that this node stopped (or resumed) routing to a peer. The record \
-             names the peer only by a salted commitment; the salt is returned to the caller.",
-        ),
-        move |args, _context| {
-            let capsules = capsules_for_routing_choice.clone();
-            Box::pin(async move {
-                routing_choice_bridge::handle_local_routing_choice(&capsules, args)
-            })
-        },
-    );
-    evidence_operations.add_json(
-        json_schema_operation::<MeshLedgerFetchArgs>(
-            LEDGER_FETCH_OPERATION,
-            "Ask a mesh peer's admission-policy plugin for one of ITS sealed ledger entries by \
-             capsule_id -- the witness-level fetch half of the two-sided ledger. Returns the raw \
-             unsigned {capsule, signed_statement_b64, node_pub_key_pem} for independent recompute; \
-             never a second attestation.",
-        ),
-        {
-            let self_peer = self_peer.clone();
-            move |args, context| {
-                let self_id = self_peer.current();
-                Box::pin(ledger_fetch_bridge::handle_mesh_ledger_fetch(args, context, self_id))
-            }
-        },
-    );
-
     let plugin = DeclarativePluginBuilder::new(PluginMetadata::new(
         PLUGIN_ID,
         PLUGIN_VERSION,
@@ -858,6 +888,12 @@ async fn main() -> anyhow::Result<()> {
             node_pub_key_pem: Some(evidence_pub_key_pem),
             received_log_dir: evidence_routes::EvidenceSource::received_log_dir(&data_dir),
         },
+    );
+    let plugin = with_evidence_operations(
+        plugin,
+        maintenance,
+        capsules_for_routing_choice,
+        self_peer.clone(),
     )
     .customize(move |plugin| {
         plugin.on_channel_message(move |message, context| {
@@ -1047,9 +1083,6 @@ async fn main() -> anyhow::Result<()> {
             })
         })
     })
-    // Extend, never replace: the HTTP routes above registered their own
-    // operations on the builder's router.
-    .customize(|plugin| plugin.extend_operation_router(evidence_operations))
     .build();
 
     PluginRuntime::run(plugin).await
@@ -1241,5 +1274,50 @@ mod push_eligibility_tests {
     fn remote_mesh_with_unknown_served_by_node_id_has_no_knowable_counterparty() {
         let envelope = remote_mesh_envelope(Some("unknown"));
         assert_eq!(push_eligibility(&envelope, false, Some("self-m4")), None);
+    }
+}
+
+#[cfg(test)]
+mod published_operations_tests {
+    use super::*;
+    use mesh_llm_plugin::Plugin;
+
+    /// The host publishes only the operations the manifest declares, so a
+    /// handler that is routed but not declared is a 404 on the live node.
+    #[test]
+    fn every_evidence_operation_is_declared_in_the_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let capsules =
+            Arc::new(CapsuleState::open(dir.path(), "node-under-test").expect("open state"));
+        let maintenance = Arc::new(owner_maintenance::Maintenance::new(
+            dir.path().to_path_buf(),
+            capsules.clone(),
+            "node-under-test".into(),
+        ));
+        let builder = DeclarativePluginBuilder::new(PluginMetadata::new(
+            PLUGIN_ID,
+            PLUGIN_VERSION,
+            plugin_server_info(PLUGIN_ID, PLUGIN_VERSION, "test", "test", None::<String>),
+        ));
+        let plugin = with_evidence_operations(
+            builder,
+            maintenance,
+            capsules,
+            self_peer::SelfPeer::new(dir.path()),
+        )
+        .build();
+        let manifest = plugin.manifest().expect("manifest");
+        let declared: Vec<&str> = manifest.operations.iter().map(|op| op.name.as_str()).collect();
+        for name in [
+            EVIDENCE_REQUEST_OPERATION,
+            routing_choice_bridge::LOCAL_ROUTING_CHOICE_OPERATION,
+            LEDGER_FETCH_OPERATION,
+            owner_maintenance::STATUS_OPERATION,
+            owner_maintenance::DELETE_STORED_TEXT_OPERATION,
+            owner_maintenance::REBUILD_INDEX_OPERATION,
+            owner_maintenance::START_NEW_HISTORY_OPERATION,
+        ] {
+            assert!(declared.contains(&name), "{name} is routed but not declared: {declared:?}");
+        }
     }
 }
