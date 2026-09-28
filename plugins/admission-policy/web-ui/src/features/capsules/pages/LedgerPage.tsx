@@ -113,7 +113,10 @@ import { useStatusQuery } from '@/features/network/api/use-status-query'
 import { useDataMode } from '@/lib/data-mode'
 import { HoverChip } from '@/features/capsules/components/HoverChip'
 import {
-  HERO_DESCRIPTION,
+  HERO_DESCRIPTION_AFTER_LINK,
+  HERO_DESCRIPTION_BEFORE_LINK,
+  HERO_DESCRIPTION_LINK_TEXT,
+  TRUST_MAP_URL,
   HERO_TOOLTIPS,
   NO_CONTRADICTION_REASON,
   SAMPLE_DATA_UNAVAILABLE
@@ -1383,7 +1386,15 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
       <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-[calc(var(--shell-normal)*2)]">
         <DoorNotice />
         <InfoBanner
-          description={HERO_DESCRIPTION}
+          description={
+            <>
+              {HERO_DESCRIPTION_BEFORE_LINK}
+              <a className="underline underline-offset-2 hover:text-foreground" href={TRUST_MAP_URL} rel="noreferrer" target="_blank">
+                {HERO_DESCRIPTION_LINK_TEXT}
+              </a>
+              {HERO_DESCRIPTION_AFTER_LINK}
+            </>
+          }
           leadingIcon={<ShieldCheck aria-hidden="true" className="size-4" />}
           status={
             <div className="flex flex-wrap items-center gap-2">

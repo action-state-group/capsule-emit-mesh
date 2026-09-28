@@ -24,6 +24,7 @@ import { setPluginHost } from '@/plugin-host/host'
 import { createStandaloneHost } from '@/plugin-host/standalone-host'
 import { CHAIN_BAR_INFO, INTEGRITY_TILE_INFO } from '@/features/capsules/lib/integrity-view'
 import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
+import { HERO_DESCRIPTION, TRUST_MAP_URL } from '@/features/capsules/lib/tooltip-copy'
 
 // ---------------------------------------------------------------------------
 // Mock all network fetchers — tests must never hit the real network.
@@ -146,11 +147,13 @@ describe('LedgerPageContent', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
-  it('shows the premise line', () => {
+  it('shows the premise line, with "docs" linking the trust map', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    expect(screen.getByRole('link', { name: 'docs' })).toHaveAttribute('href', TRUST_MAP_URL)
+    expect(screen.queryByText(/Everything here is checked on this machine/)).not.toBeInTheDocument()
 
     expect(
-      screen.getByText('Everything here is checked on this machine, from sealed records.')
+      screen.getByText((_, element) => element?.textContent === HERO_DESCRIPTION && element.tagName === 'DIV')
     ).toBeInTheDocument()
   })
 
@@ -159,7 +162,7 @@ describe('LedgerPageContent', () => {
 
     // The load-bearing banner is still on the face -- hovers do not replace it.
     expect(
-      screen.getByText('Everything here is checked on this machine, from sealed records.')
+      screen.getByText((_, element) => element?.textContent === HERO_DESCRIPTION && element.tagName === 'DIV')
     ).toBeInTheDocument()
 
     // The connectivity chip's (i) is present too (Live or Local depending on

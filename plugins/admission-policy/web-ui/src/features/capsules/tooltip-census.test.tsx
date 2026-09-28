@@ -266,10 +266,14 @@ describe('tooltip census -- every chip type the Evidence tab ships has a plain o
 })
 
 describe('tooltip census -- the copy itself', () => {
+  it('the hero sentence (page text, not a tooltip, so longer): full sentences, no banned word', () => {
+    expect(COPY.HERO_DESCRIPTION.endsWith('.')).toBe(true)
+    expect(checkWords(COPY.HERO_DESCRIPTION, 'face')).toEqual([])
+  })
+
   it('every registered tooltip is one or two plain sentences with no banned word; outside Dig, no engineer’s words', () => {
     const face: string[] = [
       ...Object.values(COPY.HERO_TOOLTIPS),
-      COPY.HERO_DESCRIPTION,
       ...Object.values(COPY.PEER_COLUMN_TOOLTIPS),
       COPY.SELF_REPORTED_TOOLTIP,
       COPY.PEER_INSPECTOR_HEADER,
