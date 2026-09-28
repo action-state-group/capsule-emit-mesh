@@ -140,8 +140,9 @@ pub fn share_policy_config_schema(plugin_id: &str) -> ManifestEntry {
             config_setting(STOP_ROUTING_AFTER_KEY, config_integer())
                 .description(
                     "Stop routing to a peer after this many contradictions within the window below. \
-                     Off when empty or 0 (the default). Only verdicts a referee signed, and this \
-                     node checked, count. When it fires, the host blocks the peer until you undo \
+                     Off when empty or 0 (the default). Only verdicts this node asked a referee \
+                     for, and whose signature it checked, count, once per referee and pair of \
+                     answers; with N of 2 or more, no single referee can reach N alone. When it fires, the host blocks the peer until you undo \
                      it, exactly like Stop routing, and the sealed record names this rule and \
                      cites the verdicts. Undo it the same way. Nothing is scored or sent.",
                 )

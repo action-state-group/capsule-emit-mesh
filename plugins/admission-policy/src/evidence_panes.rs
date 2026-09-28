@@ -2356,7 +2356,7 @@ pub(crate) fn build_pane_json(
                 &received_provenance,
                 &read_claim_refusals(ledger_dir),
             );
-            crate::verdict_counts::attach(&mut pane, &our_records);
+            crate::verdict_counts::attach(&mut pane, &our_records, ledger_dir);
             Some(pane)
         }
         "pane-c" => {

@@ -80,15 +80,6 @@ pub fn handle_local_routing_choice(
     let emitted = capsules
         .emit_local_routing_choice(args.change.into(), peer_id, args.until.as_deref(), &salt, citation.as_ref())
         .map_err(|error| PluginError::internal(format!("could not seal the record: {error}")))?;
-    if let Some(pending) = &pending {
-        if let Err(error) =
-            crate::routing_rule::record_cited(capsules.ledger_dir(), &emitted.capsule_id, &pending.verdict_capsule_ids)
-        {
-            // The record is sealed and the block holds; only the "never count
-            // these again" note is missing, so an undo could let them re-fire.
-            tracing::warn!(%error, capsule_id = %emitted.capsule_id, "rule block sealed but its cited verdicts were not noted");
-        }
-    }
     Ok(json!({
         "capsule_id": emitted.capsule_id,
         "peer_commitment": emitted.peer_commitment,

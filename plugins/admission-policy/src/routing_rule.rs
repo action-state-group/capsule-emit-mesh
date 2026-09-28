@@ -11,11 +11,16 @@
 //! `capsule_producer::capsule::RoutingRuleCitation`). Undo is the host's
 //! unblock, exactly as for a manual block.
 //!
-//! Inputs: only [`crate::verdict_counts::fold`] over this node's own chain, so
-//! only verdicts whose referee signature this node's door verified count. A
-//! verdict that met the rule once is written to [`CITED_FILENAME`] and never
-//! counts again: after an undo the rule fires again only on new
-//! contradictions.
+//! Inputs: only [`crate::verdict_counts::fold`] over this node's own chain:
+//! verdicts whose referee signature this node's door verified, from a referee
+//! this node itself asked about that pair of halves, once per (referee, pair).
+//! On top of that, one referee alone never fires the rule when N is 2 or more:
+//! it contributes at most N - 1 contradictions ([`per_referee_cap`]).
+//!
+//! A verdict that met the rule is written to [`CITED_FILENAME`] whenever the
+//! host holds a block of that peer afterwards (a new block, sealed or not, or
+//! one already in place), and never counts again. So undoing a block holds:
+//! the rule fires again only on new contradictions.
 //!
 //! A host without `/api/peer-blocks` (stock mesh-llm today) answers 404: the
 //! rule logs that this host has no stop-routing hook and does nothing.
@@ -29,7 +34,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Value};
 
 use crate::capsule_emit::CapsuleState;
-use crate::verdict_counts::{PeerVerdict, CONTRADICTED};
+use crate::verdict_counts::{read_requested, PeerVerdict, CONTRADICTED};
 
 pub const RULE_NAME: &str = "stop_routing_after_contradictions";
 /// N. Unset, empty, `0` or not a number: the rule is off.
@@ -79,9 +84,17 @@ pub struct Firing {
     pub verdict_capsule_ids: Vec<String>,
 }
 
+/// The most contradictions one referee can contribute toward N: N - 1, so
+/// that with N of 2 or more no single referee blocks a peer alone. N = 1 is
+/// the operator's explicit choice to act on one referee's word.
+pub fn per_referee_cap(rule: Rule) -> usize {
+    (rule.after as usize).saturating_sub(1).max(1)
+}
+
 /// Every peer with at least `rule.after` contradictions recorded within the
 /// last `rule.window_days` days, not counting verdicts an earlier rule block
-/// already cited. A verdict with no readable time counts nowhere.
+/// already cited, and at most [`per_referee_cap`] from any one referee. A
+/// verdict with no readable time counts nowhere.
 pub fn due(
     rule: Rule,
     by_peer: &BTreeMap<String, Vec<PeerVerdict>>,
@@ -92,6 +105,7 @@ pub fn due(
     by_peer
         .iter()
         .filter_map(|(peer, verdicts)| {
+            let mut per_referee: HashMap<&str, usize> = HashMap::new();
             let ids: Vec<String> = verdicts
                 .iter()
                 .filter(|v| v.bucket == CONTRADICTED && !cited.contains(&v.verdict_capsule_id))
@@ -100,6 +114,11 @@ pub fn due(
                         .as_deref()
                         .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
                         .is_some_and(|at| at >= since && at <= now)
+                })
+                .filter(|v| {
+                    let taken = per_referee.entry(v.referee_node_id.as_str()).or_default();
+                    *taken += 1;
+                    *taken <= per_referee_cap(rule)
                 })
                 .map(|v| v.verdict_capsule_id.clone())
                 .collect();
@@ -152,7 +171,13 @@ pub fn read_cited(ledger_dir: &Path) -> HashSet<String> {
         .collect()
 }
 
-pub fn record_cited(ledger_dir: &Path, routing_choice_capsule_id: &str, verdict_capsule_ids: &[String]) -> std::io::Result<()> {
+/// Note `verdict_capsule_ids` as acted on, with the host's routing-choice
+/// record id when it reported one.
+pub fn record_cited(
+    ledger_dir: &Path,
+    routing_choice_capsule_id: Option<&str>,
+    verdict_capsule_ids: &[String],
+) -> std::io::Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -171,7 +196,7 @@ pub enum Outcome {
     Blocked { peer_id: String, sealed: bool },
     /// The peer was already blocked; nothing asked.
     AlreadyBlocked { peer_id: String },
-    /// This host has no `/api/peer-blocks`: the upstream seam (b7).
+    /// This host has no `/api/peer-blocks` (stock mesh-llm).
     NoHostHook,
     /// The host refused or could not be reached.
     Failed { peer_id: String, error: String },
@@ -199,7 +224,9 @@ async fn active_blocks(client: &reqwest::Client, host: &str) -> Result<HashSet<S
         .unwrap_or_default())
 }
 
-async fn block(client: &reqwest::Client, host: &str, firing: &Firing) -> Outcome {
+/// Asks the host to block; on success also returns the record id the host
+/// reports, if it sealed one.
+async fn block(client: &reqwest::Client, host: &str, firing: &Firing) -> (Outcome, Option<String>) {
     let peer_id = firing.peer_id.clone();
     let sent = client
         .post(format!("{host}{PEER_BLOCKS_PATH}"))
@@ -208,14 +235,15 @@ async fn block(client: &reqwest::Client, host: &str, firing: &Firing) -> Outcome
         .await;
     let response = match sent.and_then(reqwest::Response::error_for_status) {
         Ok(response) => response,
-        Err(error) => return Outcome::Failed { peer_id, error: error.to_string() },
+        Err(error) => return (Outcome::Failed { peer_id, error: error.to_string() }, None),
     };
     match response.json::<Value>().await {
-        Ok(body) => Outcome::Blocked {
-            peer_id,
-            sealed: body.get("sealed").and_then(Value::as_bool) == Some(true),
-        },
-        Err(error) => Outcome::Failed { peer_id, error: error.to_string() },
+        Ok(body) => {
+            let sealed = body.get("sealed").and_then(Value::as_bool) == Some(true);
+            let record = body.pointer("/choice/capsule_id").and_then(Value::as_str).map(str::to_string);
+            (Outcome::Blocked { peer_id, sealed }, record)
+        }
+        Err(error) => (Outcome::Failed { peer_id, error: error.to_string() }, None),
     }
 }
 
@@ -224,7 +252,10 @@ pub async fn evaluate(capsules: &Arc<CapsuleState>, rule: Rule, host: &str, now:
     let ledger_dir = capsules.ledger_dir().to_path_buf();
     let (by_peer, cited) = match tokio::task::spawn_blocking(move || {
         let records = crate::evidence_panes::read_capsule_records(&ledger_dir);
-        (crate::verdict_counts::fold(&records), read_cited(&ledger_dir))
+        (
+            crate::verdict_counts::fold(&records, &read_requested(&ledger_dir)),
+            read_cited(&ledger_dir),
+        )
     })
     .await
     {
@@ -244,17 +275,27 @@ pub async fn evaluate(capsules: &Arc<CapsuleState>, rule: Rule, host: &str, now:
     };
     let mut outcomes = Vec::new();
     for firing in firings {
-        if blocked.contains(&firing.peer_id) {
-            outcomes.push(Outcome::AlreadyBlocked { peer_id: firing.peer_id });
-            continue;
+        let (outcome, record) = if blocked.contains(&firing.peer_id) {
+            (Outcome::AlreadyBlocked { peer_id: firing.peer_id.clone() }, None)
+        } else {
+            set_pending(
+                &firing.peer_id,
+                PendingCitation { rule, verdict_capsule_ids: firing.verdict_capsule_ids.clone() },
+            );
+            let answer = block(&client, host, &firing).await;
+            // A citation the seal did not take must not ride a later manual block.
+            take_pending(&firing.peer_id);
+            answer
+        };
+        // Whenever the host now holds a block of this peer, these verdicts
+        // have been acted on: note them, so an undo is not undone by the
+        // same verdicts on the next run. Only a host that did not block
+        // (unreachable, refused) leaves them to count again.
+        if matches!(outcome, Outcome::Blocked { .. } | Outcome::AlreadyBlocked { .. }) {
+            if let Err(error) = record_cited(capsules.ledger_dir(), record.as_deref(), &firing.verdict_capsule_ids) {
+                tracing::warn!(%error, peer_id = %firing.peer_id, "rule verdicts not noted as cited; an undo could re-fire on them");
+            }
         }
-        set_pending(
-            &firing.peer_id,
-            PendingCitation { rule, verdict_capsule_ids: firing.verdict_capsule_ids.clone() },
-        );
-        let outcome = block(&client, host, &firing).await;
-        // A citation the seal did not take must not ride a later manual block.
-        take_pending(&firing.peer_id);
         outcomes.push(outcome);
     }
     outcomes
@@ -295,7 +336,7 @@ pub fn spawn_evaluate(capsules: Arc<CapsuleState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::verdict_counts::{CORROBORATED, INCONCLUSIVE};
+    use crate::verdict_counts::{CORROBORATED, INCONCLUSIVE, REQUESTED_FILENAME};
 
     const NOW: &str = "2026-09-28T16:00:00Z";
     const RULE: Rule = Rule { after: 3, window_days: 7 };
@@ -304,9 +345,15 @@ mod tests {
         NOW.parse().unwrap()
     }
 
+    /// A counted verdict about peer `p`, from a referee of its own.
     fn verdict(id: &str, bucket: &'static str, days_ago: i64) -> PeerVerdict {
+        by_referee(id, &format!("referee-{id}"), bucket, days_ago)
+    }
+
+    fn by_referee(id: &str, referee: &str, bucket: &'static str, days_ago: i64) -> PeerVerdict {
         PeerVerdict {
             verdict_capsule_id: id.to_string(),
+            referee_node_id: referee.to_string(),
             bucket,
             recorded_at: Some((now() - Duration::days(days_ago)).to_rfc3339()),
         }
@@ -382,6 +429,26 @@ mod tests {
         assert!(due(RULE, &by_peer, &cited, now()).is_empty());
     }
 
+    /// With N of 2 or more, one referee alone never fires the rule: it
+    /// contributes at most N - 1.
+    #[test]
+    fn one_referee_alone_never_reaches_n() {
+        assert_eq!(per_referee_cap(Rule { after: 1, window_days: 7 }), 1);
+        assert_eq!(per_referee_cap(Rule { after: 2, window_days: 7 }), 1);
+        assert_eq!(per_referee_cap(RULE), 2);
+        let one_referee: Vec<PeerVerdict> =
+            ["a", "b", "c", "d"].iter().map(|id| by_referee(id, "r1", CONTRADICTED, 0)).collect();
+        assert!(due(RULE, &peer(one_referee.clone()), &HashSet::new(), now()).is_empty());
+        let mut two_referees = one_referee;
+        two_referees.push(by_referee("e", "r2", CONTRADICTED, 0));
+        assert_eq!(
+            due(RULE, &peer(two_referees), &HashSet::new(), now()),
+            vec![Firing { peer_id: "p".into(), verdict_capsule_ids: vec!["a".into(), "b".into(), "e".into()] }]
+        );
+        let n_one = Rule { after: 1, window_days: 7 };
+        assert_eq!(due(n_one, &peer(vec![by_referee("a", "r1", CONTRADICTED, 0)]), &HashSet::new(), now()).len(), 1);
+    }
+
     /// "Not for unsigned verdicts": the rule reads only the fold, and the fold
     /// reads only the records the door-verified path seals. A bare
     /// adjudication block claiming three contradictions fires nothing.
@@ -389,19 +456,22 @@ mod tests {
     fn unsigned_verdicts_never_fire_the_rule() {
         let bare = |id: &str| {
             json!({ "model_attestation": { "compute_attestation": { "adjudication": {
-                "verdict": "contradicted:p", "verdict_capsule_id": id,
+                "verdict": "contradicted:p", "verdict_capsule_id": id, "referee_node_id": format!("r-{id}"),
+                "halves": [format!("{id}-a"), format!("{id}-b")],
                 "half_node_ids": ["p", "q"], "received_at": NOW,
             }}}})
         };
-        let by_peer = crate::verdict_counts::fold(&[bare("a"), bare("b"), bare("c")]);
+        let by_peer = crate::verdict_counts::fold(&[bare("a"), bare("b"), bare("c")], &HashSet::new());
         assert!(due(RULE, &by_peer, &HashSet::new(), now()).is_empty());
     }
 
     /// A stand-in for the fork host's `/api/peer-blocks`: a block is saved,
     /// then the plugin's own seal operation is asked for the record, as
-    /// `api/routes/peer_blocks.rs` does. `stock` answers 404 like upstream.
+    /// `api/routes/peer_blocks.rs` does. `stock` answers 404 like upstream;
+    /// with `seal_fails` set the block holds but the answer is `sealed: false`.
     mod host {
         use std::collections::HashSet;
+        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::{Arc, Mutex};
 
         use axum::extract::State;
@@ -418,6 +488,18 @@ mod tests {
             pub capsules: Arc<CapsuleState>,
             pub blocked: Arc<Mutex<HashSet<String>>>,
             pub sealed: Arc<Mutex<Vec<String>>>,
+            pub seal_fails: Arc<AtomicBool>,
+        }
+
+        impl Host {
+            pub fn new(capsules: &Arc<CapsuleState>) -> Self {
+                Self {
+                    capsules: capsules.clone(),
+                    blocked: Arc::default(),
+                    sealed: Arc::default(),
+                    seal_fails: Arc::default(),
+                }
+            }
         }
 
         fn seal(host: &Host, change: &str, peer: &str) -> Value {
@@ -435,6 +517,12 @@ mod tests {
             seal(host, "unblock", peer);
         }
 
+        /// The operator's own Stop routing, with no rule involved.
+        pub fn manual_block(host: &Host, peer: &str) {
+            host.blocked.lock().unwrap().insert(peer.to_string());
+            seal(host, "block", peer);
+        }
+
         async fn list(State(host): State<Host>) -> Json<Value> {
             let blocks: serde_json::Map<String, Value> =
                 host.blocked.lock().unwrap().iter().map(|p| (p.clone(), json!({}))).collect();
@@ -445,6 +533,9 @@ mod tests {
             assert_eq!(body["length"], json!("until_undone"));
             let peer = body["peer"].as_str().unwrap().to_string();
             host.blocked.lock().unwrap().insert(peer.clone());
+            if host.seal_fails.load(Ordering::SeqCst) {
+                return Json(json!({ "choice": { "capsule_id": null }, "sealed": false, "seal_error": "down" }));
+            }
             let record = seal(&host, "block", &peer);
             Json(json!({ "choice": { "capsule_id": record["capsule_id"] }, "sealed": true }))
         }
@@ -462,23 +553,34 @@ mod tests {
         }
     }
 
-    /// A verdict contradicting `peer` (against its twin `q`), recorded on the
-    /// chain the way the door-verified path records one. Each test uses its
-    /// own `peer`: the pending citations are one map per process.
-    fn contradiction(capsules: &CapsuleState, peer: &str, id: &str, at: DateTime<Utc>) {
+    /// A verdict from `referee` contradicting `peer` (against its twin `q`),
+    /// about a pair of halves of its own, recorded on the chain the way the
+    /// door-verified path records one. With `asked`, this node's own request
+    /// to that referee about that pair is noted too. Each test uses its own
+    /// `peer`: the pending citations are one map per process.
+    fn contradiction(capsules: &CapsuleState, peer: &str, id: &str, referee: &str, asked: bool, at: DateTime<Utc>) {
         let verdict = format!("contradicted:{peer}");
+        let halves = [format!("{id}-a"), format!("{id}-b")];
         let facts = crate::capsule_emit::VerdictFacts {
             verdict: &verdict,
             verdict_capsule_id: id,
-            referee_node_id: "ref",
-            halves: ["hp", "hq"],
+            referee_node_id: referee,
+            halves: [&halves[0], &halves[1]],
             half_node_ids: [peer, "q"],
             twin_bracket_id: None,
         };
         capsules
-            .emit_adjudication_received(&facts, "hq", "q", &at.to_rfc3339())
+            .emit_adjudication_received(&facts, &halves[1], "q", &at.to_rfc3339())
             .unwrap()
             .expect("a new verdict seals a record");
+        if asked {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(capsules.ledger_dir().join(REQUESTED_FILENAME))
+                .unwrap();
+            writeln!(file, "{}", json!({ "referee": referee, "halves": halves })).unwrap();
+        }
     }
 
     fn rule_record(capsules: &CapsuleState, capsule_id: &str) -> Value {
@@ -490,30 +592,31 @@ mod tests {
             .clone()
     }
 
+    fn open(dir: &tempfile::TempDir) -> Arc<CapsuleState> {
+        Arc::new(CapsuleState::open(dir.path(), "node-under-test").unwrap())
+    }
+
+    const N2: Rule = Rule { after: 2, window_days: 7 };
+
     #[tokio::test]
     async fn fires_through_the_hosts_stop_routing_path_and_undo_works() {
         let dir = tempfile::tempdir().unwrap();
-        let capsules = Arc::new(CapsuleState::open(dir.path(), "node-under-test").unwrap());
-        let host = host::Host {
-            capsules: capsules.clone(),
-            blocked: Arc::default(),
-            sealed: Arc::default(),
-        };
+        let capsules = open(&dir);
+        let host = host::Host::new(&capsules);
         let url = host::serve(host.clone(), false).await;
-        let rule = Rule { after: 2, window_days: 7 };
         let now = Utc::now();
         let (v1, v2, v3, v4) = ("1".repeat(64), "2".repeat(64), "3".repeat(64), "4".repeat(64));
 
         // N-1: nothing asked of the host.
-        contradiction(&capsules, "p", &v1, now);
-        assert!(evaluate(&capsules, rule, &url, now).await.is_empty());
+        contradiction(&capsules, "p", &v1, "r1", true, now);
+        assert!(evaluate(&capsules, N2, &url, now).await.is_empty());
         assert!(host.sealed.lock().unwrap().is_empty());
 
-        // N within D: the host blocks, and the record names the rule and cites
-        // both verdicts by commitment.
-        contradiction(&capsules, "p", &v2, now);
+        // N within D, from two referees this node asked: the host blocks, and
+        // the record names the rule and cites both verdicts by commitment.
+        contradiction(&capsules, "p", &v2, "r2", true, now);
         assert_eq!(
-            evaluate(&capsules, rule, &url, now).await,
+            evaluate(&capsules, N2, &url, now).await,
             vec![Outcome::Blocked { peer_id: "p".into(), sealed: true }]
         );
         let block_id = host.sealed.lock().unwrap()[0].clone();
@@ -530,33 +633,87 @@ mod tests {
         assert_eq!(rule_record(&capsules, &unblock_id)["rule"], Value::Null);
 
         // The verdicts that already met the rule don't fire it again...
-        assert!(evaluate(&capsules, rule, &url, now).await.is_empty());
+        assert!(evaluate(&capsules, N2, &url, now).await.is_empty());
         // ...one new contradiction is N-1 again...
-        contradiction(&capsules, "p", &v3, now);
-        assert!(evaluate(&capsules, rule, &url, now).await.is_empty());
+        contradiction(&capsules, "p", &v3, "r1", true, now);
+        assert!(evaluate(&capsules, N2, &url, now).await.is_empty());
         // ...and N new ones fire it.
-        contradiction(&capsules, "p", &v4, now);
+        contradiction(&capsules, "p", &v4, "r3", true, now);
         assert_eq!(
-            evaluate(&capsules, rule, &url, now).await,
+            evaluate(&capsules, N2, &url, now).await,
             vec![Outcome::Blocked { peer_id: "p".into(), sealed: true }]
         );
         assert_eq!(host.sealed.lock().unwrap().len(), 3);
+    }
 
-        // Met again while still blocked: nothing asked of the host.
-        contradiction(&capsules, "p", &"5".repeat(64), now);
-        contradiction(&capsules, "p", &"6".repeat(64), now);
+    /// The adversarial case end to end: a peer with an announced key signs
+    /// many contradictions of `f`, each with its own id and a pair this node
+    /// never asked it about. The door-verified records exist, but nothing is
+    /// asked of the host.
+    #[tokio::test]
+    async fn verdicts_this_node_never_asked_for_block_nobody() {
+        let dir = tempfile::tempdir().unwrap();
+        let capsules = open(&dir);
+        let host = host::Host::new(&capsules);
+        let url = host::serve(host.clone(), false).await;
+        let now = Utc::now();
+        for i in 0..6 {
+            contradiction(&capsules, "f", &format!("{i}").repeat(64), &format!("x{}", i % 2), false, now);
+        }
+        assert!(evaluate(&capsules, N2, &url, now).await.is_empty());
+        assert!(host.blocked.lock().unwrap().is_empty());
+        assert!(host.sealed.lock().unwrap().is_empty());
+    }
+
+    /// Undo holds on every path where the host ends up holding a block:
+    /// here the host blocked but could not seal the record.
+    #[tokio::test]
+    async fn undo_holds_when_the_host_blocked_without_a_sealed_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let capsules = open(&dir);
+        let host = host::Host::new(&capsules);
+        host.seal_fails.store(true, std::sync::atomic::Ordering::SeqCst);
+        let url = host::serve(host.clone(), false).await;
+        let now = Utc::now();
+        contradiction(&capsules, "u", &"1".repeat(64), "r1", true, now);
+        contradiction(&capsules, "u", &"2".repeat(64), "r2", true, now);
         assert_eq!(
-            evaluate(&capsules, rule, &url, now).await,
-            vec![Outcome::AlreadyBlocked { peer_id: "p".into() }]
+            evaluate(&capsules, N2, &url, now).await,
+            vec![Outcome::Blocked { peer_id: "u".into(), sealed: false }]
         );
-        assert_eq!(host.sealed.lock().unwrap().len(), 3);
+        assert!(take_pending("u").is_none());
+        host.seal_fails.store(false, std::sync::atomic::Ordering::SeqCst);
+        host::unblock(&host, "u");
+        assert!(evaluate(&capsules, N2, &url, now).await.is_empty(), "the undo is not undone");
+        assert!(host.blocked.lock().unwrap().is_empty());
+    }
+
+    /// ...and here the operator had already blocked the peer by hand when the
+    /// rule was met, then undid that block.
+    #[tokio::test]
+    async fn undo_holds_when_the_peer_was_already_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let capsules = open(&dir);
+        let host = host::Host::new(&capsules);
+        let url = host::serve(host.clone(), false).await;
+        let now = Utc::now();
+        host::manual_block(&host, "w");
+        contradiction(&capsules, "w", &"1".repeat(64), "r1", true, now);
+        contradiction(&capsules, "w", &"2".repeat(64), "r2", true, now);
+        assert_eq!(
+            evaluate(&capsules, N2, &url, now).await,
+            vec![Outcome::AlreadyBlocked { peer_id: "w".into() }]
+        );
+        host::unblock(&host, "w");
+        assert!(evaluate(&capsules, N2, &url, now).await.is_empty(), "the undo is not undone");
+        assert!(host.blocked.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn a_manual_block_carries_no_rule() {
         let dir = tempfile::tempdir().unwrap();
-        let capsules = Arc::new(CapsuleState::open(dir.path(), "node-under-test").unwrap());
-        let host = host::Host { capsules: capsules.clone(), blocked: Arc::default(), sealed: Arc::default() };
+        let capsules = open(&dir);
+        let host = host::Host::new(&capsules);
         let url = host::serve(host.clone(), false).await;
         reqwest::Client::new()
             .post(format!("{url}{PEER_BLOCKS_PATH}"))
@@ -572,16 +729,16 @@ mod tests {
     #[tokio::test]
     async fn a_stock_host_without_the_hook_blocks_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let capsules = Arc::new(CapsuleState::open(dir.path(), "node-under-test").unwrap());
-        let host = host::Host { capsules: capsules.clone(), blocked: Arc::default(), sealed: Arc::default() };
+        let capsules = open(&dir);
+        let host = host::Host::new(&capsules);
         let url = host::serve(host.clone(), true).await;
         let now = Utc::now();
-        contradiction(&capsules, "s", &"1".repeat(64), now);
+        contradiction(&capsules, "s", &"1".repeat(64), "r1", true, now);
         assert_eq!(
             evaluate(&capsules, Rule { after: 1, window_days: 7 }, &url, now).await,
             vec![Outcome::NoHostHook]
         );
-        assert!(read_cited(capsules.ledger_dir()).is_empty());
+        assert!(read_cited(capsules.ledger_dir()).is_empty(), "nothing blocked, so nothing is used up");
         assert!(take_pending("s").is_none());
         assert!(host.sealed.lock().unwrap().is_empty());
     }
@@ -590,8 +747,8 @@ mod tests {
     fn the_cited_file_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         assert!(read_cited(dir.path()).is_empty());
-        record_cited(dir.path(), "r1", &["a".into(), "b".into()]).unwrap();
-        record_cited(dir.path(), "r2", &["c".into()]).unwrap();
+        record_cited(dir.path(), Some("r1"), &["a".into(), "b".into()]).unwrap();
+        record_cited(dir.path(), None, &["c".into()]).unwrap();
         assert_eq!(read_cited(dir.path()), ["a", "b", "c"].map(String::from).into());
     }
 }

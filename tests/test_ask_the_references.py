@@ -410,6 +410,31 @@ def test_one_verdict_held_by_two_references_counts_once(referee_key):
     assert tally["contradicted"] == 1
 
 
+def test_one_referee_counts_once_per_pair_of_halves(referee_key):
+    """A referee that signs several verdicts about one pair (each its own
+    capsule id) counts once: the first stands."""
+    first = _verdict(contradicted("gcp"))
+    second = seal_adjudication_capsule(
+        adjudicate(
+            AdjudicationHalf.from_capsule_and_disclosure(*_make_served_half("x", owner_id="gcp")),
+            AdjudicationHalf.from_capsule_and_disclosure(*_make_served_half("y", owner_id="aws")),
+            referee=lambda a, b, c: RefereeResult(verdict=contradicted("gcp"), margin=c.margin, identity=RefereeIdentity(referee_id=REFEREE)),
+        ),
+        extra={"referee_node_id": REFEREE, "half_a_node_id": "gcp", "half_b_node_id": "aws"},
+    )
+    block = second["model_attestation"]["compute_attestation"]["adjudication"]
+    for key in ("half_a_capsule_id", "half_b_capsule_id"):
+        block[key] = first["model_attestation"]["compute_attestation"]["adjudication"][key]
+    from agent_action_capsule.canonical import compute_capsule_id
+
+    second["capsule_id"] = compute_capsule_id({k: v for k, v in second.items() if k not in ("capsule_id", "signature", "key_id")})
+    receipts = [_sign_as_referee(first, referee_key), _sign_as_referee(second, referee_key)]
+    assert receipts[0]["capsule_id"] != receipts[1]["capsule_id"]
+    tally = _tally()
+    ah._classify_receipts_for_x(receipts, "gcp", tally)
+    assert tally["contradicted"] == 1
+
+
 def test_an_ack_refusal_counts_only_for_a_verified_verdict(referee_key):
     signed = _sign_as_referee(_verdict(contradicted("gcp")), referee_key)
     unsigned = _verdict(contradicted("gcp"))

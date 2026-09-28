@@ -2,20 +2,31 @@
 //! chain: the Peers drill's "Verdicts about them" counts, and the input the
 //! opt-in stop-routing rule reads (`routing_rule`).
 //!
-//! Only a verdict whose signature this node's door verified counts. The door
-//! checks the referee's signature under the key that referee announced
-//! before it holds a verdict (`adjudication_hold.verdict_facts` on a node the
-//! verdict is delivered to; on the referee, its own door signed it), and the
-//! plugin seals `adjudication_received` / `adjudication_issued` only after
-//! that (`adjudication_records`). So those two record kinds on this node's own
-//! chain are the fold's only source. A verdict held anywhere else, or a
-//! verdict string in any other record, counts nowhere.
+//! Two gates, both required:
+//!
+//! 1. **Verified.** Only `adjudication_received` / `adjudication_issued` on this
+//!    node's own chain count. The plugin seals those only after the door has
+//!    checked the referee's signature under the key that referee announced
+//!    (`adjudication_hold.verdict_facts`); on the referee, its own door signed.
+//!    A verdict string in any other record counts nowhere.
+//! 2. **Asked for by this node.** A signature only says which referee signed,
+//!    not that anyone asked it: any peer with an announced key could mint as
+//!    many verdicts about a peer as it likes. So a received verdict counts only
+//!    when this node itself asked that referee about that exact pair of halves
+//!    ([`REQUESTED_FILENAME`], written when this node sends an adjudicate
+//!    request). A verdict delivered by anyone else, about a pair this node
+//!    never put to that referee, counts nowhere. A verdict this node issued as
+//!    referee is its own judgment and counts.
+//!
+//! Then each (referee, pair of halves) counts once, whatever number of
+//! differently-signed verdicts a referee issues about it.
 //!
 //! Four counts per peer, each a list of the verdicts' capsule ids so the page
 //! can open every one. No score, no rating, nothing blended into one number;
 //! the counts are this node's and are never sent to anyone.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::path::Path;
 
 use capsule_producer::capsule::{ADJUDICATION_ISSUED_BLOCK, ADJUDICATION_RECEIVED_BLOCK};
 use serde_json::{json, Value};
@@ -29,10 +40,44 @@ const CONTRADICTED_PREFIX: &str = "contradicted:";
 /// The four buckets, in the order the page shows them.
 pub const BUCKETS: [&str; 4] = [CORROBORATED, CONTRADICTED, INCONCLUSIVE, NOT_COMPARABLE];
 
+/// Beside the ledger: one line per adjudicate request this node sent,
+/// `{referee, halves: [id, id], twin_bracket_id, asked_at}`.
+pub const REQUESTED_FILENAME: &str = "requested-adjudications.jsonl";
+
+/// `(referee, the pair of halves in sorted order)`.
+type PairKey = (String, [String; 2]);
+
+fn pair_key(referee: &str, a: &str, b: &str) -> PairKey {
+    let mut halves = [a.to_string(), b.to_string()];
+    halves.sort();
+    (referee.to_string(), halves)
+}
+
+/// The (referee, pair) keys this node asked about. A missing or unreadable
+/// file is "asked nothing": no received verdict counts.
+pub fn read_requested(ledger_dir: &Path) -> HashSet<PairKey> {
+    let Ok(text) = std::fs::read_to_string(ledger_dir.join(REQUESTED_FILENAME)) else {
+        return HashSet::new();
+    };
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|line| {
+            let referee = line.get("referee")?.as_str()?.to_string();
+            let halves = line.get("halves")?.as_array()?;
+            match halves.as_slice() {
+                [a, b] => Some(pair_key(&referee, a.as_str()?, b.as_str()?)),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 /// One verified verdict, as it bears on one judged peer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerVerdict {
     pub verdict_capsule_id: String,
+    /// Who signed it: the rule caps how much one referee can count.
+    pub referee_node_id: String,
     /// One of [`BUCKETS`].
     pub bucket: &'static str,
     /// When this node recorded the verdict (`received_at` or `issued_at`),
@@ -65,53 +110,70 @@ pub fn ruling_about(verdict: &str, half_node_ids: [&str; 2], node_id: &str) -> O
     }
 }
 
-fn verdict_block(record: &Value) -> Option<(&Value, &'static str)> {
+/// The verdict block, its time key, and whether this node issued it.
+fn verdict_block(record: &Value) -> Option<(&Value, &'static str, bool)> {
     let attestation = record.pointer("/model_attestation/compute_attestation")?;
     [
-        (ADJUDICATION_RECEIVED_BLOCK, "received_at"),
-        (ADJUDICATION_ISSUED_BLOCK, "issued_at"),
+        (ADJUDICATION_RECEIVED_BLOCK, "received_at", false),
+        (ADJUDICATION_ISSUED_BLOCK, "issued_at", true),
     ]
     .into_iter()
-    .find_map(|(name, at)| attestation.get(name).map(|block| (block, at)))
+    .find_map(|(name, at, issued)| attestation.get(name).map(|block| (block, at, issued)))
 }
 
-/// Every verified verdict on `records` (this node's own chain), per judged
-/// peer id. Each verdict counts once per peer, however many records cite it.
-pub fn fold(records: &[Value]) -> BTreeMap<String, Vec<PeerVerdict>> {
-    let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+/// Every counted verdict on `records` (this node's own chain), per judged
+/// peer id, given the pairs this node asked about (`requested`, see
+/// [`read_requested`]). Each (referee, pair of halves) counts once.
+pub fn fold(records: &[Value], requested: &HashSet<PairKey>) -> BTreeMap<String, Vec<PeerVerdict>> {
+    let mut seen_pairs: BTreeSet<PairKey> = BTreeSet::new();
     let mut by_peer: BTreeMap<String, Vec<PeerVerdict>> = BTreeMap::new();
     for record in records {
-        let Some((block, at_key)) = verdict_block(record) else {
+        let Some((block, at_key, issued)) = verdict_block(record) else {
             continue;
         };
         let text = |key: &str| block.get(key).and_then(Value::as_str).filter(|s| !s.is_empty());
-        let (Some(verdict), Some(verdict_capsule_id)) = (text("verdict"), text("verdict_capsule_id")) else {
+        let (Some(verdict), Some(verdict_capsule_id), Some(referee)) =
+            (text("verdict"), text("verdict_capsule_id"), text("referee_node_id"))
+        else {
             continue;
         };
-        let Some(halves) = block.get("half_node_ids").and_then(Value::as_array) else {
+        let [Some(a), Some(b)] = pair(block, "half_node_ids") else {
             continue;
         };
-        let [Some(a), Some(b)] = [halves.first(), halves.get(1)].map(|h| h.and_then(Value::as_str)) else {
+        let [Some(half_a), Some(half_b)] = pair(block, "halves") else {
             continue;
         };
-        if halves.len() != 2 || a == b {
+        if a == b || half_a == half_b || referee == a || referee == b {
+            continue;
+        }
+        let key = pair_key(referee, half_a, half_b);
+        if !issued && !requested.contains(&key) {
+            continue;
+        }
+        if !seen_pairs.insert(key) {
             continue;
         }
         for peer in [a, b] {
             let Some(bucket) = ruling_about(verdict, [a, b], peer) else {
                 continue;
             };
-            if !seen.insert((peer.to_string(), verdict_capsule_id.to_string())) {
-                continue;
-            }
             by_peer.entry(peer.to_string()).or_default().push(PeerVerdict {
                 verdict_capsule_id: verdict_capsule_id.to_string(),
+                referee_node_id: referee.to_string(),
                 bucket,
                 recorded_at: text(at_key).map(str::to_string),
             });
         }
     }
     by_peer
+}
+
+/// A two-string array member, or `[None, None]` when it is not exactly that.
+fn pair<'a>(block: &'a Value, key: &str) -> [Option<&'a str>; 2] {
+    match block.get(key).and_then(Value::as_array).map(Vec::as_slice) {
+        Some([a, b]) => [a.as_str(), b.as_str()],
+        _ => [None, None],
+    }
 }
 
 /// The page's shape: every bucket present, zero included, each with the ids
@@ -144,10 +206,11 @@ fn row_peer_ids(row: &Value) -> Vec<&str> {
 }
 
 /// Put `referee_verdicts` on every attributed Pane B row, from this node's own
-/// chain (`our_records`). A row whose ids name no judged peer gets four
-/// zeros: zero is a fact here, since the chain was read.
-pub fn attach(pane_b: &mut Value, our_records: &[Value]) {
-    let by_peer = fold(our_records);
+/// chain (`our_records`) and the pairs it asked about (in `ledger_dir`). A
+/// row whose ids name no judged peer gets four zeros: zero is a fact here,
+/// since the chain was read.
+pub fn attach(pane_b: &mut Value, our_records: &[Value], ledger_dir: &Path) {
+    let by_peer = fold(our_records, &read_requested(ledger_dir));
     let Some(rows) = pane_b.get_mut("rows").and_then(Value::as_array_mut) else {
         return;
     };
@@ -171,16 +234,26 @@ pub fn attach(pane_b: &mut Value, our_records: &[Value]) {
 mod tests {
     use super::*;
 
-    fn record(block: &str, verdict: &str, id: &str, halves: [&str; 2]) -> Value {
+    /// A verdict record as this node's chain holds one: `referee` judged the
+    /// halves `halves` served by `nodes`.
+    fn record(block: &str, verdict: &str, id: &str, referee: &str, halves: [&str; 2], nodes: [&str; 2]) -> Value {
         let at = if block == ADJUDICATION_ISSUED_BLOCK { "issued_at" } else { "received_at" };
         json!({ "model_attestation": { "compute_attestation": { block: {
             "verdict": verdict,
             "verdict_capsule_id": id,
-            "referee_node_id": "ref",
-            "halves": ["ha", "hb"],
-            "half_node_ids": halves,
+            "referee_node_id": referee,
+            "halves": halves,
+            "half_node_ids": nodes,
             at: "2026-09-28T15:00:00Z",
         }}}})
+    }
+
+    fn received(verdict: &str, id: &str) -> Value {
+        record(ADJUDICATION_RECEIVED_BLOCK, verdict, id, "ref", ["ha", "hb"], ["a", "b"])
+    }
+
+    fn asked(pairs: &[(&str, [&str; 2])]) -> HashSet<PairKey> {
+        pairs.iter().map(|(referee, [a, b])| pair_key(referee, a, b)).collect()
     }
 
     fn count(json: &Value, bucket: &str) -> u64 {
@@ -202,46 +275,100 @@ mod tests {
     #[test]
     fn only_the_door_verified_record_kinds_count() {
         let bare = json!({ "model_attestation": { "compute_attestation": { "adjudication": {
-            "verdict": "contradicted:b", "verdict_capsule_id": "v0", "half_node_ids": ["a", "b"],
+            "verdict": "contradicted:b", "verdict_capsule_id": "v0", "referee_node_id": "ref",
+            "halves": ["ha", "hb"], "half_node_ids": ["a", "b"],
         }}}});
         let refused = json!({ "model_attestation": { "compute_attestation": { "adjudication_ack_refused": {
-            "verdict": "contradicted:b", "verdict_capsule_id": "v9", "half_node_ids": ["a", "b"],
+            "verdict": "contradicted:b", "verdict_capsule_id": "v9", "referee_node_id": "ref",
+            "halves": ["ha", "hb"], "half_node_ids": ["a", "b"],
         }}}});
         let records = vec![
             bare,
             refused,
-            record(ADJUDICATION_RECEIVED_BLOCK, "contradicted:b", "v1", ["a", "b"]),
-            record(ADJUDICATION_ISSUED_BLOCK, "inconclusive", "v2", ["b", "c"]),
+            received("contradicted:b", "v1"),
+            record(ADJUDICATION_ISSUED_BLOCK, "inconclusive", "v2", "me", ["hc", "hd"], ["b", "c"]),
         ];
-        let by_peer = fold(&records);
+        let by_peer = fold(&records, &asked(&[("ref", ["ha", "hb"])]));
         let b = counts_json(&by_peer["b"]);
         assert_eq!(count(&b, CONTRADICTED), 1);
-        assert_eq!(count(&b, INCONCLUSIVE), 1);
+        assert_eq!(count(&b, INCONCLUSIVE), 1, "a verdict this node issued counts without a request");
         assert_eq!(b[CONTRADICTED]["verdict_capsule_ids"], json!(["v1"]));
         assert_eq!(count(&counts_json(&by_peer["a"]), CORROBORATED), 1);
     }
 
+    /// The adversarial case: peer X, with an announced key, signs N
+    /// contradictions of Y, each citing one of our record ids and a made-up
+    /// one, each with its own verdict id. This node never asked X anything,
+    /// so none of them count.
     #[test]
-    fn a_verdict_recorded_twice_counts_once() {
+    fn verdicts_from_a_referee_this_node_did_not_ask_count_nowhere() {
+        let forged: Vec<Value> = (0..5)
+            .map(|i| {
+                record(
+                    ADJUDICATION_RECEIVED_BLOCK,
+                    "contradicted:y",
+                    &format!("forged-{i}"),
+                    "x",
+                    ["ours", &format!("made-up-{i}")],
+                    ["z", "y"],
+                )
+            })
+            .collect();
+        assert!(fold(&forged, &HashSet::new()).is_empty());
+        // Asking X about one pair counts that pair only, never the others.
+        let by_peer = fold(&forged, &asked(&[("x", ["made-up-0", "ours"])]));
+        assert_eq!(by_peer["y"].len(), 1);
+        // Asking a different referee about the same pair does not let X in.
+        assert!(fold(&forged, &asked(&[("ref", ["ours", "made-up-0"])])).is_empty());
+    }
+
+    #[test]
+    fn one_referee_counts_once_per_pair_whatever_it_signs() {
         let records = vec![
-            record(ADJUDICATION_RECEIVED_BLOCK, "contradicted:b", "v1", ["a", "b"]),
-            record(ADJUDICATION_ISSUED_BLOCK, "contradicted:b", "v1", ["a", "b"]),
+            received("contradicted:b", "v1"),
+            received("contradicted:b", "v2"),
+            received("contradicted:b", "v1"),
+            record(ADJUDICATION_RECEIVED_BLOCK, "contradicted:b", "v3", "ref", ["hb", "ha"], ["a", "b"]),
         ];
-        assert_eq!(fold(&records)["b"].len(), 1);
+        let by_peer = fold(&records, &asked(&[("ref", ["ha", "hb"])]));
+        assert_eq!(by_peer["b"].len(), 1);
+        assert_eq!(by_peer["b"][0].verdict_capsule_id, "v1", "the first recorded verdict stands");
+    }
+
+    #[test]
+    fn a_referee_that_is_one_of_the_twins_counts_nowhere() {
+        let records = vec![record(ADJUDICATION_RECEIVED_BLOCK, "contradicted:b", "v1", "a", ["ha", "hb"], ["a", "b"])];
+        assert!(fold(&records, &asked(&[("a", ["ha", "hb"])])).is_empty());
     }
 
     #[test]
     fn a_malformed_block_counts_nowhere() {
+        let requested = asked(&[("ref", ["ha", "hb"])]);
         let records = vec![
-            record(ADJUDICATION_RECEIVED_BLOCK, "contradicted:b", "v1", ["b", "b"]),
+            record(ADJUDICATION_RECEIVED_BLOCK, "contradicted:b", "v1", "ref", ["ha", "hb"], ["b", "b"]),
+            record(ADJUDICATION_RECEIVED_BLOCK, "contradicted:b", "v2", "ref", ["ha", "ha"], ["a", "b"]),
             json!({ "model_attestation": { "compute_attestation": { "adjudication_received": {
-                "verdict": "contradicted:b", "verdict_capsule_id": "v2", "half_node_ids": ["a"],
+                "verdict": "contradicted:b", "verdict_capsule_id": "v3", "referee_node_id": "ref",
+                "halves": ["ha", "hb"], "half_node_ids": ["a"],
             }}}}),
             json!({ "model_attestation": { "compute_attestation": { "adjudication_received": {
-                "verdict": "contradicted:b", "half_node_ids": ["a", "b"],
+                "verdict": "contradicted:b", "verdict_capsule_id": "v4",
+                "halves": ["ha", "hb"], "half_node_ids": ["a", "b"],
             }}}}),
         ];
-        assert!(fold(&records).is_empty());
+        assert!(fold(&records, &requested).is_empty());
+    }
+
+    #[test]
+    fn the_requested_file_is_read_and_a_missing_one_asks_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(read_requested(dir.path()).is_empty());
+        std::fs::write(
+            dir.path().join(REQUESTED_FILENAME),
+            "{\"referee\":\"ref\",\"halves\":[\"hb\",\"ha\"],\"twin_bracket_id\":\"t\",\"asked_at\":\"x\"}\nnot json\n{\"referee\":\"ref\",\"halves\":[\"only-one\"]}\n",
+        )
+        .unwrap();
+        assert_eq!(read_requested(dir.path()), asked(&[("ref", ["ha", "hb"])]));
     }
 
     #[test]
@@ -265,23 +392,32 @@ mod tests {
             .emit_adjudication_issued(&facts("not_comparable", &second), None, "2026-09-28T15:02:00Z")
             .unwrap();
         let records = crate::evidence_panes::read_capsule_records(state.ledger_dir());
-        let b = &fold(&records)["b"];
-        assert_eq!(b.len(), 2);
+        // Same referee, same pair: the received one was first and stands.
+        let b = &fold(&records, &asked(&[("ref", ["ha", "hb"])]))["b"];
+        assert_eq!(b.len(), 1);
         assert_eq!(b[0].bucket, CONTRADICTED);
         assert_eq!(b[0].recorded_at.as_deref(), Some("2026-09-28T15:01:00.000Z"));
-        assert_eq!(b[1].bucket, NOT_COMPARABLE);
+        // Not asked: only this node's own issued verdict counts.
+        let b = &fold(&records, &HashSet::new())["b"];
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].bucket, NOT_COMPARABLE);
     }
 
     #[test]
     fn rows_get_all_four_counts_matched_on_any_of_their_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(REQUESTED_FILENAME),
+            "{\"referee\":\"ref\",\"halves\":[\"ha\",\"hb\"]}\n",
+        )
+        .unwrap();
         let mut pane = json!({ "rows": [
             { "peer_id": "endpoint:b", "identity": { "endpoint_id": "b", "node_id": null } },
             { "peer_id": "key:k", "identity": { "endpoint_id": null, "node_id": "a" } },
             { "peer_id": "node:z", "identity": null },
             { "peer_id": null },
         ]});
-        let records = vec![record(ADJUDICATION_RECEIVED_BLOCK, "contradicted:b", "v1", ["a", "b"])];
-        attach(&mut pane, &records);
+        attach(&mut pane, &[received("contradicted:b", "v1")], dir.path());
         let rows = pane["rows"].as_array().unwrap();
         assert_eq!(count(&rows[0]["referee_verdicts"], CONTRADICTED), 1);
         assert_eq!(count(&rows[1]["referee_verdicts"], CORROBORATED), 1);

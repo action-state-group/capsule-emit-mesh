@@ -337,17 +337,25 @@ def _classify_receipts_for_x(receipts: list[dict[str, Any]], x_node_id: str, tal
     an ``adjudication`` block without a verifying referee signature --
     unsigned, signed by a key the referee never announced, or naming no
     referee -- counts nowhere. Each verdict counts once, however many
-    references hold it.
+    references hold it, and each referee counts once per pair of halves.
 
     ``ack_refusals`` counts a refusal only when it cites a verdict verified
     here that names ``x_node_id`` as contradicted; the refusal's own copy
     of the verdict string is never trusted.
     """
     verified: dict[str, dict[str, Any]] = {}
+    pairs: set[tuple[str, tuple[str, ...]]] = set()
     for receipt in receipts:
         facts = verdict_facts(receipt)
-        if facts is not None:
-            verified[facts["verdict_capsule_id"]] = facts
+        if facts is None:
+            continue
+        # One referee counts once per pair of halves, however many
+        # differently-signed verdicts it issues about it.
+        pair = (facts["referee_node_id"], tuple(sorted(facts["halves"])))
+        if facts["verdict_capsule_id"] in verified or pair in pairs:
+            continue
+        pairs.add(pair)
+        verified[facts["verdict_capsule_id"]] = facts
     for facts in verified.values():
         ruling = _ruling_about(facts["verdict"], facts["half_node_ids"], x_node_id)
         if ruling is not None:

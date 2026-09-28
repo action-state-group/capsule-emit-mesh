@@ -275,7 +275,7 @@ export const YOUR_DEALINGS_TITLE = 'Your dealings with them'
 export const REFEREE_VERDICTS_ABOUT_THEM = {
   sectionTitle: 'Referee verdicts about them',
   explainer:
-    'How often a referee, re-answering a request both this peer and another peer served, agreed or disagreed with this peer. Counted from referee verdicts as this node recorded them: its door records a verdict only after checking the referee’s signature against the key that referee announced, and a referee records its own. Open a record to see whether the referee’s signature checks here. The four counts stay on this node, are never sent to anyone, and are never combined into one number.',
+    'How often a referee, re-answering a request both this peer and another peer served, agreed or disagreed with this peer. Counted from verdicts this node asked a referee for, as this node recorded them: its door records one only after checking the referee’s signature against the key that referee announced. A verdict nobody here asked for isn’t counted, and one referee counts once per pair of answers. Open a record to see whether the referee’s signature checks here. The four counts stay on this node, are never sent to anyone, and are never combined into one number.',
   notShown: 'Not shown: this plugin version doesn’t count referee verdicts.',
   bucketTooltip: {
     corroborated: 'The referee’s answer matched this peer’s answer.',
