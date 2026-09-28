@@ -34,6 +34,7 @@ from twin_adjudicator import (
     NO_VERDICT_OWNER_ABSENT,
     NO_VERDICT_REFEREE_NOT_INDEPENDENT,
     NO_VERDICT_REFEREE_UNREACHABLE,
+    NO_VERDICT_NOT_COMPARABLE,
     NO_VERDICT_SAME_OWNER_TWIN,
     NO_VERDICT_WEIGHTS_MISMATCH,
     RELATION_ADJUDICATES,
@@ -90,6 +91,9 @@ def _make_half(
     weights_digest: str | None = None,
     response_body: dict | None = None,
     declared_digest: str | None = None,
+    decoding: dict | None = None,
+    generation_parameters: dict | None = None,
+    request_body: dict | None = None,
 ) -> AdjudicationHalf:
     """Build one fixture half: a self-consistent, VERIFIABLE capsule
     declaring response_digest over `response_body` (default: derived from
@@ -105,6 +109,10 @@ def _make_half(
     )
     disposition = Disposition(decision="accept", approver="policy", human_disposed=False, verdict_class="confirmed")
     compute_attestation = {"owner": {"owner_id": owner_id}} if owner_id is not None else {}
+    if decoding is not None:
+        compute_attestation["decoding"] = decoding
+    if generation_parameters is not None:
+        compute_attestation["x-mesh-poc-v1"] = {"generation_parameters": generation_parameters}
     capsule = emit(
         action_type="decide",
         operator="test-org",
@@ -115,6 +123,8 @@ def _make_half(
         tool_name="serve_exchange",
     )
     disclosed = {"capsule_id": capsule["capsule_id"], "response_body": body, "response_text": text}
+    if request_body is not None:
+        disclosed["request_body"] = request_body
     return AdjudicationHalf.from_capsule_and_disclosure(capsule, disclosed, weights_digest=weights_digest)
 
 
@@ -846,3 +856,45 @@ def test_status_for_verdict_raises_on_unrecognized_verdict():
 
     with pytest.raises(ValueError, match="unrecognized verdict"):
         status_for_verdict("not_a_real_verdict")
+
+
+# --- sampled halves are not comparable (u110) --------------------------------
+
+
+@pytest.mark.parametrize(
+    "sampled",
+    [
+        {"decoding": {"temperature": "0.7", "seed": 1}},
+        {"generation_parameters": {"temperature": "0.8"}},
+        {"request_body": {"messages": [{"role": "user", "content": "q"}], "temperature": 1}},
+    ],
+    ids=["sealed-decoding", "host-generation-parameters", "disclosed-request"],
+)
+def test_an_adjudication_over_sampled_halves_is_not_comparable(sampled):
+    """Two different answers from a sampled half never make a contradiction,
+    even when a referee would side with the other twin."""
+    half_a = _make_half("the answer is 4", owner_id="owner-a")
+    half_b = _make_half("the answer is 5", owner_id="owner-b", **sampled)
+    called = []
+
+    def _referee(a, b, comparison):
+        called.append(True)
+        return RefereeResult(verdict=contradicted("owner-b"), identity=RefereeIdentity(referee_id="referee-node"))
+
+    for x, y in ((half_a, half_b), (half_b, half_a)):
+        outcome = adjudicate(x, y, referee=_referee, referee_owner_id="referee-node")
+        assert outcome.verdict is None
+        assert outcome.no_verdict_reason == NO_VERDICT_NOT_COMPARABLE
+    assert not called, "a sampled pair never reaches the referee"
+
+
+def test_greedy_halves_are_still_adjudicated():
+    half_a = _make_half("the answer is 4", owner_id="owner-a", decoding={"temperature": "0", "seed": 1})
+    half_b = _make_half("the answer is 5", owner_id="owner-b", generation_parameters={"temperature": "0.0"})
+    outcome = adjudicate(
+        half_a,
+        half_b,
+        referee=lambda a, b, c: RefereeResult(verdict=contradicted("owner-b"), identity=RefereeIdentity(referee_id="r")),
+        referee_owner_id="r",
+    )
+    assert outcome.verdict == contradicted("owner-b")

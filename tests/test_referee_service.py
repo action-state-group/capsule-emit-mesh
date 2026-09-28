@@ -309,3 +309,13 @@ def test_delivery_follows_the_record_at_completion_switch(mesh):
     state = mesh.state(B, share_policy=SharePolicy(record_at_completion="off"))
     assert _deliver(state, verdict)["reason"] == "policy_decline"
     assert not (mesh.dirs[B] / RECEIVED_ADJUDICATIONS_FILENAME).exists()
+
+
+def test_the_referee_signs_nothing_for_sampled_twins(mesh):
+    half_a, half_b, _ = _doctored(mesh)
+    body = json.loads(_request(half_a, HONEST, half_b, FLIPPED, HONEST))
+    for half in body["halves"]:
+        half["request_body"] = {**PROMPT, "temperature": 0.7}
+    out = handle_adjudicate_request(mesh.state(R), json.dumps(body).encode())
+    assert out["reason"] == "no_verdict" and out["detail"] == "not_comparable"
+    assert not (mesh.dirs[R] / ISSUED_ADJUDICATIONS_FILENAME).exists()

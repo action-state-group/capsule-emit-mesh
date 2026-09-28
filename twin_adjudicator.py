@@ -219,6 +219,10 @@ def status_for_verdict(verdict: str) -> str:
 #: fine, there is simply nothing to adjudicate.
 NO_VERDICT_WEIGHTS_MISMATCH = "weights_mismatch"
 NO_VERDICT_SAME_OWNER_TWIN = "same_owner_twin"
+#: Either half was sampled (temperature > 0): two sampled answers may differ
+#: with neither provider at fault, so they are not comparable -- never
+#: ``contradicted``.
+NO_VERDICT_NOT_COMPARABLE = "not_comparable"
 #: [mesh-provider-no-body-persistence] The referee spec is explicit: the
 #: REQUESTER holds both twin responses. A half whose sealed serving_provenance
 #: names it as the provider role -- and carries no disclosed response body --
@@ -681,6 +685,31 @@ def _verify_preimage_or_raise(label: str, half: AdjudicationHalf) -> None:
         )
 
 
+def _temperature_above_zero(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return False
+    try:
+        return float(value) > 0
+    except ValueError:
+        return False
+
+
+def _sampled(half: AdjudicationHalf) -> bool:
+    """True when the half was sampled (temperature > 0): as sealed in
+    ``compute_attestation.decoding`` or the host's
+    ``x-mesh-poc-v1.generation_parameters``, or as the disclosed request
+    asked. Any one of them is enough to refuse; none of them says "greedy"
+    on its own when absent."""
+    attestation = (half.capsule.get("model_attestation") or {}).get("compute_attestation") or {}
+    poc = attestation.get("x-mesh-poc-v1") or {}
+    declared = [
+        (attestation.get("decoding") or {}).get("temperature"),
+        (poc.get("generation_parameters") or {}).get("temperature"),
+        half.request_body.get("temperature"),
+    ]
+    return any(_temperature_above_zero(t) for t in declared)
+
+
 def _half_role(half: AdjudicationHalf) -> str | None:
     """The half's sealed `serving_provenance.role` ("provider"/"requester"),
     read from the same `x-mesh-poc-v1` block `capsule_mesh_viewer.
@@ -727,6 +756,10 @@ def adjudicate(
        declared `response_digest` -- a mismatch raises
        `PreimageDigestMismatchError` (abort BEFORE any comparison; never
        reason about bytes that don't match what was actually sealed).
+    3a. If either half was sampled (temperature > 0 in its sealed
+       `compute_attestation.decoding`, its host `generation_parameters`, or
+       the disclosed request), the answers are not comparable:
+       `no_verdict_reason = "not_comparable"`, never `contradicted`.
     4. If both halves declare a `weights_digest` and they differ, there is
        nothing to adjudicate -- returns with
        `no_verdict_reason="weights_mismatch"`.
@@ -779,6 +812,20 @@ def adjudicate(
 
     _verify_preimage_or_raise("half_a", half_a)
     _verify_preimage_or_raise("half_b", half_b)
+
+    if _sampled(half_a) or _sampled(half_b):
+        return AdjudicationOutcome(
+            verdict=None,
+            no_verdict_reason=NO_VERDICT_NOT_COMPARABLE,
+            divergence_index=None,
+            margin=0.0,
+            margin_tau=margin_tau,
+            prefix_digest=None,
+            twin_owner_distinct=None,
+            weights_digest=None,
+            half_a_capsule_id=half_a_id,
+            half_b_capsule_id=half_b_id,
+        )
 
     if (
         half_a.weights_digest is not None
