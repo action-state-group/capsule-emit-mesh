@@ -21,7 +21,8 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { TabPanel } from '@/components/ui/TabPanel'
 import { fetchCapsuleLedger } from '@/features/capsules/api/client'
 import type { CapsuleRecord, JsonRecord } from '@/features/capsules/api/types'
-import { PaneFetchError, fetchPaneA, fetchPaneB, fetchPaneCList } from '@/features/capsules/api/sidecarClient'
+import { PaneFetchError, fetchDoorStatus, fetchPaneA, fetchPaneB, fetchPaneCList } from '@/features/capsules/api/sidecarClient'
+import { doorNotice } from '@/features/capsules/lib/door-status'
 import { balanceCoverage } from '@/features/capsules/lib/balance-view'
 import { LedgerPeersTable } from '@/features/capsules/components/LedgerPeersTable'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
@@ -178,6 +179,27 @@ function ExchangesBalanceHeader({ card }: { card: JsonRecord | null | undefined 
       <p className="text-sm font-medium text-foreground">Served: {coverage.servedText}</p>
       <p className="text-xs text-fg-dim">{coverage.consumedText}</p>
       <p className="text-xs text-fg-faint">{coverage.statement}</p>
+    </div>
+  )
+}
+
+/** The evidence door is what lets the other side's records reach this node:
+ *  when it is down or fails authentication, say so above everything, since
+ *  no row can close. Nothing is shown while the answer is unknown. */
+function DoorNotice() {
+  const { mode } = useDataMode()
+  const query = useQuery({
+    queryKey: ['ledger', 'door', mode],
+    queryFn: fetchDoorStatus,
+    enabled: mode !== 'harness',
+    refetchInterval: 15_000,
+    retry: false
+  })
+  const notice = doorNotice(query.data)
+  if (!notice) return null
+  return (
+    <div role="status" className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-500">
+      {notice}
     </div>
   )
 }
@@ -1332,6 +1354,7 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
   return (
     <TooltipProvider delayDuration={250} skipDelayDuration={120}>
       <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-[calc(var(--shell-normal)*2)]">
+        <DoorNotice />
         <InfoBanner
           description={HERO_DESCRIPTION}
           leadingIcon={<ShieldCheck aria-hidden="true" className="size-4" />}

@@ -162,12 +162,6 @@ fn next_stream_id(prefix: &str) -> String {
     )
 }
 
-/// Same door this node's own `mesh_evidence_bridge` bridges to -- one E15
-/// door, two carriers.
-fn evidence_server_url() -> String {
-    std::env::var("ADMISSION_POLICY_EVIDENCE_SERVER_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8091".to_string())
-}
 
 /// Splits the wire bytes into `(sender_peer_id, capsule_json_bytes)` on the
 /// first `\n` -- see module doc's "wire shape" note. `None` when the bytes
@@ -287,15 +281,17 @@ async fn bridge_inbound_record_push(
     let client = reqwest::Client::builder()
         .timeout(responder_http_timeout())
         .build()?;
-    let url = format!("{}/evidence/record-push", evidence_server_url());
-    let response = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .header("X-Mesh-Requester-Id", &sender_peer_id)
-        .body(capsule_bytes.clone())
-        .send()
-        .await?;
-    let response_bytes = response.bytes().await?;
+    // Authenticated both ways (`door_auth`): a reply without the door's proof
+    // is never acked or cited.
+    let reply = crate::door_auth::call(
+        &client,
+        reqwest::Method::POST,
+        "/evidence/record-push",
+        &[("Content-Type", "application/json"), ("X-Mesh-Requester-Id", &sender_peer_id)],
+        Some(capsule_bytes.clone()),
+    )
+    .await?;
+    let response_bytes = reply.body;
 
     // SEAL BEFORE ACK (the ack-before-seal window fix): the door is the ONE
     // authority on whether the half verified + stored, and its refusal bytes

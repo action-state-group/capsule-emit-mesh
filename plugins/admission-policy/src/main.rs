@@ -1,5 +1,6 @@
 mod capsule_emit;
 mod data_dir;
+mod door_auth;
 mod checkpoint_cadence;
 mod decision;
 mod evidence_panes;
@@ -706,6 +707,12 @@ async fn main() -> anyhow::Result<()> {
     // Absolute, never the working directory's; see `data_dir`.
     let data_dir = data_dir::data_dir()?;
     tracing::info!(data_dir = %data_dir.display(), "plugin data directory");
+    let token_path = door_auth::init(&data_dir)?;
+    tracing::info!(
+        token_file = %token_path.display(),
+        door = %door_auth::door_url(),
+        "evidence door token ready; start the door with --token-file pointing at it"
+    );
     // A new history the owner asked for last run starts HERE, before the
     // ledger or the checkpoint cadence opens (see `owner_maintenance`).
     let log_id = owner_maintenance::apply_pending_before_open(&data_dir, PLUGIN_ID)?;

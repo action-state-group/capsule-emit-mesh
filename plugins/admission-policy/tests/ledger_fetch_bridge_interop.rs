@@ -8,6 +8,10 @@
 //! here as a regression guard) and a ledger-fetch-tagged open must reach
 //! the NEW responder -- never the other way around.
 
+mod common {
+    pub mod door;
+}
+
 use mesh_llm_plugin::proto::{self, envelope::Payload};
 use mesh_llm_plugin::{
     connect_side_stream, read_envelope, write_envelope, LocalListener, LocalStream,
@@ -41,15 +45,14 @@ impl Harness {
         let _ = std::fs::remove_file(&socket_path);
         let listener = UnixListener::bind(&socket_path).expect("bind fake-host socket");
 
+        let data_dir = std::env::temp_dir().join(format!("ledger-fetch-interop-data-{}", nonce()));
+        common::door::seed_token(&data_dir);
         let mut cmd = Command::new(PLUGIN_BIN);
         cmd.env("MESH_LLM_PLUGIN_ENDPOINT", &socket_path)
             .env("MESH_LLM_PLUGIN_TRANSPORT", "unix")
             .env("ADMISSION_POLICY_BLOCKED_MODELS", "blocked-test-model")
             .env("ADMISSION_POLICY_LEDGER_FETCH_TIMEOUT_MS", "1500")
-            .env(
-                "ADMISSION_POLICY_DATA_DIR",
-                std::env::temp_dir().join(format!("ledger-fetch-interop-data-{}", nonce())),
-            )
+            .env("ADMISSION_POLICY_DATA_DIR", &data_dir)
             // Same `/tmp` override `mesh_evidence_bridge_interop.rs` uses --
             // keeps the derived local-listener socket path under
             // `sockaddr_un`'s ~104-byte `sun_path` limit on macOS.
@@ -478,8 +481,9 @@ async fn spawn_fake_evidence_server(
                     .unwrap_or(request.len());
                 received.lock().await.push(request[header_end..].to_vec());
 
+                let proof = common::door::proof_header(&common::door::request_nonce(request), 200, response_body);
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{proof}\r\n",
                     response_body.len()
                 );
                 let _ = socket.write_all(response.as_bytes()).await;

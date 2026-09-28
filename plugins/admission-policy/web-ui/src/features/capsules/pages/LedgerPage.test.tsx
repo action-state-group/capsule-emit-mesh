@@ -19,6 +19,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LedgerPageContent } from '@/features/capsules/pages/LedgerPage'
+import { fetchDoorStatus } from '@/features/capsules/api/sidecarClient'
 import { setPluginHost } from '@/plugin-host/host'
 import { createStandaloneHost } from '@/plugin-host/standalone-host'
 import { CHAIN_BAR_INFO, INTEGRITY_TILE_INFO } from '@/features/capsules/lib/integrity-view'
@@ -28,6 +29,7 @@ import { CHAIN_BAR_INFO, INTEGRITY_TILE_INFO } from '@/features/capsules/lib/int
 // ---------------------------------------------------------------------------
 
 vi.mock('@/features/capsules/api/sidecarClient', () => ({
+  fetchDoorStatus: vi.fn().mockResolvedValue({ state: 'ready', url: 'http://127.0.0.1:8091' }),
   fetchPaneA: vi.fn().mockResolvedValue({
     rows: [],
     operator: null,
@@ -115,6 +117,14 @@ describe('LedgerPageContent', () => {
     expect(peersTab).toHaveAttribute('data-state', 'active')
     expect(screen.getByRole('tab', { name: /exchanges/i })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /integrity/i })).toBeInTheDocument()
+  })
+
+  it('says above everything when the evidence door is not running, and nothing when it is ready', async () => {
+    vi.mocked(fetchDoorStatus).mockResolvedValueOnce({ state: 'not_running', url: 'http://127.0.0.1:8091' })
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    expect(
+      await screen.findByText(/Confirmation unavailable: the evidence door isn't running at http:\/\/127\.0\.0\.1:8091/)
+    ).toBeInTheDocument()
   })
 
   it('shows the premise line', () => {

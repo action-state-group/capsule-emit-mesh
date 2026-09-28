@@ -135,13 +135,6 @@ where
     Ok(bytes)
 }
 
-/// Where this node's own `evidence_server.py` (E15) is listening. Defaults to
-/// `evidence_server.py`'s own default port (`--listen-port 8091`) so a manual
-/// run needs no extra wiring; the e2e test points this at an isolated port.
-fn evidence_server_url() -> String {
-    std::env::var("ADMISSION_POLICY_EVIDENCE_SERVER_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8091".to_string())
-}
 
 // ---------------------------------------------------------------------
 // Responder role: mesh-inbound `evidence-request/1` stream -> local E15 door
@@ -187,14 +180,17 @@ async fn bridge_inbound_evidence_stream(
     let client = reqwest::Client::builder()
         .timeout(responder_http_timeout())
         .build()?;
-    let url = format!("{}/evidence-request", evidence_server_url());
-    let response = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .body(request_bytes)
-        .send()
-        .await?;
-    let response_bytes = response.bytes().await?;
+    // Authenticated both ways (`door_auth`): a reply without the door's proof
+    // is never forwarded to the peer.
+    let reply = crate::door_auth::call(
+        &client,
+        reqwest::Method::POST,
+        "/evidence-request",
+        &[("Content-Type", "application/json")],
+        Some(request_bytes),
+    )
+    .await?;
+    let response_bytes = reply.body;
 
     write_half.write_all(&response_bytes).await?;
     write_half.shutdown().await?;

@@ -66,6 +66,9 @@ export function answerFromFixtures(method: string, url: string, read: CaptureRea
   const pluginPath = parsed.pathname.slice(PLUGIN_API_PREFIX.length)
   const route = pluginPath.startsWith('http/') ? pluginPath.slice('http/'.length) : pluginPath
 
+  // Recorded captures predate the door route: a captured node had its door.
+  if (method === 'GET' && route === 'door') return json(200, { state: 'ready', url: 'fixture' })
+
   if (method === 'GET' && route.startsWith('panes/')) {
     const key = `GET /api/capsules/${route}${parsed.search}`
     const hit = read(key)

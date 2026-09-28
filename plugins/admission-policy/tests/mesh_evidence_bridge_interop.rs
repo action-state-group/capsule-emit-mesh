@@ -14,6 +14,10 @@
 //! plugin's OWN behavior once reached, not the host's gate (untestable here
 //! without `mesh-llm-host-runtime`; that gate is upstream, unmodified code).
 
+mod common {
+    pub mod door;
+}
+
 use mesh_llm_plugin::proto::{self, envelope::Payload};
 use mesh_llm_plugin::{
     connect_side_stream, read_envelope, write_envelope, LocalListener, LocalStream,
@@ -42,14 +46,13 @@ impl Harness {
         let _ = std::fs::remove_file(&socket_path);
         let listener = UnixListener::bind(&socket_path).expect("bind fake-host socket");
 
+        let data_dir = std::env::temp_dir().join(format!("mesh-evidence-interop-data-{}", nonce()));
+        common::door::seed_token(&data_dir);
         let mut cmd = Command::new(PLUGIN_BIN);
         cmd.env("MESH_LLM_PLUGIN_ENDPOINT", &socket_path)
             .env("MESH_LLM_PLUGIN_TRANSPORT", "unix")
             // An isolated data dir per run: never the operator's own.
-            .env(
-                "ADMISSION_POLICY_DATA_DIR",
-                std::env::temp_dir().join(format!("mesh-evidence-interop-data-{}", nonce())),
-            )
+            .env("ADMISSION_POLICY_DATA_DIR", &data_dir)
             .env("ADMISSION_POLICY_BLOCKED_MODELS", "blocked-test-model")
             .env("ADMISSION_POLICY_MESH_REQUEST_TIMEOUT_MS", "1500")
             // `bind_side_stream` (mesh-llm-plugin's own `io.rs`) derives the
@@ -273,8 +276,9 @@ async fn spawn_fake_evidence_server(
                     .unwrap_or(request.len());
                 received.lock().await.push(request[header_end..].to_vec());
 
+                let proof = common::door::proof_header(&common::door::request_nonce(request), 200, response_body);
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{proof}\r\n",
                     response_body.len()
                 );
                 let _ = socket.write_all(response.as_bytes()).await;

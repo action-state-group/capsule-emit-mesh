@@ -19,6 +19,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "mesh-llm-plugin",
+ "rand_core 0.6.4",
  "reqwest",
  "rmcp 1.8.0",
  "schemars",

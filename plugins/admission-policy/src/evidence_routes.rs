@@ -235,6 +235,22 @@ pub fn with_routes(
         );
     }
 
+    builder = builder.http_item(
+        http::get("/door")
+            .binding_id("evidence_door_status")
+            .description(
+                "Whether this node's evidence door is running and holds this install's token: \
+                 ready, not_running, auth_failed or unknown, with its address.",
+            )
+            .input::<NoArgs>()
+            .handle(move |_args, _context| {
+                Box::pin(async move {
+                    serde_json::to_value(crate::door_auth::status().await)
+                        .map_err(|e| PluginError::internal(e.to_string()))
+                })
+            }),
+    );
+
     let s = source;
     builder = builder.http_item(
         http::get("/panes/pane-c")
@@ -405,6 +421,7 @@ mod tests {
         assert_eq!(
             routes,
             [
+                "/door",
                 "/ledger",
                 "/ledger/disclosure",
                 "/ledger/signed-statement",

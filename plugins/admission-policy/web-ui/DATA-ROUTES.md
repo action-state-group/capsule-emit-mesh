@@ -13,6 +13,7 @@ plugin keeps on disk arrive wrapped in JSON.
 
 | Plugin route, under `http/` (GET unless noted) | Answers | Read from (under the plugin's data dir) |
 | --- | --- | --- |
+| `door` | `{ "state": "ready" \| "not_running" \| "auth_failed" \| "unknown", "url": "<door address>" }`: whether this node's evidence door runs and holds this install's token; the page warns when it does not | the door itself (`GET /health`, authenticated) |
 | `ledger` | `{ "records": [<capsule>...], "node_pub_key_pem": "<PEM>" \| null }`; padding records are never listed; an empty list while nothing is sealed | `ledger/capsules.jsonl` + `ledger/node-key.pub.pem` |
 | `ledger/signed-statement?capsule_id=<id>` | `{ "signed_statement_b64": "<COSE_Sign1, base64>" \| null }` | `ledger/signed-statements/<id>.cose` |
 | `ledger/disclosure?capsule_id=<id>` | `{ "disclosure": {...} \| null }` | `ledger/disclosures/<id>.json` |

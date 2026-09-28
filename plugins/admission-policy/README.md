@@ -89,7 +89,18 @@ and packages `bundle/` plus `plugin-manifest.json` (from
 `--print-package-manifest`) next to the executable; see `web-ui/README.md`.
 
 The page's data comes from this plugin's own routes (`web-ui/DATA-ROUTES.md`),
-read from `ADMISSION_POLICY_DATA_DIR`. Two settings, both optional:
+read from `ADMISSION_POLICY_DATA_DIR`.
+
+**The evidence door.** The other side's records reach this node, and requests
+for yours are answered, through the local evidence door (`evidence_server.py`),
+at `ADMISSION_POLICY_EVIDENCE_SERVER_URL` (default `http://127.0.0.1:8091`). At
+startup the plugin creates `<data dir>/evidence-door.token` (0600, never
+replaced) and signs every call to the door with it; start the door with
+`--token-file <data dir>/evidence-door.token`. A reply that doesn't prove the
+door holds the token is ignored. When the door isn't running or fails that
+check, the plugin logs it and the page says "Confirmation unavailable".
+
+Two more settings, both optional:
 
 - **"Asked of you"** (the peer drill's log of requests made of this node) is
   read from `ADMISSION_POLICY_RECEIVED_LOG_DIR`, default
