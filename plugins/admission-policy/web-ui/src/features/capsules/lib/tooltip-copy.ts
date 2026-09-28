@@ -170,12 +170,25 @@ export const TWIN_NO_VERDICT_TOOLTIP =
 /** Integrity tiles. */
 export const INTEGRITY_TILE_TOOLTIPS = {
   sealed:
-    'Records this node has sealed into its own chain, checked on this machine. It says nothing about whether their contents are true.',
+    'Records this node sealed into its log, not counting padding. Sealed means a record can’t change unnoticed; it doesn’t make the contents true.',
   sharedWithWitness:
     'How many of your checkpoints a witness you don’t run is holding. Off by your choice until you turn one on.',
   confirmedByOtherSide: 'Exchanges the other side confirmed with their own signed record, checked on this machine.',
-  contradicted: 'Exchanges where your record and theirs disagree.'
+  contradicted:
+    'Exchanges where your record and theirs disagree: a different request, answer, model or server, or their record not matching its own id.'
 } as const
+
+/** The Exchanges header's one setup button: it opens Integrity and does
+ *  nothing else, so the hover says exactly that. */
+export const SETUP_STEPS_LABEL = 'See the setup steps'
+export const SETUP_STEPS_TOOLTIP =
+  'Opens Integrity, which lists how to get the other side’s record and how to have a witness hold your checkpoints.'
+
+/** Integrity: Continuity, and the evidence file download. */
+export const CONTINUITY_TOOLTIP =
+  'Whether each checkpoint builds on the one before, so a rewrite would show. This page reads the node’s status and doesn’t check it.'
+export const SAVE_EVIDENCE_FILE_TOOLTIP =
+  'Download this node’s records and checkpoint facts as one file that anyone can check without this app.'
 
 /** Integrity's chain coverage strip. */
 export const CHAIN_STRIP_TOOLTIP =

@@ -132,7 +132,7 @@ describe('LedgerPageContent', () => {
   it('the hero says in one line how many records, how many the other side confirmed, and disagreements', async () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     expect(await screen.findByTestId('hero-status-line')).toHaveTextContent(
-      '0 records · 0 confirmed by the other side · 0 disagreements · checkable only by you (witness off — your choice)'
+      '0 records · 0 confirmed by the other side · 0 disagreements · no outside witness (witness off — your choice)'
     )
   })
 
@@ -436,7 +436,7 @@ describe('LedgerPageContent', () => {
     expect(screen.queryByText(/sealed by you/)).not.toBeInTheDocument()
   })
 
-  it('"Get the other side’s record" and "Register a checkpoint" beside the Exchanges headline both open Integrity — the one place either setup step exists today', async () => {
+  it('"See the setup steps" beside the Exchanges headline opens Integrity, and its hover says that is all it does', async () => {
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue({
       rows: [
@@ -464,12 +464,13 @@ describe('LedgerPageContent', () => {
     await user.click(screen.getByRole('tab', { name: /exchanges/i }))
     await screen.findByTestId('exchanges-headline')
 
-    await user.click(screen.getByRole('button', { name: 'Get the other side’s record' }))
-    expect(await screen.findByText('Chain integrity')).toBeInTheDocument()
-
-    await user.click(screen.getByRole('tab', { name: /exchanges/i }))
-    await screen.findByTestId('exchanges-headline')
-    await user.click(screen.getByRole('button', { name: 'Register a checkpoint' }))
+    expect(screen.queryByRole('button', { name: 'Register a checkpoint' })).not.toBeInTheDocument()
+    const setup = screen.getByRole('button', { name: 'See the setup steps' })
+    const wrapper = setup.closest('[aria-describedby]') as HTMLElement
+    expect(document.getElementById(wrapper.getAttribute('aria-describedby') as string)).toHaveTextContent(
+      'Opens Integrity, which lists how to get the other side’s record'
+    )
+    await user.click(setup)
     expect(await screen.findByText('Chain integrity')).toBeInTheDocument()
   })
 
@@ -568,7 +569,7 @@ describe('LedgerPageContent', () => {
       const user = userEvent.setup()
       render(<LedgerPageContent />, { wrapper: makeWrapper() })
       await user.click(screen.getByRole('tab', { name: /exchanges/i }))
-      for (const name of ['Get the other side’s record', 'Register a checkpoint']) {
+      for (const name of ['See the setup steps']) {
         const button = await screen.findByRole('button', { name })
         expect(button).toBeDisabled()
         const wrapper = button.closest('[aria-describedby]') as HTMLElement
@@ -1218,7 +1219,7 @@ describe('LedgerPageContent — Part T6: Integrity section completion', () => {
 
     expect(
       await screen.findByText(
-        'Continuity: 1 checkpoint so far. The next one will be checked against it. A witness is what lets someone else check it too.'
+        'Continuity: 1 checkpoint so far. The next one builds on it. A witness is what lets someone else check it too.'
       )
     ).toBeInTheDocument()
     // Finding 7: the unwitnessed checkpoint is said by step 1 -- not again as

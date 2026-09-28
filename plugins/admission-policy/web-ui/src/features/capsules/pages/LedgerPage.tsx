@@ -116,6 +116,10 @@ import {
   HERO_DESCRIPTION_AFTER_LINK,
   HERO_DESCRIPTION_BEFORE_LINK,
   HERO_DESCRIPTION_LINK_TEXT,
+  CONTINUITY_TOOLTIP,
+  SAVE_EVIDENCE_FILE_TOOLTIP,
+  SETUP_STEPS_LABEL,
+  SETUP_STEPS_TOOLTIP,
   TRUST_MAP_URL,
   HERO_TOOLTIPS,
   NO_CONTRADICTION_REASON,
@@ -775,20 +779,18 @@ function ExchangesSection({
           {/* p2 item 5: both land on Integrity's setup steps, which a saved
              sample can't act on -- disabled there, with the reason on hover,
              never a click that silently goes nowhere useful. */}
-          {(['Get the other side’s record', 'Register a checkpoint'] as const).map((label) => (
-            <DisabledReason key={label} reason={sampleData ? SAMPLE_DATA_UNAVAILABLE : null}>
-              <Button
-                className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
-                disabled={sampleData}
-                onClick={onGoToIntegrity}
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                {label}
-              </Button>
-            </DisabledReason>
-          ))}
+          <DisabledReason reason={sampleData ? SAMPLE_DATA_UNAVAILABLE : SETUP_STEPS_TOOLTIP}>
+            <Button
+              className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
+              disabled={sampleData}
+              onClick={onGoToIntegrity}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              {SETUP_STEPS_LABEL}
+            </Button>
+          </DisabledReason>
         </div>
       </div>
       {/* Exceptions-first line — only when something needs attention; the
@@ -1231,21 +1233,23 @@ function IntegritySection() {
         </div>
         {/* ledger-ux-from-the-user §7 — the one hand-over affordance, on
            every range, same as the Exchanges table's own evidence export. */}
-        <Button
-          className="ui-control h-8 shrink-0 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
-          onClick={() =>
-            saveTextFile(
-              'mesh-integrity-evidence.json',
-              integrityEvidenceBundle(rows, card ?? null),
-              'application/json'
-            )
-          }
-          size="sm"
-          type="button"
-          variant="outline"
-        >
-          Save evidence file
-        </Button>
+        <HoverChip census="integrity:save_evidence_file" label={SAVE_EVIDENCE_FILE_TOOLTIP}>
+          <Button
+            className="ui-control h-8 shrink-0 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
+            onClick={() =>
+              saveTextFile(
+                'mesh-integrity-evidence.json',
+                integrityEvidenceBundle(rows, card ?? null),
+                'application/json'
+              )
+            }
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            Save evidence file
+          </Button>
+        </HoverChip>
       </CardHeader>
       <CardContent className="flex flex-col gap-4 pt-0 text-sm text-fg-dim">
         <ChainStrip checkpointCount={checkpointCount} coveredLeafCount={coveredLeafCount} sealedCount={sealedCount} />
@@ -1289,13 +1293,16 @@ function IntegritySection() {
           </div>
         ) : null}
 
-        {continuity ? (
-          <p>
-            Continuity: <span className="font-medium text-foreground">{continuity}</span>
-          </p>
-        ) : (
-          <p>{continuityFact(checkpointCount)}</p>
-        )}
+        <p className="inline-flex flex-wrap items-center gap-1">
+          {continuity ? (
+            <span>
+              Continuity: <span className="font-medium text-foreground">{continuity}</span>
+            </span>
+          ) : (
+            <span>{continuityFact(checkpointCount)}</span>
+          )}
+          <InfoHover census="integrity:continuity" describes="Continuity" label={CONTINUITY_TOOLTIP} />
+        </p>
 
         {/* Once-per-node facts -- engineering detail, so behind a Details
            disclosure (UX §4); never repeated per exchange row. */}

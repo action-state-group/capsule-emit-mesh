@@ -47,7 +47,7 @@ const STATIC: Record<string, StaticExplanation> = {
   checkpoint_signature: {
     meaning: 'The checkpoint covering this record carries a valid signature.',
     doesNotEstablish: 'That the checkpoint has been witnessed by anyone other than this node.',
-    howToSupply: 'Register a checkpoint that covers this record’s range (see Integrity).'
+    howToSupply: 'The node’s next checkpoint covers this record (see Integrity).'
   },
   external_registration: {
     meaning: 'A witness you don’t run holds the checkpoint covering this record. The witness’s receipt isn’t checked on this page.',

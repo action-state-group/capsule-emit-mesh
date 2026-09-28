@@ -25,7 +25,7 @@ export function heroStatusLine(counts: HeroCounts): string {
     plural(counts.records, 'record'),
     `${counts.confirmed} confirmed by the other side`,
     plural(counts.disagreements, 'disagreement'),
-    counts.witnessed ? 'also held by a witness you don’t run' : `checkable only by you (${WITNESS_OFF})`
+    counts.witnessed ? 'also held by a witness you don’t run' : `no outside witness (${WITNESS_OFF})`
   ].join(' · ')
 }
 

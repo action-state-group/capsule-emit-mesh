@@ -346,7 +346,7 @@ export const CONTINUITY_NOT_ESTABLISHED = 'Continuity: not established. It needs
 export function continuityFact(checkpointCount: number | null): string {
   if (checkpointCount === null || checkpointCount <= 0) return CONTINUITY_NOT_ESTABLISHED
   if (checkpointCount === 1) {
-    return 'Continuity: 1 checkpoint so far. The next one will be checked against it. A witness is what lets someone else check it too.'
+    return 'Continuity: 1 checkpoint so far. The next one builds on it. A witness is what lets someone else check it too.'
   }
   return `Continuity: ${checkpointCount} checkpoints so far. A witness is what lets someone else check them too.`
 }

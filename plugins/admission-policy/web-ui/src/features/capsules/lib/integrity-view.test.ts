@@ -285,7 +285,7 @@ describe('once-per-node facts — never fabricated, never per-row', () => {
     expect(continuityFact(null)).toBe(CONTINUITY_NOT_ESTABLISHED)
     expect(continuityFact(0)).toBe(CONTINUITY_NOT_ESTABLISHED)
     expect(continuityFact(1)).toBe(
-      'Continuity: 1 checkpoint so far. The next one will be checked against it. A witness is what lets someone else check it too.'
+      'Continuity: 1 checkpoint so far. The next one builds on it. A witness is what lets someone else check it too.'
     )
     // Never claims each checkpoint binds to the one before -- not reported.
     expect(continuityFact(3)).toBe('Continuity: 3 checkpoints so far. A witness is what lets someone else check them too.')
