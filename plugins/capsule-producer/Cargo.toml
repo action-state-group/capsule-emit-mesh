@@ -15,8 +15,8 @@ path = "src/lib.rs"
 # records; `cll` is the log it embeds, used directly only by the backfill
 # migration binary and tests. Both come from the same commit, so there is one
 # `cll` in the build.
-evidencebook = { git = "https://github.com/action-state-group/checkpointed-local-log", rev = "6cf568c4092a71c1bd5ead41e51a109f38ea0ccb" }
-cll = { git = "https://github.com/action-state-group/checkpointed-local-log", rev = "6cf568c4092a71c1bd5ead41e51a109f38ea0ccb" }
+evidencebook = { git = "https://github.com/action-state-group/checkpointed-local-log", tag = "rust-evidencebook-v0.1.0" }
+cll = { git = "https://github.com/action-state-group/checkpointed-local-log", tag = "rust-evidencebook-v0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 coset = "0.4"
