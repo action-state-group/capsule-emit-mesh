@@ -87,6 +87,8 @@ The plugin's console page is built from `web-ui/` (`pnpm install && pnpm build`
 writes `bundle/register-mesh-plugin-ui.js`), and the release workflow builds it
 and packages `bundle/` plus `plugin-manifest.json` (from
 `--print-package-manifest`) next to the executable; see `web-ui/README.md`.
+Packaging is `package_release.py`; installing a package on a node is
+[`INSTALL.md`](INSTALL.md).
 
 The page's data comes from this plugin's own routes (`web-ui/DATA-ROUTES.md`),
 read from `ADMISSION_POLICY_DATA_DIR`.

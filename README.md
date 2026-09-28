@@ -78,9 +78,12 @@ enabled = false
 ```
 
 The release workflow builds macOS/Apple Silicon (`aarch64-apple-darwin`) and
-Linux (`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`) assets; see
+Linux (`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`) packages, each
+with the plugin's Evidence page, plus a `SHA256SUMS` file; see
 [`.github/workflows/release.yml`](.github/workflows/release.yml) for the build
-matrix. The Python sidecar path below (**Path 2**) has no native binary and
+matrix. To download a package, verify its checksum, and install it from the
+archive, follow
+[`plugins/admission-policy/INSTALL.md`](plugins/admission-policy/INSTALL.md). The Python sidecar path below (**Path 2**) has no native binary and
 stays a `pip install` regardless of platform.
 
 Two integration paths ship here (see below): a **native Rust
