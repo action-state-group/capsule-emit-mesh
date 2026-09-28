@@ -34,6 +34,9 @@ export type RightCellState = {
 // wiring is out of scope here ... not yet reachable over the wire") -- this
 // mapping exists so the UI is forward-compatible the moment it is.
 const EVIDENCE_OUTCOME_TO_KIND: Record<string, RightCellStateKind> = {
+  // This node's door refused the half the provider pushed: signed with its
+  // key, it named another server or other model weights than our record.
+  claims_refused: 'contradicted',
   signed_refusal: 'open_refused',
   recorded_absence: 'open_absent',
   unanswered: 'open_asked',

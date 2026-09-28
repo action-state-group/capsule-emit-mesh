@@ -208,7 +208,9 @@ export type AssuranceProperties = Record<string, PaneState>
  *  (`evidence_responder.py`: "not yet reachable over the wire") -- an
  *  absent value degrades to `not_asked`, never a guess at one of the other
  *  three. */
-export type EvidenceRequestOutcome = 'signed_refusal' | 'recorded_absence' | 'unanswered' | 'not_asked'
+/** `claims_refused`: this node's door refused the provider's pushed half for
+ *  its signed claims (another server named, other model weights). */
+export type EvidenceRequestOutcome = 'signed_refusal' | 'recorded_absence' | 'unanswered' | 'not_asked' | 'claims_refused'
 
 /** item 3 — the mechanical facts of an ambient
  *  twin comparison, when this row is one half of one. Deliberately carries

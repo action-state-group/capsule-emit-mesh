@@ -560,3 +560,12 @@ describe('deriveRightCellState — a swapped model is never CLOSED (attack D)', 
     expect(deriveRightCellState(paneCRow(), fetched({ peerRecord: peer }), local).kind).toBe('closed')
   })
 })
+
+describe('deriveRightCellState — a provider half the door refused for its claims (attack B/D)', () => {
+  it('reads CONTRADICTED, never open and never closed', () => {
+    const row = paneCRow({
+      theirs: { ...paneCRow().theirs, evidence_outcome: 'claims_refused', evidence_outcome_date: '2026-09-28T08:00:00Z' }
+    })
+    expect(deriveRightCellState(row).kind).toBe('contradicted')
+  })
+})

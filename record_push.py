@@ -199,6 +199,17 @@ REASON_CHECKPOINT_STALE = "checkpoint_stale"
 #: root for a size this node already holds a signed root for. Recorded as
 #: evidence (:data:`CHECKPOINT_EQUIVOCATIONS_FILENAME`), never accepted.
 REASON_CHECKPOINT_EQUIVOCATION = "checkpoint_equivocation"
+#: A served half, signed by its sender's announced key, that names another
+#: node as its server, or a server other than the one this node's own record
+#: of the exchange names. A provider cannot sign a record for someone else.
+REASON_SERVED_BY_MISMATCH = "served_by_mismatch"
+#: A served half whose model weights claims disagree with each other, or do
+#: not include the weights this node's own record of the exchange asked for.
+REASON_MODEL_MISMATCH = "model_mismatch"
+#: The two refusals above: the sender's own signed claims contradict this
+#: node's record of the exchange. The pane shows such an exchange as
+#: contradicted when the sender is the node that served it.
+CLAIM_MISMATCH_REASONS = frozenset({REASON_SERVED_BY_MISMATCH, REASON_MODEL_MISMATCH})
 
 #: The top-level member that marks a push body as a bundle (a capsule never
 #: carries it) and the one bundle version this door reads.
@@ -493,7 +504,12 @@ def _append_provenance(state: Any, capsule: dict[str, Any], sender_peer_id: str,
 
 
 def _append_rejected_push(
-    state: Any, capsule_id: str | None, sender_peer_id: str | None, reason: str, issued_at: str
+    state: Any,
+    capsule_id: str | None,
+    sender_peer_id: str | None,
+    reason: str,
+    issued_at: str,
+    request_digest: str | None = None,
 ) -> None:
     """Seam A2 -- record a claimed-identity
     push that failed signature/announced-key verification. Never folded into
@@ -508,8 +524,105 @@ def _append_rejected_push(
             "claimed_sender_peer_id": sender_peer_id,
             "reason": reason,
             "rejected_at": issued_at,
+            # The exchange the half claimed to be about, so the pane can show
+            # that exchange's row (only set for the claim checks).
+            **({"request_digest": request_digest} if request_digest else {}),
         },
     )
+
+
+_HEX64 = frozenset("0123456789abcdef")
+
+
+def _weights_claims(record: dict[str, Any]) -> set[str]:
+    """Every weights digest a record names for its model: the producer's
+    ``compute_attestation.weights_digest.digest``, the host's
+    ``serving_provenance.model.weights_digest``, and a ``sha256-<hex>`` in
+    ``model_attestation.model_id`` (a local GGUF is named by its weights).
+    Mirrors the plugin pane's ``weights_claims``."""
+    ma = record.get("model_attestation") or {}
+    ca = ma.get("compute_attestation") or {}
+    sp = (ca.get("x-mesh-poc-v1") or {}).get("serving_provenance") or {}
+    candidates = [
+        (ca.get("weights_digest") or {}).get("digest") if isinstance(ca.get("weights_digest"), dict) else None,
+        (sp.get("model") or {}).get("weights_digest") if isinstance(sp.get("model"), dict) else None,
+    ]
+    model_id = ma.get("model_id")
+    if isinstance(model_id, str):
+        low = model_id.lower()
+        for marker in ("sha256-", "sha256:"):
+            if marker in low:
+                candidates.append(low.split(marker, 1)[1][:64])
+    out = set()
+    for c in candidates:
+        if isinstance(c, str):
+            c = c.strip().lower()
+            if len(c) == 64 and set(c) <= _HEX64:
+                out.add(c)
+    return out
+
+
+def _poc(record: dict[str, Any]) -> dict[str, Any]:
+    return ((record.get("model_attestation") or {}).get("compute_attestation") or {}).get("x-mesh-poc-v1") or {}
+
+
+def _named_server(record: dict[str, Any]) -> str | None:
+    served_by = (_poc(record).get("serving_provenance") or {}).get("served_by_node_id")
+    if isinstance(served_by, str) and served_by.strip() and served_by.strip() != "unknown":
+        return served_by.strip()
+    return None
+
+
+def _own_requested_records(ledger_dir: Any, request_digest: str) -> list[dict[str, Any]]:
+    """This node's own requester records of the exchange with
+    ``request_digest``: what our host routed and what we asked for."""
+    from pathlib import Path
+
+    path = Path(ledger_dir) / "capsules.jsonl"
+    if not path.exists():
+        return []
+    own = []
+    for line in path.read_text().splitlines():
+        try:
+            record = json.loads(line)
+        except Exception:
+            continue
+        if (
+            isinstance(record, dict)
+            and (record.get("effect") or {}).get("request_digest") == request_digest
+            and _poc(record).get("role") == "requested"
+        ):
+            own.append(record)
+    return own
+
+
+def _claims_verdict(state: Any, capsule: dict[str, Any], sender_peer_id: str) -> str | None:
+    """The claim checks on a signature-verified SERVED half, or ``None``.
+
+    The pin is this node's own record of the same exchange: the node our host
+    routed it to and the weights we asked for. A provider signing a role lie
+    (naming another server) or a model swap with its own key passes the
+    signature check; it does not pass these."""
+    if _poc(capsule).get("role") != "served":
+        return None
+    named = _named_server(capsule)
+    if named is not None and named != sender_peer_id:
+        return REASON_SERVED_BY_MISMATCH
+    request_digest = (capsule.get("effect") or {}).get("request_digest")
+    own = _own_requested_records(state.ledger_dir, request_digest) if isinstance(request_digest, str) else []
+    routed = {_named_server(r) for r in own} - {None}
+    if routed and sender_peer_id not in routed:
+        return REASON_SERVED_BY_MISMATCH
+    theirs = _weights_claims(capsule)
+    if len(theirs) > 1:
+        return REASON_MODEL_MISMATCH
+    asked: set[str] = set()
+    for record in own:
+        if _named_server(record) in (None, sender_peer_id):
+            asked |= _weights_claims(record)
+    if asked and theirs and not (asked & theirs):
+        return REASON_MODEL_MISMATCH
+    return None
 
 
 def _canonical_digest(obj: dict[str, Any]) -> str:
@@ -747,6 +860,21 @@ def handle_record_push(
             state, capsule.get("capsule_id"), sender_peer_id, REASON_SIGNATURE_UNVERIFIED, issued_at
         )
         return _refuse(request_digest, REASON_SIGNATURE_UNVERIFIED, state=state, issued_at=issued_at)
+
+    # The signature only proves WHO signed. What the signer claims about the
+    # exchange -- who served it, which model -- is checked against this
+    # node's own record of it before anything is held.
+    claims = _claims_verdict(state, capsule, sender_peer_id)
+    if claims is not None:
+        _append_rejected_push(
+            state,
+            capsule.get("capsule_id"),
+            sender_peer_id,
+            claims,
+            issued_at,
+            request_digest=(capsule.get("effect") or {}).get("request_digest"),
+        )
+        return _refuse(request_digest, claims, state=state, issued_at=issued_at)
 
     # The received foreign body is an
     # ARTIFACT we HOLD, not a record we MADE: store it by capsule_id in the

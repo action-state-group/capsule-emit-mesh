@@ -2030,6 +2030,73 @@ pub(crate) fn build_pane_c_drilldown(
 /// `capsule_panes.rs` already validated it), reading the ledger fresh on
 /// every call -- same "never cache" discipline as
 /// `accountability_pane_routes.py`'s own module docstring.
+/// The door's refusal reasons for a half whose signed claims contradict this
+/// node's own record of the exchange (record_push.py `CLAIM_MISMATCH_REASONS`).
+const CLAIM_REFUSAL_REASONS: [&str; 2] = ["served_by_mismatch", "model_mismatch"];
+
+/// `rejected-record-pushes.jsonl` lines the door wrote for a claim check:
+/// `(request_digest, sender, reason, rejected_at)`.
+fn read_claim_refusals(ledger_dir: &Path) -> Vec<(String, String, String, Option<String>)> {
+    let Ok(text) = std::fs::read_to_string(ledger_dir.join("rejected-record-pushes.jsonl")) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+        .filter_map(|entry| {
+            let reason = entry.get("reason").and_then(Value::as_str)?;
+            if !CLAIM_REFUSAL_REASONS.contains(&reason) {
+                return None;
+            }
+            Some((
+                entry.get("request_digest").and_then(Value::as_str)?.to_string(),
+                entry.get("claimed_sender_peer_id").and_then(Value::as_str)?.to_string(),
+                reason.to_string(),
+                entry.get("rejected_at").and_then(Value::as_str).map(str::to_string),
+            ))
+        })
+        .collect()
+}
+
+/// A row whose other half the door refused because the node that served it
+/// signed claims contradicting our record (another server named, other model
+/// weights) is never left looking merely open: `theirs.evidence_outcome` is
+/// `claims_refused`, which the page renders CONTRADICTED. Only a refusal
+/// from the node OUR record says served the exchange counts: a push from
+/// anyone else says nothing about it.
+fn mark_claims_refused(pane: &mut Value, our_records: &[Value], refusals: &[(String, String, String, Option<String>)]) {
+    if refusals.is_empty() {
+        return;
+    }
+    let ours_by_id: HashMap<&str, &Value> = our_records
+        .iter()
+        .filter_map(|r| r.get("capsule_id").and_then(Value::as_str).map(|id| (id, r)))
+        .collect();
+    let mark = |row: &mut Value| {
+        if row["theirs"].get("record").is_some_and(|r| !r.is_null()) {
+            return;
+        }
+        let Some(mine) = row["mine"].get("capsule_id").and_then(Value::as_str).and_then(|id| ours_by_id.get(id)) else {
+            return;
+        };
+        if label_role(mine) != "requested" {
+            return;
+        }
+        let (Some(digest), Some(server)) = (request_digest(mine), full_counterparty_node_id(mine)) else {
+            return;
+        };
+        if let Some((_, _, reason, at)) =
+            refusals.iter().rev().find(|(d, sender, _, _)| d == digest && *sender == server)
+        {
+            row["theirs"]["evidence_outcome"] = json!("claims_refused");
+            row["theirs"]["evidence_outcome_date"] = json!(at);
+            row["theirs"]["evidence_outcome_reason"] = json!(reason);
+        }
+    };
+    if let Some(rows) = pane.get_mut("rows").and_then(Value::as_array_mut) {
+        rows.iter_mut().for_each(mark);
+    }
+}
+
 pub(crate) fn build_pane_json(
     pane: &str,
     ledger_dir: &Path,
@@ -2050,12 +2117,16 @@ pub(crate) fn build_pane_json(
         // never the foreign bodies (those are evidence we hold, not ours).
         "pane-a" => Some(build_pane_a(&our_records, read_checkpoint_card(ledger_dir))),
         "pane-b" => Some(build_pane_b(&pane_bc_records, &received_provenance)),
-        "pane-c" => Some(match exchange_id {
-            Some(id) if !id.is_empty() => {
-                build_pane_c_drilldown(&pane_bc_records, &received_provenance, id)
-            }
-            _ => build_pane_c_list(&pane_bc_records, &received_provenance),
-        }),
+        "pane-c" => {
+            let mut pane = match exchange_id {
+                Some(id) if !id.is_empty() => {
+                    build_pane_c_drilldown(&pane_bc_records, &received_provenance, id)
+                }
+                _ => build_pane_c_list(&pane_bc_records, &received_provenance),
+            };
+            mark_claims_refused(&mut pane, &our_records, &read_claim_refusals(ledger_dir));
+            Some(pane)
+        }
         _ => None,
     }
 }
@@ -3535,6 +3606,37 @@ mod tests {
         assert_eq!(digest_match_state(&mine, &theirs(&other_id, &other, &other)), STATE_FAILED, "case 2");
         let alias = with_weights(mine.clone(), Some("qwen"), None, None);
         assert_eq!(digest_match_state(&alias, &theirs(&other_id, &other, &other)), STATE_VERIFIED, "a name alone never counts");
+    }
+
+    /// Attack B/D at the pane: the door refused the provider's half for a
+    /// claim check, so the row is marked `claims_refused` (the page shows
+    /// CONTRADICTED), never left open. A refusal of a push from a node our
+    /// record did not route to leaves the row alone.
+    #[test]
+    fn a_claim_refusal_from_our_provider_marks_the_row_and_one_from_anyone_else_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let provider = format!("c1f5{}", "5".repeat(60));
+        let ours = mesh_half_served_by("a".repeat(64).as_str(), "requested", "d".repeat(64).as_str(), "e".repeat(64).as_str(), "me-1", &provider);
+        write_fixture_ledger(dir.path(), &[ours]);
+        let refusal = |sender: &str, reason: &str| {
+            json!({ "capsule_id": "f".repeat(64), "claimed_sender_peer_id": sender, "reason": reason,
+                    "rejected_at": "2026-09-28T08:00:00Z", "request_digest": "d".repeat(64) })
+        };
+        let write = |lines: &[Value]| {
+            let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+            std::fs::write(dir.path().join("rejected-record-pushes.jsonl"), text).unwrap();
+        };
+
+        write(&[refusal(&"b".repeat(64), "served_by_mismatch"), refusal(&provider, "signature_unverified")]);
+        let pane = build_pane_json("pane-c", dir.path(), None).unwrap();
+        assert!(pane["rows"][0]["theirs"].get("evidence_outcome").is_none(), "not from our provider, or not a claim check");
+
+        write(&[refusal(&provider, "model_mismatch")]);
+        let pane = build_pane_json("pane-c", dir.path(), None).unwrap();
+        let theirs = &pane["rows"][0]["theirs"];
+        assert_eq!(theirs["evidence_outcome"], json!("claims_refused"));
+        assert_eq!(theirs["evidence_outcome_reason"], json!("model_mismatch"));
+        assert_eq!(theirs["evidence_outcome_date"], json!("2026-09-28T08:00:00Z"));
     }
 
     /// A minimal CITING record our
