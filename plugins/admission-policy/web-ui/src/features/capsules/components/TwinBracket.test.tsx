@@ -152,5 +152,15 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
     expect(screen.getByText(/referee: contradicted 2e981e8089/)).toBeInTheDocument()
     expect(screen.queryByText('no verdict')).not.toBeInTheDocument()
     expect(screen.getByText(/a9a0ca668223/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'View the verdict' })).toBeInTheDocument()
+  })
+
+  it('offers no verdict to open while no referee has signed one', () => {
+    render(
+      <TwinBracket bracketId="twin-xyz" rows={[twinRow('a'), twinRow('b')]} twinSampleRateDenominator={1}>
+        <p>row a</p>
+      </TwinBracket>
+    )
+    expect(screen.queryByRole('button', { name: 'View the verdict' })).not.toBeInTheDocument()
   })
 })

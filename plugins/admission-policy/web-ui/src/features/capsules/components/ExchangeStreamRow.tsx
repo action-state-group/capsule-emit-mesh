@@ -53,6 +53,7 @@ import { StageStrip } from '@/features/capsules/components/StageStrip'
 import { copyStateLabel } from '@/lib/copyStateLabel'
 import { useClipboardCopy } from '@/lib/useClipboardCopy'
 import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
+import { RowVerdictLine } from '@/features/capsules/components/RowVerdictLine'
 
 /** The gated cell text (Do (2)) when an ask
  *  action's row carries no recorded counterparty. This splits by which of two
@@ -340,6 +341,7 @@ export function ExchangeStreamRow({
                 </>
               ) : null}
             </p>
+            <RowVerdictLine row={row.raw} />
           </div>
           <div className="flex flex-col gap-1.5 px-3 py-2">
             <div className="flex flex-wrap items-center justify-between gap-2">

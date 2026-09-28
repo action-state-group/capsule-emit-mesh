@@ -881,6 +881,51 @@ describe('ExchangeStreamRow — §3A one colour per state', () => {
   })
 })
 
+describe('ExchangeStreamRow — the referee', () => {
+  it('badges a row that is this node’s answer as a referee, and no other row', () => {
+    const referee = makeRow('open_not_asked')
+    render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        {...toggleProps()}
+        rail={NO_RAIL}
+        row={{ ...referee, raw: { ...referee.raw, referee_call: true } }}
+      />
+    )
+    expect(screen.getByText('referee answer')).toBeInTheDocument()
+  })
+
+  it('shows a verdict delivered about this exchange on its row', () => {
+    const judged = makeRow('open_not_asked')
+    render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        {...toggleProps()}
+        rail={NO_RAIL}
+        row={{
+          ...judged,
+          raw: {
+            ...judged.raw,
+            adjudication: {
+              verdict: 'corroborated',
+              verdict_capsule_id: 'v'.repeat(64),
+              referee_node_id: 'a70d3967bea3b22f'.repeat(4),
+              received_at: '2026-09-28T15:00:00Z',
+              about_this_node: false
+            }
+          }
+        }}
+      />
+    )
+    expect(screen.getByText('A referee (node a70d3967be…) found this answer corroborated.')).toBeInTheDocument()
+  })
+
+  it('shows no referee badge on an ordinary row', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_asked')} />)
+    expect(screen.queryByText('referee answer')).not.toBeInTheDocument()
+  })
+})
+
 describe('ExchangeStreamRow — row time', () => {
   it('shows the exchange time in local time, never an ISO/UTC stamp', () => {
     const { container } = render(

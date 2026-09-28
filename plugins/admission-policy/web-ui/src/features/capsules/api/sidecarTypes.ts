@@ -340,6 +340,12 @@ export type PaneCRow = {
   /** This node's record of a call it answered AS A REFEREE (its client nonce
    *  carries the referee prefix). */
   referee_call?: boolean
+  /** On a JUDGED node: a referee's verdict delivered to this node that cites
+   *  this row's own half. Absent when there is none. */
+  adjudication?: DeliveredAdjudication
+  /** On the REFEREE node: the verdict it issued, on the row of the call it
+   *  answered as referee. Absent when there is none. */
+  adjudication_issued?: IssuedAdjudication
 }
 
 export type TwinRowFacts = {
@@ -348,6 +354,34 @@ export type TwinRowFacts = {
   other_row: string | null
   verdict?: string | null
   verdict_capsule_id?: string | null
+  referee_node_id?: string | null
+}
+
+/** `"corroborated"` or `"contradicted:<node_id>"`, as the referee sealed it. */
+export type VerdictWire = string
+
+export type DeliveredAdjudication = {
+  verdict: VerdictWire
+  verdict_capsule_id: string
+  referee_node_id: string
+  received_at: string
+  /** The verdict names this node as the one contradicted. */
+  about_this_node: boolean
+}
+
+export type IssuedAdjudication = {
+  verdict: VerdictWire
+  verdict_capsule_id: string
+  bracket_id?: string
+  halves: string[]
+}
+
+/** `http/ledger/verdict?capsule_id=…`: one signed verdict record, with the
+ *  plugin's own check of its signature. */
+export type VerdictRecordJson = {
+  capsule: Record<string, unknown>
+  signed_by_key_id: string | null
+  verify_ok: boolean
 }
 
 export type PaneCListJson = {

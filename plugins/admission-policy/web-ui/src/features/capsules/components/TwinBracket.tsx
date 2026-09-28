@@ -18,6 +18,7 @@ import { StatusBadge } from '@/components/ui/StatusBadge'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import { saveTextFile } from '@/features/capsules/lib/exchange-export'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
+import { VerdictRecordDialog } from '@/features/capsules/components/VerdictRecordDialog'
 import { TWIN_NO_VERDICT_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
 import {
   TWIN_ANSWER_LABEL,
@@ -57,6 +58,7 @@ export type TwinBracketProps = {
 
 export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, children }: TwinBracketProps) {
   const [compareOpen, setCompareOpen] = useState(false)
+  const [verdictOpen, setVerdictOpen] = useState(false)
   const parametersLine = twinComparisonParametersLine(rows)
   const disclosure = twinDisclosureSentence(twinSampleRateDenominator)
   const [textA, textB] = twinResponseTexts(rows)
@@ -110,7 +112,23 @@ export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, childr
             Not yet adjudicated — no referee has signed a verdict for this pair.
           </p>
         ) : (
-          <p className="type-caption text-fg-faint">Referee's signed verdict: {capsuleId ? `${capsuleId.slice(0, 12)}…` : 'id not recorded'}</p>
+          <p className="type-caption flex flex-wrap items-center gap-x-2 text-fg-faint">
+            <span>Referee's signed verdict: {capsuleId ? `${capsuleId.slice(0, 12)}…` : 'id not recorded'}</span>
+            {capsuleId ? (
+              <>
+                <button
+                  className="underline underline-offset-2 hover:text-foreground"
+                  onClick={() => setVerdictOpen(true)}
+                  type="button"
+                >
+                  View the verdict
+                </button>
+                {verdictOpen ? (
+                  <VerdictRecordDialog capsuleId={capsuleId} onOpenChange={setVerdictOpen} open={verdictOpen} />
+                ) : null}
+              </>
+            ) : null}
+          </p>
         )}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="type-caption text-fg-faint">{disclosure}</p>
