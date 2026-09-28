@@ -206,6 +206,24 @@ pub fn with_routes(
 
     let s = source.clone();
     builder = builder.http_item(
+        http::get("/ledger/verdict")
+            .binding_id("evidence_verdict")
+            .description(
+                "One referee-signed twin verdict this node holds, with this plugin's check of its \
+                 signature and of this node's own record of it, or a null capsule.",
+            )
+            .input::<CapsuleIdArgs>()
+            .handle(move |args, _context| {
+                let s = s.clone();
+                Box::pin(async move {
+                    let id = record_id(&args.capsule_id)?.to_string();
+                    blocking(move || Ok(crate::adjudication_records::verdict_json(&s.ledger_dir, &id))).await
+                })
+            }),
+    );
+
+    let s = source.clone();
+    builder = builder.http_item(
         http::get("/ledger/disclosure")
             .binding_id("evidence_disclosure")
             .description("The request/response text kept beside one record, or null.")
@@ -425,6 +443,7 @@ mod tests {
                 "/ledger",
                 "/ledger/disclosure",
                 "/ledger/signed-statement",
+                "/ledger/verdict",
                 "/panes/pane-a",
                 "/panes/pane-b",
                 "/panes/pane-c",

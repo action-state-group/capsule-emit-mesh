@@ -84,6 +84,51 @@ pub fn sign_producer_envelope(capsule_id_digest: &[u8], signing_key: &SigningKey
         .expect("COSE_Sign1 must always be CBOR-serializable")
 }
 
+/// Verify a capsule's inline producer envelope (`signature` + `key_id`, as
+/// `attach_producer_envelope` or the Python `sign_producer_envelope` attach
+/// them): the `capsule_id` recomputes, the envelope's payload is that id's raw
+/// digest, its kid is the carried `key_id`, and the signature verifies under
+/// that key. Returns the signing `key_id` (hex) on success.
+pub fn verify_producer_envelope(capsule: &serde_json::Value) -> Result<String, String> {
+    let carried = capsule
+        .get("capsule_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("no capsule_id")?;
+    let recomputed = crate::jcs::compute_capsule_id(capsule).map_err(|e| format!("capsule_id: {e}"))?;
+    if recomputed != carried {
+        return Err("capsule_id does not recompute".into());
+    }
+    let key_id = capsule
+        .get("key_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("no key_id")?;
+    let signature = capsule
+        .get("signature")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("no signature")?;
+    let key_bytes: [u8; 32] = hex::decode(key_id)
+        .map_err(|_| "key_id is not hex")?
+        .try_into()
+        .map_err(|_| "key_id is not 32 bytes")?;
+    let key = VerifyingKey::from_bytes(&key_bytes).map_err(|_| "key_id is not an Ed25519 key")?;
+    let envelope = hex::decode(signature).map_err(|_| "signature is not hex")?;
+    let sign1 = CoseSign1::from_tagged_slice(&envelope).map_err(|_| "signature is not a COSE_Sign1")?;
+    if sign1.protected.header.key_id != key_bytes.to_vec() {
+        return Err("envelope kid is not the carried key_id".into());
+    }
+    let digest = hex::decode(carried).map_err(|_| "capsule_id is not hex")?;
+    if sign1.payload.as_deref() != Some(&digest[..]) {
+        return Err("envelope payload is not this capsule_id".into());
+    }
+    sign1
+        .verify_signature(b"", |sig, tbs| {
+            let sig: [u8; 64] = sig.try_into().map_err(|_| ed25519_dalek::SignatureError::new())?;
+            key.verify(tbs, &ed25519_dalek::Signature::from_bytes(&sig))
+        })
+        .map_err(|_| "signature does not verify")?;
+    Ok(key_id.to_string())
+}
+
 pub struct SignedStatementInput<'a> {
     pub payload: &'a [u8],
     pub issuer: &'a str,
@@ -270,4 +315,38 @@ mod tests {
         let b = sign_producer_envelope(&digest, &SigningKey::from_bytes(&[2u8; 32]));
         assert_ne!(a, b);
     }
+
+    fn enveloped(sk: &SigningKey) -> serde_json::Value {
+        let mut capsule = serde_json::json!({ "schema": "t", "body": { "n": 1 } });
+        let id = crate::jcs::compute_capsule_id(&capsule).unwrap();
+        capsule["capsule_id"] = serde_json::json!(id);
+        let envelope = sign_producer_envelope(&hex::decode(&id).unwrap(), sk);
+        capsule["signature"] = serde_json::json!(hex::encode(envelope));
+        capsule["key_id"] = serde_json::json!(hex::encode(sk.verifying_key().to_bytes()));
+        capsule
+    }
+
+    #[test]
+    fn a_producer_envelope_verifies_and_names_its_key() {
+        let sk = SigningKey::from_bytes(&[5u8; 32]);
+        let capsule = enveloped(&sk);
+        assert_eq!(verify_producer_envelope(&capsule).unwrap(), hex::encode(sk.verifying_key().to_bytes()));
+    }
+
+    #[test]
+    fn an_altered_or_resigned_capsule_does_not_verify() {
+        let sk = SigningKey::from_bytes(&[5u8; 32]);
+        let mut altered = enveloped(&sk);
+        altered["body"]["n"] = serde_json::json!(2);
+        assert!(verify_producer_envelope(&altered).is_err(), "content changed");
+
+        let mut other_key = enveloped(&sk);
+        other_key["key_id"] = serde_json::json!(hex::encode(SigningKey::from_bytes(&[6u8; 32]).verifying_key().to_bytes()));
+        assert!(verify_producer_envelope(&other_key).is_err(), "key_id swapped");
+
+        let mut unsigned = enveloped(&sk);
+        unsigned.as_object_mut().unwrap().remove("signature");
+        assert!(verify_producer_envelope(&unsigned).is_err(), "unsigned");
+    }
+
 }
