@@ -7,7 +7,8 @@
 //! refuses a broken link, and anyone holding a checkpoint would see it. The
 //! three things an owner CAN do:
 //!
-//! 1. **Delete stored prompt and answer text** (`<ledger>/disclosures/*.json`).
+//! 1. **Delete stored prompt and answer text** (`<ledger>/disclosures/*.json`,
+//!    and the host's per-exchange copies in `disclosures/by-exchange/`).
 //!    That text is a local, out-of-band attachment -- never part of a signed
 //!    record -- so the records keep their digests and stay valid.
 //! 2. **Rebuild the index.** Re-open the ledger from disk, re-checking every
@@ -242,6 +243,39 @@ fn stored_text_ids(ledger_dir: &Path) -> Vec<String> {
     ids
 }
 
+/// Where the host keeps the owner's opted-in prompt and answer text, one file
+/// per exchange, named by the exchange id rather than a record id.
+const BY_EXCHANGE_DIR: &str = "by-exchange";
+
+fn is_exchange_id(stem: &str) -> bool {
+    !stem.is_empty()
+        && stem.len() <= 128
+        && stem.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// The exchange ids that have stored text, read off
+/// `<ledger>/disclosures/by-exchange/`.
+fn stored_exchange_text_ids(ledger_dir: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(ledger_dir.join("disclosures").join(BY_EXCHANGE_DIR)) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let stem = name.strip_suffix(".json")?;
+            is_exchange_id(stem).then(|| stem.to_string())
+        })
+        .collect();
+    ids.sort();
+    ids
+}
+
+fn stored_text_count(ledger_dir: &Path) -> usize {
+    stored_text_ids(ledger_dir).len() + stored_exchange_text_ids(ledger_dir).len()
+}
+
 /// 1-based chain positions, collapsed into inclusive `[first, last]` runs.
 fn position_ranges(mut positions: Vec<usize>) -> Vec<[usize; 2]> {
     positions.sort_unstable();
@@ -277,7 +311,7 @@ impl Maintenance {
             "record_count": ids.len(),
             "head": ids.last(),
             "log_id": self.log_id,
-            "stored_text_count": stored_text_ids(self.ledger_dir()).len(),
+            "stored_text_count": stored_text_count(self.ledger_dir()),
             "new_history_pending": pending.as_ref().map(|p| json!({
                 "requested_at": p.requested_at,
                 "closing_record_id": p.closing_record_id,
@@ -292,7 +326,8 @@ impl Maintenance {
     pub fn delete_stored_text(&self) -> PluginResult<Value> {
         let _one = self.one_at_a_time();
         let ids = stored_text_ids(self.ledger_dir());
-        if ids.is_empty() {
+        let exchange_ids = stored_exchange_text_ids(self.ledger_dir());
+        if ids.is_empty() && exchange_ids.is_empty() {
             return Ok(json!({ "deleted_count": 0, "sealed": null }));
         }
         let order = self.capsules.capsule_ids_in_order();
@@ -308,20 +343,35 @@ impl Maintenance {
                 Err(e) => return Err(internal(format!("could not delete stored text for {id}: {e}"))),
             }
         }
+        let by_exchange = dir.join(BY_EXCHANGE_DIR);
+        let mut deleted_exchanges = 0usize;
+        for id in &exchange_ids {
+            match fs::remove_file(by_exchange.join(format!("{id}.json"))) {
+                Ok(()) => deleted_exchanges += 1,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(internal(format!("could not delete stored text for exchange {id}: {e}"))),
+            }
+        }
         let in_history: Vec<usize> = deleted.iter().filter_map(|id| position.get(id.as_str()).copied()).collect();
+        let not_in_this_history = deleted.len() - in_history.len();
         let ids_digest = hex::encode(Sha256::digest(serde_json::to_vec(&deleted).expect("a string list serializes")));
+        let total_deleted = deleted.len() + deleted_exchanges;
 
         let mut facts = Map::new();
-        facts.insert("deleted_count".into(), json!(deleted.len()));
+        facts.insert("deleted_count".into(), json!(total_deleted));
         facts.insert("record_ranges".into(), json!(position_ranges(in_history.clone())));
-        facts.insert("not_in_this_history".into(), json!(deleted.len() - in_history.len()));
+        facts.insert("not_in_this_history".into(), json!(not_in_this_history));
         facts.insert("deleted_ids_sha256".into(), json!(ids_digest));
+        if deleted_exchanges > 0 {
+            // Named by exchange, not by record: counted, never listed.
+            facts.insert("exchange_texts_deleted".into(), json!(deleted_exchanges));
+        }
         let emitted = self
             .capsules
             .emit_owner_maintenance(&OwnerMaintenance { kind: "stored_text_deleted", facts, prior_history_head: None })
             .map_err(internal)?;
         Ok(json!({
-            "deleted_count": deleted.len(),
+            "deleted_count": total_deleted,
             "record_ranges": position_ranges(in_history),
             "sealed": sealed_summary(&emitted, order.len() + 1),
         }))
@@ -526,6 +576,33 @@ mod tests {
         assert_eq!(block(&sealed)["record_ranges"], json!([[1, 2], [4, 4]]));
         assert!(!sealed.to_string().contains("secret"), "the record never carries the text it removed");
         assert_eq!(out["sealed"]["record_number"], json!(5));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stored_text_counts_and_deletes_the_hosts_per_exchange_copies() {
+        let dir = temp_dir("delete-by-exchange");
+        let (m, ids) = maintenance(&dir, 2);
+        put_text(&dir, &ids[0]);
+        let d = dir.join("ledger/disclosures/by-exchange");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("ex-1.json"), br#"{"response_text":"secret"}"#).unwrap();
+        fs::write(d.join("ex-2.json"), br#"{"response_text":"secret"}"#).unwrap();
+        fs::write(d.join("README"), b"not a stored text").unwrap();
+        assert_eq!(m.status()["stored_text_count"], json!(3), "the per-exchange copies are disclosed");
+
+        let out = m.delete_stored_text().unwrap();
+        assert_eq!(out["deleted_count"], json!(3));
+        assert_eq!(m.status()["stored_text_count"], json!(0));
+        assert!(!d.join("ex-1.json").exists() && !d.join("ex-2.json").exists());
+        assert!(d.join("README").exists(), "only stored-text files are touched");
+
+        let ledger = reopen_clean(&dir);
+        let sealed = ledger.lookup(ledger.capsule_ids_in_order().last().unwrap()).unwrap().unwrap().capsule;
+        assert_eq!(block(&sealed)["deleted_count"], json!(3));
+        assert_eq!(block(&sealed)["exchange_texts_deleted"], json!(2));
+        assert_eq!(block(&sealed)["not_in_this_history"], json!(0));
+        assert!(!sealed.to_string().contains("ex-1"), "exchange ids are counted, never listed");
         let _ = fs::remove_dir_all(&dir);
     }
 
