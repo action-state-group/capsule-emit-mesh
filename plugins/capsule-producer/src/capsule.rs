@@ -646,6 +646,14 @@ fn derive_effect_mode(status: &str, response_digest: Option<&str>) -> &'static s
 /// returns the full capsule dict with `capsule_id` computed over the canonical
 /// capsule form (§5.1) — standalone (no `chain` block; chaining is milestone 2).
 pub fn seal(input: &CapsuleInput) -> Result<Value, SealError> {
+    finish_seal(seal_body(input)?)
+}
+
+/// Everything [`seal`] commits to, before `capsule_id` is computed. Split out
+/// so a record kind that adds blocks to an exchange record (the split-main
+/// record, `crate::stage::seal_split_main_record`) commits them under the
+/// same id computation, never by editing a sealed capsule.
+pub(crate) fn seal_body(input: &CapsuleInput) -> Result<Map<String, Value>, SealError> {
     check_effect(input)?;
     if !is_hex64(&input.store_nonce) {
         return Err(SealError::StoreNonce);
@@ -845,7 +853,12 @@ pub fn seal(input: &CapsuleInput) -> Result<Value, SealError> {
     if let Some(chain) = &input.chain {
         body.insert("chain".into(), chain.to_value());
     }
+    Ok(body)
+}
 
+/// Compute `capsule_id` over a finished body and lay the sealed capsule out
+/// the way [`seal`] always has: version fields, then the id, then the body.
+pub(crate) fn finish_seal(body: Map<String, Value>) -> Result<Value, SealError> {
     let body_value = Value::Object(body.clone());
     let capsule_id = compute_capsule_id(&body_value)?;
 
@@ -1063,6 +1076,24 @@ fn seal_local_citation(
     chain: Option<ChainLink>,
     signing_key: &ed25519_dalek::SigningKey,
 ) -> Result<Value, crate::jcs::JcsError> {
+    let mut blocks = Map::new();
+    blocks.insert(block_name.into(), Value::Object(block));
+    seal_local_record(action_id, model_id, blocks, Some(references), chain, signing_key)
+}
+
+/// The shared body of every LOCAL record with no served exchange (the citing
+/// kinds above, and the split-stage records in `crate::stage`): an `fyi`
+/// capsule whose `compute_attestation` holds exactly `blocks` plus a fresh
+/// store nonce, with `references[]` when given (absent, never empty, when
+/// not), chained with `chain`, sealed and enveloped.
+pub(crate) fn seal_local_record(
+    action_id: String,
+    model_id: &str,
+    blocks: Map<String, Value>,
+    references: Option<Value>,
+    chain: Option<ChainLink>,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> Result<Value, crate::jcs::JcsError> {
     // Build the citing capsule body directly (this is a capsule KIND with no
     // served exchange, so it does not route through the exchange-shaped
     // `CapsuleInput`/`seal`). Header fields mirror `seal`'s so the record is a
@@ -1080,8 +1111,7 @@ fn seal_local_citation(
     body.insert("domain".into(), json!("action"));
     body.insert("provenance".into(), json!("collector"));
 
-    let mut compute_attestation = Map::new();
-    compute_attestation.insert(block_name.into(), Value::Object(block));
+    let mut compute_attestation = blocks;
     compute_attestation.insert(STORE_NONCE_FIELD.into(), json!(fresh_store_nonce()));
     body.insert(
         "model_attestation".into(),
@@ -1111,7 +1141,9 @@ fn seal_local_citation(
     if let Some(chain) = &chain {
         body.insert("chain".into(), chain.to_value());
     }
-    body.insert("references".into(), references);
+    if let Some(references) = references {
+        body.insert("references".into(), references);
+    }
 
     let capsule_id = compute_capsule_id(&Value::Object(body.clone()))?;
     let mut sealed = Map::new();

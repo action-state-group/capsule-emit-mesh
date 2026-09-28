@@ -561,3 +561,35 @@ earlier host ask has an answer. It asks the maintainers:
 6. **UI.** Stage strip, the Peers split group and the stage node's row, in fixture mode.
 7. **Host.** The `skippy.stage.v1` emitter, and only after the issue has an answer. Upstream
    text in host vocabulary only.
+
+## 12. Build notes
+
+Where the build had to choose something this document left open, the choice is recorded here.
+The decisions in §10 are built as recommended.
+
+- **Fold encoding.** "‖" in §4.2 is made unambiguous: every variable-length field is
+  `u32be(len) ‖ bytes`, `request_id` is `u64be`, `hop_index` is `u32be`, and the salt is a
+  zero-length field in v0. The direct return lane's `hop_index` is the final stage's index.
+  `tests/fixtures/split-stage/fold-vectors.json` pins the bytes for both implementations.
+- **The coordinator's first-hand observations** ride under `coordinator_observed`
+  (`downstream` for stage 1, `direct_return.received` for the final stage under `direct`
+  return) on its stage-exchange record, never under the stage's own hop field names. A reader
+  keying on `upstream` / `downstream` cannot mistake the coordinator's end for the stage's.
+- **Stage 0 in the receipt.** `topology[0]` is the coordinator (`role: coordinator`), and its
+  `stages[0].bundle` is always `not_requested`: the coordinator asks nobody for its own slice,
+  which rides on the main record's `x-mesh-stage-v1`.
+- **`conflict` is a fourth bundle state.** Two distinct records under one stage key are cited
+  together in `bundle_refs`, and neither is `present` (§3). The Python emitter accepts it, and
+  its existing verifier reads it as a gap.
+- **Topology entries carry the assignment** (`node_id`, `layer_start`, `layer_end`,
+  `package_id`). The stage strip's `✓` compares each stage record against it.
+- **Required lanes.** Forward is always required. Replies are required only for a `relayed`
+  request that completed. The direct return lane is required only for a `direct` request that
+  completed. A lane that is not required and is empty on both ends reads `not_applicable`,
+  never `agree`, and the run line needs at least one lane that agrees.
+- **Main-record citations.** The main record carries one `split_stage` reference per remote
+  stage, to the coordinator's stage-exchange record, whether or not that stage's own record
+  arrived. `stages[k].bundle_ref` names the stage's own record.
+- **What the requester's check does not repeat.** It recomputes every `capsule_id`. Signatures
+  are checked where records are received, and a stage key is not yet linked to
+  `assignment.node_id` (that needs announced keys).

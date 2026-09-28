@@ -36,6 +36,9 @@
 //! - [`verify`] Offline (no-network) verification composing capsule_id
 //!   recomputation, COSE signature verification, and chain-parent
 //!   membership.
+//! - [`stage`] Split-inference stage records: the `x-mesh-stage-v1` block,
+//!   the hop frame fold, stage and stage-exchange records, the coordinator
+//!   receipt and the coordinator's main record of a split request.
 //! - [`sequence`] Per-`(self, counterparty)` monotone capsule sequencing
 //!   (`seq`/`prev_seq`) and the gap/regression continuity check over a
 //!   pair's sealed capsule stream.
@@ -50,6 +53,8 @@ pub mod ledger;
 pub mod padding;
 pub mod runtime_attest;
 pub mod sequence;
+pub mod stage;
+pub mod stage_verify;
 pub mod tee_attest;
 pub mod tee_verify;
 pub mod timestamp;
