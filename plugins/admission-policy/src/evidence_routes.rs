@@ -30,8 +30,11 @@ use crate::evidence_panes::{
 };
 
 /// The directory the evidence door writes `received_log.jsonl` into (its
-/// `--received-log-dir`): the drill's "Asked of you". Unset: not shown.
+/// `--received-log-dir`): the drill's "Asked of you".
 pub const ENV_RECEIVED_LOG_DIR: &str = "ADMISSION_POLICY_RECEIVED_LOG_DIR";
+/// Where that log is read from when [`ENV_RECEIVED_LOG_DIR`] is unset:
+/// `<data dir>/received-log`. Point the door's `--received-log-dir` here.
+pub const DEFAULT_RECEIVED_LOG_SUBDIR: &str = "received-log";
 
 /// A route that takes no arguments. Unknown members (the host may add query
 /// parameters) are ignored.
@@ -61,12 +64,21 @@ pub struct EvidenceSource {
 }
 
 impl EvidenceSource {
-    /// `received_log_dir` from [`ENV_RECEIVED_LOG_DIR`], when set.
-    pub fn received_log_dir_from_env() -> Option<PathBuf> {
-        std::env::var_os(ENV_RECEIVED_LOG_DIR)
-            .filter(|dir| !dir.is_empty())
-            .map(PathBuf::from)
+    /// `received_log_dir`: [`ENV_RECEIVED_LOG_DIR`] when set, else
+    /// `<data_dir>/`[`DEFAULT_RECEIVED_LOG_SUBDIR`]. Either way only a
+    /// directory that exists counts, so a node that keeps no log shows
+    /// "not shown", never an empty "0 requests".
+    pub fn received_log_dir(data_dir: &Path) -> Option<PathBuf> {
+        received_log_dir_for(std::env::var_os(ENV_RECEIVED_LOG_DIR), data_dir)
     }
+}
+
+fn received_log_dir_for(env: Option<std::ffi::OsString>, data_dir: &Path) -> Option<PathBuf> {
+    let dir = env
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_dir.join(DEFAULT_RECEIVED_LOG_SUBDIR));
+    dir.is_dir().then_some(dir)
 }
 
 fn is_record_id(value: &str) -> bool {
@@ -440,5 +452,31 @@ mod tests {
         assert!(rows
             .iter()
             .all(|r| r["asked_of_you"]["entries"].as_array().unwrap().len() == 1));
+    }
+
+    #[test]
+    fn the_received_log_defaults_to_the_data_dir_and_counts_only_when_it_exists() {
+        let data = tempfile::tempdir().unwrap();
+        assert_eq!(
+            received_log_dir_for(None, data.path()),
+            None,
+            "no log kept: not shown"
+        );
+        std::fs::create_dir(data.path().join(DEFAULT_RECEIVED_LOG_SUBDIR)).unwrap();
+        assert_eq!(
+            received_log_dir_for(None, data.path()),
+            Some(data.path().join(DEFAULT_RECEIVED_LOG_SUBDIR))
+        );
+        let other = tempfile::tempdir().unwrap();
+        assert_eq!(
+            received_log_dir_for(Some(other.path().as_os_str().to_owned()), data.path()),
+            Some(other.path().to_path_buf()),
+            "the env var wins"
+        );
+        assert_eq!(
+            received_log_dir_for(Some("".into()), data.path()),
+            Some(data.path().join(DEFAULT_RECEIVED_LOG_SUBDIR)),
+            "an empty env var is unset"
+        );
     }
 }

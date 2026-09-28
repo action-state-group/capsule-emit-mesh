@@ -1,7 +1,6 @@
 //! Consumes the #1331 lifecycle-hook terminal-event broadcast on the
 //! `openai.exchange.v1` mesh channel (`mesh-llm-host-runtime`'s
-//! `plugin::openai_exchange` module, `StevenMih/mesh-llm` branch
-//! `mesh1331-lifecycle-hooks-m2`). The host originally wired only the
+//! `plugin::openai_exchange` module). The host originally wired only the
 //! *plugin-dispatch* raw-proxy path into production
 //! (`network/openai/ingress.rs`'s `try_route_plugin_model`, the path this
 //! plugin's own `inference::provider()` registration is routed through), so
@@ -61,7 +60,7 @@ pub enum DispatchPath {
     /// `OpenAiExchangeDispatchPath::RemoteMesh`). This node is the
     /// requester/router for the exchange, never the server -- the
     /// authoritative signal `is_sealable_requester_side`-style role
-    /// derivation keys on (Steven's 2026-09-06 ruling). Present on the
+    /// derivation keys on (the 2026-09-06 role ruling). Present on the
     /// fork's enrichment-aware host today; ships on bare upstream main the
     /// day mesh-llm#1668 merges, so keying role on this field (not on the
     /// fork-only `served_by_node_id` enrichment) labels correctly either way.
@@ -80,8 +79,8 @@ pub enum DispatchPath {
 }
 
 /// The top-level `x-mesh-poc-v1.role` value derived from an observed
-/// exchange's `dispatch_path` -- the AUTHORITATIVE signal (Steven's
-/// 2026-09-06 ruling): `RemoteMesh` means this node routed the exchange to a
+/// exchange's `dispatch_path` -- the AUTHORITATIVE signal (the 2026-09-06
+/// role ruling): `RemoteMesh` means this node routed the exchange to a
 /// peer, so it is the REQUESTER, never the server, no matter what a heuristic
 /// might otherwise guess. `Unknown` is labeled `"unknown"`, never silently
 /// defaulted to `"served"` -- a missing/unrecognized field must never become
@@ -555,6 +554,39 @@ impl From<&OpenAiExchangeEnvelope> for LoggedEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stock upstream host's terminal event, as its serializer writes it
+    /// (`plugin::openai_exchange` on mesh-llm main): no `requested_by_node_id`
+    /// or `twin_bracket_id` (fork-only), and a `nonce_source` this plugin does
+    /// not read. It must parse, or a stock node would seal nothing.
+    #[test]
+    fn a_stock_upstream_terminal_event_parses() {
+        let body = serde_json::json!({
+            "exchange_id": "exch-1",
+            "dispatch_path": "remote_mesh",
+            "phase": "terminal",
+            "model": "qwen",
+            "status": 200,
+            "capsule_id": "capsule-chatcmpl-1",
+            "capsule_id_provenance": "peer_asserted",
+            "nonce": "n-1",
+            "nonce_source": "client_supplied",
+            "serving_provenance": {
+                "served_by_node_id": "c1f5",
+                "quantization": "Q4_K_M",
+                "architecture": "llama"
+            },
+            "usage": { "prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8 },
+            "request_digest": "a".repeat(64),
+            "response_digest": "b".repeat(64)
+        });
+        let envelope: OpenAiExchangeEnvelope = serde_json::from_value(body).expect("stock event parses");
+        assert_eq!(envelope.dispatch_path, DispatchPath::RemoteMesh);
+        let provenance = envelope.serving_provenance.expect("serving provenance");
+        assert_eq!(provenance.served_by_node_id.as_deref(), Some("c1f5"));
+        assert!(provenance.requested_by_node_id.is_none());
+        assert!(envelope.twin_bracket_id.is_none());
+    }
 
     /// A REAL host terminal event (verbatim wire bytes captured from a live
     /// `mesh-llm serve` on this branch) deserializes into the mirror, and the

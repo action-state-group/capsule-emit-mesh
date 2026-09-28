@@ -86,6 +86,17 @@ writes `bundle/register-mesh-plugin-ui.js`), and the release workflow builds it
 and packages `bundle/` plus `plugin-manifest.json` (from
 `--print-package-manifest`) next to the executable; see `web-ui/README.md`.
 
+The page's data comes from this plugin's own routes (`web-ui/DATA-ROUTES.md`),
+read from `ADMISSION_POLICY_DATA_DIR`. Two settings, both optional:
+
+- **"Asked of you"** (the peer drill's log of requests made of this node) is
+  read from `ADMISSION_POLICY_RECEIVED_LOG_DIR`, default
+  `<ADMISSION_POLICY_DATA_DIR>/received-log`. The evidence door writes it
+  when started with `--received-log-dir` pointing there. With no such
+  directory the drill says the log is not shown.
+- The fork console's own Evidence tab reads the same log from
+  `MESH_LLM_CAPSULE_RECEIVED_LOG_DIR` (host side; not needed on a stock node).
+
 ## Running the tests
 
 ```sh

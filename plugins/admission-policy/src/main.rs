@@ -847,7 +847,7 @@ async fn main() -> anyhow::Result<()> {
         evidence_routes::EvidenceSource {
             ledger_dir: data_dir.join("ledger"),
             node_pub_key_pem: Some(evidence_pub_key_pem),
-            received_log_dir: evidence_routes::EvidenceSource::received_log_dir_from_env(),
+            received_log_dir: evidence_routes::EvidenceSource::received_log_dir(&data_dir),
         },
     )
     .customize(move |plugin| {

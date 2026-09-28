@@ -796,7 +796,7 @@ async fn malformed_body_fails_safe_at_the_real_host_before_reaching_the_plugin()
 ///    capsule-producer's own independent `verify::verify_offline` (COSE
 ///    signature, capsule_id recomputation, COSE-payload-matches-capsule).
 /// 2. **capsule-producer wired to the #1331 lifecycle hook**: the real host
-///    (built from `StevenMih/mesh-llm`'s `mesh1331-lifecycle-hooks` branch)
+///    (a mesh-llm build with the #1331 lifecycle hooks)
 ///    independently publishes a `RawProxy`/`Terminal` envelope on the
 ///    `openai.exchange.v1` mesh channel for this SAME exchange
 ///    (`network/openai/ingress.rs::try_route_plugin_model`, wired into
