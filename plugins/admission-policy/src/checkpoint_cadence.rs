@@ -35,8 +35,9 @@
 //! witnesses, once per window (`CheckpointState::tick`).
 
 use capsule_producer::anchor::AnchorClient;
+use crate::capsule_emit::CapsuleState;
 use capsule_producer::checkpoint::{
-    CheckpointCadenceConfig, CheckpointRecord, CheckpointState, Coverage,
+    CheckpointCadenceConfig, CheckpointRecord, CheckpointState, Coverage, PaddingSink,
 };
 use ed25519_dalek::SigningKey;
 use std::path::PathBuf;
@@ -65,6 +66,10 @@ const ENV_CADENCE_ENTRIES: &str = "ADMISSION_POLICY_CHECKPOINT_CADENCE_ENTRIES";
 /// self-checkpointed only, no network, matching `checkpoint_daemon.py`'s
 /// `--ts-url`/`--witness` flags.
 const ENV_WITNESS_URLS: &str = "ADMISSION_POLICY_CHECKPOINT_WITNESS_URLS";
+/// `checkpoint_pad_bucket`: pad every checkpoint's leaf count up to a
+/// multiple of this (Evidence Layer -00 §12.1). Defaults to
+/// `DEFAULT_PAD_BUCKET` (32); `0` turns padding off.
+const ENV_PAD_BUCKET: &str = "ADMISSION_POLICY_CHECKPOINT_PAD_BUCKET";
 
 pub fn is_enabled() -> bool {
     is_enabled_for(std::env::var(ENV_ENABLE).ok().as_deref())
@@ -88,6 +93,11 @@ fn config_from_env() -> CheckpointCadenceConfig {
     if let Ok(v) = std::env::var(ENV_CADENCE_ENTRIES) {
         if let Ok(n) = v.parse::<u64>() {
             cfg.cadence_entries = n;
+        }
+    }
+    if let Ok(v) = std::env::var(ENV_PAD_BUCKET) {
+        if let Ok(n) = v.parse::<u64>() {
+            cfg.pad_bucket = n;
         }
     }
     if let Ok(v) = std::env::var(ENV_WITNESS_URLS) {
@@ -217,6 +227,15 @@ impl CheckpointHandle {
     }
 }
 
+/// The checkpoint state's padding hook over this node's one ledger writer.
+struct LedgerPadder(Arc<CapsuleState>);
+
+impl PaddingSink for LedgerPadder {
+    fn pad_to_bucket(&self, bucket: u64) -> Result<u64, String> {
+        self.0.pad_ledger_to_bucket(bucket).map_err(|e| e.to_string())
+    }
+}
+
 /// Spawn the background cadence task over `ledger_dir`, using `signer` for
 /// every checkpoint this task ever signs (always through the
 /// `CheckpointSigner` trait -- see `checkpoint.rs`'s module doc). Returns
@@ -227,15 +246,20 @@ impl CheckpointHandle {
 /// interval tick runs `tick()`, and a shutdown signal triggers
 /// `checkpoint_on_shutdown()` -- the same three-phase shape
 /// `checkpoint_daemon.py`'s `run_daemon` has.
+///
+/// `capsules` is the ledger's one writer: every checkpoint is padded through
+/// it to `checkpoint_pad_bucket` before it is cut (see [`LedgerPadder`]).
 pub fn spawn(
     ledger_dir: PathBuf,
     log_id: String,
     signer: SigningKey,
+    capsules: Arc<CapsuleState>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<CheckpointHandle> {
     let cfg = config_from_env();
     let interval = Duration::from_secs(cfg.cadence_seconds);
-    let (state, report) = CheckpointState::load(&ledger_dir, log_id, cfg).map_err(|e| {
+    let pad_bucket = cfg.pad_bucket;
+    let (mut state, report) = CheckpointState::load(&ledger_dir, log_id, cfg).map_err(|e| {
         anyhow::anyhow!(
             "failed to load checkpoint state at {}: {e}",
             ledger_dir.display()
@@ -249,9 +273,11 @@ pub fn spawn(
             );
         }
     }
+    state.set_padding_sink(Box::new(LedgerPadder(capsules)));
     tracing::info!(
         leaves_indexed_this_load = report.leaves_indexed_this_load,
         leaf_count = state.leaf_count(),
+        pad_bucket,
         "checkpoint cadence task starting"
     );
 

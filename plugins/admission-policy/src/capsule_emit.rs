@@ -20,7 +20,7 @@ use capsule_producer::jcs;
 use capsule_producer::keys::{self, KeyPair};
 use capsule_producer::ledger::Ledger;
 use capsule_producer::sequence::SequenceCounterStore;
-use capsule_producer::timestamp::utc_now_iso8601;
+use capsule_producer::timestamp::utc_now_minute;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -499,6 +499,18 @@ impl CapsuleState {
         &self.keys.signing_key
     }
 
+    /// Pad the ledger to a multiple of `bucket` lines under the SAME writer
+    /// lock every seal takes, so a real record never lands between two
+    /// padding records (Evidence Layer -00 §12.1; see
+    /// `capsule_producer::padding`). Returns the padded line count.
+    pub fn pad_ledger_to_bucket(&self, bucket: u64) -> anyhow::Result<u64> {
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(ledger.pad_to_bucket(bucket, &self.keys.signing_key, &self.node_id)?)
+    }
+
     pub fn chain_head(&self) -> Option<String> {
         self.ledger
             .lock()
@@ -557,7 +569,7 @@ impl CapsuleState {
         // `capsule_producer::runtime_attest` for the honesty grades and their
         // trust ceilings.
         let binary_attestation =
-            capsule_producer::runtime_attest::measure_self(&self.keys, utc_now_iso8601());
+            capsule_producer::runtime_attest::measure_self(&self.keys, utc_now_minute());
 
         // Provider-side pair key (history proposal §1): self = this node
         // (`served_by_node_id` below); counterparty = the requesting party,
@@ -577,7 +589,7 @@ impl CapsuleState {
             action_type: "decide".to_string(),
             operator: "capsule-emit-mesh-poc-rust".to_string(),
             developer: "capsule-producer/0.2.0".to_string(),
-            timestamp: utc_now_iso8601(),
+            timestamp: utc_now_minute(),
             domain: Some("action".to_string()),
             provenance: Some("collector".to_string()),
             model_id: model.to_string(),
@@ -672,7 +684,7 @@ impl CapsuleState {
                 role: "served".to_string(),
                 observation_point: None,
                 generation_parameters,
-                latency_ms: format!("{latency_ms:.3}"),
+                latency_ms: capsule_producer::capsule::committed_latency_ms(latency_ms),
                 binary_attestation,
                 // rung 3c (tee_measured) producer leg is HW-gated (Intel TDX
                 // Confidential VM only) and not wired in on this path -- honest
@@ -692,6 +704,7 @@ impl CapsuleState {
             disposition_human_disposed: false,
             disposition_verdict_class: "executed".to_string(),
             chain,
+            store_nonce: capsule_producer::capsule::fresh_store_nonce(),
         };
 
         let mut capsule = seal(&input)?;
@@ -998,7 +1011,7 @@ impl CapsuleState {
         // of the host serving runtime.
         // Degrades to `None` (empty slot) when unmeasurable, never fabricated.
         let binary_attestation =
-            capsule_producer::runtime_attest::measure_self(&self.keys, utc_now_iso8601());
+            capsule_producer::runtime_attest::measure_self(&self.keys, utc_now_minute());
 
         // Observe path carries no requester identity (see the honest
         // "unknown" requesting_party below) -- the pair is keyed on that same
@@ -1015,7 +1028,7 @@ impl CapsuleState {
             action_type: "fyi".to_string(),
             operator: "capsule-emit-mesh-poc-rust".to_string(),
             developer: "capsule-producer/0.2.0".to_string(),
-            timestamp: utc_now_iso8601(),
+            timestamp: utc_now_minute(),
             domain: Some("action".to_string()),
             provenance: Some("collector".to_string()),
             model_id: model.to_string(),
@@ -1133,6 +1146,7 @@ impl CapsuleState {
             disposition_human_disposed: false,
             disposition_verdict_class: "executed".to_string(),
             chain,
+            store_nonce: capsule_producer::capsule::fresh_store_nonce(),
         };
 
         let mut capsule = seal(&input)?;
@@ -1742,6 +1756,63 @@ mod tests {
         let emitted = state.emit_for_exchange(&exchange).expect("seal");
         let ca = &emitted.capsule["model_attestation"]["compute_attestation"];
         assert!(ca.get("host_binding").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Evidence Layer -00 §12.1 on the live seal path: every sealed record
+    /// carries a fresh store nonce (never the client's) and minute-granular
+    /// committed times; padding to the bucket goes through the same ledger
+    /// writer, stays off the chain, and the ledger reopens clean with the
+    /// next seal chaining to the last REAL record.
+    #[test]
+    fn seals_carry_a_store_nonce_and_coarse_time_and_padding_stays_off_the_chain() {
+        let dir = std::env::temp_dir().join(format!("cap-pad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
+        let exchange = ExchangeRecord {
+            model: "m",
+            client_nonce: Some("client-nonce"),
+            request_bytes: br#"{"model":"m","messages":[]}"#,
+            response_bytes: br#"{"model":"m","choices":[]}"#,
+            latency_ms: 1.0,
+            exchange_id: Some("e"),
+            requesting_party: Some("client"),
+            host_provenance: None,
+        };
+        let first = state.emit_for_exchange(&exchange).expect("seal");
+        let second = state.emit_for_exchange(&exchange).expect("seal");
+        let nonce = |c: &Value| {
+            c["model_attestation"]["compute_attestation"]["store_nonce"]
+                .as_str()
+                .expect("store_nonce present")
+                .to_string()
+        };
+        assert_eq!(nonce(&first.capsule).len(), 64);
+        assert_ne!(nonce(&first.capsule), nonce(&second.capsule));
+        for c in [&first.capsule, &second.capsule] {
+            let ts = c["timestamp"].as_str().unwrap();
+            assert!(capsule_producer::timestamp::is_minute_granular(ts), "{ts}");
+            let measured = &c["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]
+                ["evidence_refs"]["binary_attestation"]["measured_at"];
+            if let Some(m) = measured.as_str() {
+                assert!(capsule_producer::timestamp::is_minute_granular(m), "{m}");
+            }
+        }
+
+        assert_eq!(state.pad_ledger_to_bucket(32).expect("pad"), 32);
+        assert_eq!(state.pad_ledger_to_bucket(32).expect("pad again"), 32, "no double pad");
+        assert_eq!(state.chain_head().as_deref(), Some(second.capsule_id.as_str()));
+        let third = state.emit_for_exchange(&exchange).expect("seal after padding");
+        assert_eq!(
+            third.capsule["chain"]["parent_capsule_id"],
+            second.capsule_id.as_str(),
+            "the chain skips padding"
+        );
+        drop(state);
+
+        let (ledger, report) = Ledger::open(&dir.join("ledger")).expect("reopen");
+        assert_eq!(report.valid_entries, 33);
+        assert_eq!(ledger.chain_head(), Some(third.capsule_id.as_str()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

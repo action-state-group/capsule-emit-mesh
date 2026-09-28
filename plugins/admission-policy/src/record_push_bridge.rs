@@ -359,7 +359,7 @@ async fn seal_citing_record_for_push(
     };
     let foreign_capsule_id = foreign_capsule_id.to_string();
     let received_from = sender_peer_id.to_string();
-    let received_at = capsule_producer::timestamp::utc_now_iso8601();
+    let received_at = capsule_producer::timestamp::utc_now_minute();
     let foreign_input = foreign_digest(&foreign, "agent_input_digest").map(str::to_string);
     let foreign_output = foreign_digest(&foreign, "agent_output_digest").map(str::to_string);
     let capsules = capsules.clone();

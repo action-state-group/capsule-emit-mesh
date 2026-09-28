@@ -129,6 +129,7 @@ fn sample_capsule_input() -> CapsuleInput {
         disposition_human_disposed: false,
         disposition_verdict_class: "executed".to_string(),
         chain: None,
+        store_nonce: "5".repeat(64),
     }
 }
 

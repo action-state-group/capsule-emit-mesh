@@ -45,6 +45,7 @@ from typing import Any
 
 # Reuse the neutral mesh label layer -- role/counterparty labelling and the
 # best-effort per-log verify -- rather than re-deriving any of it here.
+from padding_record import without_padding
 from capsule_mesh_view import (
     SOURCE_PLUGIN,
     SOURCE_SIDECAR,
@@ -1625,9 +1626,10 @@ _HTML_SHELL = r"""<!DOCTYPE html>
 
 
 def _read_records(path: str) -> list[dict[str, Any]]:
+    # Padding leaves are never records (Evidence Layer -00 §12.1).
     if read_ledger is not None:
         try:
-            return read_ledger(path)
+            return without_padding(read_ledger(path))
         except Exception:
             pass
     out: list[dict[str, Any]] = []
@@ -1636,7 +1638,7 @@ def _read_records(path: str) -> list[dict[str, Any]]:
             line = line.strip()
             if line:
                 out.append(json.loads(line))
-    return out
+    return without_padding(out)
 
 
 def _read_first_json(path: str) -> dict[str, Any]:

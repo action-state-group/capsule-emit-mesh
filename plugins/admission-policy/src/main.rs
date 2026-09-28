@@ -476,6 +476,7 @@ async fn main() -> anyhow::Result<()> {
             ledger_dir,
             PLUGIN_ID.to_string(),
             capsules.signing_key().clone(),
+            capsules.clone(),
             checkpoint_shutdown_rx,
         )?;
         tokio::spawn(async move {

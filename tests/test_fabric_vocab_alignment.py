@@ -145,3 +145,15 @@ def test_sidecar_seal_join_card_wires_nostr_pubkey_end_to_end(monkeypatch, tmp_p
     assert ca[CARD_SUBJECT_KEY]["card"]["principal_ref"] == f"nostr-pubkey:{'cd' * 32}"
 
 
+
+
+def test_sidecar_seal_meets_the_checkpoint_privacy_requirements():
+    """Evidence Layer -00 §12.1 on the Python seal path: a fresh store nonce
+    inside the capsule_id preimage, a minute-granular timestamp, and latency
+    committed in 100 ms buckets."""
+    state = _make_state(role=cs.ROLE_PROVIDER)
+    a, b = _build(state), _build(state)
+    nonce_a = _compute_attestation(a)["store_nonce"]
+    assert len(nonce_a) == 64 and nonce_a != _compute_attestation(b)["store_nonce"]
+    assert a["timestamp"].endswith(":00.000Z")
+    assert _compute_attestation(a)["x-mesh-poc-v1"]["latency_ms"] == "100.000"

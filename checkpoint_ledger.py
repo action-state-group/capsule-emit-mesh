@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from capsule_emit.checkpoint import DEFAULT_TS_URL, CheckpointConfig
 from checkpointing import CheckpointState, Ed25519Signer
 from ledger_store_backend import open_log_source_for_checkpointing
+from padding_record import refuse_unpadded_witnessing
 
 
 def checkpoint_ledger(
@@ -78,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.witness and DEFAULT_TS_URL not in ts_urls:
         ts_urls.append(DEFAULT_TS_URL)
 
+    refuse_unpadded_witnessing(ts_urls, who="checkpoint_ledger")
     state, cp = checkpoint_ledger(
         ledger_dir=Path(args.ledger_dir),
         keys_dir=Path(args.keys_dir),

@@ -81,6 +81,7 @@ import assurance_map
 from capsule_accountability_tab import STATE_FAILED, STATE_VERIFIED, cross_party_grade
 from capsule_exchange_tab import digest_match_grade, exchange_correlator, half_by_role, records_for_exchange
 from capsule_mesh_view import _poc_block, label_counterparty, label_role
+from padding_record import without_padding
 from history_card import HistoryCard, build_history_card
 
 # Peer evidence client (optional -- guards against import cycle on first load)
@@ -1044,6 +1045,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
         ledger_records = read_ledger(args.ledger)
     except Exception:
         ledger_records = _read_jsonl(Path(args.ledger))
+    # Padding leaves are never records (Evidence Layer -00 §12.1).
+    ledger_records = without_padding(ledger_records)
 
     payload = build_peers_payload(
         ledger_records,

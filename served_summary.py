@@ -94,6 +94,7 @@ from capsule_emit.checkpoint import CheckpointRecord
 from capsule_emit.checkpoint import leaf_count as _leaf_count_at_size
 
 from capsule_mesh_view import _poc_block, label_role
+from padding_record import is_padding_record
 from history_card import node_id_from_key_id
 from twin_adjudicator import RELATION_ADJUDICATES
 
@@ -319,7 +320,7 @@ def _fold_range(capsules: list[dict[str, Any]], source_log: str) -> dict[str, Se
     per-model ``ServedModelStats``. Only records this node SERVED count --
     never the requested-role half of a bilateral exchange this node
     initiated, which belongs to a different node's served summary."""
-    served_only = [c for c in capsules if _is_served(c, source_log)]
+    served_only = [c for c in capsules if not is_padding_record(c) and _is_served(c, source_log)]
 
     by_model: dict[str, dict[str, Any]] = {}
     for c in served_only:
@@ -768,7 +769,9 @@ def verify_served_summary(summary_value: dict[str, Any], sampled_capsules: list[
     contradictions: list[str] = []
     checked = 0
     for capsule in sampled_capsules:
-        if not _is_served(capsule, source_log):
+        # A sampled position can land on a padding leaf: it is no record,
+        # so it neither supports nor contradicts the summary.
+        if is_padding_record(capsule) or not _is_served(capsule, source_log):
             continue
         checked += 1
         model = _model_ref(capsule)

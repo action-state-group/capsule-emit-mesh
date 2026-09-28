@@ -116,6 +116,7 @@ fn capsule_input(n: usize, parent: Option<&str>) -> CapsuleInput {
             parent_capsule_id: p.to_string(),
             relation: "follows".to_string(),
         }),
+        store_nonce: "5".repeat(64),
     }
 }
 

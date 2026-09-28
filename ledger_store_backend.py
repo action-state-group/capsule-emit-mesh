@@ -61,6 +61,8 @@ from typing import Any
 from cll.ledger.segments import SegmentManifest
 from cll.ledger.store import LedgerStore
 
+from padding_record import is_padding_record
+
 __all__ = [
     "ARCHIVED_SEGMENT_KIND",
     "CORRELATION_FIELDS",
@@ -243,7 +245,12 @@ def _trim_page(
     if limit is not None and len(pairs) > limit:
         pairs = pairs[:limit]
         next_after_seq = pairs[-1][0]
-    return [capsule for _seq, capsule in pairs], next_after_seq
+    # Padding lines (Evidence Layer -00 §12.1) are leaves, not records: every
+    # caller of the page readers counts, lists or answers, so they are dropped
+    # here -- AFTER the cursor is fixed, so ``seq`` stays the line position and
+    # a page may hold fewer than ``limit`` records. MMR folding never comes
+    # through here (``open_log_source_for_checkpointing`` reads every line).
+    return [capsule for _seq, capsule in pairs if not is_padding_record(capsule)], next_after_seq
 
 
 def _read_store_page(

@@ -48,7 +48,7 @@ use cll::checkpoint::{
 };
 use cll::mmr::{
     add_leaf, consistency_proof, inclusion_proof, leaf_count as mmr_leaf_count, leaf_hash,
-    leaf_index_to_pos, peaks, root_from_peaks, ConsistencyProof, Hash, MmrError, NodeReader,
+    leaf_index_to_pos, node_count, peaks, root_from_peaks, ConsistencyProof, Hash, MmrError, NodeReader,
     DIGEST_LEN,
 };
 // Re-exported for the same reason as `CheckpointRecord`: the push-a-bundle
@@ -127,6 +127,24 @@ pub enum CheckpointStateError {
     },
     #[error("capsule_id {capsule_id} is not in capsules.jsonl -- nothing to cover")]
     CapsuleNotInLedger { capsule_id: String },
+    #[error("padding to the checkpoint bucket failed: {0}")]
+    Padding(String),
+    #[error(
+        "padded the ledger to {padded_to} lines but only {folded} are readable in \
+         capsules.jsonl -- refusing to cut an unpadded checkpoint"
+    )]
+    PaddingNotFolded { padded_to: u64, folded: u64 },
+}
+
+/// Appends padding records to the ledger this state indexes (Evidence Layer
+/// -00 §12.1; see `crate::padding`). `CheckpointState` never writes
+/// `capsules.jsonl` itself -- the ledger has one writer -- so the plugin
+/// hands it this hook, implemented over that one writer.
+pub trait PaddingSink: Send {
+    /// Under the ledger's writer lock, append padding records until its line
+    /// count is a multiple of `bucket`; return that count. Appending nothing
+    /// when it already is, so a retry or a restart never pads twice.
+    fn pad_to_bucket(&self, bucket: u64) -> Result<u64, String>;
 }
 
 /// What [`CheckpointState::checkpoint_covering`] hands the push-a-bundle
@@ -167,7 +185,18 @@ pub struct CheckpointCadenceConfig {
     /// empty means self-checkpointed only, no network. Matches
     /// `checkpoint_daemon.py`'s `--ts-url`/`--witness` flags.
     pub witness_urls: Vec<String>,
+    /// `checkpoint_pad_bucket`: every checkpoint's leaf count
+    /// (`mmr_leaf_count`, never `mmr_size`) is padded up to a multiple of
+    /// this before it is cut, so two checkpoints reveal the record count
+    /// between them only to within the bucket (Evidence Layer -00 §12.1).
+    /// 0 turns padding off. Applies only when a [`PaddingSink`] is attached
+    /// ([`CheckpointState::set_padding_sink`]) -- without one this state has
+    /// no way to write the ledger and cuts at whatever size it has.
+    pub pad_bucket: u64,
 }
+
+/// `checkpoint_pad_bucket`'s default.
+pub const DEFAULT_PAD_BUCKET: u64 = 32;
 
 impl Default for CheckpointCadenceConfig {
     /// Matches `checkpoint_daemon.py`'s `DEFAULT_INTERVAL_SECONDS` (300s --
@@ -178,6 +207,7 @@ impl Default for CheckpointCadenceConfig {
             cadence_entries: 100,
             cadence_seconds: 300,
             witness_urls: Vec::new(),
+            pad_bucket: DEFAULT_PAD_BUCKET,
         }
     }
 }
@@ -252,6 +282,8 @@ pub struct CheckpointState {
     /// [`CheckpointState::tick`] registers the LATEST checkpoint of the
     /// window once, never one registration per turn.
     witness_deferred: bool,
+    /// See [`PaddingSink`]; `None` cuts unpadded.
+    padding: Option<Box<dyn PaddingSink>>,
 }
 
 fn leaf_positions_and_hashes(
@@ -387,6 +419,7 @@ impl CheckpointState {
             pending_since: (entries_since_checkpoint > 0).then(Instant::now),
             pending_witness_urls: Vec::new(),
             witness_deferred: false,
+            padding: None,
         };
         let report = LoadReport {
             node_store: Some(open_report),
@@ -397,6 +430,35 @@ impl CheckpointState {
 
     pub fn leaf_count(&self) -> u64 {
         self.leaf_count
+    }
+
+    /// Attach the ledger's padding hook: from now on every checkpoint this
+    /// state cuts is padded to `cfg.pad_bucket` first (see [`PaddingSink`]).
+    pub fn set_padding_sink(&mut self, sink: Box<dyn PaddingSink>) {
+        self.padding = Some(sink);
+    }
+
+    /// The leaf count the next checkpoint is cut at. With padding on: pad
+    /// the ledger to the bucket through the sink, fold what it wrote, and
+    /// return the padded count -- the checkpoint is cut at EXACTLY that
+    /// count, so a real record the ledger's writer appends between the
+    /// padding and the cut (it holds its own lock, not this one) waits for
+    /// the next checkpoint instead of knocking this one off the boundary.
+    /// With padding off: every leaf folded so far.
+    fn cut_leaf_count(&mut self) -> Result<u64, CheckpointStateError> {
+        let bucket = self.cfg.pad_bucket;
+        let Some(sink) = self.padding.as_ref().filter(|_| bucket > 0) else {
+            return Ok(self.leaf_count);
+        };
+        let padded_to = sink.pad_to_bucket(bucket).map_err(CheckpointStateError::Padding)?;
+        self.sync()?;
+        if self.leaf_count < padded_to {
+            return Err(CheckpointStateError::PaddingNotFolded {
+                padded_to,
+                folded: self.leaf_count,
+            });
+        }
+        Ok(padded_to)
     }
 
     pub fn last_checkpoint(&self) -> Option<&CheckpointRecord> {
@@ -655,7 +717,8 @@ impl CheckpointState {
         register: bool,
     ) -> Result<CheckpointRecord, CheckpointStateError> {
         let prev_before = self.last_checkpoint.clone();
-        let current_size = self.node_store.size();
+        let cut_leaves = self.cut_leaf_count()?;
+        let current_size = node_count(cut_leaves);
         if current_size == 0 {
             return Err(CheckpointStateError::EmptyMmr);
         }
@@ -694,7 +757,7 @@ impl CheckpointState {
             prev_size,
             prev_root,
             key_id: signer.key_id(),
-            timestamp: crate::timestamp::utc_now_iso8601(),
+            timestamp: crate::timestamp::utc_now_minute(),
             signature: String::new(),
             witnesses: Vec::new(),
         };
@@ -747,8 +810,12 @@ impl CheckpointState {
 
         self.last_checkpoint = Some(cp.clone());
         self.last_checkpoint_cose = checkpoint_cose;
-        self.entries_since_checkpoint = 0;
-        self.pending_since = None;
+        // Leaves folded past the cut (a record that landed between the
+        // padding and the cut) are the next checkpoint's backlog.
+        self.entries_since_checkpoint = self.leaf_count - cut_leaves;
+        if self.entries_since_checkpoint == 0 {
+            self.pending_since = None;
+        }
         Ok(cp)
     }
 
@@ -1021,6 +1088,7 @@ mod tests {
             cadence_entries: 100,
             cadence_seconds: 300,
             witness_urls: Vec::new(),
+            pad_bucket: 0,
         };
         let (mut state, _) = CheckpointState::load(dir.path(), "test-log", cfg).unwrap();
         let anchor = AnchorClient::new("http://127.0.0.1:1");
@@ -1040,6 +1108,7 @@ mod tests {
             cadence_entries: 100,
             cadence_seconds: 300,
             witness_urls: Vec::new(),
+            pad_bucket: 0,
         };
         let (mut state, _) = CheckpointState::load(dir.path(), "test-log", cfg).unwrap();
         let anchor = AnchorClient::new("http://127.0.0.1:1");
@@ -1332,6 +1401,7 @@ mod tests {
             cadence_entries: 1, // due immediately once sync succeeds
             cadence_seconds: 300,
             witness_urls: Vec::new(),
+            pad_bucket: 0,
         };
         let (mut state, _) = CheckpointState::load(dir.path(), "test-log", cfg).unwrap();
         assert_eq!(state.leaf_count(), 2);
@@ -1390,6 +1460,7 @@ mod tests {
             // Port 1 refuses connections deterministically -- a stand-in
             // for an unreachable witness without a live network dependency.
             witness_urls: vec!["http://127.0.0.1:1/".to_string()],
+            pad_bucket: 0,
         };
         let (mut state, _) = CheckpointState::load(dir.path(), "test-log", cfg).unwrap();
         let anchor = AnchorClient::new("http://127.0.0.1:1");
@@ -1530,6 +1601,7 @@ mod tests {
             // Unreachable: any registration attempt fails and stays pending,
             // which is how this test observes whether one was made.
             witness_urls: vec!["http://127.0.0.1:1".to_string()],
+            pad_bucket: 0,
         };
         let (mut state, _) = CheckpointState::load(dir.path(), "test-log", cfg).unwrap();
         let anchor = AnchorClient::new("http://127.0.0.1:1");

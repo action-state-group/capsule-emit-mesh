@@ -79,6 +79,7 @@ from checkpointing import (
     load_checkpoint_config,
 )
 from ledger_store_backend import open_log_source_for_checkpointing
+from padding_record import refuse_unpadded_witnessing
 
 #: The mesh-node default anchor interval. Upstream CheckpointConfig defaults
 #: cadence_seconds to 900 (its own "100 entries or 15 minutes" surface); a
@@ -274,6 +275,7 @@ def main(argv: list[str] | None = None) -> int:
         interval_seconds=interval,
         checkpoint_config_path=args.checkpoint_config,
     )
+    refuse_unpadded_witnessing(state.cfg.ts_urls, who="checkpoint_daemon")
 
     disclosures_dir = args.ledger_dir / "disclosures"
 

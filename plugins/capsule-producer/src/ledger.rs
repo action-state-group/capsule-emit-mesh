@@ -21,8 +21,16 @@
 //!    predecessor, is a hard error instead of a silent drop — that is real
 //!    corruption, not an artifact of a torn write, and must not be papered
 //!    over.
+//!
+//! **Padding records** ([`crate::padding`], Evidence Layer -00 §12.1) are
+//! ledger lines too -- the checkpoint MMR folds every line -- but they sit
+//! OUTSIDE the chain: no `chain` block, and the chain head never advances
+//! over one, so no record ever links to a padding record. They are appended
+//! only through [`Ledger::append_padding`] / [`Ledger::pad_to_bucket`], are
+//! not indexed for lookup, and are excluded from `known_capsule_ids`.
 
 use crate::jcs::compute_capsule_id;
+use crate::padding::{check_padding_shape, is_padding};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
@@ -75,6 +83,10 @@ pub enum LedgerError {
     },
     #[error("capsule has no capsule_id field")]
     NoCapsuleId,
+    #[error("ledger line {line}: malformed padding record: {detail}")]
+    MalformedPadding { line: usize, detail: String },
+    #[error("refusing to append: {0}")]
+    PaddingMisrouted(&'static str),
 }
 
 /// A recovered/looked-up ledger entry: the sealed capsule plus its raw
@@ -115,6 +127,9 @@ pub struct Ledger {
     /// re-pushed bundle, same rebuild-on-open / maintain-on-append discipline
     /// as `cited_counterparty_halves`.
     inclusion_cited_halves: HashSet<String>,
+    /// Every line in `capsules.jsonl`, padding included -- the leaf count the
+    /// checkpoint MMR over this file will reach once it has folded it all.
+    entries: u64,
 }
 
 fn statement_path(statements_dir: &Path, capsule_id: &str) -> PathBuf {
@@ -297,12 +312,19 @@ impl Ledger {
                 });
             }
 
+            let padding = is_padding(&parsed);
+            if padding {
+                check_padding_shape(&parsed).map_err(|detail| LedgerError::MalformedPadding {
+                    line: line_no,
+                    detail,
+                })?;
+            }
             let parent = parsed
                 .get("chain")
                 .and_then(|c| c.get("parent_capsule_id"))
                 .and_then(Value::as_str)
                 .map(str::to_string);
-            if parent != chain_head {
+            if !padding && parent != chain_head {
                 return Err(LedgerError::ChainBroken {
                     line: line_no,
                     parent,
@@ -329,12 +351,16 @@ impl Ledger {
                 }
             })?;
 
-            collect_counterparty_half_citations(&parsed, &mut cited_counterparty_halves);
-            collect_counterparty_inclusion_citations(&parsed, &mut inclusion_cited_halves);
-            index.insert(stored_id.clone(), offset);
-            chain_head = Some(stored_id);
             report.valid_entries += 1;
             offset += line_bytes_len;
+            if padding {
+                // Outside the chain: never the head, never indexed.
+                continue;
+            }
+            collect_counterparty_half_citations(&parsed, &mut cited_counterparty_halves);
+            collect_counterparty_inclusion_citations(&parsed, &mut inclusion_cited_halves);
+            index.insert(stored_id.clone(), offset - line_bytes_len);
+            chain_head = Some(stored_id);
         }
 
         let append_handle = OpenOptions::new().append(true).open(&capsules_path)?;
@@ -348,9 +374,15 @@ impl Ledger {
                 chain_head,
                 cited_counterparty_halves,
                 inclusion_cited_halves,
+                entries: report.valid_entries as u64,
             },
             report,
         ))
+    }
+
+    /// Every line in the ledger, padding included -- see [`Self::pad_to_bucket`].
+    pub fn entries(&self) -> u64 {
+        self.entries
     }
 
     pub fn chain_head(&self) -> Option<&str> {
@@ -391,6 +423,11 @@ impl Ledger {
     /// entry pointing at a receipt that doesn't exist. Refuses to write if
     /// `capsule.chain.parent_capsule_id` doesn't match the current head.
     pub fn append(&mut self, capsule: &Value, signed_statement: &[u8]) -> Result<(), LedgerError> {
+        if is_padding(capsule) {
+            return Err(LedgerError::PaddingMisrouted(
+                "a padding record goes through append_padding, never onto the chain",
+            ));
+        }
         let capsule_id = capsule
             .get("capsule_id")
             .and_then(Value::as_str)
@@ -409,22 +446,99 @@ impl Ledger {
             });
         }
 
-        let stmt_path = statement_path(&self.statements_dir, &capsule_id);
-        let mut stmt_file = File::create(&stmt_path)?;
-        stmt_file.write_all(signed_statement)?;
-        stmt_file.sync_all()?;
-
-        let offset = fs::metadata(&self.capsules_path)?.len();
-        let mut line = serde_json::to_string(capsule)?;
-        line.push('\n');
-        self.append_handle.write_all(line.as_bytes())?;
-        self.append_handle.sync_all()?;
+        let offset = self.write_line(&capsule_id, capsule, signed_statement)?;
 
         collect_counterparty_half_citations(capsule, &mut self.cited_counterparty_halves);
         collect_counterparty_inclusion_citations(capsule, &mut self.inclusion_cited_halves);
         self.index.insert(capsule_id.clone(), offset);
         self.chain_head = Some(capsule_id);
         Ok(())
+    }
+
+    /// The statement-then-line write every append shares: the `.cose` is
+    /// fsync'd BEFORE the jsonl line, so a crash between the two leaves at
+    /// worst an orphan statement file. Returns the line's byte offset.
+    fn write_line(
+        &mut self,
+        capsule_id: &str,
+        record: &Value,
+        signed_statement: &[u8],
+    ) -> Result<u64, LedgerError> {
+        let stmt_path = statement_path(&self.statements_dir, capsule_id);
+        let mut stmt_file = File::create(&stmt_path)?;
+        stmt_file.write_all(signed_statement)?;
+        stmt_file.sync_all()?;
+
+        let offset = fs::metadata(&self.capsules_path)?.len();
+        let mut line = serde_json::to_string(record)?;
+        line.push('\n');
+        self.append_handle.write_all(line.as_bytes())?;
+        self.append_handle.sync_all()?;
+        self.entries += 1;
+        Ok(offset)
+    }
+
+    /// Append one padding record + its signed statement. The chain head does
+    /// not move and the record is not indexed: a padding record is a leaf of
+    /// the checkpoint MMR and nothing else (see the module doc).
+    pub fn append_padding(&mut self, record: &Value, signed_statement: &[u8]) -> Result<(), LedgerError> {
+        if !is_padding(record) {
+            return Err(LedgerError::PaddingMisrouted(
+                "append_padding only takes a padding record",
+            ));
+        }
+        check_padding_shape(record).map_err(|detail| LedgerError::MalformedPadding {
+            line: self.entries as usize + 1,
+            detail,
+        })?;
+        let capsule_id = record
+            .get("capsule_id")
+            .and_then(Value::as_str)
+            .ok_or(LedgerError::NoCapsuleId)?
+            .to_string();
+        self.write_line(&capsule_id, record, signed_statement)?;
+        Ok(())
+    }
+
+    /// Append padding records until the ledger's line count is a multiple of
+    /// `bucket` (a no-op when it already is, so a retry or a restart never
+    /// pads twice). Each record is sealed with a fresh store nonce, carries
+    /// the producer envelope under `signing_key`, and gets a detached signed
+    /// statement from the same key, like every other line. Returns the
+    /// resulting line count -- the leaf count the next checkpoint is cut at.
+    ///
+    /// The caller holds this ledger's writer lock across the call, so no
+    /// real record can land between two padding records.
+    pub fn pad_to_bucket(
+        &mut self,
+        bucket: u64,
+        signing_key: &ed25519_dalek::SigningKey,
+        issuer: &str,
+    ) -> Result<u64, LedgerError> {
+        if bucket == 0 {
+            return Ok(self.entries);
+        }
+        let missing = (bucket - self.entries % bucket) % bucket;
+        for _ in 0..missing {
+            let mut record = crate::padding::build_padding_record()?;
+            crate::capsule::attach_producer_envelope(&mut record, signing_key)
+                .expect("build_padding_record always sets a hex capsule_id");
+            let capsule_id = record["capsule_id"]
+                .as_str()
+                .expect("build_padding_record always sets capsule_id")
+                .to_string();
+            let statement = crate::cose::build_signed_statement(
+                &crate::cose::SignedStatementInput {
+                    payload: &crate::capsule::payload_bytes(&record),
+                    issuer,
+                    subject: &capsule_id,
+                    content_type: crate::padding::PADDING_CONTENT_TYPE,
+                },
+                signing_key,
+            );
+            self.append_padding(&record, &statement)?;
+        }
+        Ok(self.entries)
     }
 
     /// Receipt lookup: read back the sealed capsule + its COSE_Sign1

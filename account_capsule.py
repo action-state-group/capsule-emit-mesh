@@ -108,6 +108,7 @@ from capsule_emit.checkpoint import leaf_count as _leaf_count_at_size
 # the same pattern served_summary.py's `_is_served` already follows. See
 # `_role_of` below for why this module used to hand-roll its own classifier.
 from capsule_mesh_view import label_role
+from padding_record import without_padding
 
 __all__ = [
     "ACCOUNT_CAPSULE_SCHEMA",
@@ -259,6 +260,9 @@ class AccountFold:
 
 
 def _fold_range(capsules: list[dict[str, Any]], source_log: str = "sidecar") -> AccountFold:
+    # The witness-bounded selection is sliced by leaf count, so it holds
+    # padding leaves; they are never records (Evidence Layer -00 §12.1).
+    capsules = without_padding(capsules)
     n_served = n_requested = n_unknown = n_conflict = n_confirmed = 0
     for c in capsules:
         role = _role_of(c, source_log)

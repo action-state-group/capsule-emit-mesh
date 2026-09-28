@@ -15,6 +15,45 @@ pub const FORMAT_VERSION: &str = "4";
 /// Format 4 requires this literal `canonicalization_id` (§5.1); see `jcs::CANONICALIZATION_JCS`.
 pub const CANONICALIZATION_ID: &str = crate::jcs::CANONICALIZATION_JCS;
 
+/// `model_attestation.compute_attestation.store_nonce`: a fresh 256-bit value
+/// this store draws from the OS CSPRNG for ONE sealed record and never reuses
+/// (Evidence Layer -00 §12.1: every record MUST carry, inside the bytes its
+/// commitment-substrate entry is derived from, >= 128 bits the store
+/// generated for it alone). It is committed into `capsule_id`, so the
+/// siblings of an inclusion proof cannot be confirmed by guessing a record's
+/// content and recomputing its digest. `client_nonce` does NOT meet this bar:
+/// it is supplied by (so known to) another party. Rides in
+/// `compute_attestation`, this producer's only free-form extension point
+/// (see `seal`'s note on the model_attestation fields).
+pub const STORE_NONCE_FIELD: &str = "store_nonce";
+
+/// Granularity of a committed `latency_ms`, in milliseconds.
+pub const LATENCY_BUCKET_MS: f64 = 100.0;
+
+/// The `x-mesh-poc-v1.latency_ms` a record commits to: the measured latency
+/// rounded UP to the next [`LATENCY_BUCKET_MS`], as an exact decimal string
+/// (§5.1 forbids floats in digest-bearing fields). Latency is a timing side
+/// channel like a timestamp (Evidence Layer -00 §12.1), so it is coarsened
+/// here, when the bytes are produced. Rounding up keeps it an honest upper
+/// bound: a 40 ms reply reads "100.000", never "0.000".
+pub fn committed_latency_ms(measured_ms: f64) -> String {
+    let bucketed = if measured_ms.is_finite() && measured_ms > 0.0 {
+        (measured_ms / LATENCY_BUCKET_MS).ceil() * LATENCY_BUCKET_MS
+    } else {
+        0.0
+    };
+    format!("{bucketed:.3}")
+}
+
+/// A fresh [`STORE_NONCE_FIELD`] value: 32 bytes from the OS CSPRNG, as 64
+/// lowercase hex.
+pub fn fresh_store_nonce() -> String {
+    use rand_core::RngCore;
+    let mut bytes = [0u8; 32];
+    rand_core::OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
 /// Token accounting for one exchange, sourced verbatim from the OpenAI-shaped
 /// response body's `usage` object (`openai-frontend`'s `Usage`:
 /// `prompt_tokens`/`completion_tokens`/`total_tokens`). `None` when the served
@@ -262,6 +301,8 @@ pub struct MeshPocV1 {
     /// Generation parameters as exact decimal STRINGS (§5.1 forbids floats in
     /// digest-bearing fields) — e.g. `{"temperature": "0.7"}`.
     pub generation_parameters: Map<String, Value>,
+    /// Build with [`committed_latency_ms`]: 100 ms buckets, never the raw
+    /// measurement (a timing side channel).
     pub latency_ms: String,
     /// The runtime/binary attestation rung (task B3): a signed, `self_measured`
     /// reference to the serving binary the node actually runs, or `None` when
@@ -538,6 +579,12 @@ pub struct CapsuleInput {
     /// `None` for the first capsule in a chain — mirrors `emit()`'s
     /// `prior_capsule_id=None` (no `chain` key at all, not a null value).
     pub chain: Option<ChainLink>,
+    /// The record's [`STORE_NONCE_FIELD`]: 64 lowercase hex from
+    /// [`fresh_store_nonce`], drawn for this record alone. A caller-supplied
+    /// field (not drawn inside [`seal`]) only so conformance tests can pin
+    /// it; the live seal paths always pass a fresh one. [`seal`] refuses
+    /// anything that is not 64 lowercase hex.
+    pub store_nonce: String,
 }
 
 fn is_hex64(v: &str) -> bool {
@@ -553,6 +600,10 @@ pub enum SealError {
     /// table -- e.g. `confirmed` with no digest of the actual output.
     #[error("effect record violates AAC-05 §5.2: {0}")]
     EffectInvariant(&'static str),
+    /// The store nonce is missing or malformed -- a record without one is
+    /// guessable from its content (Evidence Layer -00 §12.1).
+    #[error("store_nonce must be 64 lowercase hex (256 bits from the store's CSPRNG)")]
+    StoreNonce,
 }
 
 /// AAC-05 §5.2's confirmed-effect invariant and status/digest table, as
@@ -596,6 +647,9 @@ fn derive_effect_mode(status: &str, response_digest: Option<&str>) -> &'static s
 /// capsule form (§5.1) — standalone (no `chain` block; chaining is milestone 2).
 pub fn seal(input: &CapsuleInput) -> Result<Value, SealError> {
     check_effect(input)?;
+    if !is_hex64(&input.store_nonce) {
+        return Err(SealError::StoreNonce);
+    }
     let mut body = Map::new();
     body.insert("spec_version".into(), json!(SPEC_VERSION));
     body.insert("format_version".into(), json!(FORMAT_VERSION));
@@ -738,6 +792,7 @@ pub fn seal(input: &CapsuleInput) -> Result<Value, SealError> {
         compute_attestation.insert("epistemic_type".into(), json!(epistemic_type));
     }
     compute_attestation.insert("x-mesh-poc-v1".into(), input.mesh_poc.to_value());
+    compute_attestation.insert(STORE_NONCE_FIELD.into(), json!(input.store_nonce));
     body.insert(
         "model_attestation".into(),
         json!({
@@ -958,7 +1013,7 @@ pub fn seal_citing_record(
     received_half.insert("cited_capsule_id".into(), json!(prov.foreign_capsule_id));
     received_half.insert("received_from".into(), json!(prov.received_from));
     received_half.insert("via".into(), json!(prov.via));
-    received_half.insert("received_at".into(), json!(prov.received_at));
+    received_half.insert("received_at".into(), json!(committed_time(prov.received_at)));
     received_half.insert("signature_ok".into(), json!(prov.signature_ok));
     if let Some(dm) = prov.digest_match {
         received_half.insert("digest_match".into(), json!(dm));
@@ -984,6 +1039,14 @@ pub fn seal_citing_record(
         chain,
         signing_key,
     )
+}
+
+/// A time a citing record commits to, truncated to the minute
+/// (Evidence Layer -00 §12.1; see `crate::timestamp`'s module doc). A value
+/// that is not RFC3339 is carried as given -- never replaced with a time
+/// nobody observed.
+fn committed_time(raw: &str) -> String {
+    crate::timestamp::coarsen_to_minute(raw).unwrap_or_else(|| raw.to_string())
 }
 
 /// The shared body of every LOCAL citing record kind (a received half, a
@@ -1013,12 +1076,13 @@ fn seal_local_citation(
     body.insert("action_type".into(), json!("fyi"));
     body.insert("operator".into(), json!("capsule-emit-mesh-poc-rust"));
     body.insert("developer".into(), json!("capsule-producer/0.2.0"));
-    body.insert("timestamp".into(), json!(crate::timestamp::utc_now_iso8601()));
+    body.insert("timestamp".into(), json!(crate::timestamp::utc_now_minute()));
     body.insert("domain".into(), json!("action"));
     body.insert("provenance".into(), json!("collector"));
 
     let mut compute_attestation = Map::new();
     compute_attestation.insert(block_name.into(), Value::Object(block));
+    compute_attestation.insert(STORE_NONCE_FIELD.into(), json!(fresh_store_nonce()));
     body.insert(
         "model_attestation".into(),
         json!({
@@ -1124,7 +1188,7 @@ pub fn seal_inclusion_citing_record(
     block.insert("half_capsule_id".into(), json!(citation.half_capsule_id));
     block.insert("received_from".into(), json!(citation.received_from));
     block.insert("via".into(), json!(citation.via));
-    block.insert("received_at".into(), json!(citation.received_at));
+    block.insert("received_at".into(), json!(committed_time(citation.received_at)));
     block.insert("leaf_index".into(), json!(citation.leaf_index));
     block.insert("mmr_size".into(), json!(citation.mmr_size));
     seal_local_citation(
@@ -1179,6 +1243,15 @@ pub fn payload_bytes(capsule: &Value) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn committed_latency_rounds_up_to_the_bucket() {
+        assert_eq!(committed_latency_ms(0.0), "0.000");
+        assert_eq!(committed_latency_ms(40.2), "100.000");
+        assert_eq!(committed_latency_ms(100.0), "100.000");
+        assert_eq!(committed_latency_ms(1234.567), "1300.000");
+        assert_eq!(committed_latency_ms(f64::NAN), "0.000");
+    }
 
     fn base_input(chain: Option<ChainLink>) -> CapsuleInput {
         let mut generation_parameters = Map::new();
@@ -1250,6 +1323,7 @@ mod tests {
             disposition_human_disposed: false,
             disposition_verdict_class: "executed".to_string(),
             chain,
+            store_nonce: "5".repeat(64),
         }
     }
 
@@ -1267,12 +1341,17 @@ mod tests {
     /// standalone f22a917852446fe83865ad3a247bad9471d3b1bc464c1e193401804e07c44550,
     /// chained 050b194efccf9e000d19f3d7f965b82861a7217389ed5e91888f3f5f9c04f8e3
     /// (both still reproduce with `SPEC_VERSION` set back to -02).
+    /// Re-pinned again for the store nonce (Evidence Layer -00 §12.1):
+    /// `compute_attestation.store_nonce` now rides inside
+    /// the preimage, so every id moves. Before:
+    /// standalone bff097741877ff783911eb6a2771c0fcca9e6e4862d0126b368f20cee1ebb7c8,
+    /// chained 4ba7516fbae648e0bf8c868a3ea59c1f1884a892dde85ef1c40c82b816a19231.
     #[test]
     fn capsule_id_is_unchanged_by_attaching_the_producer_envelope() {
         const STANDALONE_ID: &str =
-            "bff097741877ff783911eb6a2771c0fcca9e6e4862d0126b368f20cee1ebb7c8";
+            "8180ac62b30a6a3ba7fbfc2888ff8ffb6bdc6d2fc23bf9d6b02e62f434aa74f0";
         const CHAINED_ID: &str =
-            "4ba7516fbae648e0bf8c868a3ea59c1f1884a892dde85ef1c40c82b816a19231";
+            "17b5330e0b8dbacf18306f345a08c8d3a6e77fd9a9c1d67f546964dea545a94e";
 
         // 1. The pinned fixture ids are what `seal()` computes today.
         let mut standalone = seal(&base_input(None)).unwrap();

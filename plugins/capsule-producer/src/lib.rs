@@ -31,6 +31,8 @@
 //!   file-backed node store, periodic signed checkpoints, and opt-in
 //!   witness registration -- the Rust re-expression of
 //!   `checkpointing.py`'s `CheckpointState`.
+//! - [`padding`] Padding records (Evidence Layer -00 §12.1): appended so an
+//!   outbound checkpoint's leaf count falls on a bucket boundary.
 //! - [`verify`] Offline (no-network) verification composing capsule_id
 //!   recomputation, COSE signature verification, and chain-parent
 //!   membership.
@@ -45,6 +47,7 @@ pub mod cose;
 pub mod jcs;
 pub mod keys;
 pub mod ledger;
+pub mod padding;
 pub mod runtime_attest;
 pub mod sequence;
 pub mod tee_attest;

@@ -55,6 +55,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import stat
 import time
 import urllib.error
@@ -78,6 +79,7 @@ from advertisement import Advertisement, compute_meter, reconcile_advertised_vs_
 from checkpointing import CheckpointState, Ed25519Signer, JsonlLogSource, load_checkpoint_config
 from join_card import ModelRef, build_card, latest_card, nostr_pubkey_principal_ref, seal_card
 from ledger_store_backend import import_flat_ledger_once, open_ledger_store, read_all_capsules
+from padding_record import refuse_unpadded_witnessing
 from mac_hardware_inventory import capture_mac_hardware_inventory
 from model_identity import load_manifest, model_package_digest
 from node_ownership import (
@@ -569,6 +571,28 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _utc_now_minute() -> str:
+    """The current time truncated to the minute, for the time a sealed capsule
+    commits to (Evidence Layer -00 §12.1: a committed time leaves the node on
+    disclosure, so it is coarsened when the bytes are produced). Same
+    millisecond RFC3339 shape the Rust plugin seals."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    return now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _committed_latency_ms(latency_ms: float) -> str:
+    """``latency_ms`` rounded UP to the next 100 ms, as an exact decimal
+    string -- the same bucketing the Rust plugin seals
+    (``capsule::committed_latency_ms``): latency is a timing side channel."""
+    import math
+
+    if not math.isfinite(latency_ms) or latency_ms <= 0:
+        return "0.000"
+    return f"{math.ceil(latency_ms / 100.0) * 100.0:.3f}"
+
+
 def record_native_request(
     state: "NodeState",
     *,
@@ -797,6 +821,7 @@ class NodeState:
             loaded = load_checkpoint_config(self.checkpoint_config_path)
             if loaded is not None:
                 cfg, log_id_override = loaded
+                refuse_unpadded_witnessing(cfg.ts_urls, who="capsule_sidecar checkpoint cadence")
                 log_id = log_id_override or self.node_id
                 signer = Ed25519Signer(self.signing_key_path)
                 self.checkpoint = CheckpointState.load(
@@ -818,6 +843,7 @@ class NodeState:
                 loaded = load_checkpoint_config(plugin_cfg_path)
                 if loaded is not None:
                     cfg, log_id_override = loaded
+                    refuse_unpadded_witnessing(cfg.ts_urls, who="capsule_sidecar plugin-ledger cadence")
                     # A log_id override from a config file SHARED with the
                     # sidecar's own log (no dedicated --plugin-checkpoint-config)
                     # must never be reused verbatim -- two independently
@@ -1274,7 +1300,7 @@ def build_capsule(
             "client_nonce_source": client_nonce_source,
             "model_package_digest": state.model_package_digest,
             "generation_parameters": generation_parameters,
-            "latency_ms": f"{latency_ms:.3f}",
+            "latency_ms": _committed_latency_ms(latency_ms),
             # [b6a-requester-seal] The observed serving facts for THIS half,
             # including the shared exchange_id both halves record identically
             # and the role of this record. Emitted on the Python path (was
@@ -1409,6 +1435,11 @@ def build_capsule(
         verdict_class=verdict_class,
     )
 
+    # Evidence Layer -00 §12.1: a value the store draws for this record alone
+    # (client_nonce is supplied by -- so known to -- another party), committed
+    # into capsule_id alongside the minute-granular timestamp below.
+    compute_attestation["store_nonce"] = secrets.token_hex(32)
+
     capsule = emit(
         action_id=f"mesh-poc/{state.node_id}/{uuid.uuid4()}",
         action_type="decide",
@@ -1416,6 +1447,7 @@ def build_capsule(
         developer=state.developer,
         model_id=state.manifest["model_id"],
         provider="mesh-llm",
+        timestamp=_utc_now_minute(),
         compute_attestation=compute_attestation,
         effect=effect,
         disposition=disposition,

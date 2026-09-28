@@ -81,10 +81,13 @@ scope-cut as this module's own ``allow_forced_checkpoint`` note above.
 from __future__ import annotations
 
 import hashlib
+import threading
+from pathlib import Path
 from typing import Any
 
 from capsule_emit.evidence_request import Refusal
 
+from padding_record import is_padding_record
 from share_policy import SharePolicy
 
 #: The one derivation token this module dispatches on directly. Any other
@@ -383,6 +386,9 @@ def classify_leaf_kind(entry: dict[str, Any]) -> str:
     kind = entry.get("kind")
     if kind:
         return "stamp" if kind == "checkpoint_stamp" else str(kind)
+    if is_padding_record(entry):
+        # A leaf, never a record: a range answer names it for what it is.
+        return "padding"
     chain = entry.get("chain")
     if isinstance(chain, dict) and chain.get("relation") == "adjudicates":
         return "adjudication"
@@ -392,6 +398,77 @@ def classify_leaf_kind(entry: dict[str, Any]) -> str:
     if twin_bracket_id:
         return "exchange_twin"
     return "capsule"
+
+
+#: Per flat ledger file: ``(inode, bytes consumed, padding ids seen)``. The
+#: ledger is append-only, so each query reads only the lines appended since
+#: the last one; a replaced or truncated file (new inode, shorter than what
+#: was consumed) is rescanned from the start.
+_PADDING_ID_INDEX: dict[str, tuple[int, int, set[str]]] = {}
+_PADDING_ID_INDEX_LOCK = threading.Lock()
+
+
+def _scan_padding_ids(path: Path, *, start: int = 0, ids: set[str] | None = None) -> tuple[int, set[str]]:
+    """Padding ids in *path* from byte *start*, reading complete lines only.
+    A torn tail (a line the plugin is still writing, e.g. mid-padding) is
+    left for the next call; an unparsable complete line is skipped, never an
+    error on the query path. Returns ``(bytes consumed, ids)``."""
+    import json
+
+    ids = set() if ids is None else ids
+    with path.open("rb") as fh:
+        fh.seek(start)
+        chunk = fh.read()
+    complete = chunk[: chunk.rfind(b"\n") + 1]
+    for raw in complete.splitlines():
+        if b'"padding"' not in raw:
+            continue
+        try:
+            entry = json.loads(raw)
+        except ValueError:
+            continue
+        if is_padding_record(entry):
+            ids.add(str(entry.get("capsule_id", "")))
+    return start + len(complete), ids
+
+
+def _padding_ids(ledger_dir: Any) -> set[str]:
+    """Every padding id in this node's ledger. A flat ledger (the Rust
+    plugin's) is indexed incrementally; a store-backed one is materialized
+    fresh by ``materialize_flat_view`` on every call anyway, so it is scanned
+    without caching."""
+    from ledger_store_backend import as_ledger_dir, is_store_ledger, materialize_flat_view
+
+    directory = as_ledger_dir(Path(ledger_dir))
+    if is_store_ledger(directory):
+        path = Path(materialize_flat_view(directory))
+        return _scan_padding_ids(path)[1] if path.exists() else set()
+    path = directory / "capsules.jsonl"
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return set()
+    key = str(path.resolve())
+    with _PADDING_ID_INDEX_LOCK:
+        inode, consumed, ids = _PADDING_ID_INDEX.get(key, (stat.st_ino, 0, set()))
+        if inode != stat.st_ino or stat.st_size < consumed:
+            consumed, ids = 0, set()
+        if stat.st_size > consumed:
+            consumed, ids = _scan_padding_ids(path, start=consumed, ids=set(ids))
+        _PADDING_ID_INDEX[key] = (stat.st_ino, consumed, ids)
+        return ids
+
+
+def _names_padding_record(ledger_dir: Any, capsule_id: str) -> bool:
+    """Whether a ``record`` subject's ``capsule_id`` resolves to a padding
+    line in this node's ledger (exact id, or a >= 8-char prefix, as
+    ``capsule_emit.evidence_request`` matches)."""
+    if not capsule_id:
+        return False
+    ids = _padding_ids(ledger_dir)
+    if capsule_id in ids:
+        return True
+    return len(capsule_id) >= 8 and any(entry_id.startswith(capsule_id) for entry_id in ids)
 
 
 def _read_jsonl(path: Any) -> list[dict[str, Any]]:
@@ -559,6 +636,17 @@ def handle_evidence_request(
 
     if req is not None and req.subject.get("kind") == "chain_segment":
         return _handle_chain_segment_request(state, request_bytes, req, issued_at=issued_at)
+
+    # Evidence Layer -00 §12.1: a padding record is never responsive to a
+    # record query. answer() needs the full ledger (padding leaves included)
+    # for inclusion, so the refusal is made here, on the same id-match rule
+    # answer() uses (exact, or a >= 8-char prefix).
+    if req is not None and req.subject.get("kind") == "record" and _names_padding_record(
+        state.ledger_dir, str(req.subject.get("capsule_id", ""))
+    ):
+        request_digest = hashlib.sha256(request_bytes).hexdigest()
+        signer = _resolve_state_signer(state)
+        return _sign_refusal(request_digest, "no_such_record", signer=signer, issued_at=issued_at)
 
     # [mesh-ledger-store-migration] answer() only understands a flat JSONL
     # file -- materialize_flat_view is a no-op passthrough for a still-flat

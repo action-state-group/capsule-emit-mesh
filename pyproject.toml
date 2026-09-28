@@ -71,4 +71,6 @@ py-modules = [
     "served_summary",
     "capsule_mesh_view",
     "twin_adjudicator",
+    # Evidence Layer -00 §12.1 padding predicate, imported by the readers above.
+    "padding_record",
 ]

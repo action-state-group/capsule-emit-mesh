@@ -51,6 +51,23 @@ self-checkpointed only, no network. See
 [`docs/CHECKPOINT-BY-DEFAULT.md`](docs/CHECKPOINT-BY-DEFAULT.md). Nothing is
 sent anywhere unless you set a witness URL yourself.
 
+**What a checkpoint reveals, and what the plugin does about it** (Evidence
+Layer -00 §12.1). A checkpoint states how many records the ledger holds in
+total, so two checkpoints handed to the same party (a pushed bundle, a
+witness) would show how many records this node sealed between them, across
+every peer. The plugin therefore pads the ledger with `record_type: padding`
+records before each checkpoint, so the leaf count lands on a multiple of
+`ADMISSION_POLICY_CHECKPOINT_PAD_BUCKET` (default 32; `0` turns padding off).
+Padding records stay outside the chain, and nothing that counts or lists
+records shows them. Every time a sealed record or a checkpoint commits to is
+rounded down to the minute, and `latency_ms` is committed rounded up to the
+next 100 ms. Every sealed record also carries a fresh 256-bit `store_nonce`,
+so no record can be confirmed by guessing its content. The Python sidecar
+seals the same way, but the Python checkpointers (`checkpoint_daemon.py`,
+`checkpoint_ledger.py`, the sidecar's own cadences) do not pad: they still
+checkpoint locally, and refuse to register a checkpoint with a witness unless
+you set `CAPSULE_EMIT_MESH_ALLOW_UNPADDED_WITNESSING=1`.
+
 **To turn the plugin off**, set `enabled = false` on its `[[plugin]]` entry in
 `mesh-llm`'s config and restart the node:
 

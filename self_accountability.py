@@ -48,6 +48,7 @@ from capsule_accountability_tab import (
     measurement_class_grade,
 )
 from capsule_mesh_view import _poc_block
+from padding_record import without_padding
 from history_card import build_history_card
 from native_log_join import SEALED_VERDICT_CLASSES, coverage_report
 from sequence_counter import verify_pair_continuity
@@ -374,6 +375,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
         ledger_records = read_ledger(args.ledger)
     except Exception:
         ledger_records = _read_jsonl(Path(args.ledger))
+    # Padding leaves are never records (Evidence Layer -00 §12.1).
+    ledger_records = without_padding(ledger_records)
 
     card = build_self_accountability_card(
         node_id=args.node_id,

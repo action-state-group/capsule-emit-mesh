@@ -104,6 +104,7 @@ fn sample_input(seed: &str, chain: Option<ChainLink>) -> CapsuleInput {
         disposition_human_disposed: false,
         disposition_verdict_class: "executed".to_string(),
         chain,
+        store_nonce: "5".repeat(64),
     }
 }
 

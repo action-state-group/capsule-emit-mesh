@@ -9,7 +9,8 @@
 //!
 //! Determinism: the Ed25519 signing key is derived from a fixed seed (SHA-256
 //! of a constant label) rather than `KeyPair::generate()`'s OS RNG, and every
-//! capsule field (timestamps, digests, nonces) is a fixed constant. Because
+//! capsule field (timestamps, digests, nonces -- including the store nonce, which
+//! is seed-derived here and so demo-only) is a fixed constant. Because
 //! COSE_Sign1 here is Ed25519 (deterministic per RFC 8032) over a deterministic
 //! payload, re-running the producer to a fresh directory yields byte-identical
 //! `capsules.jsonl` and `.cose` files. This mirrors how the conformance tests
@@ -198,6 +199,13 @@ fn step_input(step: &Step, chain: Option<ChainLink>) -> CapsuleInput {
         disposition_human_disposed: false,
         disposition_verdict_class: step.disposition_verdict_class.to_string(),
         chain,
+        // DEMO ONLY: a seed-derived nonce keeps the demo's bytes reproducible
+        // (see the module doc). It is known to anyone with this source, so it
+        // does NOT meet the store-nonce requirement (Evidence Layer -00
+        // §12.1) -- a live seal path always draws `fresh_store_nonce()`.
+        store_nonce: hex::encode(Sha256::digest(
+            format!("capsule-emit-mesh/demo3-producer/store-nonce/v1/{}", step.name).as_bytes(),
+        )),
     }
 }
 
