@@ -115,15 +115,20 @@ fn not_checked_state() -> Value {
 /// or summarises records includes it (the plugin's `padding::is_padding`).
 const RECORD_TYPE_PADDING: &str = "padding";
 
+/// Padding by the producer's own rule: the reserved `record_type` AND the
+/// padding shape (nothing beyond the allowed members). A line that claims to
+/// be padding but carries anything else is not one this store wrote, so it
+/// is shown as a record, never hidden.
 fn is_padding_record(record: &Value) -> bool {
     record.get("record_type").and_then(Value::as_str) == Some(RECORD_TYPE_PADDING)
+        && capsule_producer::padding::check_padding_shape(record).is_ok()
 }
 
-/// Every parsed line of `<ledger_dir>/capsules.jsonl`, padding included, in
-/// leaf order. A missing file or an unparsable line is dropped, never a
-/// panic -- mirrors `capsules.rs`'s own "file absent -> 404, not error"
-/// discipline.
-fn read_ledger_lines(ledger_dir: &Path) -> Vec<Value> {
+/// Every line of `<ledger_dir>/capsules.jsonl`, padding included, in leaf
+/// order. An unparsable line stays in place as `None`, so no later leaf's
+/// position shifts, and is counted ([`unparsable_line_count`]). A missing
+/// file is no lines, never a panic.
+fn read_ledger_lines(ledger_dir: &Path) -> Vec<Option<Value>> {
     let path = ledger_dir.join("capsules.jsonl");
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Vec::new();
@@ -131,8 +136,13 @@ fn read_ledger_lines(ledger_dir: &Path) -> Vec<Value> {
     text.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .map(|line| serde_json::from_str::<Value>(line).ok())
         .collect()
+}
+
+/// Ledger lines that do not parse: reported, never dropped silently.
+fn unparsable_line_count(ledger_dir: &Path) -> usize {
+    read_ledger_lines(ledger_dir).iter().filter(|line| line.is_none()).count()
 }
 
 /// This node's records from `<ledger_dir>/capsules.jsonl`, same as
@@ -142,6 +152,7 @@ fn read_ledger_lines(ledger_dir: &Path) -> Vec<Value> {
 pub(crate) fn read_capsule_records(ledger_dir: &Path) -> Vec<Value> {
     read_ledger_lines(ledger_dir)
         .into_iter()
+        .flatten()
         .filter(|record| !is_padding_record(record))
         .collect()
 }
@@ -153,7 +164,7 @@ fn records_among_first_leaves(ledger_dir: &Path, leaves: u64) -> u64 {
     let covered = read_ledger_lines(ledger_dir)
         .iter()
         .take(leaves)
-        .filter(|record| !is_padding_record(record))
+        .filter(|line| line.as_ref().is_some_and(|record| !is_padding_record(record)))
         .count();
     u64::try_from(covered).unwrap_or(u64::MAX)
 }
@@ -262,7 +273,10 @@ fn read_checkpoint_card(ledger_dir: &Path) -> Value {
             .collect(),
         Err(_) => Vec::new(),
     };
-    let mut card = json!({ "checkpoint_count": checkpoints.len() });
+    let mut card = json!({
+        "checkpoint_count": checkpoints.len(),
+        "unparsable_line_count": unparsable_line_count(ledger_dir),
+    });
     if let Some(latest) = checkpoints.last() {
         if let Some(ts) = latest.get("timestamp").and_then(Value::as_str) {
             card["registered_no_later_than"] = json!(ts);
@@ -3913,6 +3927,39 @@ mod tests {
             9,
             "the ledger itself keeps every leaf"
         );
+    }
+
+    /// A line claiming `record_type: padding` but carrying more than padding
+    /// may is not padding: it is listed as a record, never hidden. An
+    /// unparsable line keeps its leaf position and is counted. MUTANT: go back
+    /// to `record_type` alone and the disguised record disappears.
+    #[test]
+    fn a_disguised_padding_line_is_a_record_and_a_bad_line_is_counted_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut disguised = padding_line(1);
+        disguised["effect"] = json!({ "request_digest": "d".repeat(64) });
+        let lines = [
+            serde_json::to_string(&fixture_record("a".repeat(64).as_str(), "2026-09-28T00:00:00Z", "d".repeat(64).as_str(), None)).unwrap(),
+            "{not json".to_string(),
+            serde_json::to_string(&disguised).unwrap(),
+            serde_json::to_string(&padding_line(2)).unwrap(),
+        ];
+        std::fs::write(dir.path().join("capsules.jsonl"), lines.join("\n") + "\n").unwrap();
+        // A checkpoint over the first 3 leaves: the record, the bad line, the
+        // disguised line (MMR of 3 leaves = 4 nodes).
+        std::fs::write(
+            dir.path().join("checkpoints.jsonl"),
+            serde_json::to_string(&json!({ "timestamp": "2026-09-28T00:00:00Z", "mmr_size": 4 })).unwrap() + "\n",
+        )
+        .unwrap();
+
+        let records = read_capsule_records(dir.path());
+        assert_eq!(records.len(), 2, "the record and the disguised line");
+        assert_eq!(read_ledger_lines(dir.path()).len(), 4, "every leaf keeps its place");
+        let card = read_checkpoint_card(dir.path());
+        assert_eq!(card["unparsable_line_count"], json!(1));
+        assert_eq!(card["covered_leaf_count"], json!(3));
+        assert_eq!(card["covered_record_count"], json!(2));
     }
 
     /// The door's inbound log reaches every Pane B row, newest lines kept,
