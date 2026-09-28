@@ -1636,8 +1636,13 @@ pub(crate) fn full_counterparty_node_id(record: &Value) -> Option<String> {
 /// The one attribution join both Pane B and Pane C's `counterparty` field
 /// read, so the two panes can never name the same peer differently.
 struct PeerAttribution {
-    /// exchange key -> the pushing peer's row key (via `sibling_peer_identity`).
+    /// exchange key -> the pushing peer's row key (via `sibling_peer_identity`),
+    /// only when every half under the key resolves to that one row. A twin
+    /// pair (one prompt, two providers) shares a key: it maps to no row, and
+    /// each record is attributed on its own (below, and `row_key_for`).
     row_key_by_exchange_key: HashMap<String, String>,
+    /// received half's capsule_id -> its pushing peer's row key.
+    row_key_by_capsule_id: HashMap<String, String>,
     /// row key -> merged identity evidence (aliases).
     identity_by_row_key: HashMap<String, PeerIdentity>,
     /// short16(node id) -> row key, for bridging a `node:`-labeled local
@@ -1651,14 +1656,15 @@ struct PeerAttribution {
 /// we sealed ourselves, never a received one). That id is ours, not the
 /// peer's word, so it is one the console may block by.
 ///
-/// The key is the request digest, so the same prompt sent to two peers is
-/// one key with two own records naming two nodes. Such a key names no node
-/// at all: which own record a peer's half answers is not known from the key,
-/// and a block must never land on the other peer.
-fn own_routed_node_by_key(
+/// The key is the request digest, so the same prompt sent to two peers (a
+/// twin pair) is one key with two own records naming two nodes. The key alone
+/// never says which of them a peer's half answers: [`peer_attribution`] gives
+/// a half one of these nodes only when the half itself points at it
+/// ([`half_points_at`]), so a block never lands on the other peer.
+fn own_routed_nodes_by_key(
     records: &[Value],
     received_provenance: &HashMap<String, ReceivedProvenance>,
-) -> HashMap<String, String> {
+) -> HashMap<String, BTreeSet<String>> {
     let mut by_key: HashMap<String, BTreeSet<String>> = HashMap::new();
     for record in records {
         let received = record
@@ -1675,15 +1681,6 @@ fn own_routed_node_by_key(
         }
     }
     by_key
-        .into_iter()
-        .filter_map(|(key, nodes)| {
-            let mut nodes = nodes.into_iter();
-            match (nodes.next(), nodes.next()) {
-                (Some(node), None) => Some((key, node)),
-                _ => None,
-            }
-        })
-        .collect()
 }
 
 /// The half names `node` as its server, or the door received it from `node`.
@@ -1703,43 +1700,61 @@ fn peer_attribution(
 ) -> PeerAttribution {
     let mut attribution = PeerAttribution {
         row_key_by_exchange_key: HashMap::new(),
+        row_key_by_capsule_id: HashMap::new(),
         identity_by_row_key: HashMap::new(),
         node_alias_to_row_key: HashMap::new(),
     };
-    let own_routed = own_routed_node_by_key(records, received_provenance);
-    for (key, siblings) in siblings_by_key {
-        // A single exchange key correlates one counterparty half; take the
-        // first sibling whose evidence resolves to any identity at all.
-        let Some((sibling, row_key, mut identity)) = siblings.iter().find_map(|sibling| {
-            let identity = sibling_peer_identity(sibling.record, sibling.provenance);
-            peer_row_key(&identity).map(|row_key| (sibling, row_key, identity))
-        }) else {
-            continue;
-        };
-        // Our own record of this exchange names the node our host routed it
-        // to: that id is ours, so it replaces the peer's own claim about
-        // itself (a requester that has only asked can then stop routing to
-        // it). A peer's self-asserted id alone stays `their_record`. It is
-        // applied only to a half that points at that same node -- the node
-        // it names as its server, or the node the door received it from:
-        // any other peer can push a half with our request digest, and a
-        // block must never land on the node we routed to because of it.
-        let replaceable = identity.node_id.is_none() || identity.node_id_self_asserted;
-        let same_node = |node: &String| half_points_at(sibling.record, sibling.provenance, node);
-        if let Some(node) = own_routed.get(key).filter(|node| replaceable && same_node(node)) {
-            identity.node_id = Some(node.clone());
-            identity.node_id_self_asserted = false;
+    let own_routed = own_routed_nodes_by_key(records, received_provenance);
+    // Sorted, so the same ledger always attributes the same way (HashMap
+    // order used to decide which twin a shared key went to).
+    let mut keys: Vec<&String> = siblings_by_key.keys().collect();
+    keys.sort();
+    for key in keys {
+        let mut rows_for_key: BTreeSet<String> = BTreeSet::new();
+        for sibling in &siblings_by_key[key] {
+            let mut identity = sibling_peer_identity(sibling.record, sibling.provenance);
+            let Some(row_key) = peer_row_key(&identity) else {
+                continue;
+            };
+            // Our own records of this exchange name the node(s) our host
+            // routed it to: those ids are ours, so one replaces the peer's
+            // own claim about itself (a requester that has only asked can
+            // then stop routing to it). Only a node this half itself points
+            // at -- the node it names as its server, or the node the door
+            // received it from -- ever counts: any other peer can push a half
+            // with our request digest, and a block must never land on
+            // another node because of it. A self-asserted id alone stays
+            // `their_record`.
+            let replaceable = identity.node_id.is_none() || identity.node_id_self_asserted;
+            if replaceable {
+                if let Some(node) = own_routed.get(key).and_then(|nodes| {
+                    nodes
+                        .iter()
+                        .find(|node| half_points_at(sibling.record, sibling.provenance, node))
+                }) {
+                    identity.node_id = Some(node.clone());
+                    identity.node_id_self_asserted = false;
+                }
+            }
+            if let Some(id) = sibling.record.get("capsule_id").and_then(Value::as_str) {
+                attribution.row_key_by_capsule_id.insert(id.to_string(), row_key.clone());
+            }
+            rows_for_key.insert(row_key.clone());
+            attribution
+                .identity_by_row_key
+                .entry(row_key)
+                .or_default()
+                .merge(identity);
         }
-        attribution
-            .row_key_by_exchange_key
-            .insert(key.clone(), row_key.clone());
-        attribution
-            .identity_by_row_key
-            .entry(row_key)
-            .or_default()
-            .merge(identity);
+        if rows_for_key.len() == 1 {
+            attribution
+                .row_key_by_exchange_key
+                .insert(key.clone(), rows_for_key.into_iter().next().expect("one row"));
+        }
     }
-    for (row_key, identity) in &attribution.identity_by_row_key {
+    let mut rows: Vec<(&String, &PeerIdentity)> = attribution.identity_by_row_key.iter().collect();
+    rows.sort_by(|a, b| a.0.cmp(b.0));
+    for (row_key, identity) in rows {
         if let Some(node) = &identity.node_id {
             attribution
                 .node_alias_to_row_key
@@ -1756,6 +1771,13 @@ impl PeerAttribution {
     /// evidence carries the same node id. No evidence, no bridge: an
     /// unlinked `node:` label stays its own (honestly labeled) row.
     fn row_key_for(&self, record: &Value) -> Option<String> {
+        if let Some(row_key) = record
+            .get("capsule_id")
+            .and_then(Value::as_str)
+            .and_then(|id| self.row_key_by_capsule_id.get(id))
+        {
+            return Some(row_key.clone());
+        }
         if let Some(row_key) =
             exchange_key_for(record).and_then(|key| self.row_key_by_exchange_key.get(&key))
         {
@@ -3135,8 +3157,8 @@ mod tests {
 
     /// The same prompt asked of H, then of M: one request digest, two own
     /// records naming two nodes. M's pushed half must not pick up H's node id
-    /// (a block would land on H). The key names no node from our records, so
-    /// M's row offers no block. MUTANT: first-entry-wins gives M H's id.
+    /// (a block would land on H); it gets M, the node it points at. MUTANT:
+    /// first-entry-wins gives M H's id.
     #[test]
     fn the_same_prompt_to_two_peers_never_gives_one_peer_the_other_nodes_id() {
         let m_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
@@ -3161,7 +3183,8 @@ mod tests {
             [provenance_for("b".repeat(64).as_str(), "e5ba9d1001")].into_iter().collect();
 
         let records = [asked_h, asked_m, pushed_m];
-        assert!(own_routed_node_by_key(&records, &provenance).is_empty());
+        let routed = own_routed_nodes_by_key(&records, &provenance);
+        assert_eq!(routed.values().next().map(|n| n.len()), Some(2), "one key, both nodes");
         let pane = build_pane_b(&records, &provenance);
         let row = pane["rows"]
             .as_array()
@@ -3170,7 +3193,10 @@ mod tests {
             .find(|r| r["peer_id"] == json!("key:71eb26f8e583ccc9"))
             .expect("M's row");
         assert_ne!(row["identity"]["node_id"], json!(node_h), "never H's id on M's row");
-        assert_ne!(row["identity"]["node_id_source"], json!("your_records"));
+        // M's half names M as its server, and our records routed this key to
+        // M too: M's row may block M -- and only M.
+        assert_eq!(row["identity"]["node_id"], json!(node_m));
+        assert_eq!(row["identity"]["node_id_source"], json!("your_records"));
     }
 
     /// Only H was asked, but M pushes a signed half with the same request
@@ -3234,6 +3260,59 @@ mod tests {
         assert_eq!(row["identity"]["node_id_source"], json!("your_records"));
     }
 
+    /// A twin pair: the same prompt served by A and by B, both answering the
+    /// same text, both pushing their signed half. The shared request digest
+    /// must not put both exchanges on one provider's row, and the split must
+    /// not depend on map order: A's row holds A's exchange, B's row B's, the
+    /// same on every build, and each row can block its own node. MUTANT: map
+    /// the shared key to its first sibling and one row takes both.
+    #[test]
+    fn a_twin_pair_attributes_each_provider_its_own_exchange_stably() {
+        let key_a = "aaaa26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let key_b = "bbbb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let node_a = format!("a0a0{}", "1".repeat(60));
+        let node_b = format!("b0b0{}", "2".repeat(60));
+        let (req, resp) = ("d".repeat(64), "e".repeat(64));
+        let asked_a = mesh_half_served_by("1".repeat(64).as_str(), "requested", &req, &resp, "me-a", &node_a);
+        let asked_b = mesh_half_served_by("2".repeat(64).as_str(), "requested", &req, &resp, "me-b", &node_b);
+        let half_a = with_key(mesh_half_served_by("3".repeat(64).as_str(), "served", &req, &resp, "a-1", &node_a), key_a);
+        let half_b = with_key(mesh_half_served_by("4".repeat(64).as_str(), "served", &req, &resp, "b-1", &node_b), key_b);
+        let provenance: HashMap<String, ReceivedProvenance> = [
+            provenance_for("3".repeat(64).as_str(), &node_a),
+            provenance_for("4".repeat(64).as_str(), &node_b),
+        ]
+        .into_iter()
+        .collect();
+        let records = [asked_a, asked_b, half_a, half_b];
+        let snapshot = |pane: &Value| {
+            let mut rows: Vec<(String, Value, Value, Value)> = pane["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| {
+                    (
+                        r["peer_id"].as_str().unwrap_or("").to_string(),
+                        r["exchange_count"].clone(),
+                        r["identity"]["node_id"].clone(),
+                        r["identity"]["node_id_source"].clone(),
+                    )
+                })
+                .collect();
+            rows.sort_by(|x, y| x.0.cmp(&y.0));
+            rows
+        };
+        let first = snapshot(&build_pane_b(&records, &provenance));
+        for _ in 0..20 {
+            assert_eq!(snapshot(&build_pane_b(&records, &provenance)), first, "stable across builds");
+        }
+        let row = |key: &str| first.iter().find(|r| r.0 == format!("key:{}", &key[..16])).cloned().expect("row");
+        let (a, b) = (row(key_a), row(key_b));
+        assert_eq!(first.len(), 2, "exactly the two providers: {first:?}");
+        assert_eq!((a.1.clone(), b.1.clone()), (json!(1), json!(1)), "one exchange each");
+        assert_eq!((a.2.clone(), a.3.clone()), (json!(node_a), json!("your_records")));
+        assert_eq!((b.2.clone(), b.3.clone()), (json!(node_b), json!("your_records")));
+    }
+
     /// A node id from a record we RECEIVED never counts as ours, even on a
     /// requested-role record: only our own records route.
     #[test]
@@ -3255,7 +3334,7 @@ mod tests {
             [provenance_for("b".repeat(64).as_str(), "e5ba9d1001")]
                 .into_iter()
                 .collect();
-        let own = own_routed_node_by_key(&[pushed_requested], &provenance);
+        let own = own_routed_nodes_by_key(&[pushed_requested], &provenance);
         assert!(own.is_empty());
     }
 
