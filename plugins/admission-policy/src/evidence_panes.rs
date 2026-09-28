@@ -161,6 +161,53 @@ fn records_among_first_leaves(ledger_dir: &Path, leaves: u64) -> u64 {
     u64::try_from(covered).unwrap_or(u64::MAX)
 }
 
+/// At most this many of the newest inbound-request log lines reach a pane.
+const MAX_ASKED_OF_YOU_ENTRIES: usize = 500;
+
+/// The evidence door's own log of requests made of this node
+/// (`<dir>/received_log.jsonl`, written by `evidence_server.py` when it runs
+/// with `--received-log-dir`): one line per request it answered, refused or
+/// received. Newest [`MAX_ASKED_OF_YOU_ENTRIES`] lines, oldest first; a line
+/// that is not an object with string `ts`, `path` and `status` is dropped.
+pub(crate) fn read_received_log(dir: &Path) -> Vec<Value> {
+    let Ok(text) = std::fs::read_to_string(dir.join("received_log.jsonl")) else {
+        return Vec::new();
+    };
+    let entries: Vec<Value> = text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+        .filter(|entry| {
+            ["ts", "path", "status"]
+                .iter()
+                .all(|key| entry.get(*key).and_then(Value::as_str).is_some())
+        })
+        .map(|entry| {
+            json!({
+                "ts": entry["ts"],
+                "path": entry["path"],
+                "requester_id": entry.get("requester_id").cloned().unwrap_or(Value::Null),
+                "subject_kind": entry.get("subject_kind").cloned().unwrap_or(Value::Null),
+                "status": entry["status"],
+                "reason": entry.get("reason").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect();
+    let skip = entries.len().saturating_sub(MAX_ASKED_OF_YOU_ENTRIES);
+    entries.into_iter().skip(skip).collect()
+}
+
+/// Give every Pane B row the node's inbound-request log as `asked_of_you`.
+/// The log is node-wide and keyed by each requester's self-declared id; the
+/// drill keeps only the lines whose id is one the row is known by.
+pub(crate) fn attach_asked_of_you(pane_b: &mut Value, entries: &[Value]) {
+    let Some(rows) = pane_b.get_mut("rows").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for row in rows {
+        row["asked_of_you"] = json!({ "entries": entries });
+    }
+}
+
 /// Inverts an MMR total-node count back to the LEAF count it covers.
 ///
 /// An append-only Merkle Mountain Range over `L` leaves has a fixed total node
@@ -314,6 +361,12 @@ pub(super) struct ReceivedProvenance {
     /// node-id alias merges rows with no further code change here; when
     /// absent, no bridge is invented.
     received_from_node_id: Option<String>,
+    /// Where the held half sits in the other side's own log, when a
+    /// `counterparty_inclusion` record of ours cites their inclusion proof and
+    /// checkpoint for it: `{leaf_index, checkpoint_records}`, the latter the
+    /// size of their log that checkpoint covers. `None` until that evidence
+    /// arrives.
+    their_log: Option<Value>,
 }
 
 /// Reads the held-artifact store
@@ -354,6 +407,36 @@ fn is_citing_record(record: &Value) -> bool {
 /// True when `record` is this node's record of a local routing choice (the
 /// operator blocked or unblocked a peer; `peer_blocks`). Ours, and on the
 /// chain, but not an exchange: it never enters the Pane B/C correlation.
+/// A `counterparty_inclusion` record of ours: it cites the other side's
+/// inclusion proof and covering checkpoint for a half we hold. Ours (Pane A),
+/// never an exchange half (Pane B/C).
+fn is_inclusion_citing_record(record: &Value) -> bool {
+    record
+        .get("references")
+        .and_then(Value::as_array)
+        .is_some_and(|refs| {
+            refs.iter().any(|r| {
+                r.get("citation_purpose").and_then(Value::as_str) == Some("counterparty_inclusion")
+            })
+        })
+}
+
+/// `(held half's capsule_id, {leaf_index, checkpoint_records})` from an
+/// inclusion-citing record, when its facts are whole.
+fn their_log_position(record: &Value) -> Option<(String, Value)> {
+    let block = record.pointer("/model_attestation/compute_attestation/counterparty_inclusion")?;
+    let half = block.get("half_capsule_id").and_then(Value::as_str)?;
+    let leaf_index = block.get("leaf_index").and_then(Value::as_u64)?;
+    let checkpoint_records = block
+        .get("mmr_size")
+        .and_then(Value::as_u64)
+        .and_then(mmr_leaf_count)?;
+    Some((
+        half.to_string(),
+        json!({ "leaf_index": leaf_index, "checkpoint_records": checkpoint_records }),
+    ))
+}
+
 fn is_local_routing_choice(record: &Value) -> bool {
     record
         .pointer("/model_attestation/compute_attestation/local_routing_choice")
@@ -405,6 +488,7 @@ fn received_half_provenance(citing: &Value) -> Option<ReceivedProvenance> {
             .unwrap_or_default()
             .to_string(),
         signature_ok: true,
+        their_log: None,
         received_from_node_id: rh
             .get("received_from_node_id")
             .and_then(Value::as_str)
@@ -454,6 +538,7 @@ fn effective_ledger(ledger_dir: &Path) -> EffectiveLedger {
     let mut choice_records: Vec<Value> = Vec::new();
     let mut received_provenance: HashMap<String, ReceivedProvenance> = HashMap::new();
     let mut resolved_foreign: HashMap<String, Value> = HashMap::new();
+    let mut their_log: HashMap<String, Value> = HashMap::new();
 
     for record in raw {
         if is_citing_record(&record) {
@@ -474,6 +559,13 @@ fn effective_ledger(ledger_dir: &Path) -> EffectiveLedger {
                     .or_insert_with(|| body.clone());
             }
             citing_records.push(record);
+        } else if is_inclusion_citing_record(&record) {
+            // Ours (Pane A), never an exchange half; it places a held half in
+            // the other side's log.
+            if let Some((half, position)) = their_log_position(&record) {
+                their_log.entry(half).or_insert(position);
+            }
+            citing_records.push(record);
         } else if is_local_routing_choice(&record) {
             // Ours (Pane A), never an exchange half (Pane B/C).
             choice_records.push(record);
@@ -481,6 +573,10 @@ fn effective_ledger(ledger_dir: &Path) -> EffectiveLedger {
             // One of this node's own served/requester capsules.
             local_records.push(record);
         }
+    }
+
+    for (half, prov) in received_provenance.iter_mut() {
+        prov.their_log = their_log.get(half).cloned();
     }
 
     // Pane B/C: our own halves + the resolved foreign counterparty halves.
@@ -1641,6 +1737,7 @@ fn theirs_sibling_cell(sibling: &Value, provenance: &ReceivedProvenance) -> Valu
         "received_at": provenance.received_at,
         "signature_ok": provenance.signature_ok,
         "record": sibling,
+        "in_their_log": provenance.their_log.clone().unwrap_or(Value::Null),
     })
 }
 
@@ -1947,6 +2044,7 @@ mod tests {
                 received_at: "2026-09-25T00:00:01Z".to_string(),
                 signature_ok: true,
                 received_from_node_id: None,
+                their_log: None,
             },
         )
     }
@@ -3627,6 +3725,45 @@ mod tests {
         );
     }
 
+    /// The door's inbound log reaches every Pane B row, newest lines kept,
+    /// malformed lines dropped; no log means no `asked_of_you` at all.
+    #[test]
+    fn pane_b_rows_carry_the_door_log_of_requests_made_of_this_node() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("received_log.jsonl"),
+            concat!(
+                "{\"ts\":\"2026-09-27T10:00:00Z\",\"path\":\"evidence-request\",\"requester_id\":\"peer-1\",",
+                "\"subject_kind\":\"record\",\"status\":\"answered\",\"reason\":null}\n",
+                "not json\n",
+                "{\"ts\":\"2026-09-27T10:01:00Z\",\"path\":\"evidence-request\",\"status\":\"refused\",",
+                "\"reason\":\"policy_decline\"}\n",
+                "{\"path\":\"evidence-request\",\"status\":\"answered\"}\n",
+            ),
+        )
+        .unwrap();
+        let entries = read_received_log(dir.path());
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1]["requester_id"], Value::Null);
+        assert_eq!(entries[1]["reason"], json!("policy_decline"));
+
+        let mut pane = json!({ "rows": [{ "peer_id": "peer-1" }, { "peer_id": null }] });
+        attach_asked_of_you(&mut pane, &entries);
+        assert_eq!(
+            pane["rows"][0]["asked_of_you"]["entries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            pane["rows"][1]["asked_of_you"]["entries"][0]["subject_kind"],
+            json!("record")
+        );
+
+        assert!(read_received_log(tempfile::tempdir().unwrap().path()).is_empty());
+    }
+
     #[test]
     fn build_pane_json_reads_a_real_fixture_ledger_directory() {
         let dir = std::env::temp_dir().join("mesh-c3-fixture-ledger-test");
@@ -3662,6 +3799,70 @@ mod tests {
     ///   (c) Pane A lists our own records including the citing record, marked
     ///       `kind: counterparty_half_citation` (not a served action), and NOT
     ///       the foreign body.
+    /// A `counterparty_inclusion` record of ours places the held half in the
+    /// other side's log: the row's `theirs` says where, and the inclusion
+    /// record itself is never an exchange row. Without it, `in_their_log` is
+    /// null. MUTANT: drop the inclusion bucket and the record joins Pane C.
+    #[test]
+    fn an_inclusion_citing_record_places_their_half_in_their_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let (req, resp) = ("d".repeat(64), "e".repeat(64));
+        let local = mesh_half(&"a".repeat(64), "requested", &req, &resp, "m4-914b61c1");
+        let foreign = mesh_half(&"b".repeat(64), "served", &req, &resp, "m3-82777e20");
+        let citing = citing_fixture(&"b".repeat(64), "m3", true);
+        let inclusion = json!({
+            "capsule_id": "c".repeat(64),
+            "model_attestation": { "compute_attestation": { "counterparty_inclusion": {
+                "half_capsule_id": "b".repeat(64),
+                "received_from": "m3",
+                "via": "push",
+                "received_at": "2026-09-27T10:00:00Z",
+                "leaf_index": 6,
+                "mmr_size": 15,
+            } } },
+            "references": [
+                { "type": "cll-inclusion-proof", "digest_alg": "SHA-256", "digest": "1".repeat(64),
+                  "citation_purpose": "counterparty_inclusion" },
+                { "type": "cll-checkpoint", "digest_alg": "SHA-256", "digest": "2".repeat(64),
+                  "citation_purpose": "counterparty_inclusion" },
+            ],
+        });
+        let write = |lines: &[&Value]| {
+            let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+            std::fs::write(dir.path().join("capsules.jsonl"), text).unwrap();
+        };
+        std::fs::write(
+            dir.path().join("received-capsules.jsonl"),
+            format!("{foreign}\n"),
+        )
+        .unwrap();
+
+        write(&[&local, &citing]);
+        let before = build_pane_json("pane-c", dir.path(), None).unwrap();
+        assert_eq!(before["rows"][0]["theirs"]["in_their_log"], Value::Null);
+
+        write(&[&local, &citing, &inclusion]);
+        let pane_c = build_pane_json("pane-c", dir.path(), None).unwrap();
+        assert_eq!(
+            pane_c["row_count"],
+            json!(1),
+            "the inclusion record is not an exchange"
+        );
+        assert_eq!(
+            pane_c["rows"][0]["theirs"]["in_their_log"],
+            json!({ "leaf_index": 6, "checkpoint_records": 8 })
+        );
+        let pane_a = build_pane_json("pane-a", dir.path(), None).unwrap();
+        assert!(
+            pane_a["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["capsule_id"] == json!("c".repeat(64))),
+            "it is one of our own records"
+        );
+    }
+
     #[test]
     fn new_shape_closes_via_citing_record_and_held_artifact() {
         let dir = std::env::temp_dir().join(format!("mesh-cite-e2e-{}", std::process::id()));

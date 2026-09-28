@@ -25,7 +25,13 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::evidence_panes::{build_pane_json, read_capsule_records};
+use crate::evidence_panes::{
+    attach_asked_of_you, build_pane_json, read_capsule_records, read_received_log,
+};
+
+/// The directory the evidence door writes `received_log.jsonl` into (its
+/// `--received-log-dir`): the drill's "Asked of you". Unset: not shown.
+pub const ENV_RECEIVED_LOG_DIR: &str = "ADMISSION_POLICY_RECEIVED_LOG_DIR";
 
 /// A route that takes no arguments. Unknown members (the host may add query
 /// parameters) are ignored.
@@ -50,6 +56,17 @@ pub struct PaneCArgs {
 pub struct EvidenceSource {
     pub ledger_dir: PathBuf,
     pub node_pub_key_pem: Option<String>,
+    /// Where the evidence door logs requests made of this node, if anywhere.
+    pub received_log_dir: Option<PathBuf>,
+}
+
+impl EvidenceSource {
+    /// `received_log_dir` from [`ENV_RECEIVED_LOG_DIR`], when set.
+    pub fn received_log_dir_from_env() -> Option<PathBuf> {
+        std::env::var_os(ENV_RECEIVED_LOG_DIR)
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+    }
 }
 
 fn is_record_id(value: &str) -> bool {
@@ -105,6 +122,20 @@ pub fn pane_json(
 ) -> Result<Value, PluginError> {
     build_pane_json(pane, ledger_dir, exchange_id)
         .ok_or_else(|| PluginError::invalid_params(format!("no pane {pane:?}")))
+}
+
+/// [`pane_json`] from `source`: Pane B also carries the door's log of
+/// requests made of this node, when it keeps one.
+pub fn source_pane_json(
+    source: &EvidenceSource,
+    pane: &str,
+    exchange_id: Option<&str>,
+) -> Result<Value, PluginError> {
+    let mut payload = pane_json(&source.ledger_dir, pane, exchange_id)?;
+    if let (Some(dir), "pane-b") = (&source.received_log_dir, pane) {
+        attach_asked_of_you(&mut payload, &read_received_log(dir));
+    }
+    Ok(payload)
 }
 
 fn exchange_id(args: &PaneCArgs) -> Result<Option<String>, PluginError> {
@@ -186,7 +217,7 @@ pub fn with_routes(
                 .handle(move |_args, _context| {
                     let s = s.clone();
                     Box::pin(
-                        async move { blocking(move || pane_json(&s.ledger_dir, pane, None)).await },
+                        async move { blocking(move || source_pane_json(&s, pane, None)).await },
                     )
                 }),
         );
@@ -202,8 +233,7 @@ pub fn with_routes(
                 let s = s.clone();
                 Box::pin(async move {
                     let exchange_id = exchange_id(&args)?;
-                    blocking(move || pane_json(&s.ledger_dir, "pane-c", exchange_id.as_deref()))
-                        .await
+                    blocking(move || source_pane_json(&s, "pane-c", exchange_id.as_deref())).await
                 })
             }),
     );
@@ -241,6 +271,7 @@ mod tests {
         let source = EvidenceSource {
             ledger_dir: dir.path().into(),
             node_pub_key_pem: Some("PEM".into()),
+            received_log_dir: None,
         };
         let body = ledger_json(&source);
         assert_eq!(body["records"].as_array().unwrap().len(), 1);
@@ -253,6 +284,7 @@ mod tests {
         let source = EvidenceSource {
             ledger_dir: dir.path().into(),
             node_pub_key_pem: None,
+            received_log_dir: None,
         };
         assert_eq!(ledger_json(&source)["records"], json!([]));
         assert_eq!(
@@ -344,6 +376,7 @@ mod tests {
             EvidenceSource {
                 ledger_dir: dir.path().into(),
                 node_pub_key_pem: None,
+                received_log_dir: None,
             },
         )
         .build();
@@ -378,5 +411,34 @@ mod tests {
                 binding.path
             );
         }
+    }
+
+    #[test]
+    fn pane_b_carries_asked_of_you_only_when_the_door_keeps_a_log() {
+        let dir = ledger(&[record(&"1".repeat(64))]);
+        let log = tempfile::tempdir().unwrap();
+        std::fs::write(
+            log.path().join("received_log.jsonl"),
+            "{\"ts\":\"2026-09-27T10:00:00Z\",\"path\":\"evidence-request\",\"requester_id\":\"p\",\"subject_kind\":\"record\",\"status\":\"answered\",\"reason\":null}\n",
+        )
+        .unwrap();
+        let mut source = EvidenceSource {
+            ledger_dir: dir.path().into(),
+            node_pub_key_pem: None,
+            received_log_dir: None,
+        };
+        let without = source_pane_json(&source, "pane-b", None).unwrap();
+        assert!(without["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r.get("asked_of_you").is_none()));
+        source.received_log_dir = Some(log.path().into());
+        let with = source_pane_json(&source, "pane-b", None).unwrap();
+        let rows = with["rows"].as_array().unwrap();
+        assert!(!rows.is_empty());
+        assert!(rows
+            .iter()
+            .all(|r| r["asked_of_you"]["entries"].as_array().unwrap().len() == 1));
     }
 }
