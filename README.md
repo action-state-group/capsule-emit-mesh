@@ -83,7 +83,13 @@ with the plugin's Evidence page, plus a `SHA256SUMS` file; see
 [`.github/workflows/release.yml`](.github/workflows/release.yml) for the build
 matrix. To download a package, verify its checksum, and install it from the
 archive, follow
-[`plugins/admission-policy/INSTALL.md`](plugins/admission-policy/INSTALL.md). The Python sidecar path below (**Path 2**) has no native binary and
+[`plugins/admission-policy/INSTALL.md`](plugins/admission-policy/INSTALL.md).
+On an unmodified mesh-llm the plugin installs, each node seals its own record
+of an exchange, and the Evidence page works. An exchange confirmed by the other
+side does not work there yet: it needs two fields mesh-llm does not emit yet
+(`requested_by_node_id`, and `served_by_node_id` with the request/response
+digests), plus the Python evidence service (`evidence_server.py`) and each
+peer's public key on every node. INSTALL.md spells out both. The Python sidecar path below (**Path 2**) has no native binary and
 stays a `pip install` regardless of platform.
 
 Two integration paths ship here (see below): a **native Rust
