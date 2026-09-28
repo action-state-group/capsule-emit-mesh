@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
 import { exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
+import { OWN_RECORD_FAILS_WARNING } from '@/features/capsules/lib/tooltip-copy'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import { ASK_FOR_RECORD_AFTER_MS, type RightCellStateKind } from '@/features/capsules/lib/exchange-row-state'
 import { durationText, formatModelIdentity, tokenFlowText } from '@/features/capsules/lib/serving-provenance'
@@ -288,15 +289,15 @@ describe('ExchangeStreamRow — the states render distinct text/status/action', 
     // The (i), wired to the fuller CLOSED story.
     const glyph = screen.getByRole('button', { name: 'About the CLOSED state' })
     const description = document.getElementById(glyph.getAttribute('aria-describedby') as string)
-    expect(description).toHaveTextContent('They sent their own signed record of this exchange.')
-    expect(description).toHaveTextContent('same request and answer as yours')
+    expect(description).toHaveTextContent('They sent their own signed record of this exchange')
+    expect(description).toHaveTextContent('same request, answer and model weights as yours')
   })
 
   it('Item 4: an OPEN · not held state says their record has not arrived yet, behind its (i)', () => {
     render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_held')} />)
     const glyph = screen.getByRole('button', { name: 'About the OPEN · not held state' })
     const description = document.getElementById(glyph.getAttribute('aria-describedby') as string)
-    expect(description).toHaveTextContent('Their record of this exchange hasn’t arrived yet.')
+    expect(description).toHaveTextContent('Their record hasn’t arrived')
   })
 
   it('LOAD-BEARING: not-asked and unanswered render visibly distinct text on the row', () => {
@@ -878,6 +879,28 @@ describe('ExchangeStreamRow — §3A one colour per state', () => {
     )
     expect(container.querySelectorAll('[data-row-tone="good"]')).toHaveLength(1)
     expect(container.querySelectorAll('[data-row-tone="bad"], [data-row-tone="muted"]')).toHaveLength(0)
+  })
+})
+
+describe('ExchangeStreamRow — a Confirmed badge beside a failed check on your own copy', () => {
+  it('says your own copy fails its checks, and only then', async () => {
+    const closed = makeRow('closed')
+    const tampered = { ...LOCAL_RECORD_WITH_DIGESTS, capsule_id: 'f'.repeat(64) }
+    const { rerender } = render(
+      <ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={closed} />
+    )
+    expect(screen.queryByText(OWN_RECORD_FAILS_WARNING)).not.toBeInTheDocument()
+    rerender(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        {...toggleProps()}
+        localRecord={tampered}
+        rail={NO_RAIL}
+        row={closed}
+      />
+    )
+    // The fingerprint check runs asynchronously on this machine.
+    expect(await screen.findByText(OWN_RECORD_FAILS_WARNING)).toBeInTheDocument()
   })
 })
 

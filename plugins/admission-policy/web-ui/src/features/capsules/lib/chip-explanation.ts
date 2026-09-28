@@ -25,14 +25,14 @@ type StaticExplanation = {
 
 const STATIC: Record<string, StaticExplanation> = {
   content_binding: {
-    meaning: 'The response bytes hash to the digest this record commits to.',
+    meaning: 'The record’s own fingerprint, computed again on this machine, equals its id: nothing in the record changed after it was sealed.',
     doesNotEstablish: 'Who produced the response, or that the request itself was answered honestly.',
-    howToSupply: 'Recompute runs automatically in your browser against the sealed bytes; there is nothing to ask for.'
+    howToSupply: 'This check runs automatically on this machine once the record is loaded; there is nothing to ask for.'
   },
   producer_signature: {
-    meaning: 'The signature over this record verifies against the claimed signing key.',
+    meaning: 'The signature over this record verifies against the key this node (or the other side) announces.',
     doesNotEstablish: 'That the signing key belongs to a specific, accountable person or organisation.',
-    howToSupply: 'Recompute runs automatically in your browser against the sealed bytes; there is nothing to ask for.'
+    howToSupply: 'This check runs automatically on this machine once the record is loaded; there is nothing to ask for.'
   },
   task_binding: {
     meaning: 'The record names the specific task/model call it is an account of, not a generic placeholder.',
@@ -40,9 +40,9 @@ const STATIC: Record<string, StaticExplanation> = {
     howToSupply: 'This comes from the sealed record as sent; there is no separate step to request it.'
   },
   local_inclusion: {
-    meaning: 'This record is included in a checkpoint this node has registered.',
-    doesNotEstablish: 'That the checkpoint itself has been registered anywhere a third party can see.',
-    howToSupply: 'Register a checkpoint that covers this record’s range (see Integrity).'
+    meaning: 'A checkpoint this node signed covers this record. This page counts that coverage; it does not check the proof.',
+    doesNotEstablish: 'That a witness you don’t run holds the checkpoint.',
+    howToSupply: 'The node’s next checkpoint covers it (see Integrity).'
   },
   checkpoint_signature: {
     meaning: 'The checkpoint covering this record carries a valid signature.',
@@ -50,14 +50,14 @@ const STATIC: Record<string, StaticExplanation> = {
     howToSupply: 'Register a checkpoint that covers this record’s range (see Integrity).'
   },
   external_registration: {
-    meaning: 'An external witness has issued a receipt for the checkpoint covering this record.',
+    meaning: 'A witness you don’t run holds the checkpoint covering this record. The witness’s receipt isn’t checked on this page.',
     doesNotEstablish: 'That the record’s content, not just its checkpoint, was reviewed by the witness.',
-    howToSupply: 'Ask an external witness to register the checkpoint that covers this record.'
+    howToSupply: 'Turn on a witness in the plugin’s settings; it then holds copies of your checkpoints.'
   },
   continuity: {
-    meaning: 'This checkpoint binds to a prior registered checkpoint, so a rewrite between them would be detectable.',
+    meaning: 'This checkpoint builds on the one before it, so a rewrite between them would show. Not checked on this page.',
     doesNotEstablish: 'That either checkpoint is true, only that a change between them would be visible.',
-    howToSupply: 'Needs a registered checkpoint and a prior one to bind to (see Integrity).'
+    howToSupply: 'Needs two checkpoints, the second building on the first (see Integrity).'
   },
   capture_coverage: {
     meaning: 'States the rule this node uses to decide which exchanges get captured at all.',
@@ -65,10 +65,9 @@ const STATIC: Record<string, StaticExplanation> = {
     howToSupply: 'This is a standing policy statement, not a per-record fact to request.'
   },
   outcome_corroboration: {
-    meaning:
-      'The counterparty has stated their own account of this exchange’s outcome, and it agrees with this side’s.',
+    meaning: 'The other side’s own signed record of this exchange agrees with yours.',
     doesNotEstablish: 'That either side’s account of the outcome is itself accurate.',
-    howToSupply: 'Ask the counterparty to state their half of this exchange.'
+    howToSupply: 'Ask the other side for their record.'
   },
   identity_authority_binding: {
     meaning: 'A key is bound to this node’s identity for this record.',

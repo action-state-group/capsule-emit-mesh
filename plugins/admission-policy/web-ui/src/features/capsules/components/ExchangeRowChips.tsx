@@ -17,7 +17,7 @@ import {
 import type { EntryRowChipMark } from '@/features/capsules/lib/entry-row-chips'
 import type { ChecksRow } from '@/features/capsules/lib/security-checks-view'
 import { HoverChip } from '@/features/capsules/components/HoverChip'
-import { ENTRY_CHIP_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
+import { ENTRY_CHIP_RESULT_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
 
 const MARK_COLOR: Record<EntryRowChipMark, string> = {
   '✓': 'var(--color-good-text)',
@@ -44,7 +44,7 @@ export function ExchangeRowChips({
         const propertyKey = entryRowChipPropertyKey(chip)
         // Hover for the meaning, click for the full check (UX §8 rule 2).
         return (
-          <HoverChip census={`entry_chip:${chip}`} key={chip} label={ENTRY_CHIP_TOOLTIPS[chip]}>
+          <HoverChip census={`entry_chip:${chip}`} key={chip} label={ENTRY_CHIP_RESULT_TOOLTIPS[chip][mark]}>
             <span
               aria-label={`${label}: jump to that check`}
               className="ui-control-ghost inline-flex cursor-pointer items-center gap-1 font-mono text-xs"

@@ -54,6 +54,8 @@ import { copyStateLabel } from '@/lib/copyStateLabel'
 import { useClipboardCopy } from '@/lib/useClipboardCopy'
 import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 import { RowVerdictLine } from '@/features/capsules/components/RowVerdictLine'
+import { entryRowChipMark } from '@/features/capsules/lib/entry-row-chips'
+import { OWN_RECORD_FAILS_WARNING } from '@/features/capsules/lib/tooltip-copy'
 
 /** The gated cell text (Do (2)) when an ask
  *  action's row carries no recorded counterparty. This splits by which of two
@@ -230,6 +232,11 @@ export function ExchangeStreamRow({
     checkpointCovered,
     ownerLinked
   })
+  // A15: a Confirmed badge never sits beside a failed check on your own copy
+  // without saying so.
+  const ownRecordFails =
+    state.kind === 'closed' &&
+    (entryRowChipMark(checksRows, 'content') === '✗' || entryRowChipMark(checksRows, 'sig') === '✗')
   // The bracket strip, drawn in words (UX §3): `Yours ● sealed —— Theirs ●
   // same`. Same state the badge renders.
   const strip = bracketStripText(bracketStrip(row.raw, state))
@@ -367,6 +374,11 @@ export function ExchangeStreamRow({
             <p className="text-xs text-foreground" data-right-cell-text="true">
               {cellText}
             </p>
+            {ownRecordFails ? (
+              <p className="text-xs text-bad" data-own-record-fails="true" role="note">
+                {OWN_RECORD_FAILS_WARNING}
+              </p>
+            ) : null}
             {action ? (
               <Button
                 className="ui-control h-7 w-fit gap-1 rounded-[var(--radius)] px-2 text-[length:var(--density-type-caption)]"

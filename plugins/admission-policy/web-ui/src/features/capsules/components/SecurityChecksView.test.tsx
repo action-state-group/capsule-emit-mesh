@@ -131,7 +131,7 @@ describe('SecurityChecksView — p2 item 2: chip-only rows, each sentence moved 
     render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
     for (const detail of [
       'recomputed here',
-      'Range facts: no checkpoint covers this record — see Integrity.',
+      'No checkpoint covers this record — see Integrity.',
       'no checkpoint covers this record',
       'no receipt covers this record',
       'not linked to an owner'
@@ -158,11 +158,11 @@ describe('SecurityChecksView — p2 item 2: chip-only rows, each sentence moved 
   it('the THEIRS sentence that repeats down the column is said once, as a column note, and left off those chips', () => {
     render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
     const note = document.querySelector('[data-theirs-column-note]') as HTMLElement
-    expect(note.textContent).toBe('their log, no proof given')
-    expect(screen.getAllByText('their log, no proof given')).toHaveLength(1)
-    const repeated = Array.from(document.querySelectorAll<HTMLElement>('[data-detail="their log, no proof given"]'))
+    expect(note.textContent).toBe('not checked here')
+    expect(screen.getAllByText('not checked here')).toHaveLength(1)
+    const repeated = Array.from(document.querySelectorAll<HTMLElement>('[data-detail="not checked here"]'))
     expect(repeated.length).toBeGreaterThan(1)
-    for (const cell of repeated) expect(chipTooltip(cell)).not.toContain('their log, no proof given')
+    for (const cell of repeated) expect(chipTooltip(cell)).not.toContain('not checked here')
   })
 
   it('sharedTheirsDetail: only a sentence that actually repeats becomes the note', () => {
@@ -183,7 +183,7 @@ describe('SecurityChecksView — L-M: recomputed-here vs from-sidecar are visual
   it('content_binding/producer_signature carry a different class + data-source than a sidecar property', () => {
     render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
     const recomputedCell = cellWithDetail('recomputed here')
-    const sidecarCell = cellWithDetail('Range facts: no checkpoint covers this record — see Integrity.')
+    const sidecarCell = cellWithDetail('No checkpoint covers this record — see Integrity.')
     expect(recomputedCell).not.toBeNull()
     expect(sidecarCell).not.toBeNull()
     expect(recomputedCell?.getAttribute('data-source')).toBe('recomputed-in-browser')

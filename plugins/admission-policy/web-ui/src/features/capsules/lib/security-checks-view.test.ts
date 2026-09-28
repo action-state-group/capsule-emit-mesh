@@ -103,7 +103,7 @@ describe('buildChecksRows — checkpoint-dependent properties resolve NOT_PRESEN
     const rows = buildChecksRows(paneCRow({ properties: null }), NOT_RECOMPUTED)
     const byKey = Object.fromEntries(rows.map((r) => [r.key, r]))
     expect(byKey.local_inclusion.yours?.label).toBe('not present')
-    expect(byKey.local_inclusion.yours?.detail).toBe('Range facts: no checkpoint covers this record — see Integrity.')
+    expect(byKey.local_inclusion.yours?.detail).toBe('No checkpoint covers this record — see Integrity.')
     expect(byKey.checkpoint_signature.yours?.label).toBe('not present')
     expect(byKey.continuity.yours?.label).toBe('not present')
   })
@@ -152,7 +152,7 @@ describe('buildChecksRows — look finding 2: per-record checkpoint coverage agr
     })
     const localInclusion = rows.find((r) => r.key === 'local_inclusion')
     expect(localInclusion?.yours?.state).toBe('NOT_PRESENT')
-    expect(localInclusion?.yours?.detail).toBe('Range facts: no checkpoint covers this record yet — see Integrity.')
+    expect(localInclusion?.yours?.detail).toBe('No checkpoint covers this record yet — see Integrity.')
   })
 
   it('an unreported covered count maps nothing -- coverage unknown, never "none"', () => {
@@ -469,7 +469,7 @@ describe('buildChecksRows — THEIRS column reflects a real peer recompute once 
 
   it('surfaces the real not_found/error reasons in the detail text, not a generic placeholder', () => {
     const notFoundRows = buildChecksRows(paneCRow(), NOT_RECOMPUTED, NOT_FOUND)
-    expect(notFoundRows.find((r) => r.key === 'content_binding')?.theirs?.detail).toMatch(/no such capsule/)
+    expect(notFoundRows.find((r) => r.key === 'content_binding')?.theirs?.detail).toMatch(/no such record/)
 
     const erroredRows = buildChecksRows(paneCRow(), NOT_RECOMPUTED, ERRORED)
     expect(erroredRows.find((r) => r.key === 'content_binding')?.theirs?.detail).toMatch(/peer unroutable/)
@@ -585,7 +585,7 @@ describe('buildIdentityRow', () => {
     }
     const identityRow = buildIdentityRow(paneCRow(), NOT_RECOMPUTED, notFound)
     expect(identityRow.theirs?.note).not.toMatch(/matches/)
-    expect(identityRow.theirs?.note).toBe('peer had no such capsule')
+    expect(identityRow.theirs?.note).toBe('they have no such record')
   })
 
   // RENDERING NOTE (design §7, 2026-09-23): id known, bytes not held -- the

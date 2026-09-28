@@ -84,7 +84,7 @@ function theirsIdentityNote(theirsRecompute: PeerRecomputeState | undefined): st
     if (theirsRecompute?.idMatch === false) return '✕ recomputed here, MISMATCH'
   }
   if (theirsRecompute?.status === 'fetching') return 'fetching…'
-  if (theirsRecompute?.status === 'not_found') return 'peer had no such capsule'
+  if (theirsRecompute?.status === 'not_found') return 'they have no such record'
   if (theirsRecompute?.status === 'error') return `fetch failed: ${theirsRecompute.errorMessage ?? 'unknown error'}`
   return '◔ as given, not recomputed'
 }
@@ -369,7 +369,7 @@ function yoursDetailFor(key: string, state: string, text: string | undefined, ac
     // once-per-node checkpoint/registration
     // facts live on the Integrity section, never repeated per row -- this
     // row links back with one line instead of duplicating them.
-    if (key === 'local_inclusion') return 'Range facts: no checkpoint covers this record — see Integrity.'
+    if (key === 'local_inclusion') return 'No checkpoint covers this record — see Integrity.'
     if (CHECKPOINT_DEPENDENT.has(key)) return 'no checkpoint covers this record'
     if (key === 'external_registration') return 'no receipt covers this record'
   }
@@ -380,11 +380,11 @@ function theirsDetailFor(key: string, theirsRecompute: PeerRecomputeState | unde
   if (RECOMPUTED_PROPERTIES.has(key)) {
     if (theirsActuallyRecomputed(theirsRecompute)) return 'recomputed here'
     if (theirsRecompute?.status === 'fetching') return 'fetching…'
-    if (theirsRecompute?.status === 'not_found') return 'peer had no such capsule'
+    if (theirsRecompute?.status === 'not_found') return 'they have no such record'
     if (theirsRecompute?.status === 'error') return `fetch failed: ${theirsRecompute.errorMessage ?? 'unknown error'}`
-    return 'their bytes not held'
+    return 'their record not received'
   }
-  return 'their log, no proof given'
+  return 'not checked here'
 }
 
 /** Look finding 2: whether a checkpoint covers THIS record, from the same
@@ -408,7 +408,7 @@ function checkpointCoverageCell(key: string, covered: boolean | null): { state: 
       state: 'NOT_PRESENT',
       text:
         key === 'local_inclusion'
-          ? 'Range facts: no checkpoint covers this record yet — see Integrity.'
+          ? 'No checkpoint covers this record yet — see Integrity.'
           : 'no checkpoint covers this record yet'
     }
   }

@@ -88,14 +88,16 @@ export const PEER_ATTENTION = {
 /** The row's state badge: the (i) beside CLOSED / CONTRADICTED / OPEN. */
 export const ROW_STATE_TOOLTIPS = {
   closed:
-    'They sent their own signed record of this exchange. It checks out on this machine, and it has the same request and answer as yours.',
-  contradicted: 'You both have a record of this exchange, and they disagree about the request or the answer.',
+    'They sent their own signed record of this exchange, from the node that served you, and it checks out on this machine. It names the same request, answer and model weights as yours.',
+  contradicted:
+    'You both have signed records of this exchange and they disagree: the request, the answer, the model or who served it differs, or their record doesn’t match its own id. Use Compare to see where.',
   open_refused:
     'They declined to share their record and signed the refusal. The refusal is the evidence; the exchange stays open.',
   open_absent:
     'They say they have no record of this exchange. That is their statement; there is nothing of theirs to check.',
   open_asked: 'You asked for their record and no reply has arrived yet.',
-  open_not_held: 'Their record of this exchange hasn’t arrived yet. It usually comes when the exchange finishes.',
+  open_not_held:
+    'Their record hasn’t arrived, or what arrived couldn’t be confirmed as theirs from the node that served you. It usually comes when the exchange finishes.',
   open_not_given: 'Their record of this exchange hasn’t arrived yet, and they didn’t send an id to ask for it by.',
   open_not_asked: 'You haven’t asked them for their record.'
 } as const
@@ -108,15 +110,43 @@ export const CLOSED_CELL_TOOLTIPS = {
   response: 'The same answer as in your record.'
 } as const
 
-/** The row's chip strip (`content · sig · inclusion · registered · theirs`).
- *  Hover gives the meaning; a click still opens the full check. */
-export const ENTRY_CHIP_TOOLTIPS = {
-  content: 'Whether this record still matches its id, checked on this machine.',
-  sig: 'Whether this record is signed with the key its node announces.',
-  inclusion: 'Whether a checkpoint on this node covers this record.',
-  registered: 'Whether a witness you don’t run holds a checkpoint covering this record.',
-  theirs: 'Whether the other side’s own signed record confirms this exchange.'
+
+/** The chip strip, per result: what a ✓, ✗ or – on each chip means, and
+ *  the check behind it. The words-match and signed chips are checked on this
+ *  machine (recompute-identity.ts); in-a-checkpoint is the node's count, not
+ *  a checked proof; witnessed is read, not checked here. */
+export const ENTRY_CHIP_RESULT_TOOLTIPS = {
+  content: {
+    '✓': 'Your record’s fingerprint, checked on this machine, still equals the id it was sealed with, so nothing in it has changed.',
+    '✗': 'Your record no longer matches its id, so it changed after it was sealed. Save the evidence file and check this node’s storage.',
+    '–': 'Not checked yet: this page hasn’t loaded your record.'
+  },
+  sig: {
+    '✓': 'The signature on your record checks against this node’s key, on this machine.',
+    '✗': 'The signature on your record doesn’t check against this node’s key.',
+    '–': 'Not checked: the signed copy or this node’s key isn’t available to this page.'
+  },
+  inclusion: {
+    '✓': 'A checkpoint this node signed covers this record, by the node’s own count. This page doesn’t check that coverage itself.',
+    '✗': 'The node reports that no checkpoint covers this record.',
+    '–': 'No checkpoint covers this record yet; the next checkpoint the node makes will.'
+  },
+  registered: {
+    '✓': 'A witness you don’t run holds a checkpoint covering this record. The witness’s receipt isn’t checked on this page.',
+    '✗': 'The node reports that no witness holds a checkpoint covering this record.',
+    '–': 'No witness you don’t run holds a checkpoint covering this record. Not checked here.'
+  },
+  theirs: {
+    '✓': 'Confirmed: their own signed record, from the node that served you, names the same request, answer and model weights as yours.',
+    '✗': 'Their signed record disagrees with yours, or doesn’t match its own id. The state on the right says more.',
+    '–': 'No confirmed record from them yet; the state on the right says why.'
+  }
 } as const
+
+/** A confirmed exchange whose own record fails its checks: said on the row,
+ *  so a Confirmed badge never sits beside a failed check unexplained. */
+export const OWN_RECORD_FAILS_WARNING =
+  'Your own copy of this record fails its checks, so neither side can rely on it, whatever the badge says.'
 
 /** The TWIN bracket's `no verdict` badge. */
 export const TWIN_NO_VERDICT_TOOLTIP =

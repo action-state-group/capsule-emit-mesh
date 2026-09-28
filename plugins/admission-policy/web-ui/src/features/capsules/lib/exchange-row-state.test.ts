@@ -409,16 +409,26 @@ describe('rightCellDetail — Item 4: the fuller story behind each state, moved 
     for (const detail of details) expect(detail.length).toBeGreaterThan(0)
   })
 
-  it('CLOSED says what was checked -- their signed record, the same request and answer -- in plain words', () => {
-    expect(rightCellDetail(stateOf('closed'))).toBe(
-      'They sent their own signed record of this exchange. It checks out on this machine, and it has the same request and answer as yours.'
-    )
+  it('CLOSED names every condition the gate checks -- signed, from the node that served you, same request, answer and weights', () => {
+    const text = rightCellDetail(stateOf('closed'))
+    expect(text).toContain('their own signed record')
+    expect(text).toContain('from the node that served you')
+    expect(text).toContain('checks out on this machine')
+    expect(text).toContain('same request, answer and model weights')
+  })
+
+  it('CONTRADICTED names every cause the gate contradicts on', () => {
+    const text = rightCellDetail(stateOf('contradicted'))
+    for (const cause of ['the request', 'the answer', 'the model', 'who served it', 'doesn’t match its own id']) {
+      expect(text).toContain(cause)
+    }
   })
 
   it('the not-held states say their record has not arrived; "id not given" adds why it cannot be asked for', () => {
-    expect(rightCellDetail(stateOf('open_not_held'))).toBe(
-      'Their record of this exchange hasn’t arrived yet. It usually comes when the exchange finishes.'
-    )
+    // Both cases the gate returns open_not_held for: nothing yet, or
+    // something arrived that couldn't be confirmed as theirs.
+    expect(rightCellDetail(stateOf('open_not_held'))).toContain('Their record hasn’t arrived')
+    expect(rightCellDetail(stateOf('open_not_held'))).toContain('couldn’t be confirmed as theirs')
     expect(rightCellDetail(stateOf('open_not_given'))).toContain('they didn’t send an id to ask for it by')
   })
 
