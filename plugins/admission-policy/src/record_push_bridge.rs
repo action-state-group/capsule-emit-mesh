@@ -245,6 +245,12 @@ fn seal_failed_refusal() -> Vec<u8> {
         .expect("static refusal shape is always serializable")
 }
 
+fn is_verdict_delivery(body_bytes: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(body_bytes)
+        .map(|body| crate::adjudication_records::is_delivery_body(&body))
+        .unwrap_or(false)
+}
+
 /// `compute_attestation.agent_input_digest` / `agent_output_digest` off a
 /// received foreign capsule body -- carried onto the citing record so the
 /// pane's digest-first `exchange_key_for` correlator can group it with this
@@ -304,6 +310,17 @@ async fn bridge_inbound_record_push(
     // detached task), so a failure is handled before any reply exists.
     let door_reply = serde_json::from_slice::<serde_json::Value>(&response_bytes).ok();
     let reply_bytes = match door_reply {
+        Some(reply) if door_accepted(&reply) && is_verdict_delivery(&capsule_bytes) => {
+            // A referee's verdict delivered here: this node's own
+            // `adjudication_received` record, sealed before the ack.
+            match crate::adjudication_records::seal_received(&capsules, &reply).await {
+                Ok(()) => response_bytes.to_vec(),
+                Err(error) => {
+                    tracing::warn!(%error, received_from = %sender_peer_id, "door held a delivered verdict but its record seal failed -- refusing instead of acking");
+                    seal_failed_refusal()
+                }
+            }
+        }
         Some(reply) if door_accepted(&reply) => {
             match seal_citing_records_for_push(&capsules, &sender_peer_id, &capsule_bytes, &reply).await {
                 Ok(()) => {
@@ -607,7 +624,7 @@ fn refused_as_older_door(response: &serde_json::Value) -> bool {
 }
 
 /// One `record-push/1` stream: write `sender\n<body>`, read the door's reply.
-async fn send_push(
+pub(crate) async fn send_push(
     context: &mut PluginContext<'_>,
     peer_id: &str,
     self_peer_id: &str,

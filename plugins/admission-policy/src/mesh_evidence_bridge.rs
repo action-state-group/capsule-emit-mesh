@@ -148,6 +148,7 @@ where
 pub async fn handle_open_stream(
     request: OpenStreamRequest,
     _context: &mut PluginContext<'_>,
+    capsules: std::sync::Arc<crate::capsule_emit::CapsuleState>,
 ) -> PluginResult<Option<OpenStreamResponse>> {
     let listener = bind_side_stream(crate::PLUGIN_ID, &request.stream_id)
         .await
@@ -155,7 +156,7 @@ pub async fn handle_open_stream(
     let response = listener.open_stream_response(&request);
 
     tokio::spawn(async move {
-        if let Err(error) = bridge_inbound_evidence_stream(listener).await {
+        if let Err(error) = bridge_inbound_evidence_stream(listener, capsules).await {
             tracing::warn!(%error, "mesh evidence-request responder bridge failed");
         }
     });
@@ -165,6 +166,7 @@ pub async fn handle_open_stream(
 
 async fn bridge_inbound_evidence_stream(
     listener: mesh_llm_plugin::LocalListener,
+    capsules: std::sync::Arc<crate::capsule_emit::CapsuleState>,
 ) -> anyhow::Result<()> {
     let local = listener.accept().await?;
     let (mut read_half, mut write_half) = local.into_split();
@@ -190,7 +192,19 @@ async fn bridge_inbound_evidence_stream(
         Some(request_bytes),
     )
     .await?;
-    let response_bytes = reply.body;
+    let mut response_bytes = reply.body.to_vec();
+
+    // A verdict this node issued as referee goes on its chain BEFORE the
+    // reply leaves (`adjudication_records`); a failed seal answers with a
+    // refusal instead, so "issued" always means "recorded".
+    if let Ok(door_reply) = serde_json::from_slice::<serde_json::Value>(&response_bytes) {
+        if crate::adjudication_records::is_issued_reply(&door_reply) {
+            if let Err(error) = crate::adjudication_records::seal_issued(&capsules, &door_reply).await {
+                tracing::warn!(%error, "door issued a verdict but its record seal failed -- refusing instead");
+                response_bytes = crate::adjudication_records::seal_failed_reply();
+            }
+        }
+    }
 
     write_half.write_all(&response_bytes).await?;
     write_half.shutdown().await?;

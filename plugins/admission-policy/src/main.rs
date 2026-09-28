@@ -1,3 +1,4 @@
+mod adjudication_records;
 mod capsule_emit;
 mod data_dir;
 mod door_auth;
@@ -625,6 +626,7 @@ fn with_evidence_operations(
     capsules: Arc<CapsuleState>,
     self_peer: self_peer::SelfPeer,
 ) -> DeclarativePluginBuilder {
+    let capsules_for_delivery = capsules.clone();
     let mut builder = with_owner_maintenance(builder, maintenance);
     builder = builder.mcp_item(
         mcp::tool(EVIDENCE_REQUEST_OPERATION)
@@ -655,6 +657,24 @@ fn with_evidence_operations(
                     })
                 },
             ),
+    );
+    builder = builder.mcp_item(
+        mcp::tool(adjudication_records::DELIVER_OPERATION)
+            .description(
+                "Deliver a referee's signed twin verdict to a node it concerns (this node's own id \
+                 delivers to itself). That node's door checks the referee's signature and holds it; \
+                 its plugin seals an adjudication_received record before answering.",
+            )
+            .input::<adjudication_records::DeliverAdjudicationArgs>()
+            .handle({
+                let capsules = capsules_for_delivery;
+                let self_peer = self_peer.clone();
+                move |args, context| {
+                    let capsules = capsules.clone();
+                    let self_id = self_peer.current();
+                    Box::pin(adjudication_records::deliver(args, context, capsules, self_id))
+                }
+            }),
     );
     builder = builder.mcp_item(
         mcp::tool(LEDGER_FETCH_OPERATION)
@@ -1067,7 +1087,7 @@ async fn main() -> anyhow::Result<()> {
                     // `metadata_json` is its dispatch key.
                     ledger_fetch_bridge::handle_open_stream(request, context, capsules).await
                 } else {
-                    mesh_evidence_bridge::handle_open_stream(request, context).await
+                    mesh_evidence_bridge::handle_open_stream(request, context, capsules).await
                 }
             })
         })
@@ -1312,6 +1332,7 @@ mod published_operations_tests {
             EVIDENCE_REQUEST_OPERATION,
             routing_choice_bridge::LOCAL_ROUTING_CHOICE_OPERATION,
             LEDGER_FETCH_OPERATION,
+            adjudication_records::DELIVER_OPERATION,
             owner_maintenance::STATUS_OPERATION,
             owner_maintenance::DELETE_STORED_TEXT_OPERATION,
             owner_maintenance::REBUILD_INDEX_OPERATION,

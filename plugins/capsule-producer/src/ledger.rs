@@ -136,6 +136,10 @@ pub struct Ledger {
     /// `compute_attestation["x-mesh-settlement-v1"]` block; the live channel
     /// seal path reads this so a rebroadcast event never seals twice.
     settlement_event_refs: HashSet<String>,
+    /// `<block>:<verdict capsule id>` for every adjudication record this
+    /// ledger holds (issued or received) -- the dedup gate so a repeated
+    /// verdict seals at most one record of each kind.
+    adjudication_records: HashSet<String>,
 }
 
 fn statement_path(statements_dir: &Path, capsule_id: &str) -> PathBuf {
@@ -194,6 +198,23 @@ fn collect_settlement_event_ref(capsule: &Value, out: &mut HashSet<String>) {
         .and_then(Value::as_str)
     {
         out.insert(event_ref.to_string());
+    }
+}
+
+/// Collect into `out` this capsule's `<block>:<verdict capsule id>` key,
+/// when it is an adjudication record (see `Ledger::adjudication_records`).
+fn collect_adjudication_record(capsule: &Value, out: &mut HashSet<String>) {
+    let Some(attestation) = capsule.pointer("/model_attestation/compute_attestation") else {
+        return;
+    };
+    for block in [crate::capsule::ADJUDICATION_ISSUED_BLOCK, crate::capsule::ADJUDICATION_RECEIVED_BLOCK] {
+        if let Some(verdict) = attestation
+            .get(block)
+            .and_then(|b| b.get("verdict_capsule_id"))
+            .and_then(Value::as_str)
+        {
+            out.insert(format!("{block}:{verdict}"));
+        }
     }
 }
 
@@ -288,6 +309,7 @@ impl Ledger {
         let mut cited_counterparty_halves = HashSet::new();
         let mut inclusion_cited_halves = HashSet::new();
         let mut settlement_event_refs = HashSet::new();
+        let mut adjudication_records = HashSet::new();
 
         // Split on '\n', keeping track of whether the buffer ends with one.
         // A missing trailing newline on the final chunk means a torn write:
@@ -382,6 +404,7 @@ impl Ledger {
             collect_counterparty_half_citations(&parsed, &mut cited_counterparty_halves);
             collect_counterparty_inclusion_citations(&parsed, &mut inclusion_cited_halves);
             collect_settlement_event_ref(&parsed, &mut settlement_event_refs);
+            collect_adjudication_record(&parsed, &mut adjudication_records);
             index.insert(stored_id.clone(), offset - line_bytes_len);
             chain_head = Some(stored_id);
         }
@@ -399,6 +422,7 @@ impl Ledger {
                 inclusion_cited_halves,
                 entries: report.valid_entries as u64,
                 settlement_event_refs,
+                adjudication_records,
             },
             report,
         ))
@@ -466,6 +490,12 @@ impl Ledger {
         self.settlement_event_refs.contains(event_ref)
     }
 
+    /// Whether this ledger already holds an adjudication record with block
+    /// `block` (issued or received) for the verdict `verdict_capsule_id`.
+    pub fn has_adjudication_record(&self, block: &str, verdict_capsule_id: &str) -> bool {
+        self.adjudication_records.contains(&format!("{block}:{verdict_capsule_id}"))
+    }
+
     /// Append a sealed capsule + its signed statement. The statement file is
     /// written and fsync'd BEFORE the jsonl line, so a crash between the two
     /// leaves at worst an unindexed orphan `.cose` file -- never a jsonl
@@ -500,6 +530,7 @@ impl Ledger {
         collect_counterparty_half_citations(capsule, &mut self.cited_counterparty_halves);
         collect_counterparty_inclusion_citations(capsule, &mut self.inclusion_cited_halves);
         collect_settlement_event_ref(capsule, &mut self.settlement_event_refs);
+        collect_adjudication_record(capsule, &mut self.adjudication_records);
         self.index.insert(capsule_id.clone(), offset);
         self.chain_head = Some(capsule_id);
         Ok(())

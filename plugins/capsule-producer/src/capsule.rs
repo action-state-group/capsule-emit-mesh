@@ -1698,6 +1698,126 @@ pub fn payload_bytes(capsule: &Value) -> Vec<u8> {
     serde_json::to_vec(capsule).expect("capsule must be JSON-serializable")
 }
 
+
+// ---------------------------------------------------------------------------
+// Twin adjudication: the referee's and the judged nodes' own records of a
+// signed verdict. The verdict itself is held beside the ledger, never on it;
+// these records cite it by its capsule id.
+// ---------------------------------------------------------------------------
+
+/// `references[].citation_purpose` for a record's reference to a referee's
+/// signed verdict.
+pub const CITATION_PURPOSE_ADJUDICATION_VERDICT: &str = "adjudication_verdict";
+/// `references[].citation_purpose` for the referee's own served record of the
+/// answer that decided the verdict.
+pub const CITATION_PURPOSE_REFEREE_ANSWER: &str = "referee_answer";
+/// `references[].citation_purpose` for a twin half a verdict judged.
+pub const CITATION_PURPOSE_ADJUDICATED_HALF: &str = "adjudicated_half";
+/// The block a referee's record of a verdict it issued carries.
+pub const ADJUDICATION_ISSUED_BLOCK: &str = "adjudication_issued";
+/// The block a node's record of a verdict delivered to it carries.
+pub const ADJUDICATION_RECEIVED_BLOCK: &str = "adjudication_received";
+
+/// The facts of one verdict, as the referee signed them.
+pub struct VerdictFacts<'a> {
+    /// `"corroborated"` or `"contradicted:<node id>"`.
+    pub verdict: &'a str,
+    pub verdict_capsule_id: &'a str,
+    pub referee_node_id: &'a str,
+    /// The two judged halves' capsule ids, and the nodes that served them.
+    pub halves: [&'a str; 2],
+    pub half_node_ids: [&'a str; 2],
+    pub twin_bracket_id: Option<&'a str>,
+}
+
+fn verdict_block(facts: &VerdictFacts) -> Map<String, Value> {
+    let mut block = Map::new();
+    block.insert("verdict".into(), json!(facts.verdict));
+    block.insert("verdict_capsule_id".into(), json!(facts.verdict_capsule_id));
+    block.insert("referee_node_id".into(), json!(facts.referee_node_id));
+    block.insert("halves".into(), json!(facts.halves));
+    block.insert("half_node_ids".into(), json!(facts.half_node_ids));
+    if let Some(bracket) = facts.twin_bracket_id {
+        block.insert("twin_bracket_id".into(), json!(bracket));
+    }
+    block
+}
+
+fn capsule_reference(digest: &str, purpose: &str) -> Value {
+    json!({
+        "type": REFERENCE_TYPE_CAPSULE,
+        "digest_alg": REFERENCE_DIGEST_ALG,
+        "digest": digest,
+        "citation_purpose": purpose,
+    })
+}
+
+/// Seal the REFEREE's own record of a verdict it issued: it cites the
+/// verdict, its own served record of the answer that decided it (when one
+/// did: twins that agree need no referee answer), and both judged halves.
+pub fn seal_adjudication_issued_record(
+    facts: &VerdictFacts,
+    referee_capsule_id: Option<&str>,
+    issued_at: &str,
+    chain_head: Option<&str>,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> Result<Value, crate::jcs::JcsError> {
+    let chain = chain_head.map(|parent| ChainLink {
+        parent_capsule_id: parent.to_string(),
+        relation: CHAIN_RELATION_FOLLOWS.to_string(),
+    });
+    let mut block = verdict_block(facts);
+    if let Some(referee) = referee_capsule_id {
+        block.insert("referee_capsule_id".into(), json!(referee));
+    }
+    block.insert("issued_at".into(), json!(committed_time(issued_at)));
+    let mut references = vec![capsule_reference(facts.verdict_capsule_id, CITATION_PURPOSE_ADJUDICATION_VERDICT)];
+    if let Some(referee) = referee_capsule_id {
+        references.push(capsule_reference(referee, CITATION_PURPOSE_REFEREE_ANSWER));
+    }
+    for half in facts.halves {
+        references.push(capsule_reference(half, CITATION_PURPOSE_ADJUDICATED_HALF));
+    }
+    seal_local_citation(
+        format!("mesh-poc/adjudication-issued/{}", facts.verdict_capsule_id),
+        "n/a-adjudication-issued",
+        ADJUDICATION_ISSUED_BLOCK,
+        block,
+        Value::Array(references),
+        chain,
+        signing_key,
+    )
+}
+
+/// Seal a node's own record of a verdict delivered to it: it cites the
+/// verdict, and names the half this node holds that the verdict is about.
+pub fn seal_adjudication_received_record(
+    facts: &VerdictFacts,
+    held_half_capsule_id: &str,
+    received_from: &str,
+    received_at: &str,
+    chain_head: Option<&str>,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> Result<Value, crate::jcs::JcsError> {
+    let chain = chain_head.map(|parent| ChainLink {
+        parent_capsule_id: parent.to_string(),
+        relation: CHAIN_RELATION_FOLLOWS.to_string(),
+    });
+    let mut block = verdict_block(facts);
+    block.insert("held_half_capsule_id".into(), json!(held_half_capsule_id));
+    block.insert("received_from".into(), json!(received_from));
+    block.insert("received_at".into(), json!(committed_time(received_at)));
+    seal_local_citation(
+        format!("mesh-poc/adjudication-received/{}", facts.verdict_capsule_id),
+        "n/a-adjudication-received",
+        ADJUDICATION_RECEIVED_BLOCK,
+        block,
+        json!([capsule_reference(facts.verdict_capsule_id, CITATION_PURPOSE_ADJUDICATION_VERDICT)]),
+        chain,
+        signing_key,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

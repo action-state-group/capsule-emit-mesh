@@ -1480,6 +1480,75 @@ impl CapsuleState {
         Ok(Some(EmittedCapsule { capsule_id, capsule }))
     }
 
+    /// Seal the REFEREE's own record of a verdict it issued (see
+    /// `capsule_producer::capsule::seal_adjudication_issued_record`), on the
+    /// same single-writer path as [`Self::emit_citing_record`]. A verdict
+    /// already recorded seals nothing (`Ok(None)`).
+    pub fn emit_adjudication_issued(
+        &self,
+        facts: &VerdictFacts,
+        referee_capsule_id: Option<&str>,
+        issued_at: &str,
+    ) -> anyhow::Result<Option<EmittedCapsule>> {
+        self.emit_adjudication_record(capsule_producer::capsule::ADJUDICATION_ISSUED_BLOCK, facts, |head, key| {
+            capsule_producer::capsule::seal_adjudication_issued_record(facts, referee_capsule_id, issued_at, head, key)
+        })
+    }
+
+    /// Seal this node's own record of a verdict delivered to it (see
+    /// `capsule_producer::capsule::seal_adjudication_received_record`). A
+    /// verdict already recorded seals nothing (`Ok(None)`).
+    pub fn emit_adjudication_received(
+        &self,
+        facts: &VerdictFacts,
+        held_half_capsule_id: &str,
+        received_from: &str,
+        received_at: &str,
+    ) -> anyhow::Result<Option<EmittedCapsule>> {
+        self.emit_adjudication_record(capsule_producer::capsule::ADJUDICATION_RECEIVED_BLOCK, facts, |head, key| {
+            capsule_producer::capsule::seal_adjudication_received_record(
+                facts,
+                held_half_capsule_id,
+                received_from,
+                received_at,
+                head,
+                key,
+            )
+        })
+    }
+
+    fn emit_adjudication_record(
+        &self,
+        block: &str,
+        facts: &VerdictFacts,
+        seal: impl FnOnce(Option<&str>, &ed25519_dalek::SigningKey) -> Result<Value, capsule_producer::jcs::JcsError>,
+    ) -> anyhow::Result<Option<EmittedCapsule>> {
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ledger.has_adjudication_record(block, facts.verdict_capsule_id) {
+            return Ok(None);
+        }
+        let capsule = seal(ledger.chain_head(), &self.keys.signing_key)?;
+        let capsule_id = capsule["capsule_id"]
+            .as_str()
+            .expect("an adjudication record always sets capsule_id")
+            .to_string();
+        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let statement = build_signed_statement(
+            &SignedStatementInput {
+                payload: &payload,
+                issuer: &self.node_id,
+                subject: &capsule_id,
+                content_type: CAPSULE_CONTENT_TYPE,
+            },
+            &self.keys.signing_key,
+        );
+        ledger.append(&capsule, &statement)?;
+        Ok(Some(EmittedCapsule { capsule_id, capsule }))
+    }
+
     /// Seal a local routing choice (block or unblock) onto the same
     /// single-writer chain, committing to the peer with the caller's salt. The
     /// caller keeps that salt; it is the only way to say later which peer the
@@ -1537,6 +1606,8 @@ pub struct EmittedRoutingChoice {
 
 /// See `capsule_producer::capsule::InclusionCitation`.
 pub use capsule_producer::capsule::InclusionCitation;
+/// See `capsule_producer::capsule::VerdictFacts`.
+pub use capsule_producer::capsule::VerdictFacts;
 
 impl CapsuleState {
     /// Seal, chain, and ledger one SETTLEMENT record -- this payer node's
