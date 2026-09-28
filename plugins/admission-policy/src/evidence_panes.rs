@@ -212,7 +212,9 @@ pub(crate) fn attach_asked_of_you(pane_b: &mut Value, entries: &[Value]) {
         return;
     };
     for row in rows {
-        row["asked_of_you"] = json!({ "entries": entries });
+        // Each entry names its requester by the id it declared itself: a
+        // reader says "requests that named you", never "requests from them".
+        row["asked_of_you"] = json!({ "entries": entries, "requester_id_source": "self_declared" });
     }
 }
 
@@ -3986,6 +3988,7 @@ mod tests {
 
         let mut pane = json!({ "rows": [{ "peer_id": "peer-1" }, { "peer_id": null }] });
         attach_asked_of_you(&mut pane, &entries);
+        assert_eq!(pane["rows"][0]["asked_of_you"]["requester_id_source"], json!("self_declared"));
         assert_eq!(
             pane["rows"][0]["asked_of_you"]["entries"]
                 .as_array()
