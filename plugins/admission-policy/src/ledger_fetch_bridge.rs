@@ -139,6 +139,11 @@ enum LedgerFetchResponse {
     NotAuthorized {
         capsule_id: String,
     },
+    /// The record belongs to an earlier history of this node, set aside when
+    /// its owner started a new one: it exists, it is not served from here.
+    Archived {
+        capsule_id: String,
+    },
     Error {
         message: String,
     },
@@ -219,6 +224,16 @@ fn answer(capsules: &CapsuleState, request_bytes: &[u8], history_segments: &str)
                 .encode(&entry.signed_statement),
             node_pub_key_pem: capsules.public_key_pem(),
         },
+        Ok(None)
+            if capsules
+                .ledger_dir()
+                .parent()
+                .is_some_and(|data_dir| crate::owner_maintenance::is_archived(data_dir, &parsed.capsule_id)) =>
+        {
+            LedgerFetchResponse::Archived {
+                capsule_id: parsed.capsule_id,
+            }
+        }
         Ok(None) => LedgerFetchResponse::NotFound {
             capsule_id: parsed.capsule_id,
         },

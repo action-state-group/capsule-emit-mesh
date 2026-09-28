@@ -4,7 +4,7 @@
 // `/api/plugins/capsule-emit-mesh/tools/mesh_ledger_fetch`) via the host's
 // plugin-scoped fetch. The plugin's `mesh_ledger_fetch` tool answers with its
 // own tagged `LedgerFetchResponse` JSON on success
-// (`status: "found" | "not_found" | "not_authorized" | "error"`) unchanged; a transport-level
+// (`status: "found" | "not_found" | "not_authorized" | "archived" | "error"`) unchanged; a transport-level
 // failure (peer unroutable, channel undeclared, tool not served by this plugin
 // build, no reply) surfaces as a non-2xx from the host route instead, never a
 // hang.
@@ -81,6 +81,9 @@ export async function fetchPeerLedgerCapsule(peerId: string, capsuleId: string):
       }
     }
     if (tagged.status === 'not_found') return { kind: 'not_found' }
+    if (tagged.status === 'archived') {
+      return { kind: 'error', message: 'the peer set this record aside when it started a new history' }
+    }
     if (tagged.status === 'not_authorized') {
       return { kind: 'error', message: 'the peer declined to share this record' }
     }

@@ -59,6 +59,12 @@ describe('fetchPeerLedgerCapsule', () => {
     expect(outcome).toEqual({ kind: 'not_found' })
   })
 
+  it('reports an archived record as set aside, never as not_found', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ status: 'archived', capsule_id: 'cap-1' })))
+    const outcome = await fetchPeerLedgerCapsule('peer-a', 'cap-1')
+    expect(outcome).toEqual({ kind: 'error', message: 'the peer set this record aside when it started a new history' })
+  })
+
   it('reports a declined fetch as the peer declining, never as found or not_found', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ status: 'not_authorized', capsule_id: 'cap-1' })))
 

@@ -139,6 +139,23 @@ fn next_archive_slot(data_dir: &Path) -> (String, PathBuf) {
     }
 }
 
+/// Whether `capsule_id` is a record of an earlier history of this node, moved
+/// under `archive/` by "start new history". Such a record still exists: a
+/// reader answers "archived", never "not found".
+pub fn is_archived(data_dir: &Path, capsule_id: &str) -> bool {
+    let Ok(slots) = fs::read_dir(data_dir.join(ARCHIVE_DIR)) else {
+        return false;
+    };
+    slots.flatten().any(|slot| {
+        fs::read_to_string(slot.path().join("capsules.jsonl")).is_ok_and(|text| {
+            text.lines().any(|line| {
+                serde_json::from_str::<Value>(line.trim())
+                    .is_ok_and(|record| record.get("capsule_id").and_then(Value::as_str) == Some(capsule_id))
+            })
+        })
+    })
+}
+
 /// Phase 1, BEFORE `CapsuleState::open` and the checkpoint cadence: if a new
 /// history was requested, move the old `ledger/` aside and take the new log
 /// id. Returns the log id to run under. Idempotent across a crash: the
@@ -375,12 +392,37 @@ fn switch(env: &str, default: Option<&str>) -> Value {
     }
 }
 
+/// A witness URL as the page may show it: scheme, host and path only. A
+/// user, password, query or fragment can carry a credential, so none of them
+/// leaves this process.
+fn without_credentials(url: &str) -> String {
+    let url = url.trim();
+    let url = url.split(['?', '#']).next().unwrap_or(url);
+    match url.split_once("://") {
+        Some((scheme, rest)) => {
+            let (authority, path) = rest.find('/').map_or((rest, ""), |i| rest.split_at(i));
+            let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+            format!("{scheme}://{host}{path}")
+        }
+        None => url.rsplit_once('@').map_or(url, |(_, host)| host).to_string(),
+    }
+}
+
+fn witness_switch() -> Value {
+    let mut witness = switch("ADMISSION_POLICY_CHECKPOINT_WITNESS_URLS", None);
+    if let Some(value) = witness["value"].as_str() {
+        let shown: Vec<String> = value.split(',').filter(|u| !u.trim().is_empty()).map(without_credentials).collect();
+        witness["value"] = json!(shown.join(","));
+    }
+    witness
+}
+
 fn sharing_status() -> Value {
     json!({
         "record_at_completion": switch(crate::share_policy::ENV_RECORD_AT_COMPLETION, Some("counterparty")),
         "history_segments": switch("ADMISSION_POLICY_SHARE_HISTORY_SEGMENTS", Some("prospective")),
         "adjudications": switch("ADMISSION_POLICY_SHARE_ADJUDICATIONS", Some("deliver_to_subjects")),
-        "witness": switch("ADMISSION_POLICY_CHECKPOINT_WITNESS_URLS", None),
+        "witness": witness_switch(),
     })
 }
 
@@ -388,6 +430,25 @@ fn sharing_status() -> Value {
 mod tests {
     use super::*;
     use capsule_producer::ledger::Ledger;
+
+    #[test]
+    fn a_witness_url_is_shown_without_any_credential() {
+        assert_eq!(without_credentials("https://user:pa55@witness.example/v1/log?token=abc#x"), "https://witness.example/v1/log");
+        assert_eq!(without_credentials("https://witness.example"), "https://witness.example");
+        assert_eq!(without_credentials("http://tok@127.0.0.1:9000/"), "http://127.0.0.1:9000/");
+        assert_eq!(without_credentials("witness.example?key=1"), "witness.example");
+    }
+
+    #[test]
+    fn a_record_moved_aside_by_a_new_history_is_archived_not_absent() {
+        let dir = temp_dir("archived");
+        let slot = dir.join(ARCHIVE_DIR).join("1");
+        fs::create_dir_all(&slot).unwrap();
+        fs::write(slot.join("capsules.jsonl"), format!("{}\n", json!({ "capsule_id": "a".repeat(64) }))).unwrap();
+        assert!(is_archived(&dir, &"a".repeat(64)));
+        assert!(!is_archived(&dir, &"b".repeat(64)));
+        assert!(!is_archived(&temp_dir("no-archive"), &"a".repeat(64)));
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("owner-maint-{tag}-{}", std::process::id()));
