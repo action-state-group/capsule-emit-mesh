@@ -610,9 +610,14 @@ def _claims_verdict(state: Any, capsule: dict[str, Any], sender_peer_id: str) ->
         return REASON_SERVED_BY_MISMATCH
     request_digest = (capsule.get("effect") or {}).get("request_digest")
     own = _own_requested_records(state.ledger_dir, request_digest) if isinstance(request_digest, str) else []
-    routed = {_named_server(r) for r in own} - {None}
-    if routed and sender_peer_id not in routed:
-        return REASON_SERVED_BY_MISMATCH
+    # No "our own record routed this digest elsewhere" refusal: the provider's
+    # push can arrive BEFORE this node has sealed its own record of the same
+    # exchange, and the same prompt sent to several peers shares a digest --
+    # such a check refused honest halves (pc2-1840, 21:07Z). A half from a
+    # node our records did not route to is received but never pairs with or
+    # marks our rows (the pane's same-provider pairing and claim-refusal
+    # sender match); the server-named-is-sender check above is what stops a
+    # provider signing a role lie.
     theirs = _weights_claims(capsule)
     if len(theirs) > 1:
         return REASON_MODEL_MISMATCH

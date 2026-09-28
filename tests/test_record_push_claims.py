@@ -134,13 +134,15 @@ def test_a_half_whose_own_weights_claims_disagree_is_refused(tmp_path, monkeypat
     assert reply["reason"] == REASON_MODEL_MISMATCH
 
 
-def test_a_node_we_did_not_route_to_cannot_answer_for_our_exchange(tmp_path, monkeypatch):
-    """Another peer, with its own announced key, pushes a served half naming
-    itself: our record says the exchange went to PROVIDER."""
-    state = _requester(tmp_path, OWN)
-    half = _signed(_record("served", OTHER, weights=ASKED), _key(tmp_path, "o"))
-    reply = _push(state, half, OTHER, monkeypatch)
-    assert reply["reason"] == REASON_SERVED_BY_MISMATCH
+def test_a_provider_whose_push_beats_our_own_record_is_received(tmp_path, monkeypatch):
+    """pc2-1840: the same prompt went to three providers (one request digest);
+    M3's honest half arrived before this node sealed its own record of the M3
+    exchange, while the records to the other two already existed. It must be
+    received, never refused served_by_mismatch. MUTANT: refuse a sender not
+    among the nodes our (so far) sealed records routed to, and it is refused."""
+    state = _requester(tmp_path, OWN)  # our only sealed record routes to PROVIDER
+    half = _signed(_record("served", OTHER, weights=ASKED, model_id=f"local-gguf/sha256-{ASKED}"), _key(tmp_path, "o"))
+    assert _push(state, half, OTHER, monkeypatch) == {"status": "received"}
 
 
 def test_without_our_own_record_or_weights_nothing_is_invented(tmp_path, monkeypatch):
