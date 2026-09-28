@@ -5,23 +5,22 @@ contract lets a page reach its own plugin's routes, and only those, through
 `host.network.fetchPlugin(path)`. The console serves a plugin's declared
 HTTP bindings at `/api/plugins/capsule-emit-mesh/http/<path>` and its tools at
 `/api/plugins/capsule-emit-mesh/tools/<name>`, so the page asks for
-`http/<path>` and `tools/<name>`. It reads **plugin-owned routes only**. It never uses the fork console's host routes
-(`/api/capsules/ledger/*`, `/api/capsules/panes/*`), which were never
-upstream and never will be.
+`http/<path>` and `tools/<name>`. It reads **plugin-owned routes only**, and
+no host route beyond the two console reads below.
 
-Plugin HTTP routes (`mesh_llm_plugin::http::get`) answer JSON, so data that
-the fork served as raw files arrives wrapped in JSON.
+Plugin HTTP routes (`mesh_llm_plugin::http::get`) answer JSON, so files the
+plugin keeps on disk arrive wrapped in JSON.
 
-| Plugin route, under `http/` (GET unless noted) | Answers | The fork host route it replaces |
+| Plugin route, under `http/` (GET unless noted) | Answers | Read from (under the plugin's data dir) |
 | --- | --- | --- |
 | `ledger` | `{ "records": [<capsule>...], "node_pub_key_pem": "<PEM>" \| null }`; padding records are never listed; an empty list while nothing is sealed | `ledger/capsules.jsonl` + `ledger/node-key.pub.pem` |
 | `ledger/signed-statement?capsule_id=<id>` | `{ "signed_statement_b64": "<COSE_Sign1, base64>" \| null }` | `ledger/signed-statements/<id>.cose` |
 | `ledger/disclosure?capsule_id=<id>` | `{ "disclosure": {...} \| null }` | `ledger/disclosures/<id>.json` |
-| `panes/pane-a` | pane A JSON, unchanged shape (`api/sidecarTypes.ts` `PaneAJson`) | `panes/pane-a` |
-| `panes/pane-b` | pane B JSON, unchanged shape (`PaneBJson`) | `panes/pane-b` |
-| `panes/pane-c[?limit=&after_seq=]` | pane C list, unchanged shape (`PaneCListJson`) | `panes/pane-c` |
-| `panes/pane-c?exchange_id=<id>` | pane C drilldown (`PaneCDrilldownJson`) | `panes/pane-c?exchange_id=` |
-| POST `tools/mesh_ledger_fetch` (a tool, not under `http/`) | the plugin's `mesh_ledger_fetch` tool: `LedgerFetchResponse` (`found` / `not_found` / `error`) | (already a plugin tool route on the fork, addressed to the old plugin name `admission-policy`) |
+| `panes/pane-a` | pane A JSON (`api/sidecarTypes.ts` `PaneAJson`) | the ledger |
+| `panes/pane-b` | pane B JSON (`PaneBJson`) | the ledger |
+| `panes/pane-c[?limit=&after_seq=]` | pane C list (`PaneCListJson`) | the ledger |
+| `panes/pane-c?exchange_id=<id>` | pane C drilldown (`PaneCDrilldownJson`) | the ledger |
+| POST `tools/mesh_ledger_fetch` (a tool, not under `http/`) | the plugin's `mesh_ledger_fetch` tool: `LedgerFetchResponse` (`found` / `not_found` / `not_authorized` / `error`) | a peer's plugin, over a mesh stream |
 
 **Split requests.** A `panes/pane-c` row may carry `split` (`api/sidecarTypes.ts`
 `PaneCRow.split`, `lib/split-stage.ts` `SplitRowJson`):
@@ -41,10 +40,9 @@ message. A failed peer fetch renders as a transport error, never as a result.
 
 All of them are the plugin's own code: `src/evidence_routes.rs` declares the
 six GET bindings, `src/evidence_panes.rs` builds the panes from the plugin's
-ledger directory (moved from the console fork's host, padding left out of
-every count), and `src/ledger_fetch_bridge.rs` answers `mesh_ledger_fetch`.
+ledger directory (padding left out of every count), and `src/ledger_fetch_bridge.rs` answers `mesh_ledger_fetch`.
 `evidence_routes`'s manifest test pins the bindings. Fixture mode strips the
-`http/` prefix and answers from the fork console's captures, as before.
+`http/` prefix and answers from recorded route captures.
 
 ## Console routes the page still reads
 
@@ -62,5 +60,4 @@ plugin to serve peers from the mesh events it already subscribes to
 
 Console navigation goes through `host.navigation.navigateTo`: `/chat`, and
 the per-exchange `/logs?focusExchangeId=<id>`. The `focusExchangeId` search
-parameter exists only on the fork console (commit e1319bdb99feb6b48ae02f217f5703915ccfaa47); on
-stock upstream the link opens Logs unfocused.
+parameter is not on upstream mesh-llm; there the link opens Logs unfocused.

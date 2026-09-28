@@ -6,9 +6,6 @@
 //! out), `checkpoints.jsonl` (the Integrity card) and the record-push door's
 //! held-artifact store `received-capsules.jsonl` (the other side's records),
 //! the same on-disk shapes the Python reference panes read. No network call.
-//! Moved here from the console fork's host, where the same builder served the
-//! console tab; the two stay one implementation until the console copy is
-//! retired.
 //!
 //! **Scope of this first cut, verified against a live capsule-emit-mesh
 //! checkout, not guessed.** Every field derivable from the raw ledger
@@ -767,7 +764,7 @@ fn lifecycle_block(record: &Value) -> Option<&Value> {
 ///
 /// `exchange_id` is **host-minted**: each host mints its OWN id for the same
 /// real exchange, so two cross-node halves that attest the identical exchange
-/// routinely carry DIFFERENT `exchange_id` values (M4 `914b61c1…` vs M3
+/// routinely carry DIFFERENT `exchange_id` values (node A `914b61c1…` vs node B
 /// `82777e20…`), while both independently compute the SAME `request_digest`
 /// over the same wire bytes. Keying on `exchange_id` therefore split the two
 /// halves of one cross-node exchange into two rows that could never reconcile
@@ -2119,7 +2116,7 @@ mod tests {
             "effect": { "request_digest": request_digest, "response_digest": response_digest },
             "model_attestation": { "compute_attestation": { "x-mesh-poc-v1": {
                 "role": role,
-                "serving_provenance": { "exchange_id": exchange_id, "served_by_node_id": "m3", "requesting_party": "m4" },
+                "serving_provenance": { "exchange_id": exchange_id, "served_by_node_id": "node-b", "requesting_party": "node-a" },
             } } },
         })
     }
@@ -2337,35 +2334,35 @@ mod tests {
             "requested",
             "d".repeat(64).as_str(),
             "e".repeat(64).as_str(),
-            "m4-914b61c1",
+            "node-a-914b61c1",
         );
         let foreign = mesh_half(
             "b".repeat(64).as_str(),
             "served",
             "d".repeat(64).as_str(),
             "e".repeat(64).as_str(),
-            "m3-82777e20",
+            "node-b-82777e20",
         );
         let provenance: HashMap<String, ReceivedProvenance> =
-            [provenance_for("b".repeat(64).as_str(), "m3")]
+            [provenance_for("b".repeat(64).as_str(), "node-b")]
                 .into_iter()
                 .collect();
 
         let pane = build_pane_b(&[local, foreign], &provenance);
 
-        // The local half (role requested, served_by_node_id m3) attributes the
+        // The local half (role requested, served_by_node_id node-b) attributes the
         // peer; the foreign served half is its counterparty half, not a second
         // peer row.
         let row = pane["rows"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|r| r["peer_id"] == json!("node:m3"))
+            .find(|r| r["peer_id"] == json!("node:node-b"))
             .expect("the asked peer is attributed");
         let siblings = row["confirmed_siblings"].as_array().unwrap();
         assert_eq!(siblings.len(), 1);
         assert_eq!(siblings[0]["theirs"]["signature_ok"], json!(true));
-        assert_eq!(siblings[0]["theirs"]["received_from"], json!("m3"));
+        assert_eq!(siblings[0]["theirs"]["received_from"], json!("node-b"));
         assert_eq!(siblings[0]["digest_match"]["state"], json!(STATE_VERIFIED));
         // The Peers gate gets the same two bodies the Exchanges gate does.
         assert!(siblings[0]["theirs"]["record"].is_object());
@@ -2393,19 +2390,19 @@ mod tests {
                 "requested",
                 &d,
                 "resp",
-                &format!("m4-{i}"),
+                &format!("node-a-{i}"),
             ));
             records.push(mesh_half(
                 &format!("theirs-{i}"),
                 "served",
                 &d,
                 "resp",
-                &format!("m3-{i}"),
+                &format!("node-b-{i}"),
             ));
         }
         assert_eq!(records.len(), 6);
         let provenance: HashMap<String, ReceivedProvenance> = (0..3)
-            .map(|i| provenance_for(&format!("theirs-{i}"), "m3"))
+            .map(|i| provenance_for(&format!("theirs-{i}"), "node-b"))
             .collect();
         assert_eq!(
             distinct_exchange_count(&records, &provenance),
@@ -2438,7 +2435,7 @@ mod tests {
                 "requested",
                 &d,
                 "resp",
-                &format!("m4-{i}"),
+                &format!("node-a-{i}"),
             ));
             // The peer's served half arrived by push (verified) and correlates
             // by digest -- re-entered into the working set like the real reader.
@@ -2448,9 +2445,9 @@ mod tests {
                 "served",
                 &d,
                 "resp",
-                &format!("m3-{i}"),
+                &format!("node-b-{i}"),
             ));
-            provenance.extend([provenance_for(&theirs_id, "m3")]);
+            provenance.extend([provenance_for(&theirs_id, "node-b")]);
         }
 
         let pane = build_pane_b(&records, &provenance);
@@ -2458,7 +2455,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|r| r["peer_id"] == json!("node:m3"))
+            .find(|r| r["peer_id"] == json!("node:node-b"))
             .expect("the served peer is attributed");
         // Three exchanges, six halves.
         assert_eq!(
@@ -2481,11 +2478,11 @@ mod tests {
             "requested",
             "d".repeat(64).as_str(),
             "e".repeat(64).as_str(),
-            "m4-914b61c1",
+            "node-a-914b61c1",
         );
         let pane = build_pane_b(&[local], &no_provenance());
         let row = &pane["rows"][0];
-        assert_eq!(row["peer_id"], json!("node:m3"));
+        assert_eq!(row["peer_id"], json!("node:node-b"));
         assert_eq!(row["confirmed_siblings"].as_array().unwrap().len(), 0);
         assert!(row["node"]["text"]
             .as_str()
@@ -2503,14 +2500,14 @@ mod tests {
             "requested",
             "d".repeat(64).as_str(),
             "e".repeat(64).as_str(),
-            "m4-914b61c1",
+            "node-a-914b61c1",
         );
         let foreign = mesh_half(
             "b".repeat(64).as_str(),
             "served",
             "d".repeat(64).as_str(),
             "e".repeat(64).as_str(),
-            "m3-82777e20",
+            "node-b-82777e20",
         );
         // No provenance -> `foreign` is not a received half.
         let pane = build_pane_b(&[local, foreign], &no_provenance());
@@ -2518,7 +2515,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|r| r["peer_id"] == json!("node:m3"))
+            .find(|r| r["peer_id"] == json!("node:node-b"))
             .expect("the peer is still attributed by this node's own record");
         assert_eq!(row["confirmed_siblings"].as_array().unwrap().len(), 0);
     }
@@ -2534,7 +2531,7 @@ mod tests {
             "requested",
             "d".repeat(64).as_str(),
             "e".repeat(64).as_str(),
-            "m4-914b61c1",
+            "node-a-914b61c1",
         );
         // Same request_digest (correlates), DIFFERENT response_digest.
         let foreign = mesh_half(
@@ -2542,10 +2539,10 @@ mod tests {
             "served",
             "d".repeat(64).as_str(),
             "f".repeat(64).as_str(),
-            "m3-82777e20",
+            "node-b-82777e20",
         );
         let provenance: HashMap<String, ReceivedProvenance> =
-            [provenance_for("b".repeat(64).as_str(), "m3")]
+            [provenance_for("b".repeat(64).as_str(), "node-b")]
                 .into_iter()
                 .collect();
 
@@ -2555,7 +2552,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|r| r["peer_id"] == json!("node:m3"))
+            .find(|r| r["peer_id"] == json!("node:node-b"))
             .expect("the peer is attributed");
         let siblings = row["confirmed_siblings"].as_array().unwrap();
         assert_eq!(siblings.len(), 1);
@@ -2589,7 +2586,7 @@ mod tests {
     /// sibling falls back into the null group -- both asserts go red.
     #[test]
     fn pane_b_attributes_a_served_sides_pushed_sibling_to_the_pushing_peer_not_the_null_group() {
-        // `me-node` is THIS node's id (the server the peer named); `m3` is the
+        // `me-node` is THIS node's id (the server the peer named); `node-b` is the
         // peer's door `received_from`. Neither half carries the peer's node-id
         // or its signing key, so the endpoint id is the only honest row key.
         let local_served = mesh_half_served_by(
@@ -2605,11 +2602,11 @@ mod tests {
             "requested",
             "d".repeat(64).as_str(),
             "e".repeat(64).as_str(),
-            "m3-82777e20",
+            "node-b-82777e20",
             "me-node",
         );
         let provenance: HashMap<String, ReceivedProvenance> =
-            [provenance_for("b".repeat(64).as_str(), "m3")]
+            [provenance_for("b".repeat(64).as_str(), "node-b")]
                 .into_iter()
                 .collect();
 
@@ -2621,7 +2618,7 @@ mod tests {
         // the null group, and never labeled `node:`.
         let peer = rows
             .iter()
-            .find(|r| r["peer_id"] == json!("endpoint:m3"))
+            .find(|r| r["peer_id"] == json!("endpoint:node-b"))
             .expect("the pushing peer (received_from) gets a row");
         let siblings = peer["confirmed_siblings"].as_array().unwrap();
         assert_eq!(
@@ -2629,10 +2626,10 @@ mod tests {
             1,
             "the confirmed sibling lands in the peer's row"
         );
-        assert_eq!(siblings[0]["theirs"]["received_from"], json!("m3"));
+        assert_eq!(siblings[0]["theirs"]["received_from"], json!("node-b"));
         assert_eq!(siblings[0]["digest_match"]["state"], json!(STATE_VERIFIED));
         assert!(
-            !rows.iter().any(|r| r["peer_id"] == json!("node:m3")),
+            !rows.iter().any(|r| r["peer_id"] == json!("node:node-b")),
             "an endpoint id is never passed off as a node id"
         );
 
@@ -2667,7 +2664,7 @@ mod tests {
             "requested",
             "d".repeat(64).as_str(),
             "e".repeat(64).as_str(),
-            "m3-82777e20",
+            "node-b-82777e20",
             "unknown",
         );
         // Empty `received_from` -> no peer-id either. (The door never writes a
@@ -2703,7 +2700,7 @@ mod tests {
     // further code change the day the receive door captures it.
     // -----------------------------------------------------------------
 
-    /// The live M4 ledger shape, exactly: 3 served halves + 3 pushed foreign
+    /// A live requester ledger shape, exactly: 3 served halves + 3 pushed foreign
     /// requester halves signed by `71eb…` and received from endpoint
     /// `e5ba9d1001`, PLUS 2 requester halves naming mesh node `a70d…`. The
     /// pushing peer is ONE row keyed by its signing key (aliases: endpoint),
@@ -2729,7 +2726,7 @@ mod tests {
                 "requested",
                 "d".repeat(64).as_str(),
                 "e".repeat(64).as_str(),
-                "m3-82777e20",
+                "node-b-82777e20",
                 "me-node",
             ),
             peer_key,
@@ -2974,7 +2971,7 @@ mod tests {
                 "requested",
                 "d".repeat(64).as_str(),
                 "e".repeat(64).as_str(),
-                "m3-82777e20",
+                "node-b-82777e20",
                 "me-node",
             ),
             peer_key,
@@ -3075,7 +3072,7 @@ mod tests {
             "requested",
             "d".repeat(64).as_str(),
             "e".repeat(64).as_str(),
-            "m4-914b61c1",
+            "node-a-914b61c1",
         );
         let foreign = with_key(
             mesh_half(
@@ -3083,12 +3080,12 @@ mod tests {
                 "served",
                 "d".repeat(64).as_str(),
                 "e".repeat(64).as_str(),
-                "m3-82777e20",
+                "node-b-82777e20",
             ),
             peer_key,
         );
         let provenance: HashMap<String, ReceivedProvenance> =
-            [provenance_for("b".repeat(64).as_str(), "m3")]
+            [provenance_for("b".repeat(64).as_str(), "node-b")]
                 .into_iter()
                 .collect();
 
@@ -3239,19 +3236,19 @@ mod tests {
             "requested",
             "d".repeat(64).as_str(),
             "e".repeat(64).as_str(),
-            "m4-914b61c1",
+            "node-a-914b61c1",
         );
         let foreign = mesh_half(
             "b".repeat(64).as_str(),
             "served",
             "d".repeat(64).as_str(),
             "e".repeat(64).as_str(),
-            "m3-82777e20",
+            "node-b-82777e20",
         );
         // The door verified & recorded the foreign half; the two host-minted
         // exchange_ids differ, so ONLY the digest correlator groups them.
         let provenance: HashMap<String, ReceivedProvenance> =
-            [provenance_for("b".repeat(64).as_str(), "m3")]
+            [provenance_for("b".repeat(64).as_str(), "node-b")]
                 .into_iter()
                 .collect();
 
@@ -3270,7 +3267,7 @@ mod tests {
         assert_eq!(row["digest_match"]["state"], json!(STATE_VERIFIED));
         // The gate's `signatureOk` input: the door's recorded provenance triple.
         assert_eq!(row["theirs"]["signature_ok"], json!(true));
-        assert_eq!(row["theirs"]["received_from"], json!("m3"));
+        assert_eq!(row["theirs"]["received_from"], json!("node-b"));
         assert_eq!(row["theirs"]["via"], json!("push"));
         assert_eq!(row["theirs"]["state"], json!(STATE_PRESENT_UNVERIFIED));
         // Both bodies ride on the pair so the browser gate can recompute the
@@ -3292,7 +3289,7 @@ mod tests {
             "requested",
             "d".repeat(64).as_str(),
             "e".repeat(64).as_str(),
-            "m4-914b61c1",
+            "node-a-914b61c1",
         );
         let pane = build_pane_c_list(&[local], &no_provenance());
         assert_eq!(pane["row_count"], json!(1));
@@ -3316,14 +3313,14 @@ mod tests {
             "requested",
             "d".repeat(64).as_str(),
             "e".repeat(64).as_str(),
-            "m4-914b61c1",
+            "node-a-914b61c1",
         );
         let half_b = mesh_half(
             "b".repeat(64).as_str(),
             "served",
             "d".repeat(64).as_str(),
             "e".repeat(64).as_str(),
-            "m4-82777e20",
+            "node-a-82777e20",
         );
         // No provenance for EITHER capsule_id -> neither is a counterparty half.
         let pane = build_pane_c_list(&[half_a, half_b], &no_provenance());
@@ -3344,14 +3341,14 @@ mod tests {
             "requested",
             "d".repeat(64).as_str(),
             "e".repeat(64).as_str(),
-            "m4-914b61c1",
+            "node-a-914b61c1",
         );
         let foreign = mesh_half(
             "b".repeat(64).as_str(),
             "served",
             "d".repeat(64).as_str(),
             "e".repeat(64).as_str(),
-            "m3-82777e20",
+            "node-b-82777e20",
         );
         // Provenance map is empty -> `foreign` is not a received counterparty
         // half, even though it is a real cross-node served half.
@@ -3376,7 +3373,7 @@ mod tests {
             "requested",
             "d".repeat(64).as_str(),
             "e".repeat(64).as_str(),
-            "m4-914b61c1",
+            "node-a-914b61c1",
         );
         // Same request_digest (correlates), DIFFERENT response_digest.
         let foreign = mesh_half(
@@ -3384,10 +3381,10 @@ mod tests {
             "served",
             "d".repeat(64).as_str(),
             "f".repeat(64).as_str(),
-            "m3-82777e20",
+            "node-b-82777e20",
         );
         let provenance: HashMap<String, ReceivedProvenance> =
-            [provenance_for("b".repeat(64).as_str(), "m3")]
+            [provenance_for("b".repeat(64).as_str(), "node-b")]
                 .into_iter()
                 .collect();
 
@@ -3466,13 +3463,13 @@ mod tests {
     /// never a fabricated counterparty half.
     #[test]
     fn received_half_provenance_keeps_only_signature_ok_citing_records() {
-        let good = citing_fixture("good", "m3", true);
+        let good = citing_fixture("good", "node-b", true);
         let prov = received_half_provenance(&good).expect("verified half");
-        assert_eq!(prov.received_from, "m3");
+        assert_eq!(prov.received_from, "node-b");
         assert!(prov.signature_ok);
         assert_eq!(prov.via, "push");
 
-        assert!(received_half_provenance(&citing_fixture("bad", "m3", false)).is_none());
+        assert!(received_half_provenance(&citing_fixture("bad", "node-b", false)).is_none());
         assert!(received_half_provenance(&citing_fixture("empty", "", true)).is_none());
         // A plain served record (no received_half) is never a counterparty half.
         let served = fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None);
@@ -3487,7 +3484,7 @@ mod tests {
     #[test]
     fn is_citing_record_recognizes_the_counterparty_half_citation() {
         // Recognized by citation_purpose, though its relation reads "follows".
-        let follows_citing = citing_fixture("x", "m3", true);
+        let follows_citing = citing_fixture("x", "node-b", true);
         assert_eq!(
             follows_citing.pointer("/chain/relation").unwrap(),
             &json!("follows")
@@ -3577,7 +3574,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // capsules.jsonl: one local served half + one citing record.
         let local = fixture_record("local-1", "2026-09-01T00:00:00Z", "req-1", None);
-        let citing = citing_fixture("foreign-1", "m4", true);
+        let citing = citing_fixture("foreign-1", "node-a", true);
         std::fs::write(
             dir.path().join("capsules.jsonl"),
             format!(
@@ -3622,7 +3619,7 @@ mod tests {
 
         // Provenance keyed by the FOREIGN capsule_id, off the citing record.
         assert!(el.received_provenance.contains_key("foreign-1"));
-        assert_eq!(el.received_provenance["foreign-1"].received_from, "m4");
+        assert_eq!(el.received_provenance["foreign-1"].received_from, "node-a");
     }
 
     /// A missing artifact store means a citing record cannot resolve its
@@ -3631,7 +3628,7 @@ mod tests {
     #[test]
     fn citing_record_with_no_resolvable_artifact_adds_no_counterparty_half() {
         let dir = tempfile::tempdir().unwrap();
-        let citing = citing_fixture("foreign-gone", "m4", true);
+        let citing = citing_fixture("foreign-gone", "node-a", true);
         std::fs::write(
             dir.path().join("capsules.jsonl"),
             format!("{}\n", serde_json::to_string(&citing).unwrap()),
@@ -3712,23 +3709,23 @@ mod tests {
 
     /// the empirical CLOSED-tour finding:
     /// two cross-node halves of ONE real exchange carry DIFFERENT host-minted
-    /// `exchange_id`s (M4 vs M3) but the SAME `request_digest` (each host
+    /// `exchange_id`s (node A vs node B) but the SAME `request_digest` (each host
     /// digested the same wire bytes). They MUST group into one exchange, not
     /// two OPEN rows. MUTANT: revert `exchange_key_for` to exchange_id-first
     /// and this row_count goes from 1 to 2.
     #[test]
     fn pane_c_groups_two_cross_node_halves_with_differing_exchange_ids_as_one_exchange() {
-        // Requester half (M4): role requested, its own host-minted exchange_id.
+        // Requester half (node A): role requested, its own host-minted exchange_id.
         let mut requester =
-            fixture_record("cap-m4", "2026-09-25T00:00:00Z", "shared-req-digest", None);
+            fixture_record("cap-node-a", "2026-09-25T00:00:00Z", "shared-req-digest", None);
         requester["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
             "role": "requested",
             "serving_provenance": { "exchange_id": "914b61c1", "role": "requester" }
         });
-        // Provider half (M3, pushed into M4's ledger): a DIFFERENT host-minted
+        // Provider half (node B, pushed into node A's ledger): a DIFFERENT host-minted
         // exchange_id, the SAME request_digest.
         let mut provider =
-            fixture_record("cap-m3", "2026-09-25T00:00:01Z", "shared-req-digest", None);
+            fixture_record("cap-node-b", "2026-09-25T00:00:01Z", "shared-req-digest", None);
         provider["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
             "role": "served",
             "serving_provenance": { "exchange_id": "82777e20", "role": "provider" }
@@ -3909,14 +3906,14 @@ mod tests {
     fn an_inclusion_citing_record_places_their_half_in_their_log() {
         let dir = tempfile::tempdir().unwrap();
         let (req, resp) = ("d".repeat(64), "e".repeat(64));
-        let local = mesh_half(&"a".repeat(64), "requested", &req, &resp, "m4-914b61c1");
-        let foreign = mesh_half(&"b".repeat(64), "served", &req, &resp, "m3-82777e20");
-        let citing = citing_fixture(&"b".repeat(64), "m3", true);
+        let local = mesh_half(&"a".repeat(64), "requested", &req, &resp, "node-a-914b61c1");
+        let foreign = mesh_half(&"b".repeat(64), "served", &req, &resp, "node-b-82777e20");
+        let citing = citing_fixture(&"b".repeat(64), "node-b", true);
         let inclusion = json!({
             "capsule_id": "c".repeat(64),
             "model_attestation": { "compute_attestation": { "counterparty_inclusion": {
                 "half_capsule_id": "b".repeat(64),
-                "received_from": "m3",
+                "received_from": "node-b",
                 "via": "push",
                 "received_at": "2026-09-27T10:00:00Z",
                 "leaf_index": 6,
@@ -3979,7 +3976,7 @@ mod tests {
             "requested",
             &req_digest,
             &resp_digest,
-            "m4-914b61c1",
+            "node-a-914b61c1",
         );
         // The foreign SERVED body -- lives ONLY in the held-artifact store.
         let foreign = mesh_half(
@@ -3987,11 +3984,11 @@ mod tests {
             "served",
             &req_digest,
             &resp_digest,
-            "m3-82777e20",
+            "node-b-82777e20",
         );
         // Our CITING record of receiving the foreign half (identified by its
-        // counterparty_half citation, received_from the pushing peer m3).
-        let citing = citing_fixture(&"b".repeat(64), "m3", true);
+        // counterparty_half citation, received_from the pushing peer node-b).
+        let citing = citing_fixture(&"b".repeat(64), "node-b", true);
 
         std::fs::write(
             dir.join("capsules.jsonl"),
@@ -4022,10 +4019,10 @@ mod tests {
         assert_eq!(row["unilateral"], json!(false));
         assert_eq!(row["digest_match"]["state"], json!(STATE_VERIFIED));
         assert_eq!(row["theirs"]["signature_ok"], json!(true));
-        assert_eq!(row["theirs"]["received_from"], json!("m3"));
+        assert_eq!(row["theirs"]["received_from"], json!("node-b"));
 
         // (b) Pane B: the confirmed sibling attributes to the peer row via the
-        //     citing record's received_from (m3), never the null group.
+        //     citing record's received_from (node-b), never the null group.
         let pane_b = build_pane_json("pane-b", &dir, None).unwrap();
         let rows = pane_b["rows"].as_array().unwrap();
         let peer_row = rows
@@ -4039,8 +4036,8 @@ mod tests {
             .expect("a peer row carries the confirmed sibling");
         assert_eq!(
             peer_row["peer_id"],
-            json!("node:m3"),
-            "attributed to the pushing peer m3"
+            json!("node:node-b"),
+            "attributed to the pushing peer node-b"
         );
         let confirmed = peer_row["confirmed_siblings"][0].clone();
         assert_eq!(confirmed["theirs"]["signature_ok"], json!(true));
@@ -4300,11 +4297,11 @@ mod tests {
     fn same_prompt_twice() -> (Vec<Value>, HashMap<String, ReceivedProvenance>) {
         let d = "d".repeat(64);
         let records = vec![
-            mesh_half("mine-1", "requested", &d, &"1".repeat(64), "m4-first"),
-            mesh_half("mine-2", "requested", &d, &"2".repeat(64), "m4-second"),
-            mesh_half("theirs-2", "served", &d, &"2".repeat(64), "m3-second"),
+            mesh_half("mine-1", "requested", &d, &"1".repeat(64), "node-a-first"),
+            mesh_half("mine-2", "requested", &d, &"2".repeat(64), "node-a-second"),
+            mesh_half("theirs-2", "served", &d, &"2".repeat(64), "node-b-second"),
         ];
-        let provenance = [provenance_for("theirs-2", "m3")].into_iter().collect();
+        let provenance = [provenance_for("theirs-2", "node-b")].into_iter().collect();
         (records, provenance)
     }
 
@@ -4361,11 +4358,11 @@ mod tests {
     fn a_half_matching_none_of_our_records_still_fails() {
         let d = "d".repeat(64);
         let records = vec![
-            mesh_half("mine-1", "requested", &d, &"1".repeat(64), "m4-first"),
-            mesh_half("theirs-x", "served", &d, &"9".repeat(64), "m3-x"),
+            mesh_half("mine-1", "requested", &d, &"1".repeat(64), "node-a-first"),
+            mesh_half("theirs-x", "served", &d, &"9".repeat(64), "node-b-x"),
         ];
         let provenance: HashMap<String, ReceivedProvenance> =
-            [provenance_for("theirs-x", "m3")].into_iter().collect();
+            [provenance_for("theirs-x", "node-b")].into_iter().collect();
         let pane = build_pane_c_list(&records, &provenance);
         let rows = pane["rows"].as_array().unwrap();
         assert_eq!(rows.len(), 1);

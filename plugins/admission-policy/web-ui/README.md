@@ -7,7 +7,7 @@ plugin and the page appears. No console fork is needed.
 
 ```bash
 pnpm install
-pnpm typecheck && pnpm test     # unit suite (moved from the fork console tab)
+pnpm typecheck && pnpm test     # unit suite
 pnpm build                      # -> ../bundle/register-mesh-plugin-ui.js (one ES module)
 ```
 

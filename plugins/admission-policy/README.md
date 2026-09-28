@@ -94,8 +94,6 @@ read from `ADMISSION_POLICY_DATA_DIR`. Two settings, both optional:
   `<ADMISSION_POLICY_DATA_DIR>/received-log`. The evidence door writes it
   when started with `--received-log-dir` pointing there. With no such
   directory the drill says the log is not shown.
-- The fork console's own Evidence tab reads the same log from
-  `MESH_LLM_CAPSULE_RECEIVED_LOG_DIR` (host side; not needed on a stock node).
 
 ## Running the tests
 
