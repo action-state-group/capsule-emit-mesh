@@ -359,7 +359,7 @@ export function LedgerPeersTable({
                   <span className="inline-flex items-center gap-2">
                     {peer.nodeId}
                     <span className="text-fg-dim">
-                      ran part of {peer.splits} request{peer.splits === 1 ? '' : 's'} you sent to a coordinator
+                      the coordinator says it ran part of {peer.splits} request{peer.splits === 1 ? '' : 's'} you sent it
                     </span>
                     <InfoHover census="peers:through_split" describes="this group" label={SPLIT_TOOLTIPS.throughSplit} />
                   </span>

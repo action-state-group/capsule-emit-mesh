@@ -135,6 +135,18 @@ describe('split rows', () => {
   })
 })
 
+describe('who ran each stage is the coordinator’s word', () => {
+  it('says so in every place the page names a stage node', async () => {
+    const { SPLIT_TOOLTIPS } = await import('@/features/capsules/lib/tooltip-copy')
+    expect(SPLIT_TOOLTIPS.stageCell).toMatch(/^The coordinator says which node ran each stage\./)
+    expect(SPLIT_TOOLTIPS.throughSplit).toMatch(/^Nodes the coordinator says ran part of/)
+    expect(SPLIT_TOOLTIPS.handoffs).toContain('not which node signed them')
+    for (const copy of Object.values(SPLIT_TOOLTIPS)) {
+      expect(copy).not.toMatch(/Each node signed/)
+    }
+  })
+})
+
 describe('Nodes that served you through a split', () => {
   it("counts each remote stage's node across the requester's splits, and never the coordinator", () => {
     const main = RUST_BUNDLE.capsule
