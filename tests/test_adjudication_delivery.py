@@ -273,7 +273,9 @@ class _RunningServer:
 
 
 class TestEvidenceDeliverOverHTTP:
-    def test_corroborated_delivery_returns_received_status_200(self, tmp_path):
+    def test_the_door_refuses_an_unsigned_delivery_and_writes_nothing(self, tmp_path):
+        """Retired route: a verdict now arrives signed by its referee, over
+        record push (test_referee_service.py)."""
         from twin_adjudicator import AdjudicationHalf
 
         cap_a, disc_a = _make_served_half("hello world", owner_id="owner-a")
@@ -293,8 +295,12 @@ class TestEvidenceDeliverOverHTTP:
         finally:
             server.close()
 
-        assert result == {"status": "received"}
-        assert adjudication["capsule_id"] in [c["capsule_id"] for c in read_ledger(ledger_path)]
+        assert result["reason"] == es.REASON_UNSIGNED_DELIVERY_RETIRED
+        from capsule_emit.evidence_request import Refusal
+
+        refusal = Refusal(**{k: result[k] for k in ("request_digest", "reason", "issued_at", "key_id", "sig")})
+        assert verify_refusal_offline(refusal)
+        assert adjudication["capsule_id"] not in [c["capsule_id"] for c in read_ledger(ledger_path)]
 
     def test_unknown_path_still_404s(self, tmp_path):
         key_path = _keys(tmp_path)

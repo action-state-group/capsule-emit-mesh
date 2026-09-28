@@ -46,6 +46,7 @@ A repeated request for the same pair returns the verdict already issued.
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -61,7 +62,10 @@ from ledger_store_backend import read_all_capsules
 from live_referee import referee_verdict
 from peer_keys import ENV_PEER_KEYS, announced_key_for
 from twin_adjudicator import (
+    NO_VERDICT_NOT_COMPARABLE,
+    NO_VERDICT_REFEREE_UNREACHABLE,
     REFEREE_RECORD_RESOLVED,
+    VERDICT_NOT_COMPARABLE,
     AdjudicationHalf,
     ComparisonResult,
     PreimageDigestMismatchError,
@@ -96,6 +100,10 @@ REASON_REFEREE_RECORD_NOT_FOUND = "referee_record_not_found"
 REASON_REFEREE_NOT_INDEPENDENT = "referee_not_independent"
 REASON_REFEREE_UNNAMED = "referee_unnamed"
 REASON_NO_VERDICT = "no_verdict"
+
+
+class _NoRefereeAnswer(Exception):
+    """The twins diverge, but no answer this node served was supplied."""
 
 
 def is_adjudicate_request(request: Any) -> bool:
@@ -253,8 +261,7 @@ def handle_adjudicate_request(state: Any, request_bytes: bytes) -> dict[str, Any
     if (
         not isinstance(entries, list)
         or len(entries) != 2
-        or not isinstance(answer, dict)
-        or not isinstance(answer.get("response_body"), dict)
+        or (answer is not None and not (isinstance(answer, dict) and isinstance(answer.get("response_body"), dict)))
         or (bracket is not None and not isinstance(bracket, str))
     ):
         return _refuse(state, request_digest, REASON_REQUEST_MALFORMED)
@@ -279,13 +286,23 @@ def handle_adjudicate_request(state: Any, request_bytes: bytes) -> dict[str, Any
     if held is not None:
         return _reply(held)
 
-    answer_body = answer["response_body"]
-    record = _own_referee_record(state, signer.key_id, self_id, digest_json(answer_body))
-    if record is None:
-        return _refuse(state, request_digest, REASON_REFEREE_RECORD_NOT_FOUND)
-    referee_text = ((answer_body.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+    # The referee answer decides only when the twins diverge; it must then be
+    # one this node served (found in its own ledger).
+    answer_body = answer["response_body"] if answer is not None else None
+    record = (
+        _own_referee_record(state, signer.key_id, self_id, digest_json(answer_body))
+        if answer_body is not None
+        else None
+    )
+    referee_text = (
+        ((answer_body.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        if answer_body is not None
+        else ""
+    )
 
     def _referee(a: AdjudicationHalf, b: AdjudicationHalf, comparison: ComparisonResult) -> RefereeResult:
+        if record is None:
+            raise _NoRefereeAnswer()
         return RefereeResult(
             verdict=referee_verdict(a, b, comparison, referee_text),
             logprobs_absent=True,
@@ -298,7 +315,13 @@ def handle_adjudicate_request(state: Any, request_bytes: bytes) -> dict[str, Any
         outcome = adjudicate(half_a, half_b, referee=_referee, referee_owner_id=self_id)
     except PreimageDigestMismatchError as exc:
         return _refuse(state, request_digest, REASON_HALF_UNVERIFIED, detail=str(exc))
-    if outcome.verdict is None:
+    if outcome.no_verdict_reason == NO_VERDICT_NOT_COMPARABLE:
+        # A signed ruling that the twins cannot be compared -- never a
+        # corroboration or a contradiction.
+        outcome = dataclasses.replace(outcome, verdict=VERDICT_NOT_COMPARABLE, no_verdict_reason=None)
+    elif outcome.verdict is None:
+        if outcome.no_verdict_reason == NO_VERDICT_REFEREE_UNREACHABLE and record is None:
+            return _refuse(state, request_digest, REASON_REFEREE_RECORD_NOT_FOUND)
         return _refuse(state, request_digest, REASON_NO_VERDICT, detail=outcome.no_verdict_reason)
 
     extra: dict[str, Any] = {
@@ -308,6 +331,8 @@ def handle_adjudicate_request(state: Any, request_bytes: bytes) -> dict[str, Any
         "twins_request_digest": request_a,
         "referee_prompt": REFEREE_PROMPT_REQUESTER_ATTESTED,
     }
+    if outcome.referee_called and answer_body is not None:
+        extra["referee_answer_digest"] = digest_json(answer_body)
     if bracket:
         extra["twin_bracket_id"] = bracket
     capsule = seal_adjudication_capsule(outcome, extra=extra)
@@ -321,7 +346,7 @@ def handle_adjudicate_request(state: Any, request_bytes: bytes) -> dict[str, Any
         "verdict_capsule": capsule,
         "referee_node_id": self_id,
         # Cited only when the referee's answer decided (the twins differed).
-        "referee_capsule_id": record["capsule_id"] if outcome.referee_called else None,
+        "referee_capsule_id": record["capsule_id"] if outcome.referee_called and record else None,
         "halves": halves,
         "half_node_ids": [half_a.owner_id, half_b.owner_id],
         "twin_bracket_id": bracket,

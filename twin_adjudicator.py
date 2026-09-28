@@ -179,6 +179,10 @@ ADJUDICATION_SCHEMA = "capsule-emit-mesh/adjudication/v1"
 VERDICT_CORROBORATED = "corroborated"
 VERDICT_INCONCLUSIVE = "inconclusive"
 VERDICT_CONTRADICTED_PREFIX = "contradicted:"
+#: The ruling a referee signs for twins that cannot be compared (a sampled
+#: half, see `NO_VERDICT_NOT_COMPARABLE`): it says why there is no
+#: corroboration or contradiction, and is never either.
+VERDICT_NOT_COMPARABLE = "not_comparable"
 
 #: [mesh-fabric-vocab-alignment] the fabric's shared record-header vocabulary
 #: convention: the adjudication capsule as a whole is
@@ -202,14 +206,14 @@ STATUS_UNKNOWN = "UNKNOWN"
 
 def status_for_verdict(verdict: str) -> str:
     """Map this module's own `verdict` vocabulary to the fabric's additive
-    per-verdict `status` -- `corroborated` -> `SATISFIED`, `inconclusive` ->
-    `UNKNOWN`, `contradicted:<owner_id>` (any owner) -> `CONTRADICTED`.
+    per-verdict `status` -- `corroborated` -> `SATISFIED`, `inconclusive` and
+    `not_comparable` -> `UNKNOWN`, `contradicted:<owner_id>` (any owner) -> `CONTRADICTED`.
     Raises on an unrecognized verdict rather than silently defaulting: a new
     verdict value this function does not know about must fail loudly, not
     round up to `UNKNOWN`."""
     if verdict == VERDICT_CORROBORATED:
         return STATUS_SATISFIED
-    if verdict == VERDICT_INCONCLUSIVE:
+    if verdict in (VERDICT_INCONCLUSIVE, VERDICT_NOT_COMPARABLE):
         return STATUS_UNKNOWN
     if verdict.startswith(VERDICT_CONTRADICTED_PREFIX):
         return STATUS_CONTRADICTED

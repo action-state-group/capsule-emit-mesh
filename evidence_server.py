@@ -91,14 +91,10 @@ Route:
         referee two twins (``referee_service.py``): the answer is a verdict
         this node signed, or a signed refusal.
     POST /evidence/deliver
-        [mesh-adjudication-delivery-ack] -- body = a sealed twin-adjudication
-        capsule's own canonical JSON bytes (opaque at this layer; see
-        ``adjudication_delivery.py`` for the full contract). 200 +
-        ``{"status": "received"}`` or a signed ``Refusal``
-        (``request_malformed`` / ``policy_decline``) -- same
-        signed-answer-always discipline as ``/evidence-request``, and the
-        SAME ledger + node key ``EvidenceServerState`` already names; this
-        route never opens a second ledger.
+        RETIRED: always a signed ``Refusal`` (``unsigned_delivery_retired``),
+        nothing written. It took an unsigned verdict into the chain the
+        plugin alone writes; a referee-signed verdict now arrives over
+        ``/evidence/record-push`` (``adjudication_hold.py``).
     POST /evidence/record-push -- body = a counterparty's own sealed
         exchange record, pushed at completion (see ``record_push.py`` for
         the full contract). 200 + ``{"status": "received"}`` or a signed
@@ -156,7 +152,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, TypedDict
 
-from adjudication_delivery import handle_delivery
 from door_auth import AUTH_HEADER, NONCE_HEADER, PROOF_HEADER, DoorAuth, DoorTokenError
 from evidence_responder import augment_evidence_answer_dict, handle_evidence_request
 from record_push import handle_record_push
@@ -284,6 +279,26 @@ def _append_received_log(received_log_dir: Path | None, entry: ReceivedLogEntry)
         pass
 
 
+#: The one answer `/evidence/deliver` gives now (see its route).
+REASON_UNSIGNED_DELIVERY_RETIRED = "unsigned_delivery_retired"
+
+
+def _refusal(state: EvidenceServerState, request_bytes: bytes, reason: str) -> dict[str, Any]:
+    import hashlib
+
+    from capsule_emit.evidence_request import Refusal
+    from capsule_emit.signing import resolve_signer
+
+    issued_at = _now_iso()
+    request_digest = hashlib.sha256(request_bytes).hexdigest()
+    signer = resolve_signer(str(state.ledger_dir), key_path=state.signing_key_path)
+    stub = Refusal(request_digest=request_digest, reason=reason, issued_at=issued_at, key_id="", sig="")
+    sig, key_id = signer.sign(stub.signing_body())
+    return Refusal(
+        request_digest=request_digest, reason=reason, issued_at=issued_at, key_id=key_id, sig=sig
+    ).to_dict()
+
+
 def _is_adjudicate(request_bytes: bytes) -> bool:
     try:
         return is_adjudicate_request(json.loads(request_bytes))
@@ -396,12 +411,15 @@ def make_evidence_handler(state: EvidenceServerState):
                 return
 
             if path == "evidence/deliver":
-                # Delivery targets THIS node's own ledger directly (never
-                # the plugin-ledger bridge's scratch view) -- a delivered
-                # verdict is a NEW record this node holds, not a read
-                # against an existing one.
-                result = handle_delivery(state, request_bytes)
-                self._write_json(200, result)
+                # Retired: this route took an UNSIGNED verdict and appended
+                # it to capsules.jsonl, the chain the plugin alone writes. A
+                # verdict now arrives signed by its referee, over record
+                # push (adjudication_hold.py). Answered with a signed
+                # refusal; nothing is written.
+                self._write_json(
+                    200,
+                    _refusal(state, request_bytes, REASON_UNSIGNED_DELIVERY_RETIRED),
+                )
                 return
 
             if path == "evidence/record-push":

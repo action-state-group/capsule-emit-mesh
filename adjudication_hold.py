@@ -9,8 +9,9 @@ The node that delivers it is only the courier. What this door checks:
 
   1. The verdict record verifies, and the REFEREE it names signed it with
      that node's announced key.
-  2. The referee is neither of the twins it judged, and the verdict is
-     ``corroborated`` or names one of those twins.
+  2. The referee is neither of the twins it judged, and the ruling is
+     ``corroborated``, ``inconclusive``, ``not_comparable``, or a
+     contradiction naming one of those twins.
   3. The verdict concerns this node: one of the halves it cites is a record
      this node holds -- its own served record, or a half pushed to it.
 
@@ -31,7 +32,12 @@ from capsule_emit.signing import verify_capsule_signature
 
 from ledger_store_backend import read_all_capsules
 from peer_keys import announced_key_for
-from twin_adjudicator import VERDICT_CONTRADICTED_PREFIX, VERDICT_CORROBORATED
+from twin_adjudicator import (
+    VERDICT_CONTRADICTED_PREFIX,
+    VERDICT_CORROBORATED,
+    VERDICT_INCONCLUSIVE,
+    VERDICT_NOT_COMPARABLE,
+)
 
 __all__ = [
     "DELIVERY_MARKER",
@@ -79,7 +85,9 @@ def verdict_facts(capsule: Any) -> dict[str, Any] | None:
         return None
     if referee in nodes or nodes[0] == nodes[1]:
         return None
-    if verdict != VERDICT_CORROBORATED and verdict not in {VERDICT_CONTRADICTED_PREFIX + n for n in nodes}:
+    rulings = {VERDICT_CORROBORATED, VERDICT_INCONCLUSIVE, VERDICT_NOT_COMPARABLE}
+    if verdict not in rulings and verdict not in {VERDICT_CONTRADICTED_PREFIX + n for n in nodes}:
+        # A contradiction must name one of the twins it judged.
         return None
     if not verify_capsule(capsule).ok or not verify_capsule_signature(capsule):
         return None

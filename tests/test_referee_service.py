@@ -311,11 +311,73 @@ def test_delivery_follows_the_record_at_completion_switch(mesh):
     assert not (mesh.dirs[B] / RECEIVED_ADJUDICATIONS_FILENAME).exists()
 
 
-def test_the_referee_signs_nothing_for_sampled_twins(mesh):
+def test_sampled_twins_get_a_signed_not_comparable_ruling(mesh):
     half_a, half_b, _ = _doctored(mesh)
     body = json.loads(_request(half_a, HONEST, half_b, FLIPPED, HONEST))
     for half in body["halves"]:
         half["request_body"] = {**PROMPT, "temperature": 0.7}
     out = handle_adjudicate_request(mesh.state(R), json.dumps(body).encode())
-    assert out["reason"] == "no_verdict" and out["detail"] == "not_comparable"
-    assert not (mesh.dirs[R] / ISSUED_ADJUDICATIONS_FILENAME).exists()
+    assert out["verdict"] == "not_comparable", "never contradicted"
+    verdict = out["verdict_capsule"]
+    assert verify_capsule_signature(verdict) and verdict["key_id"] == mesh.keys[R].key_id
+    assert out["referee_capsule_id"] is None, "no referee answer decided it"
+    # It is deliverable like any other ruling.
+    assert _deliver(mesh.state(B), verdict)["adjudication"]["verdict"] == "not_comparable"
+
+
+def test_a_referee_answer_matching_neither_twin_is_a_signed_inconclusive(mesh):
+    half_a = mesh.served(A, HONEST)
+    half_b = mesh.served(B, FLIPPED)
+    other = "1, 2, 3, 7, 5"
+    referee_record = mesh.served(R, other)
+    out = handle_adjudicate_request(mesh.state(R), _request(half_a, HONEST, half_b, FLIPPED, other))
+    assert out["verdict"] == "inconclusive"
+    assert out["referee_capsule_id"] == referee_record["capsule_id"]
+    assert verify_capsule_signature(out["verdict_capsule"])
+
+
+def test_the_verdict_carries_the_divergence_and_the_referee_answer_digest(mesh):
+    half_a, half_b, _ = _doctored(mesh)
+    out = handle_adjudicate_request(mesh.state(R), _request(half_a, HONEST, half_b, FLIPPED, HONEST))
+    block = out["verdict_capsule"]["model_attestation"]["compute_attestation"]["adjudication"]
+    assert block["divergence_index"] == 3
+    assert block["referee_answer_digest"] == digest_json(_body(HONEST))
+
+
+def test_agreeing_twins_are_corroborated_without_a_referee_answer(mesh):
+    half_a = mesh.served(A, HONEST)
+    half_b = mesh.served(B, HONEST)
+    body = json.loads(_request(half_a, HONEST, half_b, HONEST, HONEST))
+    del body["referee_answer"]
+    out = handle_adjudicate_request(mesh.state(R), json.dumps(body).encode())
+    assert out["verdict"] == "corroborated"
+    block = out["verdict_capsule"]["model_attestation"]["compute_attestation"]["adjudication"]
+    assert "referee_answer_digest" not in block
+
+
+def test_diverging_twins_without_a_referee_answer_are_refused(mesh):
+    half_a, half_b, _ = _doctored(mesh)
+    body = json.loads(_request(half_a, HONEST, half_b, FLIPPED, HONEST))
+    del body["referee_answer"]
+    out = handle_adjudicate_request(mesh.state(R), json.dumps(body).encode())
+    assert out["reason"] == REASON_REFEREE_RECORD_NOT_FOUND
+
+
+def test_an_unsigned_verdict_is_refused(mesh):
+    verdict, _, _ = _issued(mesh)
+    unsigned = {k: v for k, v in verdict.items() if k not in ("signature", "key_id")}
+    assert _deliver(mesh.state(B), unsigned)["reason"] == REASON_VERDICT_UNVERIFIED
+
+
+def test_a_verdict_contradicting_a_peer_outside_the_bracket_is_refused(mesh):
+    """Signed by the real referee key, but naming a node that was not a twin."""
+    from capsule_emit.canonicalization import compute_capsule_id
+
+    verdict, _, _ = _issued(mesh)
+    outside = json.loads(json.dumps(verdict))
+    outside["model_attestation"]["compute_attestation"]["adjudication"]["verdict"] = "contradicted:" + "e" * 64
+    del outside["signature"], outside["key_id"]
+    outside["capsule_id"] = compute_capsule_id(outside)
+    outside["signature"], outside["key_id"] = sign_producer_envelope(mesh.keys[R], outside["capsule_id"])
+    assert verify_capsule_signature(outside), "the signature itself is genuine"
+    assert _deliver(mesh.state(B), outside)["reason"] == REASON_VERDICT_UNVERIFIED
