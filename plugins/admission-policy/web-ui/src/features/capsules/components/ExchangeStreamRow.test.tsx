@@ -628,7 +628,7 @@ describe('ExchangeStreamRow — UX §3: the left cell is the event in words; no 
   })
 
   it('offers "Ask them for their record" only after the timeout -- a fresh exchange just waits for the push', () => {
-    const fresh = new Date(Date.now() - 60_000).toISOString()
+    const fresh = new Date(Date.now() - 10_000).toISOString()
     const { unmount } = render(
       <ExchangeStreamRow
         onAction={vi.fn()}

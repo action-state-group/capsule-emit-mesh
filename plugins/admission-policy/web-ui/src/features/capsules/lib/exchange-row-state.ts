@@ -289,8 +289,11 @@ export function bracketStripText(strip: BracketStrip): string {
 
 /** UX §3 "Put `Ask for their record` on the row only after a timeout": with
  *  push on, their record normally arrives when the exchange finishes, so an
- *  ask is offered only once this long has passed without it. */
-export const ASK_FOR_RECORD_AFTER_MS = 10 * 60 * 1000
+ *  ask is offered only once this long has passed without it. A minute: a
+ *  node that runs no record-push door never receives a push, and asking is
+ *  then the only way its row closes, so the wait stays short. Committed
+ *  times are minute-granular, so the ask appears within a minute or two. */
+export const ASK_FOR_RECORD_AFTER_MS = 60 * 1000
 
 /** True once the exchange is old enough that their record should have
  *  arrived. A row with no parseable timestamp cannot be timed, so the ask is
