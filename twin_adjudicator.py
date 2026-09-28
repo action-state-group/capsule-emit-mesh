@@ -698,7 +698,7 @@ def _temperature_above_zero(value: Any) -> bool:
         return False
 
 
-def _sampled(half: AdjudicationHalf) -> bool:
+def half_was_sampled(half: AdjudicationHalf) -> bool:
     """True when the half was sampled (temperature > 0): as sealed in
     ``compute_attestation.decoding`` or the host's
     ``x-mesh-poc-v1.generation_parameters``, or as the disclosed request
@@ -817,7 +817,7 @@ def adjudicate(
     _verify_preimage_or_raise("half_a", half_a)
     _verify_preimage_or_raise("half_b", half_b)
 
-    if _sampled(half_a) or _sampled(half_b):
+    if half_was_sampled(half_a) or half_was_sampled(half_b):
         return AdjudicationOutcome(
             verdict=None,
             no_verdict_reason=NO_VERDICT_NOT_COMPARABLE,

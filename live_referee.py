@@ -124,6 +124,7 @@ __all__ = [
     "RefereeCallError",
     "RefereeRecordResolution",
     "build_live_referee",
+    "call_referee",
     "live_referee",
     "peer_info_from_status",
     "referee_verdict",
@@ -357,6 +358,54 @@ def referee_verdict(
     return VERDICT_INCONCLUSIVE
 
 
+def call_referee(
+    half_a: AdjudicationHalf,
+    comparison: ComparisonResult,
+    *,
+    local_api_base_url: str,
+    target_peer_id: str,
+    model: str,
+    seed: int | None = None,
+    nonce: str,
+    timeout: float = 30.0,
+) -> tuple[bytes, dict[str, Any]]:
+    """Ask *target_peer_id* to re-answer the twins' original request (see
+    the module docstring for the wire). Returns ``(request body bytes, the
+    referee's response body)``; raises `RefereeCallError` on a transport
+    failure."""
+    if not nonce.startswith(REFEREE_NONCE_PREFIX):
+        nonce = f"{REFEREE_NONCE_PREFIX}{nonce}"
+    if comparison.divergence_index is None:
+        raise ValueError("call_referee() requires an actual divergence -- comparison.divergence_index is None")
+    resolved_seed = seed if seed is not None else (half_a.decoding or {}).get("seed", 0)
+    body = _referee_request_body(half_a, comparison, model=model, seed=resolved_seed)
+    req = urllib.request.Request(
+        url=f"{local_api_base_url.rstrip('/')}/v1/chat/completions",
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            MESH_TARGET_HEADER: target_peer_id,
+            CLIENT_NONCE_HEADER: nonce,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            response_bytes = resp.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read()[:500]
+        raise RefereeCallError(f"referee call to {target_peer_id!r} failed: HTTP {exc.code}: {detail!r}") from exc
+    except urllib.error.URLError as exc:
+        raise RefereeCallError(f"referee call to {target_peer_id!r} failed: {exc.reason}") from exc
+
+    try:
+        response_body = json.loads(response_bytes)
+    except json.JSONDecodeError as exc:
+        raise RefereeCallError(f"referee response was not valid JSON: {response_bytes[:200]!r}") from exc
+
+    return body, response_body
+
+
 def live_referee(
     half_a: AdjudicationHalf,
     half_b: AdjudicationHalf,
@@ -409,31 +458,16 @@ def live_referee(
     if comparison.divergence_index is None:
         raise ValueError("live_referee() requires an actual divergence -- comparison.divergence_index is None")
 
-    resolved_seed = seed if seed is not None else (half_a.decoding or {}).get("seed", 0)
-    body = _referee_request_body(half_a, comparison, model=model, seed=resolved_seed)
-    req = urllib.request.Request(
-        url=f"{local_api_base_url.rstrip('/')}/v1/chat/completions",
-        data=body,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            MESH_TARGET_HEADER: target_peer_id,
-            CLIENT_NONCE_HEADER: nonce,
-        },
+    body, response_body = call_referee(
+        half_a,
+        comparison,
+        local_api_base_url=local_api_base_url,
+        target_peer_id=target_peer_id,
+        model=model,
+        seed=seed,
+        nonce=nonce,
+        timeout=timeout,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            response_bytes = resp.read()
-    except urllib.error.HTTPError as exc:
-        detail = exc.read()[:500]
-        raise RefereeCallError(f"referee call to {target_peer_id!r} failed: HTTP {exc.code}: {detail!r}") from exc
-    except urllib.error.URLError as exc:
-        raise RefereeCallError(f"referee call to {target_peer_id!r} failed: {exc.reason}") from exc
-
-    try:
-        response_body = json.loads(response_bytes)
-    except json.JSONDecodeError as exc:
-        raise RefereeCallError(f"referee response was not valid JSON: {response_bytes[:200]!r}") from exc
 
     referee_text = ((response_body.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
     verdict = referee_verdict(half_a, half_b, comparison, referee_text)
