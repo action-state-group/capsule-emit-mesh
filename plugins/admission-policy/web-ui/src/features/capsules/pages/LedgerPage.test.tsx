@@ -49,6 +49,27 @@ vi.mock('@/features/capsules/api/sidecarClient', () => ({
   })
 }))
 
+vi.mock('@/features/capsules/api/recordsClient', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/features/capsules/api/recordsClient')>()
+  return {
+    ...actual,
+    fetchRecordsStatus: vi.fn().mockResolvedValue({
+      records_path: '/data/capsule-emit-mesh/ledger',
+      record_count: 5,
+      head: null,
+      log_id: 'capsule-emit-mesh',
+      stored_text_count: 0,
+      new_history_pending: null,
+      sharing: {
+        record_at_completion: { value: 'counterparty', source: 'default' },
+        history_segments: { value: 'prospective', source: 'default' },
+        adjudications: { value: 'deliver_to_subjects', source: 'default' },
+        witness: { value: null, source: 'default' }
+      }
+    })
+  }
+})
+
 vi.mock('@/features/capsules/api/client', () => ({
   fetchCapsuleLedger: vi.fn().mockResolvedValue({ records: [], nodePubKeyPem: null })
 }))
@@ -555,10 +576,27 @@ describe('LedgerPageContent', () => {
     expect(bodyText).not.toMatch(/No served-summary data available yet\./)
   })
 
-  it('the retired "This node\'s copy" label is gone from the hero', () => {
+  it('the retired "This node\'s copy" label is gone; "Your records" opens the node\'s real facts', async () => {
+    const { fetchPaneA } = await import('@/features/capsules/api/sidecarClient')
+    vi.mocked(fetchPaneA).mockResolvedValue({
+      rows: [{}, {}, {}, {}, {}] as never,
+      operator: null,
+      witness_checkpoint_supplied: false,
+      card: { covered_record_count: 3, registered_no_later_than: '2026-09-28T16:16:00.000Z' }
+    })
+    const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     expect(screen.queryByText("This node's copy")).not.toBeInTheDocument()
-    expect(screen.queryByTestId('hero-your-records')).not.toBeInTheDocument()
+
+    await user.click(await screen.findByTestId('hero-your-records'))
+    const facts = await screen.findByTestId('your-records-facts')
+    expect(await within(facts).findByText('/data/capsule-emit-mesh/ledger')).toBeInTheDocument()
+    expect(facts).toHaveTextContent('5 records')
+    expect(facts).toHaveTextContent(
+      `Covers 3 records, made no later than ${formatExchangeTimestamp('2026-09-28T16:16:00.000Z')}.`
+    )
+    expect(facts.textContent).not.toMatch(/\d{4}-\d\d-\d\dT/)
+    expect(screen.getByTestId('what-you-share')).toBeInTheDocument()
   })
 
   it('p2 item 5: on sample data the two setup jumps are disabled, with the reason on hover', async () => {

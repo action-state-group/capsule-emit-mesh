@@ -8,7 +8,7 @@
 // internal item IDs, or any branded service name. Comments are exempt.
 import { Fragment, type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeftRight, Search as SearchIcon, ShieldCheck, Trash2, Users } from 'lucide-react'
+import { ArrowLeftRight, FolderOpen, Search as SearchIcon, ShieldCheck, Trash2, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/EmptyState'
@@ -45,6 +45,8 @@ import { EVIDENCE_SOURCE_LABEL, evidenceSource } from '@/features/capsules/lib/e
 import { heroStatusLine } from '@/features/capsules/lib/your-records'
 import { useRecordsStatus } from '@/features/capsules/lib/use-your-records'
 import { CleanUpRecordsDialog } from '@/features/capsules/components/CleanUpRecordsDialog'
+import { YourRecordsDialog } from '@/features/capsules/components/YourRecordsDialog'
+import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 import {
   exceptionsFirstLine,
   exceptionsFirstTally,
@@ -83,6 +85,7 @@ import {
   chainStripCaption,
   checkpointCoverageByRecord,
   checkpointRegistration,
+  coveredRecordCount,
   continuityFact,
   identityFact,
   ownerLinked,
@@ -1387,6 +1390,9 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
       : null
   const recordsStatus = useRecordsStatus({ sample: source === 'sample' })
   const [cleanUpOpen, setCleanUpOpen] = useState(false)
+  const [recordsOpen, setRecordsOpen] = useState(false)
+  const paneACard = paneAStatusQuery.data?.card ?? null
+  const paneARows = paneAStatusQuery.data?.rows ?? []
 
   return (
     <TooltipProvider delayDuration={250} skipDelayDuration={120}>
@@ -1432,17 +1438,48 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
             ) : null
           }
           action={
-            <Button
-              className="ui-control-destructive h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
-              onClick={() => setCleanUpOpen(true)}
-              size="sm"
-              type="button"
-              variant="outline"
-            >
-              <Trash2 aria-hidden="true" className="size-3.5" />
-              Clean up records
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <HoverChip census="hero:your_records" label={HERO_TOOLTIPS.yourRecords}>
+                <Button
+                  className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
+                  data-testid="hero-your-records"
+                  onClick={() => setRecordsOpen(true)}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <FolderOpen aria-hidden="true" className="size-3.5" />
+                  Your records
+                </Button>
+              </HoverChip>
+              <Button
+                className="ui-control-destructive h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
+                onClick={() => setCleanUpOpen(true)}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                <Trash2 aria-hidden="true" className="size-3.5" />
+                Clean up records
+              </Button>
+            </div>
           }
+        />
+        <YourRecordsDialog
+          checkpointNoLaterThan={
+            typeof paneACard?.registered_no_later_than === 'string'
+              ? formatExchangeTimestamp(paneACard.registered_no_later_than)
+              : null
+          }
+          coveredRecords={coveredRecordCount(paneACard)}
+          onExport={() =>
+            saveTextFile('mesh-evidence.json', integrityEvidenceBundle(paneARows, paneACard), 'application/json')
+          }
+          onOpenChange={setRecordsOpen}
+          open={recordsOpen}
+          recordCount={paneARows.length}
+          sample={source === 'sample'}
+          status={recordsStatus}
         />
         <CleanUpRecordsDialog
           onOpenChange={setCleanUpOpen}

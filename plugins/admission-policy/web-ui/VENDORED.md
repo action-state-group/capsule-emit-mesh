@@ -25,7 +25,8 @@ Copied as-is except for these files:
 | `lib/peer-routing-view.ts` (+ test) | **ported later** from the fork console's round-3 file: `dealingsLines` only (the drill's "Your dealings with them"); the block-store half needs the host's local block list, which this page does not reach |
 | `components/PeerInspector.tsx` | the Overview shows "Your dealings with them" (`dealingsLines`) and a routing section that says plainly this page can't stop routing, in place of the console's Stop routing button |
 | `lib/tooltip-copy.ts` | adds `YOUR_DEALINGS_TITLE` and `WITNESS_OFF` (console copy) and `ROUTING_NOT_ON_THIS_PAGE` |
-| `lib/your-records.ts` (+ test) | **ported later**: `heroStatusLine` (the hero's one-line summary) and the `Clean up records` words, unchanged; the `Your records` panel is not ported |
+| `lib/your-records.ts` (+ test) | **ported later**: `heroStatusLine`, the `What you share` rows, the `Your records` facts and the `Clean up records` words, unchanged (the hero line says "no outside witness" instead of "checkable only by you"); the `Your prompts` pill is not ported |
+| `components/YourRecordsDialog.tsx` | **ported later**, unchanged; the page passes the checkpoint's "no later than" time in local time |
 | `components/CleanUpRecordsDialog.tsx` (+ test) | **ported later**, unchanged |
 | `api/recordsClient.ts` | **ported later**: same types and calls; the tool route is plugin-relative through the host's `fetchPlugin` |
 | `lib/use-your-records.ts` | **ported later**: the records-status query only (`useRecordsStatus`); the console's stored-text probe feeds a pill this page does not show |

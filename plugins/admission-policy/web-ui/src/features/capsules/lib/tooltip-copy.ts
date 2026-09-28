@@ -17,7 +17,7 @@ export const HERO_TOOLTIPS = {
   sample: 'Showing a saved sample run, not this node’s records. Nothing here updates.',
   // §8 adds "Open to see where they are and what you share." -- held back
   // until the pill opens something (rule 5: never ask for what can't be done).
-  yourRecords: 'The records this node keeps, sealed and checkpointed.'
+  yourRecords: 'The records this node keeps, sealed and checkpointed. Open to see where they are and what you share.'
 } as const
 
 /** p2 item 3: the owner-link fact, worded once for Integrity's step 2 and

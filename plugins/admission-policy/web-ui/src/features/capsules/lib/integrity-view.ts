@@ -350,3 +350,13 @@ export function continuityFact(checkpointCount: number | null): string {
   }
   return `Continuity: ${checkpointCount} checkpoints so far. A witness is what lets someone else check them too.`
 }
+
+/** How many RECORDS the latest checkpoint covers: the card's
+ *  `covered_record_count`. Its `covered_leaf_count` also counts padding
+ *  leaves (covered, but never records), so comparing that with a record
+ *  count would read unsealed records as sealed. Null when the host reported
+ *  no coverage. (Console copy.) */
+export function coveredRecordCount(card: JsonRecord | null | undefined): number | null {
+  const covered = card?.covered_record_count
+  return typeof covered === 'number' ? covered : null
+}

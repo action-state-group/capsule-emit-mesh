@@ -2,7 +2,12 @@
 // `lib/your-records.ts` (`heroStatusLine` + `plural`, unchanged), and the
 // `Clean up records` dialog's words (below, unchanged). The `Your records`
 // panel is not here; see VENDORED.md.
-import type { CleanupAction, CleanupResult, RecordsStatus } from '@/features/capsules/api/recordsClient'
+import type {
+  CleanupAction,
+  CleanupResult,
+  RecordsStatus,
+  SharingSwitchKey
+} from '@/features/capsules/api/recordsClient'
 import { SAMPLE_DATA_UNAVAILABLE, WITNESS_OFF } from '@/features/capsules/lib/tooltip-copy'
 
 function plural(n: number, one: string, many = `${one}s`): string {
@@ -100,3 +105,139 @@ export function cleanupResultMessage(result: CleanupResult): string {
 }
 
 export const NEW_LOG_PENDING = 'A new log begins the next time this node starts.'
+
+// ---------------------------------------------------------------------------
+// What you share: the four switches, one "what leaves" sentence each
+// ---------------------------------------------------------------------------
+
+/** `Local only` is a claim that nothing is sent. It holds only when the
+ *  node reports every sharing switch off; with the defaults your record goes
+ *  to the other side, and without a status this view can't know. */
+export function nothingIsShared(status: RecordsStatus | null): boolean {
+  const sharing = status?.sharing
+  if (!sharing) return false
+  return (
+    sharing.record_at_completion?.value === 'off' &&
+    sharing.history_segments?.value === 'off' &&
+    sharing.adjudications?.value === 'off' &&
+    !sharing.witness?.value
+  )
+}
+
+export type SharingRow = {
+  key: SharingSwitchKey
+  label: string
+  /** The setting in words, or null when this view doesn't have it. */
+  state: string | null
+  /** Where it was set: by the owner, or the default. */
+  source: 'set' | 'default' | null
+  whatLeaves: string
+}
+
+const SHARING_LABELS: Record<SharingSwitchKey, string> = {
+  record_at_completion: 'Your record, when an exchange finishes',
+  history_segments: 'Your log, when someone asks',
+  adjudications: 'Verdicts you seal',
+  witness: 'Witness'
+}
+
+const SHARING_ORDER: readonly SharingSwitchKey[] = [
+  'record_at_completion',
+  'history_segments',
+  'adjudications',
+  'witness'
+]
+
+function describeSwitch(key: SharingSwitchKey, value: string | null): { state: string; whatLeaves: string } {
+  switch (key) {
+    case 'record_at_completion':
+      return value === 'off'
+        ? {
+            state: 'off',
+            whatLeaves: 'Nothing is sent when an exchange finishes. The other side can still ask for your record.'
+          }
+        : {
+            state: 'to the other side',
+            whatLeaves: 'Your signed record of an exchange goes to the other side of that exchange, and no one else.'
+          }
+    case 'history_segments': {
+      const to: Record<string, string> = {
+        counterparties: 'nodes you’ve dealt with',
+        prospective: 'nodes you’ve dealt with or are about to',
+        peers: 'any node that asks'
+      }
+      if (value === 'off' || !value || !to[value]) {
+        return { state: 'off', whatLeaves: 'Nothing is sent: requests for your log are declined.' }
+      }
+      return {
+        state: `to ${to[value]}`,
+        whatLeaves: `Counts from your checkpoints, never records or text, go to ${to[value]}.`
+      }
+    }
+    case 'adjudications':
+      return value === 'off'
+        ? { state: 'off', whatLeaves: 'Nothing is sent: verdicts you seal stay on this machine.' }
+        : { state: 'to the node it’s about', whatLeaves: 'A verdict you seal goes to each node it is about.' }
+    case 'witness':
+      return value
+        ? { state: 'on', whatLeaves: `Your checkpoints, never records or text, go to ${witnessDisplay(value)}.` }
+        : { state: 'off', whatLeaves: `Nothing is sent: ${WITNESS_OFF}.` }
+  }
+}
+
+/** A witness URL as it may be shown: scheme://host/path only. Credentials
+ *  (`user:pass@`), the query and the fragment never reach the page, whatever
+ *  the node reports. A value that isn't a URL is shown as given. */
+export function witnessDisplay(value: string): string {
+  try {
+    const url = new URL(value)
+    return `${url.protocol}//${url.host}${url.pathname === '/' ? '' : url.pathname}`
+  } catch {
+    return value
+  }
+}
+
+export const SHARING_NOT_SHOWN = 'Its setting isn’t shown here.'
+
+/** The four rows. Without a status (sample data, or the node didn't answer),
+ *  each row says what the switch governs and that its setting isn't shown. */
+export function sharingRows(status: RecordsStatus | null): SharingRow[] {
+  return SHARING_ORDER.map((key) => {
+    const current = status?.sharing?.[key]
+    if (!current) {
+      return {
+        key,
+        label: SHARING_LABELS[key],
+        state: null,
+        source: null,
+        whatLeaves: SHARING_NOT_SHOWN
+      }
+    }
+    const described = describeSwitch(key, current.value)
+    return { key, label: SHARING_LABELS[key], source: current.source, ...described }
+  })
+}
+
+/** Each switch's hover: what it governs, whatever it's set to. */
+export const SHARING_GOVERNS: Record<SharingSwitchKey, string> = {
+  record_at_completion: 'Governs whether your signed record of an exchange goes to the other side when it finishes.',
+  history_segments: 'Governs who may receive counts from your checkpoints when they ask.',
+  adjudications: 'Governs whether a verdict you seal goes to the node it is about.',
+  witness: 'Governs whether your checkpoints go to a witness you don’t run.'
+}
+
+// ---------------------------------------------------------------------------
+// The Your records panel's facts
+// ---------------------------------------------------------------------------
+
+export function recordsLocationFact(status: RecordsStatus | null, sample: boolean): string {
+  if (status) return status.records_path
+  return sample ? 'Not shown on sample data.' : 'Not shown: this node didn’t say.'
+}
+
+export function lastCheckpointFact(coveredRecords: number | null, noLaterThan: string | null): string {
+  if (coveredRecords === null || coveredRecords === 0) return 'No checkpoint yet.'
+  const covers = `Covers ${plural(coveredRecords, 'record')}`
+  return noLaterThan ? `${covers}, made no later than ${noLaterThan}.` : `${covers}.`
+}
+
