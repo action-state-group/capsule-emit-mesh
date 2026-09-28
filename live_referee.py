@@ -7,11 +7,12 @@ modules' docstrings): given a text divergence between two twins,
 
   1. `twin_selection.select_referee` picks a live peer independent of BOTH
      twins (same weights, hard-excluded on shared owner, tie-band random).
-  2. THIS module sends the twins' agreed-upon response PREFIX to that peer
-     over the mesh's own `x-mesh-target` routing header, asking for exactly
-     one more (greedy, seeded) token.
-  3. The referee's one token is compared against each twin's own token at
-     `comparison.divergence_index` to decide `corroborated` /
+  2. THIS module sends the twins' ORIGINAL request to that peer over the
+     mesh's own `x-mesh-target` routing header, greedy and seeded, with
+     enough tokens to pass the divergence.
+  3. The referee's answer counts only when it reproduces the twins' agreed
+     prefix word for word; its word at `comparison.divergence_index` is then
+     compared against each twin's own to decide `corroborated` /
      `contradicted:<owner_id>` / `inconclusive` -- the same closed
      vocabulary `twin_adjudicator.contradicted()` builds.
   4. The result feeds straight into `twin_adjudicator.adjudicate(...,
@@ -28,15 +29,16 @@ Wire shape (verify-don't-build -- see the 2026-09-08 ruling's item 3):
   accepted -- LIVE-CONFIRMED 2026-09-08 against M4, self-targeted: the
   header is honored, `x-mesh-served-by` echoes it back, and `max_tokens`/
   `temperature`/`seed` all reach the serving path unchanged -- see
-  `ADJUDICATION-AND-BUNDLE-TEST.md` Task 3). Body reconstructs [original
-  request messages] + one trailing `{"role": "assistant", "content":
-  <agreed prefix>}` message, so the referee node continues (prefills) the
-  assistant turn rather than answering it fresh -- this is an ASSUMPTION
-  about how the `skippy` backend treats a trailing assistant message, not
-  something this repo has independently confirmed against a live node;
-  treat it as unverified until a live run's transcript shows the referee's
-  continuation actually lines up token-for-token with the twins' own
-  prefix. `temperature: 0, max_tokens: 1, seed: <caller-supplied>` --
+  `ADJUDICATION-AND-BUNDLE-TEST.md` Task 3). Body = the ORIGINAL request
+  messages, answered afresh; never a trailing `{"role": "assistant"}`
+  prefix for the backend to continue. Prefill is NOT reliable on the
+  `skippy` backend -- LIVE-CHECKED 2026-09-28 (M4 -> M3, 0.5B, greedy,
+  seed 1): after "1, 2, 3," it continued with "4, 5", but after "A clear
+  daytime sky is" it opened a new turn and wrote an unrelated question. So
+  a prefilled continuation cannot be trusted to line up with the twins'
+  prefix; a fresh re-answer that must reproduce the prefix can.
+  `temperature: 0, max_tokens: <enough to pass the divergence>,
+  seed: <caller-supplied>` --
   deliberately NEVER `logprobs`/`top_logprobs`: LIVE-CONFIRMED 2026-09-08
   that the current runtime 400s the ENTIRE request when `logprobs: true`
   is set (`unsupported_model_feature` -- the same finding
