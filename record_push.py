@@ -157,6 +157,7 @@ from mesh_split_stage import (
     validate_block,
     validate_receipt,
 )
+from adjudication_hold import hold_delivered_verdict, is_delivery
 from peer_keys import announced_key_for
 from share_policy import DEFAULT_SHARE_POLICY, SharePolicy
 
@@ -815,6 +816,22 @@ def handle_record_push(
         capsule = _strict_loads(body)
     except Exception:
         return _refuse(request_digest, REASON_REQUEST_MALFORMED, state=state, issued_at=issued_at)
+
+    # A referee's verdict, delivered by a courier (adjudication_hold.py):
+    # held only when the referee it names signed it and it concerns a record
+    # this node holds. Same policy gate as a pushed half.
+    if is_delivery(capsule):
+        if _effective_policy(policy).record_at_completion == "off":
+            return _refuse(request_digest, REASON_POLICY_DECLINE, state=state, issued_at=issued_at)
+        if not sender_peer_id:
+            return _refuse(request_digest, REASON_SIGNATURE_UNVERIFIED, state=state, issued_at=issued_at)
+        reply, reason = hold_delivered_verdict(
+            state, capsule, sender_peer_id=sender_peer_id, issued_at=issued_at
+        )
+        if reply is None:
+            _append_rejected_push(state, None, sender_peer_id, reason, issued_at)
+            return _refuse(request_digest, reason, state=state, issued_at=issued_at)
+        return reply
 
     # A bundle carries the half under "capsule"; every check below runs on
     # the half exactly as for a bare push, then the bundle's own checks. A

@@ -960,6 +960,7 @@ def seal_adjudication_capsule(
     action: str = "adjudicate",
     operator: str = "",
     developer: str = "",
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Seal the one new record this module adds: an adjudication capsule.
 
@@ -967,6 +968,9 @@ def seal_adjudication_capsule(
     other capsule in this sidecar uses (see `capsule_sidecar.build_capsule`)
     -- so this is not a new record type, just a new `chain.relation` value
     and a `compute_attestation.adjudication` block.
+
+    *extra* adds facts to the adjudication block (inside the digest), e.g.
+    the referee's own node id; it never overrides a field the outcome sets.
 
     Returns `None`, sealing nothing, when *outcome* has no verdict: a
     weights-mismatched or same-owner "twin" has nothing to adjudicate (see
@@ -1016,6 +1020,11 @@ def seal_adjudication_capsule(
         if outcome.tau is not None:
             adjudication["tau"] = float_to_str(outcome.tau, field="adjudication.tau")
             adjudication["referee_logprobs_absent"] = outcome.referee_logprobs_absent
+
+    for key, value in (extra or {}).items():
+        if key in adjudication:
+            raise ValueError(f"extra adjudication field {key!r} would override the outcome's own")
+        adjudication[key] = value
 
     compute_attestation = {
         # [mesh-fabric-vocab-alignment] additive record-header field, a

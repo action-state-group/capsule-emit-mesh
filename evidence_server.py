@@ -87,6 +87,9 @@ Route:
             ``reason`` (Refusal). A missing/empty ledger resolves to a
             signed ``no_such_record`` refusal INSIDE ``answer()`` itself --
             never a 500.
+        A request whose ``subject.kind`` is ``adjudicate`` asks this node to
+        referee two twins (``referee_service.py``): the answer is a verdict
+        this node signed, or a signed refusal.
     POST /evidence/deliver
         [mesh-adjudication-delivery-ack] -- body = a sealed twin-adjudication
         capsule's own canonical JSON bytes (opaque at this layer; see
@@ -157,6 +160,7 @@ from adjudication_delivery import handle_delivery
 from door_auth import AUTH_HEADER, NONCE_HEADER, PROOF_HEADER, DoorAuth, DoorTokenError
 from evidence_responder import augment_evidence_answer_dict, handle_evidence_request
 from record_push import handle_record_push
+from referee_service import ADJUDICATION_VERDICT_MARKER, handle_adjudicate_request, is_adjudicate_request
 from share_policy import SharePolicy, share_policy_from_env
 
 __all__ = [
@@ -280,6 +284,13 @@ def _append_received_log(received_log_dir: Path | None, entry: ReceivedLogEntry)
         pass
 
 
+def _is_adjudicate(request_bytes: bytes) -> bool:
+    try:
+        return is_adjudicate_request(json.loads(request_bytes))
+    except Exception:
+        return False
+
+
 def make_evidence_handler(state: EvidenceServerState):
     """Build a BaseHTTPRequestHandler class closing over one node's state."""
 
@@ -324,6 +335,26 @@ def make_evidence_handler(state: EvidenceServerState):
             length = int(self.headers.get("Content-Length", "0") or "0")
             request_bytes = self.rfile.read(length) if length else b""
             if not self._authenticated():
+                return
+
+            if path == "evidence-request" and _is_adjudicate(request_bytes):
+                # A twin adjudication: this node acts as the referee
+                # (referee_service.py) and answers with a verdict it signed,
+                # or a signed refusal.
+                requester_id = self.headers.get("X-Mesh-Requester-Id") or None
+                result = handle_adjudicate_request(state, request_bytes)
+                _append_received_log(
+                    state.received_log_dir,
+                    {
+                        "ts": _now_iso(),
+                        "path": "evidence-request",
+                        "requester_id": requester_id,
+                        "subject_kind": "adjudicate",
+                        "status": "issued" if ADJUDICATION_VERDICT_MARKER in result else "refused",
+                        "reason": result.get("reason"),
+                    },
+                )
+                self._write_json(200, result)
                 return
 
             if path == "evidence-request":

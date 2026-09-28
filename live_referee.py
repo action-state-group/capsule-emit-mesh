@@ -124,6 +124,7 @@ __all__ = [
     "build_live_referee",
     "live_referee",
     "peer_info_from_status",
+    "referee_verdict",
     "resolve_referee_record",
 ]
 
@@ -317,6 +318,43 @@ def _referee_request_body(half_a: AdjudicationHalf, comparison: ComparisonResult
     ).encode("utf-8")
 
 
+def referee_verdict(
+    half_a: AdjudicationHalf,
+    half_b: AdjudicationHalf,
+    comparison: ComparisonResult,
+    referee_text: str,
+) -> str:
+    """The verdict a referee's answer gives on two diverging twins. A fresh
+    re-answer of the original request counts only when it reproduces the
+    agreed prefix word for word; its word AT the divergence then names the
+    twin that agrees. Anything else is ``inconclusive``, never a guess."""
+    if half_a.request_body.get("messages"):
+        agreed = half_a.response_text.split()[: comparison.divergence_index]
+        referee_words = referee_text.split()
+        referee_token = (
+            token_at(referee_text, comparison.divergence_index)
+            if referee_words[: comparison.divergence_index] == agreed
+            else None
+        )
+    else:
+        referee_token = token_at(referee_text, 0)
+
+    token_a = token_at(half_a.response_text, comparison.divergence_index)
+    token_b = token_at(half_b.response_text, comparison.divergence_index)
+    matches_a = referee_token is not None and referee_token == token_a
+    matches_b = referee_token is not None and referee_token == token_b
+
+    if matches_a and not matches_b and half_b.owner_id:
+        return contradicted(half_b.owner_id)
+    if matches_b and not matches_a and half_a.owner_id:
+        return contradicted(half_a.owner_id)
+    # Matches neither twin, matches both (impossible given a genuine
+    # divergence, but never trusted blindly), or the contradicted party's
+    # owner_id is unknown (never fabricate a verdict citing an owner we
+    # can't name) -- all fall through to inconclusive.
+    return VERDICT_INCONCLUSIVE
+
+
 def live_referee(
     half_a: AdjudicationHalf,
     half_b: AdjudicationHalf,
@@ -396,34 +434,7 @@ def live_referee(
         raise RefereeCallError(f"referee response was not valid JSON: {response_bytes[:200]!r}") from exc
 
     referee_text = ((response_body.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
-    if half_a.request_body.get("messages"):
-        # A fresh re-answer: it counts only when it reproduces the agreed
-        # prefix word for word; then its word AT the divergence is the call.
-        agreed = half_a.response_text.split()[: comparison.divergence_index]
-        referee_words = referee_text.split()
-        referee_token = (
-            token_at(referee_text, comparison.divergence_index)
-            if referee_words[: comparison.divergence_index] == agreed
-            else None
-        )
-    else:
-        referee_token = token_at(referee_text, 0)
-
-    token_a = token_at(half_a.response_text, comparison.divergence_index)
-    token_b = token_at(half_b.response_text, comparison.divergence_index)
-    matches_a = referee_token is not None and referee_token == token_a
-    matches_b = referee_token is not None and referee_token == token_b
-
-    if matches_a and not matches_b and half_b.owner_id:
-        verdict = contradicted(half_b.owner_id)
-    elif matches_b and not matches_a and half_a.owner_id:
-        verdict = contradicted(half_a.owner_id)
-    else:
-        # Matches neither twin, matches both (impossible given a genuine
-        # divergence, but never trusted blindly), or the contradicted
-        # party's owner_id is unknown (never fabricate a verdict citing an
-        # owner we can't name) -- all fall through to inconclusive.
-        verdict = VERDICT_INCONCLUSIVE
+    verdict = referee_verdict(half_a, half_b, comparison, referee_text)
 
     margin = top2_logprob_margin(response_body, 0)
 
