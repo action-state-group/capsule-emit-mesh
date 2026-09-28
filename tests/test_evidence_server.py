@@ -312,6 +312,53 @@ class TestPluginLedgerBridge:
         assert (ledger_dir / "capsules.jsonl").read_bytes() == before_capsules
         assert sorted(p.name for p in ledger_dir.iterdir()) == before_entries
 
+    def test_a_rust_plugin_ledger_with_padding_answers_from_its_checkpoints(self, tmp_path, stub_witness):
+        # The Rust plugin's ledger: padding lines sit between records in
+        # capsules.jsonl and ARE leaves of the MMR its checkpoints.jsonl
+        # commits to. The door's flat view used to drop them, rebuild a
+        # smaller MMR, and refuse every record coverage_unsatisfiable.
+        import secrets
+
+        ledger_dir = tmp_path / "plugin-ledger"
+        ledger_dir.mkdir()
+        keys_dir = tmp_path / "keys"
+        from capsule_sidecar import NODE_KEY_FILENAME, load_or_create_signing_key
+
+        load_or_create_signing_key(keys_dir)
+        key_path = keys_dir / NODE_KEY_FILENAME
+        capsules = ledger_dir / "capsules.jsonl"
+        first = seal(None, action="act-0", operator="acme", anchor=False, ledger=capsules, signing_key_path=key_path).capsule
+        with capsules.open("a", encoding="utf-8") as fh:
+            for _ in range(3):
+                padding = {
+                    "capsule_id": secrets.token_hex(32),
+                    "record_type": "padding",
+                    "store_nonce": secrets.token_hex(32),
+                }
+                fh.write(json.dumps(padding) + "\n")
+        second = seal(None, action="act-1", operator="acme", anchor=False, ledger=capsules, signing_key_path=key_path).capsule
+        signer = Ed25519Signer(key_path)
+        cfg = CheckpointConfig(cadence_entries=1, max_lag_entries=10, ts_urls=[])
+        state = CheckpointState.load(
+            ledger_dir=ledger_dir, log_source=JsonlLogSource(capsules), cfg=cfg, signer=signer, log_id="plugin-log"
+        )
+        state.reconnect()
+        assert json.loads((ledger_dir / "checkpoints.jsonl").read_text().splitlines()[-1])["mmr_size"] >= 8
+
+        door = es.EvidenceServerState(ledger_dir=ledger_dir, ledger_path=capsules, signing_key_path=key_path)
+        server = _RunningServer(door)
+        try:
+            for capsule in (first, second):
+                status, body = server.post(
+                    "/evidence-request", {"subject": {"kind": "record", "capsule_id": capsule["capsule_id"]}, "coverage": {}}
+                )
+                assert status == 200
+                assert "bundles" in body, f"expected an Artifact, got a refusal: {body}"
+                ok, errors = verify_bundle(Bundle.from_dict(body["bundles"][0]))
+                assert ok, errors
+        finally:
+            server.close()
+
     def test_no_checkpoints_yet_refuses_coverage_unsatisfiable_never_crashes(self, tmp_path, stub_witness):
         ledger_dir = tmp_path / "fresh-plugin-ledger"
         ledger_dir.mkdir()

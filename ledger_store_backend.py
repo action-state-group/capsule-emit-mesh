@@ -199,7 +199,12 @@ def open_log_source_for_checkpointing(ledger_dir: Path, *, log_id: str = "") -> 
 
 
 def _read_flat_capsules_page(
-    ledger_dir: Path, *, limit: int | None, after_seq: int, flat_filename: str = _LEGACY_FLAT_FILENAME
+    ledger_dir: Path,
+    *,
+    limit: int | None,
+    after_seq: int,
+    flat_filename: str = _LEGACY_FLAT_FILENAME,
+    include_padding: bool = False,
 ) -> tuple[list[dict[str, Any]], int | None]:
     """:func:`read_capsules_page`'s flat-file branch. A flat ledger has no
     persisted ``seq`` column, so this assigns the same synthetic 1-based
@@ -229,11 +234,11 @@ def _read_flat_capsules_page(
             pairs.append((seq, json.loads(line)))
             if fetch_cap is not None and len(pairs) >= fetch_cap:
                 break
-    return _trim_page(pairs, limit)
+    return _trim_page(pairs, limit, include_padding=include_padding)
 
 
 def _trim_page(
-    pairs: list[tuple[int, dict[str, Any]]], limit: int | None
+    pairs: list[tuple[int, dict[str, Any]]], limit: int | None, *, include_padding: bool = False
 ) -> tuple[list[dict[str, Any]], int | None]:
     """Shared cursor trim: *pairs* was collected with one extra record past
     *limit* when a next page might exist (the ``fetch_cap = limit + 1``
@@ -248,13 +253,16 @@ def _trim_page(
     # Padding lines (Evidence Layer -00 §12.1) are leaves, not records: every
     # caller of the page readers counts, lists or answers, so they are dropped
     # here -- AFTER the cursor is fixed, so ``seq`` stays the line position and
-    # a page may hold fewer than ``limit`` records. MMR folding never comes
-    # through here (``open_log_source_for_checkpointing`` reads every line).
+    # a page may hold fewer than ``limit`` records. A caller that rebuilds the
+    # MMR (``materialize_flat_view``) passes ``include_padding`` and gets every
+    # leaf.
+    if include_padding:
+        return [capsule for _seq, capsule in pairs], next_after_seq
     return [capsule for _seq, capsule in pairs if not is_padding_record(capsule)], next_after_seq
 
 
 def _read_store_page(
-    ledger_dir: Path, *, limit: int | None, after_seq: int
+    ledger_dir: Path, *, limit: int | None, after_seq: int, include_padding: bool = False
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int | None]:
     """:func:`read_capsules_page`'s store branch -- the segment-walk
     :func:`read_all_capsules` used to do inline, extended with an
@@ -332,14 +340,14 @@ def _read_store_page(
                 if hi >= lo:
                     hits = store.by_seq_range(lo, hi)
                     pairs.extend((r.seq, r.capsule) for r in hits)
-        records, next_after_seq = _trim_page(pairs, limit)
+        records, next_after_seq = _trim_page(pairs, limit, include_padding=include_padding)
         return records, archived, next_after_seq
     finally:
         store.close()
 
 
 def read_capsules_page(
-    ledger_dir: Path, *, limit: int | None = None, after_seq: int = 0
+    ledger_dir: Path, *, limit: int | None = None, after_seq: int = 0, include_padding: bool = False
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int | None]:
     """Capped, paginated :func:`read_all_capsules`: at most *limit* capsule
     records with ``seq > after_seq``, in append order -- store-aware (keys
@@ -359,11 +367,16 @@ def read_capsules_page(
     ``limit=None`` (the default) returns everything from ``after_seq``
     onward in one page, same as calling :func:`read_all_capsules` with
     ``after_seq=0``.
+
+    Padding lines are leaves, not records, so they are left out unless
+    ``include_padding`` asks for every leaf (for rebuilding the MMR).
     """
     ledger_dir = as_ledger_dir(ledger_dir)
     if is_store_ledger(ledger_dir):
-        return _read_store_page(ledger_dir, limit=limit, after_seq=after_seq)
-    records, next_after_seq = _read_flat_capsules_page(ledger_dir, limit=limit, after_seq=after_seq)
+        return _read_store_page(ledger_dir, limit=limit, after_seq=after_seq, include_padding=include_padding)
+    records, next_after_seq = _read_flat_capsules_page(
+        ledger_dir, limit=limit, after_seq=after_seq, include_padding=include_padding
+    )
     return records, [], next_after_seq
 
 
@@ -464,7 +477,10 @@ def materialize_flat_view(ledger_dir: Path) -> Path:
     if not is_store_ledger(ledger_dir) and not stamp_lines:
         return ledger_dir / _LEGACY_FLAT_FILENAME
 
-    records, _archived = read_all_capsules(ledger_dir)
+    # Every leaf, padding included: the checkpoints' MMR (the Rust plugin's
+    # checkpoints.jsonl) counts padding lines as leaves, so a view without them
+    # rebuilds a smaller MMR and no checkpoint ever covers a record.
+    records, _archived, _next = read_capsules_page(ledger_dir, include_padding=True)
 
     import tempfile
 
