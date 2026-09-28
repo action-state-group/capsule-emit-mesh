@@ -311,3 +311,69 @@ def test_peer_no_url_stays_pending() -> None:
     served = peer_row["served"]
     assert history["state"] == CELL_PENDING, f"expected pending history for no-url peer, got: {history}"
     assert served["state"] == CELL_PENDING, f"expected pending served for no-url peer, got: {served}"
+
+
+# ---------------------------------------------------------------------------
+# Fail closed: a peer's log this node cannot verify is never "verified"
+# ---------------------------------------------------------------------------
+
+
+class _BundlesPeerHandler(BaseHTTPRequestHandler):
+    """A peer whose evidence door answers a range request with one bundle."""
+
+    def log_message(self, fmt: str, *args: Any) -> None:
+        pass
+
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+        body = json.dumps(
+            {"bundles": [{"checkpoint": {"tree_size": 7, "root_hash": "ab" * 32}}]}
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def test_fetch_peer_history_fails_closed_when_bundles_cannot_be_verified(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    # This node has no bundle verifier: `capsule_emit.bundle` cannot import.
+    monkeypatch.setitem(sys.modules, "capsule_emit.bundle", None)
+    server = HTTPServer(("127.0.0.1", 0), _BundlesPeerHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        result = fetch_peer_history(
+            f"http://127.0.0.1:{server.server_address[1]}",
+            timeout_seconds=5,
+            ledger_dir=tmp_path,
+            peer_id="test-peer",
+        )
+    finally:
+        server.shutdown()
+
+    assert result["status"] == "unchecked"
+    assert result["reason"].startswith("their log could not be checked")
+    assert "history_summary" not in result, "nothing from an unchecked log is used"
+    sent = [json.loads(line) for line in (tmp_path / "send_log.jsonl").read_text().splitlines()]
+    assert sent[-1]["status"] == "unchecked"
+
+
+def test_an_unchecked_peer_log_is_shown_as_not_checked_never_verified() -> None:
+    from history_card import build_history_card
+    from peer_accountability_tab import CELL_FAILED, peer_history_cell
+
+    card = build_history_card(node_id="node-a", log_id="log-a", checkpoint_lines=[], since_size=0)
+    cell = peer_history_cell(
+        card,
+        [],
+        peer_fetch_result={
+            "status": "unchecked",
+            "reason": "their log could not be checked: bundle verification (capsule_emit) is not installed on this node",
+        },
+    )
+    assert cell["state"] == CELL_PENDING
+    assert cell["state"] not in (CELL_VERIFIED, CELL_FAILED)
+    assert cell["text"].startswith("their log could not be checked")

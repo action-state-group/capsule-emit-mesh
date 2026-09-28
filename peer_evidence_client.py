@@ -178,6 +178,11 @@ def fetch_peer_history(
       {"status": "refused", "reason": "...", "signed": bool}
       {"status": "no_answer", "transport": "http", "timeout_seconds": N, ...}
       {"status": "failed", "reason": "...", ...}
+      {"status": "unchecked", "reason": "their log could not be checked: ...", ...}
+
+    Fails closed: when this node cannot verify bundles (``capsule_emit`` is not
+    installed), the peer's log is reported as not checked -- never counted as
+    verified, and none of its checkpoints are used.
     """
     url = peer_base_url.rstrip("/") + "/evidence-request"
     request_map: dict[str, Any] = {
@@ -229,36 +234,37 @@ def fetch_peer_history(
     # Attempt offline bundle verification.
     try:
         from capsule_emit.bundle import Bundle, verify_bundle
-        bundle_verify_available = True
     except ImportError:
-        bundle_verify_available = False
+        reason = "their log could not be checked: bundle verification (capsule_emit) is not installed on this node"
+        log_entry["status"] = "unchecked"
+        log_entry["reason"] = reason
+        _append_send_log(ledger_dir, log_entry)
+        return {
+            "status": "unchecked",
+            "reason": reason,
+            "bundle_count": len(raw_bundles),
+            "timeout_seconds": timeout_seconds,
+        }
 
     verified_count = 0
     failed_count = 0
     checkpoint_lines: list[dict[str, Any]] = []
     for bd in raw_bundles:
-        if bundle_verify_available:
-            try:
-                bundle = Bundle.from_dict(bd)
-                ok, _errors = verify_bundle(bundle)
-            except Exception:
-                failed_count += 1
-                continue
-            if not ok:
-                failed_count += 1
-                continue
-            verified_count += 1
-            cp = getattr(bundle, "checkpoint", None)
-            if cp is not None:
-                cp_dict = cp.to_dict() if hasattr(cp, "to_dict") else {}
-                if cp_dict:
-                    checkpoint_lines.append(cp_dict)
-        else:
-            # capsule_emit not available; accept the bundle but note it.
-            verified_count += 1
-            cp = bd.get("checkpoint")
-            if isinstance(cp, dict):
-                checkpoint_lines.append(cp)
+        try:
+            bundle = Bundle.from_dict(bd)
+            ok, _errors = verify_bundle(bundle)
+        except Exception:
+            failed_count += 1
+            continue
+        if not ok:
+            failed_count += 1
+            continue
+        verified_count += 1
+        cp = getattr(bundle, "checkpoint", None)
+        if cp is not None:
+            cp_dict = cp.to_dict() if hasattr(cp, "to_dict") else {}
+            if cp_dict:
+                checkpoint_lines.append(cp_dict)
 
     if verified_count == 0:
         log_entry["status"] = "failed"

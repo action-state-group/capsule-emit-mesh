@@ -516,6 +516,14 @@ def peer_history_cell(card: HistoryCard, checkpoint_lines: list[dict[str, Any]],
                 "text": f"fetch verification failed: {peer_fetch_result.get('reason', 'unknown')}",
                 "mine_for_reference": card,
             }
+        elif status == "unchecked":
+            # This node could not verify what the peer sent: not checked,
+            # never shown as verified and never as a failure of their log.
+            return {
+                "state": CELL_PENDING,
+                "text": peer_fetch_result.get("reason", "their log could not be checked"),
+                "mine_for_reference": card,
+            }
         # no_answer or unknown: fall through to existing pending logic
     return {
         "state": CELL_PENDING,
