@@ -1186,6 +1186,50 @@ fn seen_range(records: &[Value]) -> (Option<&str>, Option<&str>) {
     (timestamps.first().copied(), timestamps.last().copied())
 }
 
+/// `(requested, served)` over THIS node's own records only. A group also holds
+/// the halves the peer pushed (their `served` is our `requested`), so counting
+/// every record by role showed "1 requested · 1 served" for one exchange this
+/// node only asked for.
+fn own_role_counts(
+    records: &[Value],
+    received_provenance: &HashMap<String, ReceivedProvenance>,
+) -> (usize, usize) {
+    let own = || records.iter().filter(|r| !is_received_record(r, received_provenance));
+    (
+        own().filter(|r| label_role(r) == "requested").count(),
+        own().filter(|r| label_role(r) == "served").count(),
+    )
+}
+
+/// One `claims_refused` gate input per own record of this peer whose other
+/// half the door refused for contradicting it (`claim_refusal_for`).
+fn refused_siblings(
+    records: &[Value],
+    received_provenance: &HashMap<String, ReceivedProvenance>,
+    refusals: &[(String, String, String, Option<String>)],
+) -> Vec<Value> {
+    if refusals.is_empty() {
+        return Vec::new();
+    }
+    records
+        .iter()
+        .filter(|r| !is_received_record(r, received_provenance))
+        .filter_map(|mine| {
+            let (_, _, reason, at) = claim_refusal_for(mine, refusals)?;
+            Some(json!({
+                "mine": mine_pair_cell(mine),
+                "theirs": {
+                    "state": STATE_PRESENT_UNVERIFIED,
+                    "capsule_id": Value::Null,
+                    "evidence_outcome": "claims_refused",
+                    "evidence_outcome_date": at,
+                    "evidence_outcome_reason": reason,
+                },
+            }))
+        })
+        .collect()
+}
+
 /// One "Nodes you have dealt with" row: a NAMED counterparty (`label`) this
 /// node exchanged with, `exchange_count` real. Its half being unheld is a
 /// STATE ("their half not held") the CLOSED path fills -- it is never a reason
@@ -1196,6 +1240,7 @@ fn dealt_with_row(
     siblings_by_key: &HashMap<String, Vec<CorrelatedSibling<'_>>>,
     received_provenance: &HashMap<String, ReceivedProvenance>,
     identity: Option<&PeerIdentity>,
+    refusals: &[(String, String, String, Option<String>)],
 ) -> Value {
     let (first_seen, last_seen) = seen_range(records);
     // The count of DISTINCT exchanges (by the ONE correlator), NOT records.len():
@@ -1204,11 +1249,7 @@ fn dealt_with_row(
     // reads "3 / 3", never "3 / 6". See `distinct_exchange_count`.
     let total = distinct_exchange_count(records, received_provenance);
     let confirmed_siblings = confirmed_siblings_for(records, siblings_by_key, received_provenance);
-    let served_count = records.iter().filter(|r| label_role(r) == "served").count();
-    let requested_count = records
-        .iter()
-        .filter(|r| label_role(r) == "requested")
-        .count();
+    let (requested_count, served_count) = own_role_counts(records, received_provenance);
     // A half this peer pushed and the door verified IS held now. The node/
     // cross_party text stops asserting the flat "their half not held" the
     // moment a provenance-carrying sibling correlates -- the gate decides
@@ -1219,6 +1260,13 @@ fn dealt_with_row(
     } else {
         "their half not held".to_string()
     };
+    // An exchange whose other half the door refused for contradicting our
+    // record is a disagreement with this peer: supplied to the ONE gate as a
+    // sibling whose outcome is `claims_refused` (CONTRADICTED), the same
+    // outcome Pane C's row carries, so the Peers row and the drill never read
+    // "0 differ" while the hero counts it.
+    let mut confirmed_siblings = confirmed_siblings;
+    confirmed_siblings.extend(refused_siblings(records, received_provenance, refusals));
     json!({
         "peer_id": label,
         // D3: the alias evidence for
@@ -1279,11 +1327,7 @@ fn unattributed_row(
 ) -> Value {
     let (first_seen, last_seen) = seen_range(records);
     let confirmed_siblings = confirmed_siblings_for(records, siblings_by_key, received_provenance);
-    let served_count = records.iter().filter(|r| label_role(r) == "served").count();
-    let requested_count = records
-        .iter()
-        .filter(|r| label_role(r) == "requested")
-        .count();
+    let (requested_count, served_count) = own_role_counts(records, received_provenance);
     // Distinct exchanges by the ONE correlator, NOT records.len() -- same
     // record-vs-exchange discipline as the dealt-with rows (`distinct_exchange_count`).
     let total = distinct_exchange_count(records, received_provenance);
@@ -1365,9 +1409,20 @@ fn unattributed_row(
 /// predicate here; correlation feeds the gate, it never bypasses it. A peer with
 /// no correlated sibling supplies an empty list, which the gate reads as "not
 /// confirmed" -- honest, never a fabricated zero.
+#[cfg(test)]
 pub(crate) fn build_pane_b(
     records: &[Value],
     received_provenance: &HashMap<String, ReceivedProvenance>,
+) -> Value {
+    build_pane_b_with_refusals(records, received_provenance, &[])
+}
+
+/// [`build_pane_b`] with the door's claim refusals, so a peer's row counts the
+/// exchanges whose other half contradicted our record as disagreements.
+fn build_pane_b_with_refusals(
+    records: &[Value],
+    received_provenance: &HashMap<String, ReceivedProvenance>,
+    refusals: &[(String, String, String, Option<String>)],
 ) -> Value {
     if records.is_empty() {
         return json!({
@@ -1427,6 +1482,7 @@ pub(crate) fn build_pane_b(
                 &siblings_by_key,
                 received_provenance,
                 attribution.identity_by_row_key.get(label),
+                refusals,
             )
         })
         .collect();
@@ -2072,6 +2128,20 @@ fn read_claim_refusals(ledger_dir: &Path) -> Vec<(String, String, String, Option
         .collect()
 }
 
+/// The door's claim refusal for our own record's other half, if any: only for
+/// a record where this node asked, and only a refusal of a push from the node
+/// OUR record says served the exchange (a push from anyone else says nothing
+/// about it). Pane B and Pane C both read disagreements through this.
+fn claim_refusal_for<'r>(mine: &Value, refusals: &'r [(String, String, String, Option<String>)]) -> Option<&'r (String, String, String, Option<String>)> {
+    if label_role(mine) != "requested" {
+        return None;
+    }
+    let (Some(digest), Some(server)) = (request_digest(mine), full_counterparty_node_id(mine)) else {
+        return None;
+    };
+    refusals.iter().rev().find(|(d, sender, _, _)| d == digest && *sender == server)
+}
+
 /// A row whose other half the door refused because the node that served it
 /// signed claims contradicting our record (another server named, other model
 /// weights) is never left looking merely open: `theirs.evidence_outcome` is
@@ -2093,15 +2163,7 @@ fn mark_claims_refused(pane: &mut Value, our_records: &[Value], refusals: &[(Str
         let Some(mine) = row["mine"].get("capsule_id").and_then(Value::as_str).and_then(|id| ours_by_id.get(id)) else {
             return;
         };
-        if label_role(mine) != "requested" {
-            return;
-        }
-        let (Some(digest), Some(server)) = (request_digest(mine), full_counterparty_node_id(mine)) else {
-            return;
-        };
-        if let Some((_, _, reason, at)) =
-            refusals.iter().rev().find(|(d, sender, _, _)| d == digest && *sender == server)
-        {
+        if let Some((_, _, reason, at)) = claim_refusal_for(mine, refusals) {
             row["theirs"]["evidence_outcome"] = json!("claims_refused");
             row["theirs"]["evidence_outcome_date"] = json!(at);
             row["theirs"]["evidence_outcome_reason"] = json!(reason);
@@ -2131,7 +2193,11 @@ pub(crate) fn build_pane_json(
         // halves AND our citing records (they ARE our chained log entries) --
         // never the foreign bodies (those are evidence we hold, not ours).
         "pane-a" => Some(build_pane_a(&our_records, read_checkpoint_card(ledger_dir))),
-        "pane-b" => Some(build_pane_b(&pane_bc_records, &received_provenance)),
+        "pane-b" => Some(build_pane_b_with_refusals(
+            &pane_bc_records,
+            &received_provenance,
+            &read_claim_refusals(ledger_dir),
+        )),
         "pane-c" => {
             let mut pane = match exchange_id {
                 Some(id) if !id.is_empty() => {
@@ -2615,6 +2681,33 @@ mod tests {
         );
         // Three pushed served halves closed through the ONE gate.
         assert_eq!(row["confirmed_siblings"].as_array().unwrap().len(), 3);
+    }
+
+    /// The drill's "requested · served" counts THIS node's own records only:
+    /// three exchanges this node asked for, each confirmed by the peer's
+    /// pushed served half, read "3 requested · 0 served", never "3 · 3".
+    #[test]
+    fn pane_b_role_counts_are_own_records_only_never_the_peers_pushed_half() {
+        let mut records = Vec::new();
+        let mut provenance: HashMap<String, ReceivedProvenance> = HashMap::new();
+        for i in 0..3 {
+            let d = format!("{i}").repeat(64);
+            records.push(mesh_half(&format!("mine-{i}"), "requested", &d, "resp", &format!("node-a-{i}")));
+            let theirs_id = format!("theirs-{i}");
+            records.push(mesh_half(&theirs_id, "served", &d, "resp", &format!("node-b-{i}")));
+            provenance.extend([provenance_for(&theirs_id, "node-b")]);
+        }
+
+        let pane = build_pane_b(&records, &provenance);
+        let row = pane["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["peer_id"] == json!("node:node-b"))
+            .expect("the served peer is attributed");
+        assert_eq!(row["role"]["you_to_them_count"], json!(3));
+        assert_eq!(row["role"]["them_to_you_count"], json!(0), "their pushed halves are not our served exchanges");
+        assert_eq!(row["role"]["text"], json!("you→them · 3 (them→you · 0)"));
     }
 
     /// A peer with only this node's own half (no pushed sibling, no
@@ -3721,6 +3814,48 @@ mod tests {
         assert_eq!(theirs["evidence_outcome"], json!("claims_refused"));
         assert_eq!(theirs["evidence_outcome_reason"], json!("model_mismatch"));
         assert_eq!(theirs["evidence_outcome_date"], json!("2026-09-28T08:00:00Z"));
+    }
+
+    /// The Peers row and the drill read disagreements from Pane B: an exchange
+    /// whose other half the door refused for contradicting our record reaches
+    /// the ONE gate as a `claims_refused` sibling (the page counts it as a
+    /// disagreement), the same outcome Pane C's row carries. A refusal of a
+    /// push from anyone else adds nothing.
+    #[test]
+    fn a_claim_refusal_from_our_provider_is_a_disagreement_on_the_peer_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let provider = format!("c1f5{}", "5".repeat(60));
+        let ours = mesh_half_served_by(
+            "a".repeat(64).as_str(),
+            "requested",
+            "d".repeat(64).as_str(),
+            "e".repeat(64).as_str(),
+            "me-1",
+            &provider,
+        );
+        write_fixture_ledger(dir.path(), &[ours]);
+        let refusal = |sender: &str, reason: &str| {
+            json!({ "capsule_id": "f".repeat(64), "claimed_sender_peer_id": sender, "reason": reason,
+                    "rejected_at": "2026-09-28T08:00:00Z", "request_digest": "d".repeat(64) })
+        };
+        let write = |lines: &[Value]| {
+            let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+            std::fs::write(dir.path().join("rejected-record-pushes.jsonl"), text).unwrap();
+        };
+        let siblings = || {
+            let pane = build_pane_json("pane-b", dir.path(), None).unwrap();
+            pane["rows"][0]["confirmed_siblings"].as_array().unwrap().clone()
+        };
+
+        write(&[refusal(&"b".repeat(64), "served_by_mismatch"), refusal(&provider, "signature_unverified")]);
+        assert!(siblings().is_empty(), "not from our provider, or not a claim check");
+
+        write(&[refusal(&provider, "served_by_mismatch")]);
+        let siblings = siblings();
+        assert_eq!(siblings.len(), 1);
+        assert_eq!(siblings[0]["theirs"]["evidence_outcome"], json!("claims_refused"));
+        assert_eq!(siblings[0]["theirs"]["evidence_outcome_reason"], json!("served_by_mismatch"));
+        assert_eq!(siblings[0]["mine"]["capsule_id"], json!("a".repeat(64)));
     }
 
     /// A minimal CITING record our
