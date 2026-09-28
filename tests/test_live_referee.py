@@ -226,7 +226,9 @@ def test_live_referee_sends_mesh_target_header_and_agreed_prefix():
     comparison = compare_transcripts(half_a.response_text, half_b.response_text)
     assert comparison.divergence_index == 3  # "the quick brown" agree, token 3 (fox/wolf) diverges
 
-    node = _FakeRefereeNode(response_text="fox")
+    # The referee re-answers the original request in full (a host that opens
+    # a new turn after a trailing assistant message never continues it).
+    node = _FakeRefereeNode(response_text="the quick brown fox jumps")
     try:
         result = live_referee(
             half_a, half_b, comparison,
@@ -239,10 +241,9 @@ def test_live_referee_sends_mesh_target_header_and_agreed_prefix():
     assert node.last_headers.get("X-Mesh-Target") == "deadbeef" * 8
     assert node.last_headers.get("X-Capsule-Client-Nonce") == "nonce-agreed-prefix"
     sent_messages = node.last_body["messages"]
-    assert sent_messages[0] == {"role": "user", "content": "describe the fox"}
-    assert sent_messages[-1] == {"role": "assistant", "content": "the quick brown"}
+    assert sent_messages == [{"role": "user", "content": "describe the fox"}], "the original request, no prefill"
     assert node.last_body["temperature"] == 0
-    assert node.last_body["max_tokens"] == 1
+    assert node.last_body["max_tokens"] >= comparison.divergence_index + 1
     assert node.last_body["seed"] == 42
     # LIVE-CONFIRMED 2026-09-08: the current runtime 400s the whole request
     # if asked for logprobs -- must never be sent.
@@ -254,6 +255,47 @@ def test_live_referee_sends_mesh_target_header_and_agreed_prefix():
     assert result.capsule_id is None
     assert result.referee_record_status == REFEREE_RECORD_UNRESOLVED
     assert result.referee_record_nonce == "nonce-agreed-prefix"
+
+
+def test_a_fresh_reanswer_that_reproduces_the_prefix_decides_at_the_divergence():
+    """The doctored-twin shape from the live Phase C run: both twins said
+    "1 2 3 4 5", one half was doctored to "1 2 3 999 5". The referee (a host
+    that answers the original request afresh) says "1 2 3 4 5": the doctored
+    twin is contradicted. MUTANT: the old one-token continuation read "1"
+    (token 0 of the fresh reply) and returned inconclusive."""
+    msgs = [{"role": "user", "content": "List the first five counting numbers."}]
+    half_a = _half("1 2 3 4 5", owner_id="owner-a", request_messages=msgs)
+    half_b = _half("1 2 3 999 5", owner_id="owner-b", request_messages=msgs)
+    comparison = compare_transcripts(half_a.response_text, half_b.response_text)
+    node = _FakeRefereeNode(response_text="1 2 3 4 5")
+    try:
+        result = live_referee(
+            half_a, half_b, comparison,
+            local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
+            nonce="nonce-doctored",
+        )
+    finally:
+        node.close()
+    assert result.verdict == "contradicted:owner-b"
+
+
+def test_a_reanswer_that_does_not_reproduce_the_agreed_prefix_is_inconclusive():
+    """The referee must first agree with what both twins agreed on; if its own
+    answer differs before the divergence, it decides nothing."""
+    msgs = [{"role": "user", "content": "List the first five counting numbers."}]
+    half_a = _half("1 2 3 4 5", owner_id="owner-a", request_messages=msgs)
+    half_b = _half("1 2 3 999 5", owner_id="owner-b", request_messages=msgs)
+    comparison = compare_transcripts(half_a.response_text, half_b.response_text)
+    node = _FakeRefereeNode(response_text="one 2 3 4 5")
+    try:
+        result = live_referee(
+            half_a, half_b, comparison,
+            local_api_base_url=node.base_url, target_peer_id="deadbeef" * 8, model="test-model", seed=1,
+            nonce="nonce-prefix-differs",
+        )
+    finally:
+        node.close()
+    assert result.verdict == VERDICT_INCONCLUSIVE
 
 
 def test_live_referee_defaults_seed_from_half_a_declared_decoding_when_caller_omits_it():

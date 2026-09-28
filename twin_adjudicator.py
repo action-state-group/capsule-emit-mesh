@@ -375,7 +375,25 @@ class AdjudicationHalf:
         return self.disclosed.get("response_body") or {}
 
     @property
+    def body_text(self) -> str | None:
+        """The response text the SIGNED body carries
+        (``choices[0].message.content``), or ``None`` when the body has none."""
+        choices = self.response_body.get("choices") or []
+        if not choices or not isinstance(choices[0], dict):
+            return None
+        content = (choices[0].get("message") or {}).get("content")
+        return content if isinstance(content, str) else None
+
+    @property
     def response_text(self) -> str:
+        """The text this half is compared on: the signed body's own text when
+        the body carries one, never a separately supplied string (a real
+        signed record carrying altered text must not be judged on the
+        alteration). The disclosed ``response_text`` is only a fallback for a
+        body without message content."""
+        body = self.body_text
+        if body is not None:
+            return body
         return self.disclosed.get("response_text") or ""
 
     @property
@@ -652,6 +670,14 @@ def _verify_preimage_or_raise(label: str, half: AdjudicationHalf) -> None:
         raise PreimageDigestMismatchError(
             f"{label} ({half.capsule_id[:16]}…): disclosed response digest {recomputed!r} "
             f"!= declared response_digest {declared!r} -- refusing to compare unverified bytes"
+        )
+    # The digest covers the body; the text compared must be that body's own.
+    supplied = half.disclosed.get("response_text")
+    body_text = half.body_text
+    if body_text is not None and supplied is not None and supplied != body_text:
+        raise PreimageDigestMismatchError(
+            f"{label} ({half.capsule_id[:16]}…): disclosed response_text is not the signed body's "
+            "text -- refusing to compare text the signature does not cover"
         )
 
 

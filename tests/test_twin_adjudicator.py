@@ -199,6 +199,27 @@ def test_bytes_not_matching_digest_aborts():
         adjudicate(half_a, tampered)
 
 
+def test_a_real_signed_body_with_altered_text_is_refused():
+    """A real signed record whose disclosed text was altered (the body, and so
+    the digest, left intact) must never be adjudicated on the altered text.
+    MUTANT: compare `disclosed.response_text` unchecked and it is accepted."""
+    half_a = _make_half("1 2 3 4 5")
+    real_b = _make_half("1 2 3 4 5", owner_id="owner-b")
+    forged = AdjudicationHalf(
+        capsule=real_b.capsule,
+        disclosed={**real_b.disclosed, "response_text": "1 2 3 999 5"},
+        owner_id=real_b.owner_id,
+        weights_digest=real_b.weights_digest,
+    )
+    with pytest.raises(PreimageDigestMismatchError):
+        adjudicate(half_a, forged)
+
+
+def test_the_compared_text_is_the_signed_bodys_own():
+    half = _make_half("hello world")
+    assert half.response_text == half.body_text == "hello world"
+
+
 # ---------------------------------------------------------------------------
 # Mutant: forged half -> ✗
 # ---------------------------------------------------------------------------

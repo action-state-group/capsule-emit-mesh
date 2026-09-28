@@ -271,24 +271,39 @@ def peer_info_from_status(peer_json: dict[str, Any], *, weights_digest: str | No
     )
 
 
+def _regeneration_budget(divergence_index: int) -> int:
+    """Tokens a greedy re-answer needs to reach past word `divergence_index`:
+    a word can be several model tokens, so a generous multiple, capped."""
+    return min(256, 8 * (divergence_index + 2))
+
+
 def _referee_request_body(half_a: AdjudicationHalf, comparison: ComparisonResult, *, model: str, seed: int) -> bytes:
     prefix_tokens = half_a.response_text.split()[: comparison.divergence_index]
     prefix_text = " ".join(prefix_tokens)
 
     original_messages = list(half_a.request_body.get("messages") or [])
     if original_messages:
-        messages = [*original_messages, {"role": "assistant", "content": prefix_text}]
+        # The referee answers the ORIGINAL request afresh, greedy, far enough
+        # to pass the divergence; `live_referee` then requires its answer to
+        # reproduce the agreed prefix before reading its word at the
+        # divergence. No reliance on the host continuing a trailing
+        # assistant message: a host that opens a new turn after one (the
+        # skippy frontend does, unless asked to prefill) answered token 0 of
+        # a fresh reply, which could never match either twin.
+        messages = original_messages
+        max_tokens = _regeneration_budget(comparison.divergence_index)
     else:
         # No disclosed request preimage -- best-effort fallback, honestly a
         # weaker recompute than a real prefill (see module docstring).
         messages = [{"role": "user", "content": prefix_text}]
+        max_tokens = 1
 
     return json.dumps(
         {
             "model": model,
             "messages": messages,
             "temperature": 0,
-            "max_tokens": 1,
+            "max_tokens": max_tokens,
             "seed": seed,
             # Deliberately NO logprobs/top_logprobs -- LIVE-CONFIRMED
             # 2026-09-08 that the current runtime 400s the whole request
@@ -373,7 +388,18 @@ def live_referee(
         raise RefereeCallError(f"referee response was not valid JSON: {response_bytes[:200]!r}") from exc
 
     referee_text = ((response_body.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
-    referee_token = token_at(referee_text, 0)
+    if half_a.request_body.get("messages"):
+        # A fresh re-answer: it counts only when it reproduces the agreed
+        # prefix word for word; then its word AT the divergence is the call.
+        agreed = half_a.response_text.split()[: comparison.divergence_index]
+        referee_words = referee_text.split()
+        referee_token = (
+            token_at(referee_text, comparison.divergence_index)
+            if referee_words[: comparison.divergence_index] == agreed
+            else None
+        )
+    else:
+        referee_token = token_at(referee_text, 0)
 
     token_a = token_at(half_a.response_text, comparison.divergence_index)
     token_b = token_at(half_b.response_text, comparison.divergence_index)
