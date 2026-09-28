@@ -360,9 +360,10 @@ pub(super) struct ReceivedProvenance {
     received_from_node_id: Option<String>,
     /// Where the held half sits in the other side's own log, when a
     /// `counterparty_inclusion` record of ours cites their inclusion proof and
-    /// checkpoint for it: `{leaf_index, checkpoint_records}`, the latter the
-    /// size of their log that checkpoint covers. `None` until that evidence
-    /// arrives.
+    /// checkpoint for it: `{leaf_index, checkpoint_leaves}`, the latter the
+    /// size of their log that checkpoint covers, in leaves. Their padding is
+    /// among those leaves and this node cannot tell how much, so it is never a
+    /// count of their records. `None` until that evidence arrives.
     their_log: Option<Value>,
 }
 
@@ -418,19 +419,20 @@ fn is_inclusion_citing_record(record: &Value) -> bool {
         })
 }
 
-/// `(held half's capsule_id, {leaf_index, checkpoint_records})` from an
-/// inclusion-citing record, when its facts are whole.
+/// `(held half's capsule_id, {leaf_index, checkpoint_leaves})` from an
+/// inclusion-citing record, when its facts are whole. `checkpoint_leaves`
+/// includes the other side's padding: not a record count.
 fn their_log_position(record: &Value) -> Option<(String, Value)> {
     let block = record.pointer("/model_attestation/compute_attestation/counterparty_inclusion")?;
     let half = block.get("half_capsule_id").and_then(Value::as_str)?;
     let leaf_index = block.get("leaf_index").and_then(Value::as_u64)?;
-    let checkpoint_records = block
+    let checkpoint_leaves = block
         .get("mmr_size")
         .and_then(Value::as_u64)
         .and_then(mmr_leaf_count)?;
     Some((
         half.to_string(),
-        json!({ "leaf_index": leaf_index, "checkpoint_records": checkpoint_records }),
+        json!({ "leaf_index": leaf_index, "checkpoint_leaves": checkpoint_leaves }),
     ))
 }
 
@@ -4038,7 +4040,7 @@ mod tests {
         );
         assert_eq!(
             pane_c["rows"][0]["theirs"]["in_their_log"],
-            json!({ "leaf_index": 6, "checkpoint_records": 8 })
+            json!({ "leaf_index": 6, "checkpoint_leaves": 8 })
         );
         let pane_a = build_pane_json("pane-a", dir.path(), None).unwrap();
         assert!(
