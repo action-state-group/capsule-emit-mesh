@@ -1630,6 +1630,16 @@ fn own_routed_node_by_key(
         .collect()
 }
 
+/// The half names `node` as its server, or the door received it from `node`.
+fn half_points_at(half: &Value, provenance: &ReceivedProvenance, node: &str) -> bool {
+    let served_by = poc_block(half)
+        .and_then(|poc| poc.pointer("/serving_provenance/served_by_node_id"))
+        .and_then(Value::as_str);
+    served_by == Some(node)
+        || provenance.received_from.trim() == node
+        || provenance.received_from_node_id.as_deref() == Some(node)
+}
+
 fn peer_attribution(
     records: &[Value],
     received_provenance: &HashMap<String, ReceivedProvenance>,
@@ -1644,18 +1654,23 @@ fn peer_attribution(
     for (key, siblings) in siblings_by_key {
         // A single exchange key correlates one counterparty half; take the
         // first sibling whose evidence resolves to any identity at all.
-        let Some((row_key, mut identity)) = siblings.iter().find_map(|sibling| {
+        let Some((sibling, row_key, mut identity)) = siblings.iter().find_map(|sibling| {
             let identity = sibling_peer_identity(sibling.record, sibling.provenance);
-            peer_row_key(&identity).map(|row_key| (row_key, identity))
+            peer_row_key(&identity).map(|row_key| (sibling, row_key, identity))
         }) else {
             continue;
         };
         // Our own record of this exchange names the node our host routed it
         // to: that id is ours, so it replaces the peer's own claim about
         // itself (a requester that has only asked can then stop routing to
-        // it). A peer's self-asserted id alone stays `their_record`.
+        // it). A peer's self-asserted id alone stays `their_record`. It is
+        // applied only to a half that points at that same node -- the node
+        // it names as its server, or the node the door received it from:
+        // any other peer can push a half with our request digest, and a
+        // block must never land on the node we routed to because of it.
         let replaceable = identity.node_id.is_none() || identity.node_id_self_asserted;
-        if let Some(node) = own_routed.get(key).filter(|_| replaceable) {
+        let same_node = |node: &String| half_points_at(sibling.record, sibling.provenance, node);
+        if let Some(node) = own_routed.get(key).filter(|node| replaceable && same_node(node)) {
             identity.node_id = Some(node.clone());
             identity.node_id_self_asserted = false;
         }
@@ -3008,12 +3023,20 @@ mod tests {
             let rows = pane["rows"].as_array().unwrap();
             assert_eq!(rows.len(), 1, "one peer row");
             assert_eq!(rows[0]["peer_id"], json!("key:71eb26f8e583ccc9"));
-            assert_eq!(
-                rows[0]["identity"]["node_id"],
-                json!(routed),
-                "the node our host routed to"
-            );
-            assert_eq!(rows[0]["identity"]["node_id_source"], json!("your_records"));
+            if claimed == routed {
+                assert_eq!(
+                    rows[0]["identity"]["node_id"],
+                    json!(routed),
+                    "the node our host routed to"
+                );
+                assert_eq!(rows[0]["identity"]["node_id_source"], json!("your_records"));
+            } else {
+                // A half naming another server, from a sender that is not the
+                // node we routed to, is not that node's half: its own claim
+                // stays its own (not blockable), never our routed node.
+                assert_eq!(rows[0]["identity"]["node_id"], json!(claimed));
+                assert_eq!(rows[0]["identity"]["node_id_source"], json!("their_record"));
+            }
         }
     }
 
@@ -3055,6 +3078,50 @@ mod tests {
             .expect("M's row");
         assert_ne!(row["identity"]["node_id"], json!(node_h), "never H's id on M's row");
         assert_ne!(row["identity"]["node_id_source"], json!("your_records"));
+    }
+
+    /// Only H was asked, but M pushes a signed half with the same request
+    /// digest: M's row must not get H's node id (a block would land on H).
+    /// MUTANT: apply own_routed to any half under the key and M's row reads
+    /// H's id from `your_records`.
+    #[test]
+    fn a_half_from_a_node_we_did_not_route_to_never_takes_our_routed_node() {
+        let m_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let node_h = format!("aaaa{}", "1".repeat(60));
+        let node_m = format!("bbbb{}", "2".repeat(60));
+        let asked_h = mesh_half_served_by(
+            "a".repeat(64).as_str(), "requested", "d".repeat(64).as_str(),
+            "e".repeat(64).as_str(), "me-1", &node_h,
+        );
+        let pushed_m = with_key(
+            mesh_half_served_by(
+                "b".repeat(64).as_str(), "served", "d".repeat(64).as_str(),
+                "e".repeat(64).as_str(), "them-1", &node_m,
+            ),
+            m_key,
+        );
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for("b".repeat(64).as_str(), &node_m)].into_iter().collect();
+        let pane = build_pane_b(&[asked_h.clone(), pushed_m], &provenance);
+        let row = pane["rows"].as_array().unwrap().iter()
+            .find(|r| r["peer_id"] == json!("key:71eb26f8e583ccc9")).expect("M's row");
+        assert_ne!(row["identity"]["node_id"], json!(node_h), "never H's id on M's row");
+        assert_ne!(row["identity"]["node_id_source"], json!("your_records"));
+
+        // H's own half, received from H, does take the routed node.
+        let pushed_h = with_key(
+            mesh_half_served_by(
+                "c".repeat(64).as_str(), "served", "d".repeat(64).as_str(),
+                "e".repeat(64).as_str(), "them-2", &node_h,
+            ),
+            m_key,
+        );
+        let provenance: HashMap<String, ReceivedProvenance> =
+            [provenance_for("c".repeat(64).as_str(), &node_h)].into_iter().collect();
+        let pane = build_pane_b(&[asked_h, pushed_h], &provenance);
+        let row = &pane["rows"][0];
+        assert_eq!(row["identity"]["node_id"], json!(node_h));
+        assert_eq!(row["identity"]["node_id_source"], json!("your_records"));
     }
 
     /// A node id from a record we RECEIVED never counts as ours, even on a
