@@ -23,6 +23,11 @@
 # Only `plugin.toml` and the renamed executable are required by the
 # extractor; README.md, LICENSE and NOTICE ride along because the contract
 # lists them as recommended and they are already public-safe in this repo.
+# The web UI projection adds two more (mesh-llm "Plugin Web UI Projection
+# Contract"): `plugin-manifest.json`, printed by the built binary itself
+# (`--print-package-manifest`: config schema + the `web_ui` block), and
+# `bundle/`, the Evidence page built from `web-ui/` -- the manifest's one
+# bundle root, holding exactly `register-mesh-plugin-ui.js`.
 # No keys, ledgers, or demo data are included (checked below with an
 # explicit file-list assertion so a future workflow edit can't silently wire
 # one of those directories in).
@@ -87,6 +92,23 @@ jobs:
       - name: Build (release)
         run: cargo build --locked --release --target ${{ matrix.target }} --bin admission-policy-plugin
 
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: plugins/admission-policy/web-ui/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: plugins/admission-policy/web-ui/pnpm-lock.yaml
+
+      - name: Build the web UI bundle
+        working-directory: plugins/admission-policy/web-ui
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          test "$(ls ../bundle)" = "register-mesh-plugin-ui.js"
+
       - name: Resolve version from tag
         id: version
         shell: bash
@@ -103,13 +125,22 @@ jobs:
           cp "target/${{ matrix.target }}/release/admission-policy-plugin" "$root/${PLUGIN_NAME}"
           chmod +x "$root/${PLUGIN_NAME}"
           cp plugin.toml "$root/plugin.toml"
+          # Every matrix target builds on a runner of its own OS/arch, so the
+          # just-built binary runs here and prints its own package manifest.
+          "target/${{ matrix.target }}/release/admission-policy-plugin" --print-package-manifest \
+            > "$root/plugin-manifest.json"
+          # The printed manifest must be the reviewed one (plugin.package.json,
+          # itself pinned by the `web_ui_manifest` unit tests).
+          python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1])) != json.load(open(sys.argv[2])))' \
+            "$root/plugin-manifest.json" plugin.package.json
+          cp -R bundle "$root/bundle"
           cp README.md "$root/README.md"
           cp ../../LICENSE "$root/LICENSE"
           cp ../../NOTICE "$root/NOTICE"
           # Fail closed if the staged root ever picks up anything beyond the
           # contract's required + recommended files (never keys, ledgers, or
           # demo data).
-          allowed="plugin.toml ${PLUGIN_NAME} README.md LICENSE NOTICE"
+          allowed="plugin.toml plugin-manifest.json bundle ${PLUGIN_NAME} README.md LICENSE NOTICE"
           for f in "$root"/*; do
             name="$(basename "$f")"
             case " $allowed " in
@@ -117,6 +148,8 @@ jobs:
               *) echo "refusing to package unexpected file: $name" >&2; exit 1 ;;
             esac
           done
+          # bundle/ holds the built page and nothing else.
+          test "$(ls "$root/bundle")" = "register-mesh-plugin-ui.js"
 
       - name: Archive
         id: archive
