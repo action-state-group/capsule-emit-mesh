@@ -55,7 +55,9 @@ pieces with zero lines combining any two of them:
    ledger, with `agent_input_digest`/`agent_output_digest` computed over the
    exact request/response bytes exchanged — mutating either changes
    `capsule_id`. State (signing key + ledger + observed-lifecycle-events log)
-   persists under `ADMISSION_POLICY_DATA_DIR` (default `./admission-policy-data`).
+   persists under `ADMISSION_POLICY_DATA_DIR` (default `$XDG_DATA_HOME/capsule-emit-mesh`, else
+   `~/.local/share/capsule-emit-mesh`; always absolute, so a node started from another working
+   directory keeps its key and chain).
 2. **The #1331 lifecycle-hook broadcast** (`src/lifecycle_channel.rs`): the
    plugin declares `mesh_channel("openai.exchange.v1")` and receives the real
    host's own terminal-event envelope for the *same* exchange

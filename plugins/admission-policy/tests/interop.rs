@@ -43,6 +43,11 @@ impl Harness {
         let mut cmd = Command::new(PLUGIN_BIN);
         cmd.env("MESH_LLM_PLUGIN_ENDPOINT", &socket_path)
             .env("MESH_LLM_PLUGIN_TRANSPORT", "unix")
+            // An isolated data dir per run: never the operator's own.
+            .env(
+                "ADMISSION_POLICY_DATA_DIR",
+                std::env::temp_dir().join(format!("admission-policy-interop-data-{}", nonce())),
+            )
             .env("ADMISSION_POLICY_BLOCKED_MODELS", "blocked-test-model");
         for (key, value) in extra_env {
             cmd.env(key, value);

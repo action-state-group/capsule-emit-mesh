@@ -45,6 +45,11 @@ impl Harness {
         let mut cmd = Command::new(PLUGIN_BIN);
         cmd.env("MESH_LLM_PLUGIN_ENDPOINT", &socket_path)
             .env("MESH_LLM_PLUGIN_TRANSPORT", "unix")
+            // An isolated data dir per run: never the operator's own.
+            .env(
+                "ADMISSION_POLICY_DATA_DIR",
+                std::env::temp_dir().join(format!("mesh-evidence-interop-data-{}", nonce())),
+            )
             .env("ADMISSION_POLICY_BLOCKED_MODELS", "blocked-test-model")
             .env("ADMISSION_POLICY_MESH_REQUEST_TIMEOUT_MS", "1500")
             // `bind_side_stream` (mesh-llm-plugin's own `io.rs`) derives the

@@ -1,4 +1,5 @@
 mod capsule_emit;
+mod data_dir;
 mod checkpoint_cadence;
 mod decision;
 mod evidence_panes;
@@ -45,7 +46,6 @@ use mesh_llm_plugin::{
     DeclarativePluginBuilder, OperationRouter, PluginMetadata, PluginRuntime,
 };
 use serde_json::{json, Value};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::TcpListener;
@@ -71,15 +71,6 @@ fn blocked_models() -> Vec<String> {
         .unwrap_or_else(|| vec!["blocked-test-model".to_string()])
 }
 
-/// Where the persistent signing key + durable ledger + observed-lifecycle-
-/// events log live. Defaults to a directory beside the plugin binary's CWD
-/// so a manual run doesn't silently scatter state; the e2e test points this
-/// at an isolated directory per run.
-fn data_dir() -> PathBuf {
-    std::env::var("ADMISSION_POLICY_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("./admission-policy-data"))
-}
 
 /// The counterparty peer id for a push-at-completion, when this node can
 /// truthfully name one -- whoever sealed the other half of this exchange:
@@ -712,7 +703,9 @@ async fn main() -> anyhow::Result<()> {
     let address = format!("http://127.0.0.1:{port}");
     let models = blocked_models();
 
-    let data_dir = data_dir();
+    // Absolute, never the working directory's; see `data_dir`.
+    let data_dir = data_dir::data_dir()?;
+    tracing::info!(data_dir = %data_dir.display(), "plugin data directory");
     // A new history the owner asked for last run starts HERE, before the
     // ledger or the checkpoint cadence opens (see `owner_maintenance`).
     let log_id = owner_maintenance::apply_pending_before_open(&data_dir, PLUGIN_ID)?;
