@@ -67,11 +67,21 @@ const ENDPOINT_ID: &str = "admission-policy-openai";
 /// by observing every exchange regardless of model (see docs/PROTOCOL-NOTE.md
 /// for why that's a real architectural difference from the private spike).
 fn blocked_models() -> Vec<String> {
-    std::env::var("ADMISSION_POLICY_BLOCKED_MODELS")
-        .ok()
-        .map(|raw| raw.split(',').map(|s| s.trim().to_string()).collect())
-        .filter(|v: &Vec<String>| !v.is_empty())
-        .unwrap_or_else(|| vec!["blocked-test-model".to_string()])
+    blocked_models_for(std::env::var("ADMISSION_POLICY_BLOCKED_MODELS").ok().as_deref())
+}
+
+/// `none` (or `off`) advertises no blocked model at all: a node in a review
+/// or a real deployment must never offer a test model that "Mesh automatic"
+/// routing then picks. Unset keeps the test default.
+fn blocked_models_for(raw: Option<&str>) -> Vec<String> {
+    match raw.map(str::trim) {
+        Some("none") | Some("off") => Vec::new(),
+        Some(raw) => {
+            let models: Vec<String> = raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            if models.is_empty() { vec!["blocked-test-model".to_string()] } else { models }
+        }
+        None => vec!["blocked-test-model".to_string()],
+    }
 }
 
 
@@ -1107,6 +1117,19 @@ async fn main() -> anyhow::Result<()> {
     .build();
 
     PluginRuntime::run(plugin).await
+}
+
+#[cfg(test)]
+mod blocked_models_tests {
+    use super::blocked_models_for;
+
+    #[test]
+    fn none_advertises_no_blocked_model_and_unset_keeps_the_test_default() {
+        assert!(blocked_models_for(Some("none")).is_empty());
+        assert!(blocked_models_for(Some("off")).is_empty());
+        assert_eq!(blocked_models_for(None), vec!["blocked-test-model".to_string()]);
+        assert_eq!(blocked_models_for(Some("a, b")), vec!["a".to_string(), "b".to_string()]);
+    }
 }
 
 #[cfg(test)]
