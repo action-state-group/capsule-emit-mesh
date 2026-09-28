@@ -1,0 +1,1507 @@
+{
+ "pairs": [
+  {
+   "name": "distinct-exchange-id-shared-request-digest",
+   "provider": {
+    "action_id": "mesh-poc/prov-1/022d6a8f-e8bb-4485-adfd-593c1f8e697e",
+    "action_type": "decide",
+    "assurance": {
+     "attestation_mode": "self_attested",
+     "effect_mode": "confirmed",
+     "ledger_mode": "standalone"
+    },
+    "canonicalization_id": "jcs",
+    "capsule_id": "17c82e7b1b65b8ded698676ff2c578ed1ebc89ff6ef9cebd54300053e4cfcb77",
+    "developer": "capsule-emit-mesh-poc-sidecar/0.1.0",
+    "disposition": {
+     "approver": "policy",
+     "decision": "accept",
+     "human_disposed": false,
+     "verdict_class": "executed"
+    },
+    "domain": "action",
+    "effect": {
+     "effect_attestation": "gate_executed",
+     "request_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+     "response_digest": "f8e9b0275023e8cf727456618feb804cb2305032d66f56e323bf722fc5b73ac4",
+     "status": "confirmed",
+     "type": "inference_completion"
+    },
+    "format_version": "4",
+    "model_attestation": {
+     "compute_attestation": {
+      "agent_input_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "agent_output_digest": "f8e9b0275023e8cf727456618feb804cb2305032d66f56e323bf722fc5b73ac4",
+      "attestation_refs": [],
+      "decoding": {
+       "temperature": "0.2"
+      },
+      "epistemic_type": "producer_claim",
+      "invocation": {
+       "requested_model_id": "test-model",
+       "source": {
+        "requested_model_id": "self_reported"
+       }
+      },
+      "runtime": {
+       "name": "test-runtime"
+      },
+      "source": {
+       "decoding": "self_reported"
+      },
+      "x-mesh-poc-v1": {
+       "advertisement": null,
+       "advertisement_reconciliation": {
+        "advertised_node_id": null,
+        "advertisement_digest": null,
+        "advertisement_issued_at": null,
+        "advertisement_present": false,
+        "advertisement_self_signed": "advertisement-self-signed: the advertisement is signed by the same node that served; a match reconciles two self-attested claims from one party, not one party's claim against an independently-held counterparty note. A mismatch is still attributable and portable; a match is not proof of a second, independent party. TRUST-MODEL.md \u00a79.1 (membership-gated member-signed discovery note) is the deployment that closes this.",
+        "fields": {},
+        "mismatches": [],
+        "node_id_consistent": null,
+        "overall": "advertisement_absent",
+        "served_node_id": "prov-1"
+       },
+       "client_nonce": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+       "client_nonce_source": "client_supplied",
+       "compute_meter": {
+        "unit": "milliseconds",
+        "wall_clock_ms": "1.000"
+       },
+       "cross_party": null,
+       "evidence_refs": {
+        "statistical_fingerprint": {
+         "context": null,
+         "digest": null,
+         "type": "statistical_fingerprint"
+        },
+        "tee_attestation": {
+         "context": null,
+         "digest": null,
+         "type": "tee_attestation"
+        }
+       },
+       "forwarded_copy": null,
+       "generation_parameters": {
+        "temperature": "0.2"
+       },
+       "identity_limitation": null,
+       "latency_ms": "1.000",
+       "model_package_digest": "035694f0b0942af871f5a82cf0eaf3381137746b0168c08190077dcfaccc1d99",
+       "observation_point": "serving_host_ingress",
+       "owner": {
+        "identity_capsule_id": null,
+        "identity_limitation": null,
+        "owner_cert_ref": null,
+        "owner_id": null,
+        "owner_status": "absent",
+        "recheck_reason": "no owner cert present (owner identity is opt-in / off by default)"
+       },
+       "role": "served",
+       "serving_provenance": {
+        "counterparty_id_provenance": "unauthenticated",
+        "counterparty_ref": null,
+        "counterparty_ref_provenance": null,
+        "exchange_id": "chatcmpl-node-b",
+        "exchange_id_source": "response_id",
+        "model_canonical_ref": "test-model",
+        "prev_seq": null,
+        "quantization": "unknown",
+        "requesting_party": "unknown",
+        "role": "provider",
+        "seq": 1,
+        "served_by_node_id": "prov-1"
+       }
+      }
+     },
+     "model_id": "test-model",
+     "provider": "mesh-llm"
+    },
+    "operator": "capsule-emit-mesh-poc-demo",
+    "provenance": "collector",
+    "spec_version": "draft-mih-scitt-agent-action-capsule-04",
+    "timestamp": "2026-09-26T20:47:24.802294Z"
+   },
+   "python": {
+    "join_key": "request_digest",
+    "outcome": "joined",
+    "twin_bracket_id": ""
+   },
+   "requester": {
+    "action_id": "mesh-poc/req-1/b94ff2fe-2eb0-42f9-9bde-0a009cbcd665",
+    "action_type": "decide",
+    "assurance": {
+     "attestation_mode": "self_attested",
+     "effect_mode": "confirmed",
+     "ledger_mode": "standalone"
+    },
+    "canonicalization_id": "jcs",
+    "capsule_id": "6f0139ee5889e41fcccb528304923c71ad77bfb72cea43ef55a9faf71a7774b1",
+    "developer": "capsule-emit-mesh-poc-sidecar/0.1.0",
+    "disposition": {
+     "approver": "policy",
+     "decision": "accept",
+     "human_disposed": false,
+     "verdict_class": "executed"
+    },
+    "domain": "action",
+    "effect": {
+     "effect_attestation": "gate_executed",
+     "request_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+     "response_digest": "61d9efa903761b7808298d92f5e517b82c45c7483268129446a89ce1c58d6ad1",
+     "status": "confirmed",
+     "type": "inference_completion"
+    },
+    "format_version": "4",
+    "model_attestation": {
+     "compute_attestation": {
+      "agent_input_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "agent_output_digest": "61d9efa903761b7808298d92f5e517b82c45c7483268129446a89ce1c58d6ad1",
+      "attestation_refs": [],
+      "decoding": {
+       "temperature": "0.2"
+      },
+      "epistemic_type": "observed_event",
+      "invocation": {
+       "requested_model_id": "test-model",
+       "source": {
+        "requested_model_id": "self_reported"
+       }
+      },
+      "runtime": {
+       "name": "test-runtime"
+      },
+      "source": {
+       "decoding": "self_reported"
+      },
+      "x-mesh-poc-v1": {
+       "advertisement": null,
+       "advertisement_reconciliation": {
+        "advertised_node_id": null,
+        "advertisement_digest": null,
+        "advertisement_issued_at": null,
+        "advertisement_present": false,
+        "advertisement_self_signed": "advertisement-self-signed: the advertisement is signed by the same node that served; a match reconciles two self-attested claims from one party, not one party's claim against an independently-held counterparty note. A mismatch is still attributable and portable; a match is not proof of a second, independent party. TRUST-MODEL.md \u00a79.1 (membership-gated member-signed discovery note) is the deployment that closes this.",
+        "fields": {},
+        "mismatches": [],
+        "node_id_consistent": null,
+        "overall": "advertisement_absent",
+        "served_node_id": "unknown"
+       },
+       "client_nonce": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+       "client_nonce_source": "client_supplied",
+       "compute_meter": {
+        "unit": "milliseconds",
+        "wall_clock_ms": "1.000"
+       },
+       "cross_party": null,
+       "evidence_refs": {
+        "statistical_fingerprint": {
+         "context": null,
+         "digest": null,
+         "type": "statistical_fingerprint"
+        },
+        "tee_attestation": {
+         "context": null,
+         "digest": null,
+         "type": "tee_attestation"
+        }
+       },
+       "forwarded_copy": null,
+       "generation_parameters": {
+        "temperature": "0.2"
+       },
+       "identity_limitation": null,
+       "latency_ms": "1.000",
+       "model_package_digest": "035694f0b0942af871f5a82cf0eaf3381137746b0168c08190077dcfaccc1d99",
+       "observation_point": "client_egress",
+       "owner": {
+        "identity_capsule_id": null,
+        "identity_limitation": null,
+        "owner_cert_ref": null,
+        "owner_id": null,
+        "owner_status": "absent",
+        "recheck_reason": "no owner cert present (owner identity is opt-in / off by default)"
+       },
+       "role": "requested",
+       "serving_provenance": {
+        "counterparty_id_provenance": "unauthenticated",
+        "counterparty_ref": null,
+        "counterparty_ref_provenance": null,
+        "exchange_id": "chatcmpl-node-a",
+        "exchange_id_source": "response_id",
+        "model_canonical_ref": "test-model",
+        "prev_seq": null,
+        "quantization": "unknown",
+        "requesting_party": "req-1",
+        "role": "requester",
+        "seq": 1,
+        "served_by_node_id": "unknown"
+       }
+      }
+     },
+     "model_id": "test-model",
+     "provider": "mesh-llm"
+    },
+    "operator": "capsule-emit-mesh-poc-demo",
+    "provenance": "collector",
+    "spec_version": "draft-mih-scitt-agent-action-capsule-04",
+    "timestamp": "2026-09-26T20:47:24.801471Z"
+   }
+  },
+  {
+   "name": "shared-exchange-id-shared-request-digest",
+   "provider": {
+    "action_id": "mesh-poc/prov-1/fab68717-2344-4c34-b172-72569a73dc5c",
+    "action_type": "decide",
+    "assurance": {
+     "attestation_mode": "self_attested",
+     "effect_mode": "confirmed",
+     "ledger_mode": "standalone"
+    },
+    "canonicalization_id": "jcs",
+    "capsule_id": "803f6c30539c7d4acc1db67178d178b821fd96f7be2d18794bd46e7b172ca5ae",
+    "developer": "capsule-emit-mesh-poc-sidecar/0.1.0",
+    "disposition": {
+     "approver": "policy",
+     "decision": "accept",
+     "human_disposed": false,
+     "verdict_class": "executed"
+    },
+    "domain": "action",
+    "effect": {
+     "effect_attestation": "gate_executed",
+     "request_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "response_digest": "a692e071930981f83c02d6013d93adbaa3648253e7df0f51ccb4df99c929bbdb",
+     "status": "confirmed",
+     "type": "inference_completion"
+    },
+    "format_version": "4",
+    "model_attestation": {
+     "compute_attestation": {
+      "agent_input_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "agent_output_digest": "a692e071930981f83c02d6013d93adbaa3648253e7df0f51ccb4df99c929bbdb",
+      "attestation_refs": [],
+      "decoding": {
+       "temperature": "0.2"
+      },
+      "epistemic_type": "producer_claim",
+      "invocation": {
+       "requested_model_id": "test-model",
+       "source": {
+        "requested_model_id": "self_reported"
+       }
+      },
+      "runtime": {
+       "name": "test-runtime"
+      },
+      "source": {
+       "decoding": "self_reported"
+      },
+      "x-mesh-poc-v1": {
+       "advertisement": null,
+       "advertisement_reconciliation": {
+        "advertised_node_id": null,
+        "advertisement_digest": null,
+        "advertisement_issued_at": null,
+        "advertisement_present": false,
+        "advertisement_self_signed": "advertisement-self-signed: the advertisement is signed by the same node that served; a match reconciles two self-attested claims from one party, not one party's claim against an independently-held counterparty note. A mismatch is still attributable and portable; a match is not proof of a second, independent party. TRUST-MODEL.md \u00a79.1 (membership-gated member-signed discovery note) is the deployment that closes this.",
+        "fields": {},
+        "mismatches": [],
+        "node_id_consistent": null,
+        "overall": "advertisement_absent",
+        "served_node_id": "prov-1"
+       },
+       "client_nonce": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+       "client_nonce_source": "client_supplied",
+       "compute_meter": {
+        "unit": "milliseconds",
+        "wall_clock_ms": "1.000"
+       },
+       "cross_party": null,
+       "evidence_refs": {
+        "statistical_fingerprint": {
+         "context": null,
+         "digest": null,
+         "type": "statistical_fingerprint"
+        },
+        "tee_attestation": {
+         "context": null,
+         "digest": null,
+         "type": "tee_attestation"
+        }
+       },
+       "forwarded_copy": null,
+       "generation_parameters": {
+        "temperature": "0.2"
+       },
+       "identity_limitation": null,
+       "latency_ms": "1.000",
+       "model_package_digest": "035694f0b0942af871f5a82cf0eaf3381137746b0168c08190077dcfaccc1d99",
+       "observation_point": "serving_host_ingress",
+       "owner": {
+        "identity_capsule_id": null,
+        "identity_limitation": null,
+        "owner_cert_ref": null,
+        "owner_id": null,
+        "owner_status": "absent",
+        "recheck_reason": "no owner cert present (owner identity is opt-in / off by default)"
+       },
+       "role": "served",
+       "serving_provenance": {
+        "counterparty_id_provenance": "unauthenticated",
+        "counterparty_ref": null,
+        "counterparty_ref_provenance": null,
+        "exchange_id": "chatcmpl-shared",
+        "exchange_id_source": "response_id",
+        "model_canonical_ref": "test-model",
+        "prev_seq": 1,
+        "quantization": "unknown",
+        "requesting_party": "unknown",
+        "role": "provider",
+        "seq": 2,
+        "served_by_node_id": "prov-1"
+       }
+      }
+     },
+     "model_id": "test-model",
+     "provider": "mesh-llm"
+    },
+    "operator": "capsule-emit-mesh-poc-demo",
+    "provenance": "collector",
+    "spec_version": "draft-mih-scitt-agent-action-capsule-04",
+    "timestamp": "2026-09-26T20:47:24.807138Z"
+   },
+   "python": {
+    "join_key": "exchange_id",
+    "outcome": "joined",
+    "twin_bracket_id": ""
+   },
+   "requester": {
+    "action_id": "mesh-poc/req-1/b5ada64d-e2b1-4143-8b2f-03cf9dae0cc4",
+    "action_type": "decide",
+    "assurance": {
+     "attestation_mode": "self_attested",
+     "effect_mode": "confirmed",
+     "ledger_mode": "standalone"
+    },
+    "canonicalization_id": "jcs",
+    "capsule_id": "57753524ea20d7cabab117366644295a2717010e4ecb42d96569ab3ff08df69c",
+    "developer": "capsule-emit-mesh-poc-sidecar/0.1.0",
+    "disposition": {
+     "approver": "policy",
+     "decision": "accept",
+     "human_disposed": false,
+     "verdict_class": "executed"
+    },
+    "domain": "action",
+    "effect": {
+     "effect_attestation": "gate_executed",
+     "request_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "response_digest": "a692e071930981f83c02d6013d93adbaa3648253e7df0f51ccb4df99c929bbdb",
+     "status": "confirmed",
+     "type": "inference_completion"
+    },
+    "format_version": "4",
+    "model_attestation": {
+     "compute_attestation": {
+      "agent_input_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "agent_output_digest": "a692e071930981f83c02d6013d93adbaa3648253e7df0f51ccb4df99c929bbdb",
+      "attestation_refs": [],
+      "decoding": {
+       "temperature": "0.2"
+      },
+      "epistemic_type": "observed_event",
+      "invocation": {
+       "requested_model_id": "test-model",
+       "source": {
+        "requested_model_id": "self_reported"
+       }
+      },
+      "runtime": {
+       "name": "test-runtime"
+      },
+      "source": {
+       "decoding": "self_reported"
+      },
+      "x-mesh-poc-v1": {
+       "advertisement": null,
+       "advertisement_reconciliation": {
+        "advertised_node_id": null,
+        "advertisement_digest": null,
+        "advertisement_issued_at": null,
+        "advertisement_present": false,
+        "advertisement_self_signed": "advertisement-self-signed: the advertisement is signed by the same node that served; a match reconciles two self-attested claims from one party, not one party's claim against an independently-held counterparty note. A mismatch is still attributable and portable; a match is not proof of a second, independent party. TRUST-MODEL.md \u00a79.1 (membership-gated member-signed discovery note) is the deployment that closes this.",
+        "fields": {},
+        "mismatches": [],
+        "node_id_consistent": null,
+        "overall": "advertisement_absent",
+        "served_node_id": "unknown"
+       },
+       "client_nonce": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+       "client_nonce_source": "client_supplied",
+       "compute_meter": {
+        "unit": "milliseconds",
+        "wall_clock_ms": "1.000"
+       },
+       "cross_party": null,
+       "evidence_refs": {
+        "statistical_fingerprint": {
+         "context": null,
+         "digest": null,
+         "type": "statistical_fingerprint"
+        },
+        "tee_attestation": {
+         "context": null,
+         "digest": null,
+         "type": "tee_attestation"
+        }
+       },
+       "forwarded_copy": null,
+       "generation_parameters": {
+        "temperature": "0.2"
+       },
+       "identity_limitation": null,
+       "latency_ms": "1.000",
+       "model_package_digest": "035694f0b0942af871f5a82cf0eaf3381137746b0168c08190077dcfaccc1d99",
+       "observation_point": "client_egress",
+       "owner": {
+        "identity_capsule_id": null,
+        "identity_limitation": null,
+        "owner_cert_ref": null,
+        "owner_id": null,
+        "owner_status": "absent",
+        "recheck_reason": "no owner cert present (owner identity is opt-in / off by default)"
+       },
+       "role": "requested",
+       "serving_provenance": {
+        "counterparty_id_provenance": "unauthenticated",
+        "counterparty_ref": null,
+        "counterparty_ref_provenance": null,
+        "exchange_id": "chatcmpl-shared",
+        "exchange_id_source": "response_id",
+        "model_canonical_ref": "test-model",
+        "prev_seq": 1,
+        "quantization": "unknown",
+        "requesting_party": "req-1",
+        "role": "requester",
+        "seq": 2,
+        "served_by_node_id": "unknown"
+       }
+      }
+     },
+     "model_id": "test-model",
+     "provider": "mesh-llm"
+    },
+    "operator": "capsule-emit-mesh-poc-demo",
+    "provenance": "collector",
+    "spec_version": "draft-mih-scitt-agent-action-capsule-04",
+    "timestamp": "2026-09-26T20:47:24.806366Z"
+   }
+  },
+  {
+   "name": "shared-exchange-id-conflicting-request-digest",
+   "provider": {
+    "action_id": "mesh-poc/prov-1/684fd036-8c0c-4f61-b879-4e0a269d375f",
+    "action_type": "decide",
+    "assurance": {
+     "attestation_mode": "self_attested",
+     "effect_mode": "confirmed",
+     "ledger_mode": "standalone"
+    },
+    "canonicalization_id": "jcs",
+    "capsule_id": "a2d972974eaa19fd9158bf9843e837ce9b85c0621a95354419ace754b8d571d1",
+    "developer": "capsule-emit-mesh-poc-sidecar/0.1.0",
+    "disposition": {
+     "approver": "policy",
+     "decision": "accept",
+     "human_disposed": false,
+     "verdict_class": "executed"
+    },
+    "domain": "action",
+    "effect": {
+     "effect_attestation": "gate_executed",
+     "request_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     "response_digest": "13bd52da6fafb75134a90fdced737ab280abf9ee6d221b831460e931343bdee1",
+     "status": "confirmed",
+     "type": "inference_completion"
+    },
+    "format_version": "4",
+    "model_attestation": {
+     "compute_attestation": {
+      "agent_input_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "agent_output_digest": "13bd52da6fafb75134a90fdced737ab280abf9ee6d221b831460e931343bdee1",
+      "attestation_refs": [],
+      "decoding": {
+       "temperature": "0.2"
+      },
+      "epistemic_type": "producer_claim",
+      "invocation": {
+       "requested_model_id": "test-model",
+       "source": {
+        "requested_model_id": "self_reported"
+       }
+      },
+      "runtime": {
+       "name": "test-runtime"
+      },
+      "source": {
+       "decoding": "self_reported"
+      },
+      "x-mesh-poc-v1": {
+       "advertisement": null,
+       "advertisement_reconciliation": {
+        "advertised_node_id": null,
+        "advertisement_digest": null,
+        "advertisement_issued_at": null,
+        "advertisement_present": false,
+        "advertisement_self_signed": "advertisement-self-signed: the advertisement is signed by the same node that served; a match reconciles two self-attested claims from one party, not one party's claim against an independently-held counterparty note. A mismatch is still attributable and portable; a match is not proof of a second, independent party. TRUST-MODEL.md \u00a79.1 (membership-gated member-signed discovery note) is the deployment that closes this.",
+        "fields": {},
+        "mismatches": [],
+        "node_id_consistent": null,
+        "overall": "advertisement_absent",
+        "served_node_id": "prov-1"
+       },
+       "client_nonce": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+       "client_nonce_source": "client_supplied",
+       "compute_meter": {
+        "unit": "milliseconds",
+        "wall_clock_ms": "1.000"
+       },
+       "cross_party": null,
+       "evidence_refs": {
+        "statistical_fingerprint": {
+         "context": null,
+         "digest": null,
+         "type": "statistical_fingerprint"
+        },
+        "tee_attestation": {
+         "context": null,
+         "digest": null,
+         "type": "tee_attestation"
+        }
+       },
+       "forwarded_copy": null,
+       "generation_parameters": {
+        "temperature": "0.2"
+       },
+       "identity_limitation": null,
+       "latency_ms": "1.000",
+       "model_package_digest": "035694f0b0942af871f5a82cf0eaf3381137746b0168c08190077dcfaccc1d99",
+       "observation_point": "serving_host_ingress",
+       "owner": {
+        "identity_capsule_id": null,
+        "identity_limitation": null,
+        "owner_cert_ref": null,
+        "owner_id": null,
+        "owner_status": "absent",
+        "recheck_reason": "no owner cert present (owner identity is opt-in / off by default)"
+       },
+       "role": "served",
+       "serving_provenance": {
+        "counterparty_id_provenance": "unauthenticated",
+        "counterparty_ref": null,
+        "counterparty_ref_provenance": null,
+        "exchange_id": "chatcmpl-conflict",
+        "exchange_id_source": "response_id",
+        "model_canonical_ref": "test-model",
+        "prev_seq": 2,
+        "quantization": "unknown",
+        "requesting_party": "unknown",
+        "role": "provider",
+        "seq": 3,
+        "served_by_node_id": "prov-1"
+       }
+      }
+     },
+     "model_id": "test-model",
+     "provider": "mesh-llm"
+    },
+    "operator": "capsule-emit-mesh-poc-demo",
+    "provenance": "collector",
+    "spec_version": "draft-mih-scitt-agent-action-capsule-04",
+    "timestamp": "2026-09-26T20:47:24.811696Z"
+   },
+   "python": {
+    "outcome": "conflicting"
+   },
+   "requester": {
+    "action_id": "mesh-poc/req-1/c674d122-b133-4829-9eca-38d13ebfa62c",
+    "action_type": "decide",
+    "assurance": {
+     "attestation_mode": "self_attested",
+     "effect_mode": "confirmed",
+     "ledger_mode": "standalone"
+    },
+    "canonicalization_id": "jcs",
+    "capsule_id": "3cbdf0f6b0694df6172876fcc10fbd4d9a1ec13cf9cf494facf1b081b2a6a6d4",
+    "developer": "capsule-emit-mesh-poc-sidecar/0.1.0",
+    "disposition": {
+     "approver": "policy",
+     "decision": "accept",
+     "human_disposed": false,
+     "verdict_class": "executed"
+    },
+    "domain": "action",
+    "effect": {
+     "effect_attestation": "gate_executed",
+     "request_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "response_digest": "13bd52da6fafb75134a90fdced737ab280abf9ee6d221b831460e931343bdee1",
+     "status": "confirmed",
+     "type": "inference_completion"
+    },
+    "format_version": "4",
+    "model_attestation": {
+     "compute_attestation": {
+      "agent_input_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "agent_output_digest": "13bd52da6fafb75134a90fdced737ab280abf9ee6d221b831460e931343bdee1",
+      "attestation_refs": [],
+      "decoding": {
+       "temperature": "0.2"
+      },
+      "epistemic_type": "observed_event",
+      "invocation": {
+       "requested_model_id": "test-model",
+       "source": {
+        "requested_model_id": "self_reported"
+       }
+      },
+      "runtime": {
+       "name": "test-runtime"
+      },
+      "source": {
+       "decoding": "self_reported"
+      },
+      "x-mesh-poc-v1": {
+       "advertisement": null,
+       "advertisement_reconciliation": {
+        "advertised_node_id": null,
+        "advertisement_digest": null,
+        "advertisement_issued_at": null,
+        "advertisement_present": false,
+        "advertisement_self_signed": "advertisement-self-signed: the advertisement is signed by the same node that served; a match reconciles two self-attested claims from one party, not one party's claim against an independently-held counterparty note. A mismatch is still attributable and portable; a match is not proof of a second, independent party. TRUST-MODEL.md \u00a79.1 (membership-gated member-signed discovery note) is the deployment that closes this.",
+        "fields": {},
+        "mismatches": [],
+        "node_id_consistent": null,
+        "overall": "advertisement_absent",
+        "served_node_id": "unknown"
+       },
+       "client_nonce": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+       "client_nonce_source": "client_supplied",
+       "compute_meter": {
+        "unit": "milliseconds",
+        "wall_clock_ms": "1.000"
+       },
+       "cross_party": null,
+       "evidence_refs": {
+        "statistical_fingerprint": {
+         "context": null,
+         "digest": null,
+         "type": "statistical_fingerprint"
+        },
+        "tee_attestation": {
+         "context": null,
+         "digest": null,
+         "type": "tee_attestation"
+        }
+       },
+       "forwarded_copy": null,
+       "generation_parameters": {
+        "temperature": "0.2"
+       },
+       "identity_limitation": null,
+       "latency_ms": "1.000",
+       "model_package_digest": "035694f0b0942af871f5a82cf0eaf3381137746b0168c08190077dcfaccc1d99",
+       "observation_point": "client_egress",
+       "owner": {
+        "identity_capsule_id": null,
+        "identity_limitation": null,
+        "owner_cert_ref": null,
+        "owner_id": null,
+        "owner_status": "absent",
+        "recheck_reason": "no owner cert present (owner identity is opt-in / off by default)"
+       },
+       "role": "requested",
+       "serving_provenance": {
+        "counterparty_id_provenance": "unauthenticated",
+        "counterparty_ref": null,
+        "counterparty_ref_provenance": null,
+        "exchange_id": "chatcmpl-conflict",
+        "exchange_id_source": "response_id",
+        "model_canonical_ref": "test-model",
+        "prev_seq": 2,
+        "quantization": "unknown",
+        "requesting_party": "req-1",
+        "role": "requester",
+        "seq": 3,
+        "served_by_node_id": "unknown"
+       }
+      }
+     },
+     "model_id": "test-model",
+     "provider": "mesh-llm"
+    },
+    "operator": "capsule-emit-mesh-poc-demo",
+    "provenance": "collector",
+    "spec_version": "draft-mih-scitt-agent-action-capsule-04",
+    "timestamp": "2026-09-26T20:47:24.810806Z"
+   }
+  },
+  {
+   "name": "no-correlator-agrees",
+   "provider": {
+    "action_id": "mesh-poc/prov-1/185b0aa6-878a-45ab-9d3e-da52e8fc0c6b",
+    "action_type": "decide",
+    "assurance": {
+     "attestation_mode": "self_attested",
+     "effect_mode": "confirmed",
+     "ledger_mode": "standalone"
+    },
+    "canonicalization_id": "jcs",
+    "capsule_id": "20993df038444d762342087ac9c8f270e5be9c13a283ea90305441c08682f39e",
+    "developer": "capsule-emit-mesh-poc-sidecar/0.1.0",
+    "disposition": {
+     "approver": "policy",
+     "decision": "accept",
+     "human_disposed": false,
+     "verdict_class": "executed"
+    },
+    "domain": "action",
+    "effect": {
+     "effect_attestation": "gate_executed",
+     "request_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     "response_digest": "adf29cbd9fe5313e5b9d8e5b92ed6390219e89e50a6345342daa8c5bc1567f14",
+     "status": "confirmed",
+     "type": "inference_completion"
+    },
+    "format_version": "4",
+    "model_attestation": {
+     "compute_attestation": {
+      "agent_input_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "agent_output_digest": "adf29cbd9fe5313e5b9d8e5b92ed6390219e89e50a6345342daa8c5bc1567f14",
+      "attestation_refs": [],
+      "decoding": {
+       "temperature": "0.2"
+      },
+      "epistemic_type": "producer_claim",
+      "invocation": {
+       "requested_model_id": "test-model",
+       "source": {
+        "requested_model_id": "self_reported"
+       }
+      },
+      "runtime": {
+       "name": "test-runtime"
+      },
+      "source": {
+       "decoding": "self_reported"
+      },
+      "x-mesh-poc-v1": {
+       "advertisement": null,
+       "advertisement_reconciliation": {
+        "advertised_node_id": null,
+        "advertisement_digest": null,
+        "advertisement_issued_at": null,
+        "advertisement_present": false,
+        "advertisement_self_signed": "advertisement-self-signed: the advertisement is signed by the same node that served; a match reconciles two self-attested claims from one party, not one party's claim against an independently-held counterparty note. A mismatch is still attributable and portable; a match is not proof of a second, independent party. TRUST-MODEL.md \u00a79.1 (membership-gated member-signed discovery note) is the deployment that closes this.",
+        "fields": {},
+        "mismatches": [],
+        "node_id_consistent": null,
+        "overall": "advertisement_absent",
+        "served_node_id": "prov-1"
+       },
+       "client_nonce": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+       "client_nonce_source": "client_supplied",
+       "compute_meter": {
+        "unit": "milliseconds",
+        "wall_clock_ms": "1.000"
+       },
+       "cross_party": null,
+       "evidence_refs": {
+        "statistical_fingerprint": {
+         "context": null,
+         "digest": null,
+         "type": "statistical_fingerprint"
+        },
+        "tee_attestation": {
+         "context": null,
+         "digest": null,
+         "type": "tee_attestation"
+        }
+       },
+       "forwarded_copy": null,
+       "generation_parameters": {
+        "temperature": "0.2"
+       },
+       "identity_limitation": null,
+       "latency_ms": "1.000",
+       "model_package_digest": "035694f0b0942af871f5a82cf0eaf3381137746b0168c08190077dcfaccc1d99",
+       "observation_point": "serving_host_ingress",
+       "owner": {
+        "identity_capsule_id": null,
+        "identity_limitation": null,
+        "owner_cert_ref": null,
+        "owner_id": null,
+        "owner_status": "absent",
+        "recheck_reason": "no owner cert present (owner identity is opt-in / off by default)"
+       },
+       "role": "served",
+       "serving_provenance": {
+        "counterparty_id_provenance": "unauthenticated",
+        "counterparty_ref": null,
+        "counterparty_ref_provenance": null,
+        "exchange_id": "chatcmpl-y",
+        "exchange_id_source": "response_id",
+        "model_canonical_ref": "test-model",
+        "prev_seq": 3,
+        "quantization": "unknown",
+        "requesting_party": "unknown",
+        "role": "provider",
+        "seq": 4,
+        "served_by_node_id": "prov-1"
+       }
+      }
+     },
+     "model_id": "test-model",
+     "provider": "mesh-llm"
+    },
+    "operator": "capsule-emit-mesh-poc-demo",
+    "provenance": "collector",
+    "spec_version": "draft-mih-scitt-agent-action-capsule-04",
+    "timestamp": "2026-09-26T20:47:24.815165Z"
+   },
+   "python": {
+    "outcome": "no_correlation"
+   },
+   "requester": {
+    "action_id": "mesh-poc/req-1/62e1d349-6a54-42fe-80c5-122856e9b1fe",
+    "action_type": "decide",
+    "assurance": {
+     "attestation_mode": "self_attested",
+     "effect_mode": "confirmed",
+     "ledger_mode": "standalone"
+    },
+    "canonicalization_id": "jcs",
+    "capsule_id": "8feb78820b9f689c9e3c2078923dc13b12bc267abaf9755d787cb74cd8379012",
+    "developer": "capsule-emit-mesh-poc-sidecar/0.1.0",
+    "disposition": {
+     "approver": "policy",
+     "decision": "accept",
+     "human_disposed": false,
+     "verdict_class": "executed"
+    },
+    "domain": "action",
+    "effect": {
+     "effect_attestation": "gate_executed",
+     "request_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "response_digest": "0ced587b50d751f21f6e6768fb2086cc9488c2f38c8a8e9c98ad07aec554a701",
+     "status": "confirmed",
+     "type": "inference_completion"
+    },
+    "format_version": "4",
+    "model_attestation": {
+     "compute_attestation": {
+      "agent_input_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "agent_output_digest": "0ced587b50d751f21f6e6768fb2086cc9488c2f38c8a8e9c98ad07aec554a701",
+      "attestation_refs": [],
+      "decoding": {
+       "temperature": "0.2"
+      },
+      "epistemic_type": "observed_event",
+      "invocation": {
+       "requested_model_id": "test-model",
+       "source": {
+        "requested_model_id": "self_reported"
+       }
+      },
+      "runtime": {
+       "name": "test-runtime"
+      },
+      "source": {
+       "decoding": "self_reported"
+      },
+      "x-mesh-poc-v1": {
+       "advertisement": null,
+       "advertisement_reconciliation": {
+        "advertised_node_id": null,
+        "advertisement_digest": null,
+        "advertisement_issued_at": null,
+        "advertisement_present": false,
+        "advertisement_self_signed": "advertisement-self-signed: the advertisement is signed by the same node that served; a match reconciles two self-attested claims from one party, not one party's claim against an independently-held counterparty note. A mismatch is still attributable and portable; a match is not proof of a second, independent party. TRUST-MODEL.md \u00a79.1 (membership-gated member-signed discovery note) is the deployment that closes this.",
+        "fields": {},
+        "mismatches": [],
+        "node_id_consistent": null,
+        "overall": "advertisement_absent",
+        "served_node_id": "unknown"
+       },
+       "client_nonce": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+       "client_nonce_source": "client_supplied",
+       "compute_meter": {
+        "unit": "milliseconds",
+        "wall_clock_ms": "1.000"
+       },
+       "cross_party": null,
+       "evidence_refs": {
+        "statistical_fingerprint": {
+         "context": null,
+         "digest": null,
+         "type": "statistical_fingerprint"
+        },
+        "tee_attestation": {
+         "context": null,
+         "digest": null,
+         "type": "tee_attestation"
+        }
+       },
+       "forwarded_copy": null,
+       "generation_parameters": {
+        "temperature": "0.2"
+       },
+       "identity_limitation": null,
+       "latency_ms": "1.000",
+       "model_package_digest": "035694f0b0942af871f5a82cf0eaf3381137746b0168c08190077dcfaccc1d99",
+       "observation_point": "client_egress",
+       "owner": {
+        "identity_capsule_id": null,
+        "identity_limitation": null,
+        "owner_cert_ref": null,
+        "owner_id": null,
+        "owner_status": "absent",
+        "recheck_reason": "no owner cert present (owner identity is opt-in / off by default)"
+       },
+       "role": "requested",
+       "serving_provenance": {
+        "counterparty_id_provenance": "unauthenticated",
+        "counterparty_ref": null,
+        "counterparty_ref_provenance": null,
+        "exchange_id": "chatcmpl-x",
+        "exchange_id_source": "response_id",
+        "model_canonical_ref": "test-model",
+        "prev_seq": 3,
+        "quantization": "unknown",
+        "requesting_party": "req-1",
+        "role": "requester",
+        "seq": 4,
+        "served_by_node_id": "unknown"
+       }
+      }
+     },
+     "model_id": "test-model",
+     "provider": "mesh-llm"
+    },
+    "operator": "capsule-emit-mesh-poc-demo",
+    "provenance": "collector",
+    "spec_version": "draft-mih-scitt-agent-action-capsule-04",
+    "timestamp": "2026-09-26T20:47:24.814388Z"
+   }
+  },
+  {
+   "name": "twin-bracket-recorded-when-both-carry",
+   "provider": {
+    "action_id": "mesh-poc/prov-1/7a5183ef-3c24-4565-a692-f90b8495a28b",
+    "action_type": "decide",
+    "assurance": {
+     "attestation_mode": "self_attested",
+     "effect_mode": "confirmed",
+     "ledger_mode": "standalone"
+    },
+    "canonicalization_id": "jcs",
+    "capsule_id": "a54aa3a2f49d2f50888cf086704f67ed26276839d0e95ca507d771170fb8fefe",
+    "developer": "capsule-emit-mesh-poc-sidecar/0.1.0",
+    "disposition": {
+     "approver": "policy",
+     "decision": "accept",
+     "human_disposed": false,
+     "verdict_class": "executed"
+    },
+    "domain": "action",
+    "effect": {
+     "effect_attestation": "gate_executed",
+     "request_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+     "response_digest": "550285f6ccfc4a68d63403f4716817907764be8faf239b62c0d31c416b0603f4",
+     "status": "confirmed",
+     "type": "inference_completion"
+    },
+    "format_version": "4",
+    "model_attestation": {
+     "compute_attestation": {
+      "agent_input_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "agent_output_digest": "550285f6ccfc4a68d63403f4716817907764be8faf239b62c0d31c416b0603f4",
+      "attestation_refs": [],
+      "decoding": {
+       "temperature": "0.2"
+      },
+      "epistemic_type": "producer_claim",
+      "invocation": {
+       "requested_model_id": "test-model",
+       "source": {
+        "requested_model_id": "self_reported"
+       }
+      },
+      "runtime": {
+       "name": "test-runtime"
+      },
+      "source": {
+       "decoding": "self_reported"
+      },
+      "x-mesh-poc-v1": {
+       "advertisement": null,
+       "advertisement_reconciliation": {
+        "advertised_node_id": null,
+        "advertisement_digest": null,
+        "advertisement_issued_at": null,
+        "advertisement_present": false,
+        "advertisement_self_signed": "advertisement-self-signed: the advertisement is signed by the same node that served; a match reconciles two self-attested claims from one party, not one party's claim against an independently-held counterparty note. A mismatch is still attributable and portable; a match is not proof of a second, independent party. TRUST-MODEL.md \u00a79.1 (membership-gated member-signed discovery note) is the deployment that closes this.",
+        "fields": {},
+        "mismatches": [],
+        "node_id_consistent": null,
+        "overall": "advertisement_absent",
+        "served_node_id": "prov-1"
+       },
+       "client_nonce": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+       "client_nonce_source": "client_supplied",
+       "compute_meter": {
+        "unit": "milliseconds",
+        "wall_clock_ms": "1.000"
+       },
+       "cross_party": null,
+       "evidence_refs": {
+        "statistical_fingerprint": {
+         "context": null,
+         "digest": null,
+         "type": "statistical_fingerprint"
+        },
+        "tee_attestation": {
+         "context": null,
+         "digest": null,
+         "type": "tee_attestation"
+        }
+       },
+       "forwarded_copy": null,
+       "generation_parameters": {
+        "temperature": "0.2"
+       },
+       "identity_limitation": null,
+       "latency_ms": "1.000",
+       "model_package_digest": "035694f0b0942af871f5a82cf0eaf3381137746b0168c08190077dcfaccc1d99",
+       "observation_point": "serving_host_ingress",
+       "owner": {
+        "identity_capsule_id": null,
+        "identity_limitation": null,
+        "owner_cert_ref": null,
+        "owner_id": null,
+        "owner_status": "absent",
+        "recheck_reason": "no owner cert present (owner identity is opt-in / off by default)"
+       },
+       "role": "served",
+       "serving_provenance": {
+        "counterparty_id_provenance": "unauthenticated",
+        "counterparty_ref": null,
+        "counterparty_ref_provenance": null,
+        "exchange_id": "chatcmpl-t",
+        "exchange_id_source": "response_id",
+        "model_canonical_ref": "test-model",
+        "prev_seq": 4,
+        "quantization": "unknown",
+        "requesting_party": "unknown",
+        "role": "provider",
+        "seq": 5,
+        "served_by_node_id": "prov-1",
+        "twin_bracket_id": "twin-1"
+       }
+      }
+     },
+     "model_id": "test-model",
+     "provider": "mesh-llm"
+    },
+    "operator": "capsule-emit-mesh-poc-demo",
+    "provenance": "collector",
+    "spec_version": "draft-mih-scitt-agent-action-capsule-04",
+    "timestamp": "2026-09-26T20:47:24.818789Z"
+   },
+   "python": {
+    "join_key": "exchange_id",
+    "outcome": "joined",
+    "twin_bracket_id": "twin-1"
+   },
+   "requester": {
+    "action_id": "mesh-poc/req-1/c0ed2d29-98e8-4d60-b974-bfcdd7042f16",
+    "action_type": "decide",
+    "assurance": {
+     "attestation_mode": "self_attested",
+     "effect_mode": "confirmed",
+     "ledger_mode": "standalone"
+    },
+    "canonicalization_id": "jcs",
+    "capsule_id": "067622be1e42004c2bccdf8139e77409e5a3885aa5e22da693f497e77b1dbc54",
+    "developer": "capsule-emit-mesh-poc-sidecar/0.1.0",
+    "disposition": {
+     "approver": "policy",
+     "decision": "accept",
+     "human_disposed": false,
+     "verdict_class": "executed"
+    },
+    "domain": "action",
+    "effect": {
+     "effect_attestation": "gate_executed",
+     "request_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+     "response_digest": "550285f6ccfc4a68d63403f4716817907764be8faf239b62c0d31c416b0603f4",
+     "status": "confirmed",
+     "type": "inference_completion"
+    },
+    "format_version": "4",
+    "model_attestation": {
+     "compute_attestation": {
+      "agent_input_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "agent_output_digest": "550285f6ccfc4a68d63403f4716817907764be8faf239b62c0d31c416b0603f4",
+      "attestation_refs": [],
+      "decoding": {
+       "temperature": "0.2"
+      },
+      "epistemic_type": "observed_event",
+      "invocation": {
+       "requested_model_id": "test-model",
+       "source": {
+        "requested_model_id": "self_reported"
+       }
+      },
+      "runtime": {
+       "name": "test-runtime"
+      },
+      "source": {
+       "decoding": "self_reported"
+      },
+      "x-mesh-poc-v1": {
+       "advertisement": null,
+       "advertisement_reconciliation": {
+        "advertised_node_id": null,
+        "advertisement_digest": null,
+        "advertisement_issued_at": null,
+        "advertisement_present": false,
+        "advertisement_self_signed": "advertisement-self-signed: the advertisement is signed by the same node that served; a match reconciles two self-attested claims from one party, not one party's claim against an independently-held counterparty note. A mismatch is still attributable and portable; a match is not proof of a second, independent party. TRUST-MODEL.md \u00a79.1 (membership-gated member-signed discovery note) is the deployment that closes this.",
+        "fields": {},
+        "mismatches": [],
+        "node_id_consistent": null,
+        "overall": "advertisement_absent",
+        "served_node_id": "unknown"
+       },
+       "client_nonce": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+       "client_nonce_source": "client_supplied",
+       "compute_meter": {
+        "unit": "milliseconds",
+        "wall_clock_ms": "1.000"
+       },
+       "cross_party": null,
+       "evidence_refs": {
+        "statistical_fingerprint": {
+         "context": null,
+         "digest": null,
+         "type": "statistical_fingerprint"
+        },
+        "tee_attestation": {
+         "context": null,
+         "digest": null,
+         "type": "tee_attestation"
+        }
+       },
+       "forwarded_copy": null,
+       "generation_parameters": {
+        "temperature": "0.2"
+       },
+       "identity_limitation": null,
+       "latency_ms": "1.000",
+       "model_package_digest": "035694f0b0942af871f5a82cf0eaf3381137746b0168c08190077dcfaccc1d99",
+       "observation_point": "client_egress",
+       "owner": {
+        "identity_capsule_id": null,
+        "identity_limitation": null,
+        "owner_cert_ref": null,
+        "owner_id": null,
+        "owner_status": "absent",
+        "recheck_reason": "no owner cert present (owner identity is opt-in / off by default)"
+       },
+       "role": "requested",
+       "serving_provenance": {
+        "counterparty_id_provenance": "unauthenticated",
+        "counterparty_ref": null,
+        "counterparty_ref_provenance": null,
+        "exchange_id": "chatcmpl-t",
+        "exchange_id_source": "response_id",
+        "model_canonical_ref": "test-model",
+        "prev_seq": 4,
+        "quantization": "unknown",
+        "requesting_party": "req-1",
+        "role": "requester",
+        "seq": 5,
+        "served_by_node_id": "unknown",
+        "twin_bracket_id": "twin-1"
+       }
+      }
+     },
+     "model_id": "test-model",
+     "provider": "mesh-llm"
+    },
+    "operator": "capsule-emit-mesh-poc-demo",
+    "provenance": "collector",
+    "spec_version": "draft-mih-scitt-agent-action-capsule-04",
+    "timestamp": "2026-09-26T20:47:24.817538Z"
+   }
+  },
+  {
+   "name": "twin-bracket-never-a-join-key",
+   "provider": {
+    "action_id": "mesh-poc/prov-1/a04edd88-de14-4a41-9da0-1f761de07157",
+    "action_type": "decide",
+    "assurance": {
+     "attestation_mode": "self_attested",
+     "effect_mode": "confirmed",
+     "ledger_mode": "standalone"
+    },
+    "canonicalization_id": "jcs",
+    "capsule_id": "0694346f934dd4fa257eae12b23e82d0e097598f662fc9c1d2ec22e54b96b031",
+    "developer": "capsule-emit-mesh-poc-sidecar/0.1.0",
+    "disposition": {
+     "approver": "policy",
+     "decision": "accept",
+     "human_disposed": false,
+     "verdict_class": "executed"
+    },
+    "domain": "action",
+    "effect": {
+     "effect_attestation": "gate_executed",
+     "request_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+     "response_digest": "6d526b25dd0ede8f268dddc17780b9dc8afe6516beebbc26d458537ebac091d7",
+     "status": "confirmed",
+     "type": "inference_completion"
+    },
+    "format_version": "4",
+    "model_attestation": {
+     "compute_attestation": {
+      "agent_input_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "agent_output_digest": "6d526b25dd0ede8f268dddc17780b9dc8afe6516beebbc26d458537ebac091d7",
+      "attestation_refs": [],
+      "decoding": {
+       "temperature": "0.2"
+      },
+      "epistemic_type": "producer_claim",
+      "invocation": {
+       "requested_model_id": "test-model",
+       "source": {
+        "requested_model_id": "self_reported"
+       }
+      },
+      "runtime": {
+       "name": "test-runtime"
+      },
+      "source": {
+       "decoding": "self_reported"
+      },
+      "x-mesh-poc-v1": {
+       "advertisement": null,
+       "advertisement_reconciliation": {
+        "advertised_node_id": null,
+        "advertisement_digest": null,
+        "advertisement_issued_at": null,
+        "advertisement_present": false,
+        "advertisement_self_signed": "advertisement-self-signed: the advertisement is signed by the same node that served; a match reconciles two self-attested claims from one party, not one party's claim against an independently-held counterparty note. A mismatch is still attributable and portable; a match is not proof of a second, independent party. TRUST-MODEL.md \u00a79.1 (membership-gated member-signed discovery note) is the deployment that closes this.",
+        "fields": {},
+        "mismatches": [],
+        "node_id_consistent": null,
+        "overall": "advertisement_absent",
+        "served_node_id": "prov-1"
+       },
+       "client_nonce": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+       "client_nonce_source": "client_supplied",
+       "compute_meter": {
+        "unit": "milliseconds",
+        "wall_clock_ms": "1.000"
+       },
+       "cross_party": null,
+       "evidence_refs": {
+        "statistical_fingerprint": {
+         "context": null,
+         "digest": null,
+         "type": "statistical_fingerprint"
+        },
+        "tee_attestation": {
+         "context": null,
+         "digest": null,
+         "type": "tee_attestation"
+        }
+       },
+       "forwarded_copy": null,
+       "generation_parameters": {
+        "temperature": "0.2"
+       },
+       "identity_limitation": null,
+       "latency_ms": "1.000",
+       "model_package_digest": "035694f0b0942af871f5a82cf0eaf3381137746b0168c08190077dcfaccc1d99",
+       "observation_point": "serving_host_ingress",
+       "owner": {
+        "identity_capsule_id": null,
+        "identity_limitation": null,
+        "owner_cert_ref": null,
+        "owner_id": null,
+        "owner_status": "absent",
+        "recheck_reason": "no owner cert present (owner identity is opt-in / off by default)"
+       },
+       "role": "served",
+       "serving_provenance": {
+        "counterparty_id_provenance": "unauthenticated",
+        "counterparty_ref": null,
+        "counterparty_ref_provenance": null,
+        "exchange_id": "chatcmpl-q",
+        "exchange_id_source": "response_id",
+        "model_canonical_ref": "test-model",
+        "prev_seq": 5,
+        "quantization": "unknown",
+        "requesting_party": "unknown",
+        "role": "provider",
+        "seq": 6,
+        "served_by_node_id": "prov-1",
+        "twin_bracket_id": "twin-2"
+       }
+      }
+     },
+     "model_id": "test-model",
+     "provider": "mesh-llm"
+    },
+    "operator": "capsule-emit-mesh-poc-demo",
+    "provenance": "collector",
+    "spec_version": "draft-mih-scitt-agent-action-capsule-04",
+    "timestamp": "2026-09-26T20:47:24.824243Z"
+   },
+   "python": {
+    "outcome": "no_correlation"
+   },
+   "requester": {
+    "action_id": "mesh-poc/req-1/c81bd839-2609-4a7d-92ae-73c5f34ec0e3",
+    "action_type": "decide",
+    "assurance": {
+     "attestation_mode": "self_attested",
+     "effect_mode": "confirmed",
+     "ledger_mode": "standalone"
+    },
+    "canonicalization_id": "jcs",
+    "capsule_id": "aa46baa1cd6cf6e97fdbca267027b90d3386df7b31e8a22df350161b10e4329d",
+    "developer": "capsule-emit-mesh-poc-sidecar/0.1.0",
+    "disposition": {
+     "approver": "policy",
+     "decision": "accept",
+     "human_disposed": false,
+     "verdict_class": "executed"
+    },
+    "domain": "action",
+    "effect": {
+     "effect_attestation": "gate_executed",
+     "request_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+     "response_digest": "a2689a521fb758ad5eecc96de1f6ea2e6174408fbf0337dcf7f3356d2a83e726",
+     "status": "confirmed",
+     "type": "inference_completion"
+    },
+    "format_version": "4",
+    "model_attestation": {
+     "compute_attestation": {
+      "agent_input_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "agent_output_digest": "a2689a521fb758ad5eecc96de1f6ea2e6174408fbf0337dcf7f3356d2a83e726",
+      "attestation_refs": [],
+      "decoding": {
+       "temperature": "0.2"
+      },
+      "epistemic_type": "observed_event",
+      "invocation": {
+       "requested_model_id": "test-model",
+       "source": {
+        "requested_model_id": "self_reported"
+       }
+      },
+      "runtime": {
+       "name": "test-runtime"
+      },
+      "source": {
+       "decoding": "self_reported"
+      },
+      "x-mesh-poc-v1": {
+       "advertisement": null,
+       "advertisement_reconciliation": {
+        "advertised_node_id": null,
+        "advertisement_digest": null,
+        "advertisement_issued_at": null,
+        "advertisement_present": false,
+        "advertisement_self_signed": "advertisement-self-signed: the advertisement is signed by the same node that served; a match reconciles two self-attested claims from one party, not one party's claim against an independently-held counterparty note. A mismatch is still attributable and portable; a match is not proof of a second, independent party. TRUST-MODEL.md \u00a79.1 (membership-gated member-signed discovery note) is the deployment that closes this.",
+        "fields": {},
+        "mismatches": [],
+        "node_id_consistent": null,
+        "overall": "advertisement_absent",
+        "served_node_id": "unknown"
+       },
+       "client_nonce": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+       "client_nonce_source": "client_supplied",
+       "compute_meter": {
+        "unit": "milliseconds",
+        "wall_clock_ms": "1.000"
+       },
+       "cross_party": null,
+       "evidence_refs": {
+        "statistical_fingerprint": {
+         "context": null,
+         "digest": null,
+         "type": "statistical_fingerprint"
+        },
+        "tee_attestation": {
+         "context": null,
+         "digest": null,
+         "type": "tee_attestation"
+        }
+       },
+       "forwarded_copy": null,
+       "generation_parameters": {
+        "temperature": "0.2"
+       },
+       "identity_limitation": null,
+       "latency_ms": "1.000",
+       "model_package_digest": "035694f0b0942af871f5a82cf0eaf3381137746b0168c08190077dcfaccc1d99",
+       "observation_point": "client_egress",
+       "owner": {
+        "identity_capsule_id": null,
+        "identity_limitation": null,
+        "owner_cert_ref": null,
+        "owner_id": null,
+        "owner_status": "absent",
+        "recheck_reason": "no owner cert present (owner identity is opt-in / off by default)"
+       },
+       "role": "requested",
+       "serving_provenance": {
+        "counterparty_id_provenance": "unauthenticated",
+        "counterparty_ref": null,
+        "counterparty_ref_provenance": null,
+        "exchange_id": "chatcmpl-p",
+        "exchange_id_source": "response_id",
+        "model_canonical_ref": "test-model",
+        "prev_seq": 5,
+        "quantization": "unknown",
+        "requesting_party": "req-1",
+        "role": "requester",
+        "seq": 6,
+        "served_by_node_id": "unknown",
+        "twin_bracket_id": "twin-2"
+       }
+      }
+     },
+     "model_id": "test-model",
+     "provider": "mesh-llm"
+    },
+    "operator": "capsule-emit-mesh-poc-demo",
+    "provenance": "collector",
+    "spec_version": "draft-mih-scitt-agent-action-capsule-04",
+    "timestamp": "2026-09-26T20:47:24.822895Z"
+   }
+  }
+ ],
+ "source": {
+  "commit": "af1e969503d44f66b7598d5b26186e114cf8e760",
+  "correlator": "served_request_join.join_served_request",
+  "repository": "action-state-group/capsule-emit-mesh"
+ }
+}

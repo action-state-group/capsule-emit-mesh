@@ -296,6 +296,11 @@ jobs:
       - name: Checkpoint substrate byte-parity test (self-contained)
         run: cargo test --locked --test evidencebook_parity
 
+      # evidencebook's reconcile against the Python correlator's (and the Go
+      # book's) outcomes on real sealed halves, with this plugin's key names.
+      - name: Reconcile parity test (self-contained)
+        run: cargo test --locked --test reconcile_parity
+
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
