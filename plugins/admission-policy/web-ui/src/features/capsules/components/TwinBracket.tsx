@@ -20,7 +20,7 @@ import { saveTextFile } from '@/features/capsules/lib/exchange-export'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
 import { VerdictRecordDialog } from '@/features/capsules/components/VerdictRecordDialog'
 import { HoverChip } from '@/features/capsules/components/HoverChip'
-import { TWIN_NO_VERDICT_TOOLTIP, TWIN_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
+import { TWIN_NO_VERDICT_TOOLTIP, TWIN_TOOLTIPS, TWIN_VERDICT_TOOLTIPS } from '@/features/capsules/lib/tooltip-copy'
 import {
   TWIN_ANSWER_LABEL,
   twinAnswerState,
@@ -44,6 +44,26 @@ const diffViewerStyles = {
     background: 'var(--color-panel-strong)',
     color: 'var(--color-fg-dim)',
     borderBottom: '1px solid var(--color-border-soft)'
+  }
+}
+
+const TWIN_VERDICT_TONE = {
+  corroborated: 'good',
+  contradicted: 'bad',
+  inconclusive: 'muted',
+  not_comparable: 'muted'
+} as const
+
+function twinVerdictLabel(verdict: NonNullable<ReturnType<typeof twinVerdict>['verdict']>): string {
+  switch (verdict.kind) {
+    case 'corroborated':
+      return 'referee: corroborated'
+    case 'contradicted':
+      return `referee: contradicted ${verdict.party.slice(0, 10)}…`
+    case 'inconclusive':
+      return 'referee: inconclusive'
+    case 'not_comparable':
+      return 'not comparable'
   }
 }
 
@@ -100,10 +120,10 @@ export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, childr
               <InfoHover census="twin:no_verdict" describes="the no verdict badge" label={TWIN_NO_VERDICT_TOOLTIP} />
             </>
           ) : (
-            <HoverChip census="twin:verdict" label={TWIN_TOOLTIPS.verdict}>
+            <HoverChip census={`twin:verdict:${verdict.kind}`} label={TWIN_VERDICT_TOOLTIPS[verdict.kind]}>
               <span className="inline-flex" tabIndex={0}>
-                <StatusBadge size="caption" tone={verdict.kind === 'contradicted' ? 'bad' : 'good'}>
-                  {verdict.kind === 'contradicted' ? `referee: contradicted ${verdict.party.slice(0, 10)}…` : 'referee: corroborated'}
+                <StatusBadge size="caption" tone={TWIN_VERDICT_TONE[verdict.kind]}>
+                  {twinVerdictLabel(verdict)}
                 </StatusBadge>
               </span>
             </HoverChip>

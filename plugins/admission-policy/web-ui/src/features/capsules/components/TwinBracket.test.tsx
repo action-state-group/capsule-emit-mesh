@@ -156,6 +156,21 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
     expect(screen.getByRole('button', { name: 'View the verdict' })).toBeInTheDocument()
   })
 
+  it('a not-comparable ruling is a verdict, shown as not comparable, never as no verdict or a disagreement', () => {
+    render(
+      <TwinBracket
+        bracketId="twin-xyz"
+        rows={[twinRow('a', { twin: { bracket_id: 'twin-xyz', same_answer: false, other_row: null, verdict: 'not_comparable', verdict_capsule_id: 'v'.repeat(32) } }), twinRow('b')]}
+        twinSampleRateDenominator={1}
+      >
+        <p>row a</p>
+      </TwinBracket>
+    )
+    expect(screen.getByText('not comparable')).toBeInTheDocument()
+    expect(screen.queryByText('no verdict')).not.toBeInTheDocument()
+    expect(screen.queryByText(/contradicted/)).not.toBeInTheDocument()
+  })
+
   it('offers no verdict to open while no referee has signed one', () => {
     render(
       <TwinBracket bracketId="twin-xyz" rows={[twinRow('a'), twinRow('b')]} twinSampleRateDenominator={1}>

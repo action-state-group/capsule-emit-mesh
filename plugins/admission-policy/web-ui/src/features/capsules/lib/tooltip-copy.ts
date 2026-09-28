@@ -169,6 +169,14 @@ export const TWIN_TOOLTIPS = {
   save: 'Download both records of this side-by-side check as a file.'
 } as const
 
+/** The side-by-side check's verdict badge, per ruling the referee sealed. */
+export const TWIN_VERDICT_TOOLTIPS = {
+  corroborated: 'A referee compared the two answers, found they agree, and signed that verdict. Open it to see whether its signature checks here.',
+  contradicted: 'A referee compared the two answers, found one wrong, and signed that verdict. Open it to see whether its signature checks here.',
+  inconclusive: 'A referee compared the two answers and couldn’t decide between them. That is not a disagreement.',
+  not_comparable: 'The two answers were sampled, so a referee can’t compare them. This is never a disagreement.'
+} as const
+
 /** The TWIN bracket's `no verdict` badge. */
 export const TWIN_NO_VERDICT_TOOLTIP =
   'The same request went to two machines and both answers are recorded. No one has compared them and sealed a verdict yet.'

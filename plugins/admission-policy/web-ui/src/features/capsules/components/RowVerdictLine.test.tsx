@@ -65,7 +65,7 @@ describe('RowVerdictLine -- a verdict on the exchange it is about', () => {
     await user.click(screen.getByRole('button', { name: 'View the verdict' }))
     const dialog = await screen.findByRole('dialog')
     expect(await within(dialog).findByTestId('verdict-record-signature')).toHaveTextContent(
-      'The referee’s signature checks, on this node.'
+      'The referee’s signature checks on this node, and this node’s log records it.'
     )
     expect(within(dialog).getByText(/aaaaaaaaaa… and bbbbbbbbbb…/)).toBeInTheDocument()
   })

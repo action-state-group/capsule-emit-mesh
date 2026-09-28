@@ -381,7 +381,15 @@ export type IssuedAdjudication = {
 export type VerdictRecordJson = {
   capsule: Record<string, unknown>
   signed_by_key_id: string | null
+  /** The referee's signature verifies AND this node's chain records the
+   *  verdict. */
   verify_ok: boolean
+  /** How this node's chain holds it: a verdict it issued, one delivered to
+   *  it, or neither. */
+  recorded_as?: 'issued' | 'received' | null
+  referee_node_id?: string | null
+  /** Why the signature didn't verify, when it didn't. */
+  signature_error?: string | null
 }
 
 export type PaneCListJson = {

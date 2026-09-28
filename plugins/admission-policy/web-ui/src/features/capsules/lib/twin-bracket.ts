@@ -11,6 +11,7 @@
 //     halves themselves recorded (parameters, raw response text for a real
 //     diff), never an equality/inconclusive judgment call.
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
+import { parseVerdict, type ParsedVerdict } from '@/features/capsules/lib/adjudication-view'
 
 /**
  * "This comparison ran automatically — 1 in N exchanges is sent to a second
@@ -86,15 +87,12 @@ export const TWIN_ANSWER_LABEL: Record<TwinAnswerState, string> = {
 }
 
 /** A referee's signed verdict for this pair, when one exists. */
-export type TwinVerdict = { kind: 'corroborated' } | { kind: 'contradicted'; party: string } | null
+export type TwinVerdict = ParsedVerdict | null
 
 export function twinVerdict(rows: readonly ExchangeLedgerRow[]): { verdict: TwinVerdict; capsuleId: string | null } {
   for (const row of rows) {
-    const v = row.raw.twin?.verdict
-    if (typeof v !== 'string' || v.length === 0) continue
-    const capsuleId = row.raw.twin?.verdict_capsule_id ?? null
-    if (v === 'corroborated') return { verdict: { kind: 'corroborated' }, capsuleId }
-    if (v.startsWith('contradicted:')) return { verdict: { kind: 'contradicted', party: v.slice('contradicted:'.length) }, capsuleId }
+    const verdict = parseVerdict(row.raw.twin?.verdict)
+    if (verdict !== null) return { verdict, capsuleId: row.raw.twin?.verdict_capsule_id ?? null }
   }
   return { verdict: null, capsuleId: null }
 }

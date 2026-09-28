@@ -5,6 +5,7 @@ import {
   issuedVerdictLine,
   parseVerdict,
   verdictRecordFacts,
+  verdictSentence,
   verdictSignatureText
 } from '@/features/capsules/lib/adjudication-view'
 
@@ -26,8 +27,10 @@ describe('adjudication view -- a referee’s verdict in plain words', () => {
   it('reads the sealed verdict and nothing else', () => {
     expect(parseVerdict('corroborated')).toEqual({ kind: 'corroborated' })
     expect(parseVerdict(`contradicted:${NODE_B}`)).toEqual({ kind: 'contradicted', party: NODE_B })
+    expect(parseVerdict('inconclusive')).toEqual({ kind: 'inconclusive' })
+    expect(parseVerdict('not_comparable')).toEqual({ kind: 'not_comparable' })
     expect(parseVerdict('contradicted:')).toBeNull()
-    expect(parseVerdict('inconclusive')).toBeNull()
+    expect(parseVerdict('maybe')).toBeNull()
     expect(parseVerdict(null)).toBeNull()
   })
 
@@ -76,12 +79,33 @@ describe('adjudication view -- a referee’s verdict in plain words', () => {
       halves: ['a'.repeat(64), 'b'.repeat(64)],
       refereeCapsuleId: 'd'.repeat(64)
     })
-    expect(verdictSignatureText(record)).toMatch(/signature checks/)
-    expect(verdictSignatureText({ ...record, verify_ok: false })).toMatch(/does not check.*unconfirmed/)
+    expect(verdictSignatureText({ ...record, recorded_as: 'received' })).toBe(
+      'The referee’s signature checks on this node, and it was delivered to this node and its log records it.'
+    )
+    expect(verdictSignatureText({ ...record, verify_ok: false, signature_error: 'bad signature' })).toBe(
+      'The referee’s signature doesn’t check on this node (bad signature). Treat this verdict as unconfirmed.'
+    )
+    expect(verdictSignatureText({ ...record, verify_ok: false })).toMatch(/couldn’t confirm this verdict.*unconfirmed/)
     expect(verdictRecordFacts({ capsule: {}, signed_by_key_id: null, verify_ok: false })).toEqual({
       verdict: null,
       halves: [],
       refereeCapsuleId: null
     })
+  })
+
+  it('inconclusive and not comparable are said as such, never as a disagreement', () => {
+    expect(deliveredVerdictLine(delivered({ verdict: 'inconclusive' }))).toBe(
+      'A referee (node a70d3967be…) couldn’t decide between the two answers.'
+    )
+    expect(deliveredVerdictLine(delivered({ verdict: 'not_comparable' }))).toBe(
+      'A referee (node a70d3967be…) found the two answers can’t be compared: they were sampled.'
+    )
+    expect(issuedVerdictLine({ verdict: 'not_comparable', verdict_capsule_id: 'v', halves: ['a', 'b'] })).toBe(
+      'You judged the two answers: not comparable, because they were sampled.'
+    )
+    expect(verdictSentence({ kind: 'not_comparable' })).toMatch(/never a disagreement/)
+    for (const wire of ['inconclusive', 'not_comparable']) {
+      expect(deliveredVerdictLine(delivered({ verdict: wire }))).not.toMatch(/contradicted|wrong/)
+    }
   })
 })

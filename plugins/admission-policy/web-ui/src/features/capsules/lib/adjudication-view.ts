@@ -9,10 +9,19 @@ import type {
   VerdictWire
 } from '@/features/capsules/api/sidecarTypes'
 
-export type ParsedVerdict = { kind: 'corroborated' } | { kind: 'contradicted'; party: string }
+export type ParsedVerdict =
+  | { kind: 'corroborated' }
+  | { kind: 'contradicted'; party: string }
+  | { kind: 'inconclusive' }
+  | { kind: 'not_comparable' }
 
+/** The rulings a referee seals: `corroborated`, `contradicted:<node>`,
+ *  `inconclusive`, `not_comparable` (sampled answers; never a disagreement).
+ *  Anything else is not read as a verdict. */
 export function parseVerdict(wire: VerdictWire | null | undefined): ParsedVerdict | null {
   if (wire === 'corroborated') return { kind: 'corroborated' }
+  if (wire === 'inconclusive') return { kind: 'inconclusive' }
+  if (wire === 'not_comparable') return { kind: 'not_comparable' }
   if (typeof wire === 'string' && wire.startsWith('contradicted:') && wire.length > 'contradicted:'.length) {
     return { kind: 'contradicted', party: wire.slice('contradicted:'.length) }
   }
@@ -30,6 +39,8 @@ export function deliveredVerdictLine(adjudication: DeliveredAdjudication): strin
   if (verdict === null) return null
   const referee = `A referee (node ${shortId(adjudication.referee_node_id)})`
   if (verdict.kind === 'corroborated') return `${referee} found this answer corroborated.`
+  if (verdict.kind === 'inconclusive') return `${referee} couldn’t decide between the two answers.`
+  if (verdict.kind === 'not_comparable') return `${referee} found the two answers can’t be compared: they were sampled.`
   return adjudication.about_this_node
     ? `${referee} found your answer contradicted.`
     : `${referee} found the other answer (node ${shortId(verdict.party)}) contradicted.`
@@ -40,9 +51,16 @@ export function issuedVerdictLine(issued: IssuedAdjudication): string | null {
   const verdict = parseVerdict(issued.verdict)
   if (verdict === null) return null
   const answers = issued.halves.length === 2 ? 'the two answers' : 'the answers'
-  return verdict.kind === 'corroborated'
-    ? `You judged ${answers}: corroborated.`
-    : `You judged ${answers}: node ${shortId(verdict.party)}'s answer contradicted.`
+  switch (verdict.kind) {
+    case 'corroborated':
+      return `You judged ${answers}: corroborated.`
+    case 'contradicted':
+      return `You judged ${answers}: node ${shortId(verdict.party)}'s answer contradicted.`
+    case 'inconclusive':
+      return `You judged ${answers}: inconclusive.`
+    case 'not_comparable':
+      return `You judged ${answers}: not comparable, because they were sampled.`
+  }
 }
 
 export type VerdictRecordFacts = {
@@ -65,9 +83,35 @@ export function verdictRecordFacts(record: VerdictRecordJson): VerdictRecordFact
   }
 }
 
-/** Whether the plugin could check the verdict's signature. */
+/** Whether the plugin could check the verdict: the referee's signature, and
+ *  this node's chain recording it. */
 export function verdictSignatureText(record: VerdictRecordJson): string {
-  return record.verify_ok
-    ? 'The referee’s signature checks, on this node.'
-    : 'The referee’s signature does not check, on this node. Treat this verdict as unconfirmed.'
+  if (record.verify_ok) {
+    const held =
+      record.recorded_as === 'issued'
+        ? 'this node issued it and its log records it'
+        : record.recorded_as === 'received'
+          ? 'it was delivered to this node and its log records it'
+          : 'this node’s log records it'
+    return `The referee’s signature checks on this node, and ${held}.`
+  }
+  if (record.signature_error) {
+    return `The referee’s signature doesn’t check on this node (${record.signature_error}). Treat this verdict as unconfirmed.`
+  }
+  return 'This node couldn’t confirm this verdict: its signature doesn’t check, or its log doesn’t record it. Treat it as unconfirmed.'
+}
+
+/** The verdict in one sentence, for the record dialog. */
+export function verdictSentence(verdict: ParsedVerdict | null): string {
+  if (verdict === null) return 'The record holds no verdict this page can read.'
+  switch (verdict.kind) {
+    case 'corroborated':
+      return 'Verdict: corroborated. The referee found the answers agree.'
+    case 'contradicted':
+      return `Verdict: contradicted. The referee found node ${shortId(verdict.party)}’s answer wrong.`
+    case 'inconclusive':
+      return 'Verdict: inconclusive. The referee couldn’t decide between the answers.'
+    case 'not_comparable':
+      return 'Verdict: not comparable. The answers were sampled, so they can’t be compared; this is never a disagreement.'
+  }
 }

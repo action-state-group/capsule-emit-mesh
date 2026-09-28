@@ -14,7 +14,12 @@ import {
 } from '@/components/ui/SharedModal'
 import { Button } from '@/components/ui/button'
 import { fetchVerdictRecord } from '@/features/capsules/api/verdictClient'
-import { shortId, verdictRecordFacts, verdictSignatureText } from '@/features/capsules/lib/adjudication-view'
+import {
+  shortId,
+  verdictRecordFacts,
+  verdictSentence,
+  verdictSignatureText
+} from '@/features/capsules/lib/adjudication-view'
 
 export type VerdictRecordDialogProps = {
   capsuleId: string
@@ -51,11 +56,7 @@ export function VerdictRecordDialog({ capsuleId, open, onOpenChange }: VerdictRe
           {record.data && facts ? (
             <>
               <p data-testid="verdict-record-verdict">
-                {facts.verdict === null
-                  ? 'The record holds no verdict this page can read.'
-                  : facts.verdict.kind === 'corroborated'
-                    ? 'Verdict: corroborated. The referee found the answers agree.'
-                    : `Verdict: contradicted. The referee found node ${shortId(facts.verdict.party)}’s answer wrong.`}
+                {verdictSentence(facts.verdict)}
               </p>
               <p data-testid="verdict-record-signature">{verdictSignatureText(record.data)}</p>
               {record.data.signed_by_key_id ? (
