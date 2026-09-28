@@ -18,6 +18,7 @@ import {
 } from '@/features/capsules/lib/peer-fixtures'
 import { deriveMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
 import { advertisedOnlyRowView, dealtWithRowView, SELF_REPORTED_NOTE } from '@/features/capsules/lib/peer-row-view'
+import { ROUTING_NOT_ON_THIS_PAGE } from '@/features/capsules/lib/tooltip-copy'
 
 const [CLEAN_ROW, ALARMED_ROW] = HARNESS_PANE_B_PAYLOAD.rows
 
@@ -111,6 +112,17 @@ describe('PeerTableRow — dealt-with peers', () => {
     // The modal's own Overview tab still shows the operational facts --
     // only the summary row dropped them.
     expect(within(dialog).getByText('online')).toBeInTheDocument()
+  })
+
+  it('the drill shows your dealings with them and says plainly that routing is not changed here', async () => {
+    const user = userEvent.setup()
+    renderInTable(<PeerTableRow meshStatus={null} view={dealtWithRowView(CLEAN_ROW)} />)
+    await user.click(screen.getByText(CLEAN_ROW.peer_id ?? ''))
+
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText('24 exchanges with you · they confirmed 16 of 24')).toBeInTheDocument()
+    expect(within(dialog).getByText(ROUTING_NOT_ON_THIS_PAGE.text)).toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: /stop routing/i })).not.toBeInTheDocument()
   })
 
   it('drills into the timeline with exchange sources supplied', async () => {

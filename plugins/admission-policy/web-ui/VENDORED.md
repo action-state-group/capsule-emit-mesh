@@ -22,6 +22,9 @@ Copied as-is except for these files:
 | `retired-copy.test.ts` | scans every shipped source of the bundle; the host Rust pane scan stays with the pane on the fork until it moves here |
 | `pages/EvidencePage.tsx` | **new**: the providers the console app supplied (query client, data mode fixed to live, tooltip provider) + `?focusExchangeKey=` |
 | `pages/AccountabilityPage.tsx`, `pages/CapsulesExchangeRedirectPage.tsx` (+ test) | **removed**: console router glue; the deep link is `?focusExchangeKey=` on the plugin page |
+| `lib/peer-routing-view.ts` (+ test) | **ported later** from the fork console's round-3 file: `dealingsLines` only (the drill's "Your dealings with them"); the block-store half needs the host's local block list, which this page does not reach |
+| `components/PeerInspector.tsx` | the Overview shows "Your dealings with them" (`dealingsLines`) and a routing section that says plainly this page can't stop routing, in place of the console's Stop routing button |
+| `lib/tooltip-copy.ts` | adds `YOUR_DEALINGS_TITLE` (console copy) and `ROUTING_NOT_ON_THIS_PAGE` |
 
 ## Console primitives the page imports
 

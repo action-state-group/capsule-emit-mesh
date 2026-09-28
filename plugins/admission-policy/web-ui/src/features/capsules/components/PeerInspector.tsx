@@ -26,16 +26,19 @@ import { toneForState } from '@/features/capsules/lib/assurance-tone'
 import type { PeerTimelinePoint } from '@/features/capsules/lib/peer-exchange-timeline'
 import type { PeerMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
 import {
-  adjudicationSummary,
-  adjudicationSummaryText,
   meshMetaLine,
   peerDisplayId,
   theirChainSummary,
   withYouCounts,
   withYouCountsText
 } from '@/features/capsules/lib/peer-row-view'
+import { dealingsLines } from '@/features/capsules/lib/peer-routing-view'
 import { PeerExchangeInspector } from '@/features/capsules/components/PeerExchangeInspector'
-import { PEER_INSPECTOR_HEADER } from '@/features/capsules/lib/tooltip-copy'
+import {
+  PEER_INSPECTOR_HEADER,
+  ROUTING_NOT_ON_THIS_PAGE,
+  YOUR_DEALINGS_TITLE
+} from '@/features/capsules/lib/tooltip-copy'
 import { PeerTimeline } from '@/features/capsules/components/PeerTimeline'
 
 export type PeerInspectorProps = {
@@ -50,7 +53,6 @@ type PeerInspectorTab = 'overview' | 'timeline' | 'exchanges'
 
 function PeerOverviewTab({ row, meshStatus }: { row: PaneBRow; meshStatus: PeerMeshStatus | null }) {
   const counts = withYouCounts(row)
-  const adjudication = adjudicationSummary(row)
   const chain = theirChainSummary(row)
   const metaLine = meshMetaLine(meshStatus)
   const latencyLabel = meshStatus?.latencyMs != null ? `${meshStatus.latencyMs} ms` : 'latency unknown'
@@ -68,9 +70,23 @@ function PeerOverviewTab({ row, meshStatus }: { row: PaneBRow; meshStatus: PeerM
         </p>
         <p className="mt-1 text-xs text-fg-faint">self-reported — not independently attested</p>
       </div>
-      <p>{withYouCountsText(counts)}</p>
-      <p>{adjudicationSummaryText(adjudication)}</p>
+      {/* §7.5: the drill answers "should I stop dealing with anyone?" --
+         your dealings with them, then routing at the bottom. */}
+      <section aria-label={YOUR_DEALINGS_TITLE} className="flex flex-col gap-2">
+        <h3 className="text-xs font-medium text-foreground">{YOUR_DEALINGS_TITLE}</h3>
+        {dealingsLines(row).map((line) => (
+          <p key={line}>{line}</p>
+        ))}
+        <p>{withYouCountsText(counts)}</p>
+      </section>
       <p className="text-fg-faint">{chain.text}</p>
+      <section
+        aria-label={ROUTING_NOT_ON_THIS_PAGE.sectionTitle}
+        className="flex flex-col gap-2 border-t border-border-soft pt-3"
+      >
+        <h3 className="text-xs font-medium text-foreground">{ROUTING_NOT_ON_THIS_PAGE.sectionTitle}</h3>
+        <p>{ROUTING_NOT_ON_THIS_PAGE.text}</p>
+      </section>
     </div>
   )
 }

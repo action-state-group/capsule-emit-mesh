@@ -160,3 +160,14 @@ export const SPLIT_TOOLTIPS = {
   throughSplit:
     'Nodes the coordinator says ran part of a request you sent it. You never dealt with them directly.'
 } as const
+
+/** §7.5: the drill's "your dealings with them" section title (console copy). */
+export const YOUR_DEALINGS_TITLE = 'Your dealings with them'
+
+/** The drill's routing section. Stopping routing to a peer needs the host's
+ *  local block list, which this page does not reach, so the page says so
+ *  instead of offering a button that could not act. */
+export const ROUTING_NOT_ON_THIS_PAGE = {
+  sectionTitle: 'Routing to this peer',
+  text: 'This page can’t stop routing to a peer. It shows your records and changes nothing about routing.'
+} as const
