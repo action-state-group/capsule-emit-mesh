@@ -216,6 +216,16 @@ fn collect_adjudication_record(capsule: &Value, out: &mut HashSet<String>) {
             out.insert(format!("{block}:{verdict}"));
         }
     }
+    // A refused delivery is keyed per receiver: `<block>:<verdict>/<peer>`.
+    let block = crate::capsule::ADJUDICATION_ACK_REFUSED_BLOCK;
+    if let Some(refused) = attestation.get(block) {
+        if let (Some(verdict), Some(peer)) = (
+            refused.get("verdict_capsule_id").and_then(Value::as_str),
+            refused.get("refused_by").and_then(Value::as_str),
+        ) {
+            out.insert(format!("{block}:{verdict}/{peer}"));
+        }
+    }
 }
 
 /// The reload check behind [`LedgerError::StatementInvalid`]: the `.cose`

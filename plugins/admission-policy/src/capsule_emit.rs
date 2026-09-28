@@ -1517,17 +1517,39 @@ impl CapsuleState {
         })
     }
 
+    /// Seal this node's record of a verdict delivery its receiver refused
+    /// (see `capsule_producer::capsule::seal_adjudication_ack_refused_record`).
+    /// One record per verdict and receiver (`Ok(None)` for a repeat).
+    pub fn emit_adjudication_ack_refused(
+        &self,
+        refused: &capsule_producer::capsule::RefusedDelivery,
+    ) -> anyhow::Result<Option<EmittedCapsule>> {
+        let key = format!("{}/{}", refused.verdict_capsule_id, refused.refused_by);
+        self.emit_keyed_record(capsule_producer::capsule::ADJUDICATION_ACK_REFUSED_BLOCK, &key, |head, signing| {
+            capsule_producer::capsule::seal_adjudication_ack_refused_record(refused, head, signing)
+        })
+    }
+
     fn emit_adjudication_record(
         &self,
         block: &str,
         facts: &VerdictFacts,
         seal: impl FnOnce(Option<&str>, &ed25519_dalek::SigningKey) -> Result<Value, capsule_producer::jcs::JcsError>,
     ) -> anyhow::Result<Option<EmittedCapsule>> {
+        self.emit_keyed_record(block, facts.verdict_capsule_id, seal)
+    }
+
+    fn emit_keyed_record(
+        &self,
+        block: &str,
+        key: &str,
+        seal: impl FnOnce(Option<&str>, &ed25519_dalek::SigningKey) -> Result<Value, capsule_producer::jcs::JcsError>,
+    ) -> anyhow::Result<Option<EmittedCapsule>> {
         let mut ledger = self
             .ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if ledger.has_adjudication_record(block, facts.verdict_capsule_id) {
+        if ledger.has_adjudication_record(block, key) {
             return Ok(None);
         }
         let capsule = seal(ledger.chain_head(), &self.keys.signing_key)?;

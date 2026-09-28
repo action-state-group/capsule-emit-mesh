@@ -1717,6 +1717,8 @@ pub const CITATION_PURPOSE_ADJUDICATED_HALF: &str = "adjudicated_half";
 pub const ADJUDICATION_ISSUED_BLOCK: &str = "adjudication_issued";
 /// The block a node's record of a verdict delivered to it carries.
 pub const ADJUDICATION_RECEIVED_BLOCK: &str = "adjudication_received";
+/// The block a courier's record of a refused delivery carries.
+pub const ADJUDICATION_ACK_REFUSED_BLOCK: &str = "adjudication_ack_refused";
 
 /// The facts of one verdict, as the referee signed them.
 pub struct VerdictFacts<'a> {
@@ -1813,6 +1815,50 @@ pub fn seal_adjudication_received_record(
         ADJUDICATION_RECEIVED_BLOCK,
         block,
         json!([capsule_reference(facts.verdict_capsule_id, CITATION_PURPOSE_ADJUDICATION_VERDICT)]),
+        chain,
+        signing_key,
+    )
+}
+
+/// A delivery of a verdict that its receiver refused, with a signed refusal.
+pub struct RefusedDelivery<'a> {
+    pub verdict_capsule_id: &'a str,
+    pub refused_by: &'a str,
+    pub reason: &'a str,
+    /// SHA-256 of the refusal as received (compact JSON).
+    pub refusal_digest: &'a str,
+    /// The key the refusal says signed it; not checked here.
+    pub refusal_key_id: Option<&'a str>,
+    pub refused_at: &'a str,
+}
+
+/// Seal the COURIER's own record of a refused delivery: the receiver's chain
+/// shows nothing, so this node's chain holds the decline. It cites the verdict
+/// and names who refused and why.
+pub fn seal_adjudication_ack_refused_record(
+    refused: &RefusedDelivery,
+    chain_head: Option<&str>,
+    signing_key: &ed25519_dalek::SigningKey,
+) -> Result<Value, crate::jcs::JcsError> {
+    let chain = chain_head.map(|parent| ChainLink {
+        parent_capsule_id: parent.to_string(),
+        relation: CHAIN_RELATION_FOLLOWS.to_string(),
+    });
+    let mut block = Map::new();
+    block.insert("verdict_capsule_id".into(), json!(refused.verdict_capsule_id));
+    block.insert("refused_by".into(), json!(refused.refused_by));
+    block.insert("reason".into(), json!(refused.reason));
+    block.insert("refusal_digest".into(), json!(refused.refusal_digest));
+    if let Some(key) = refused.refusal_key_id {
+        block.insert("refusal_key_id".into(), json!(key));
+    }
+    block.insert("refused_at".into(), json!(committed_time(refused.refused_at)));
+    seal_local_citation(
+        format!("mesh-poc/adjudication-ack-refused/{}/{}", refused.verdict_capsule_id, refused.refused_by),
+        "n/a-adjudication-ack-refused",
+        ADJUDICATION_ACK_REFUSED_BLOCK,
+        block,
+        json!([capsule_reference(refused.verdict_capsule_id, CITATION_PURPOSE_ADJUDICATION_VERDICT)]),
         chain,
         signing_key,
     )

@@ -158,11 +158,18 @@ pub async fn deliver(
     self_id: Option<String>,
 ) -> PluginResult<Value> {
     let self_id = self_id.ok_or_else(|| PluginError::internal("this node's own mesh id is not known yet"))?;
+    let verdict_capsule_id = args
+        .verdict_capsule
+        .get("capsule_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| PluginError::invalid_params("verdict_capsule carries no capsule_id"))?
+        .to_string();
     let body = delivery_body(&args.verdict_capsule);
     if args.peer_id != self_id {
-        return crate::record_push_bridge::send_push(context, &args.peer_id, &self_id, &body)
+        let reply = crate::record_push_bridge::send_push(context, &args.peer_id, &self_id, &body)
             .await
-            .map_err(|e| PluginError::internal(e.to_string()));
+            .map_err(|e| PluginError::internal(e.to_string()))?;
+        return with_refusal_recorded(&capsules, reply, &verdict_capsule_id, &args.peer_id).await;
     }
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -185,6 +192,47 @@ pub async fn deliver(
             tracing::warn!(%error, "door held the delivered verdict but the record seal failed");
             return Ok(json!({ "reason": SEAL_FAILED_REASON }));
         }
+        return Ok(reply);
+    }
+    with_refusal_recorded(&capsules, reply, &verdict_capsule_id, &self_id).await
+}
+
+/// A signed refusal of a delivery goes on this node's chain as
+/// `adjudication_ack_refused`; the reply gains that record's id. A refusal
+/// without a signature (a bridge's own "seal failed", worth a retry) is not
+/// recorded.
+async fn with_refusal_recorded(
+    capsules: &Arc<CapsuleState>,
+    mut reply: Value,
+    verdict_capsule_id: &str,
+    refused_by: &str,
+) -> PluginResult<Value> {
+    let Some(reason) = text(&reply, "reason") else {
+        return Ok(reply);
+    };
+    if text(&reply, "sig").is_none() {
+        return Ok(reply);
+    }
+    use sha2::Digest;
+    let refusal_digest = hex::encode(sha2::Sha256::digest(serde_json::to_vec(&reply).unwrap_or_default()));
+    let refusal_key_id = text(&reply, "key_id");
+    let refused_at = capsule_producer::timestamp::utc_now_minute();
+    let (capsules, verdict, peer) = (capsules.clone(), verdict_capsule_id.to_string(), refused_by.to_string());
+    let emitted = tokio::task::spawn_blocking(move || {
+        capsules.emit_adjudication_ack_refused(&capsule_producer::capsule::RefusedDelivery {
+            verdict_capsule_id: &verdict,
+            refused_by: &peer,
+            reason: &reason,
+            refusal_digest: &refusal_digest,
+            refusal_key_id: refusal_key_id.as_deref(),
+            refused_at: &refused_at,
+        })
+    })
+    .await
+    .map_err(|e| PluginError::internal(format!("refusal seal task did not complete: {e}")))?
+    .map_err(|e| PluginError::internal(format!("could not record the refused delivery: {e}")))?;
+    if let Some(emitted) = emitted {
+        reply["ack_refused_capsule_id"] = json!(emitted.capsule_id);
     }
     Ok(reply)
 }
@@ -416,6 +464,39 @@ mod tests {
     fn an_unknown_verdict_is_null_not_an_error() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(verdict_json(dir.path(), &"0".repeat(64))["capsule"], Value::Null);
+    }
+
+
+    #[tokio::test]
+    async fn a_signed_refusal_of_a_delivery_is_recorded_once_per_receiver() {
+        let dir = tempfile::tempdir().unwrap();
+        let capsules = state(dir.path());
+        let refusal = json!({ "reason": "not_about_this_node", "sig": "ab", "key_id": "cd",
+                              "request_digest": "e".repeat(64), "issued_at": "2026-09-28T15:00:00Z" });
+        let verdict = "v".repeat(64);
+        let out = with_refusal_recorded(&capsules, refusal.clone(), &verdict, "peer-b").await.unwrap();
+        assert!(out["ack_refused_capsule_id"].is_string());
+        let again = with_refusal_recorded(&capsules, refusal.clone(), &verdict, "peer-b").await.unwrap();
+        assert!(again.get("ack_refused_capsule_id").is_none(), "a repeat seals nothing");
+        with_refusal_recorded(&capsules, refusal, &verdict, "peer-a").await.unwrap();
+        let ids = capsules.capsule_ids_in_order();
+        assert_eq!(ids.len(), 2, "one record per receiver");
+        let (ledger, _) = capsule_producer::ledger::Ledger::open(&dir.path().join("ledger")).unwrap();
+        let record = ledger.lookup(&ids[0]).unwrap().unwrap().capsule;
+        let b = block(&record, "adjudication_ack_refused");
+        assert_eq!(b["refused_by"], json!("peer-b"));
+        assert_eq!(b["reason"], json!("not_about_this_node"));
+        assert_eq!(record["references"][0]["digest"], json!(verdict));
+    }
+
+    #[tokio::test]
+    async fn an_unsigned_refusal_or_a_success_is_not_recorded_as_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let capsules = state(dir.path());
+        let verdict = "v".repeat(64);
+        with_refusal_recorded(&capsules, json!({ "reason": SEAL_FAILED_REASON }), &verdict, "p").await.unwrap();
+        with_refusal_recorded(&capsules, json!({ "status": "received" }), &verdict, "p").await.unwrap();
+        assert!(capsules.capsule_ids_in_order().is_empty());
     }
 
 }
