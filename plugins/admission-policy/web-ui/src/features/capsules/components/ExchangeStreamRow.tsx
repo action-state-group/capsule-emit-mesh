@@ -56,7 +56,7 @@ import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 import { RowVerdictLine } from '@/features/capsules/components/RowVerdictLine'
 import { entryRowChipMark } from '@/features/capsules/lib/entry-row-chips'
 import { rowCombinationText } from '@/features/capsules/lib/row-combination'
-import { OWN_RECORD_FAILS_WARNING } from '@/features/capsules/lib/tooltip-copy'
+import { CLOSED_FROM_FETCH_NOT_SAVED, OWN_RECORD_FAILS_WARNING } from '@/features/capsules/lib/tooltip-copy'
 
 /** The gated cell text (Do (2)) when an ask
  *  action's row carries no recorded counterparty. This splits by which of two
@@ -233,6 +233,9 @@ export function ExchangeStreamRow({
     checkpointCovered,
     ownerLinked
   })
+  // Confirmed from a record this page fetched, not one the node holds: say
+  // it isn't saved, so a reload reopening the row is never a surprise.
+  const closedFromFetch = state.kind === 'closed' && peerFetch.status === 'found' && !pushedHalfRecompute(row.raw)
   // A15: a Confirmed badge never sits beside a failed check on your own copy
   // without saying so.
   const ownRecordFails =
@@ -392,6 +395,11 @@ export function ExchangeStreamRow({
             <p className="text-xs text-foreground" data-right-cell-text="true">
               {cellText}
             </p>
+            {closedFromFetch ? (
+              <p className="text-xs text-fg-dim" data-closed-from-fetch="true" role="note">
+                {CLOSED_FROM_FETCH_NOT_SAVED}
+              </p>
+            ) : null}
             {ownRecordFails ? (
               <p className="text-xs text-bad" data-own-record-fails="true" role="note">
                 {OWN_RECORD_FAILS_WARNING}

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
 import { exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
-import { OWN_RECORD_FAILS_WARNING } from '@/features/capsules/lib/tooltip-copy'
+import { CLOSED_FROM_FETCH_NOT_SAVED, OWN_RECORD_FAILS_WARNING } from '@/features/capsules/lib/tooltip-copy'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import { ASK_FOR_RECORD_AFTER_MS, type RightCellStateKind } from '@/features/capsules/lib/exchange-row-state'
 import { durationText, formatModelIdentity, tokenFlowText } from '@/features/capsules/lib/serving-provenance'
@@ -15,7 +15,7 @@ import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import { usePeerLedgerRecompute, type PeerRecomputeState } from '@/features/capsules/lib/recompute-identity'
-import { fixtureHalfBody } from '@/features/capsules/lib/pushed-half-fixtures'
+import { fixtureHalfBody, fixtureMineCell, fixtureTheirsCell } from '@/features/capsules/lib/pushed-half-fixtures'
 
 const REQUEST_DIGEST = 'a'.repeat(64)
 const RESPONSE_DIGEST = 'b'.repeat(64)
@@ -901,6 +901,27 @@ describe('ExchangeStreamRow — a Confirmed badge beside a failed check on your 
     )
     // The fingerprint check runs asynchronously on this machine.
     expect(await screen.findByText(OWN_RECORD_FAILS_WARNING)).toBeInTheDocument()
+  })
+})
+
+describe('ExchangeStreamRow — confirmed from a record this page asked for', () => {
+  it('says the confirmation is on this page only, not saved on the node', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
+    expect(screen.getByText('CLOSED')).toBeInTheDocument()
+    expect(screen.getByText(CLOSED_FROM_FETCH_NOT_SAVED)).toBeInTheDocument()
+  })
+
+  it('never on a row confirmed from a record the node holds (pushed and saved)', () => {
+    const base = makeRow('open_not_asked')
+    const pushed = { ...base, raw: { ...base.raw, mine: fixtureMineCell(), theirs: fixtureTheirsCell('agrees') } }
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={pushed} />)
+    expect(screen.getByText('CLOSED')).toBeInTheDocument()
+    expect(screen.queryByText(CLOSED_FROM_FETCH_NOT_SAVED)).not.toBeInTheDocument()
+  })
+
+  it('says nothing of the kind on a row that is not confirmed', () => {
+    render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('open_not_held')} />)
+    expect(screen.queryByText(CLOSED_FROM_FETCH_NOT_SAVED)).not.toBeInTheDocument()
   })
 })
 

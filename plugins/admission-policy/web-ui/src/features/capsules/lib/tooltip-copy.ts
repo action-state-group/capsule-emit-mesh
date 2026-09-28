@@ -149,6 +149,11 @@ export const ENTRY_CHIP_RESULT_TOOLTIPS = {
   }
 } as const
 
+/** A row confirmed from a record this page asked for and fetched: honest
+ *  that nothing was saved on the node (console copy). */
+export const CLOSED_FROM_FETCH_NOT_SAVED =
+  'Confirmed on this page from the record you asked for; not saved on this node yet.'
+
 /** A confirmed exchange whose own record fails its checks: said on the row,
  *  so a Confirmed badge never sits beside a failed check unexplained. */
 export const OWN_RECORD_FAILS_WARNING =
