@@ -23,6 +23,7 @@ mod peer_root_ledger;
 mod settlement_channel;
 mod share_policy;
 mod split_stage;
+mod verdict_counts;
 mod web_ui_manifest;
 
 use axum::{
