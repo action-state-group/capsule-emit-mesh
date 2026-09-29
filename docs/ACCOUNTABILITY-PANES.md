@@ -281,7 +281,7 @@ drives the Issues filter (see below); each row instead carries a `properties` ma
 properties, real-computed via `build_verify_map`/`build_assurance_map`, the same offline recompute
 the live tab runs) and a `has_issue` bool, rendered as a chip strip plus an `ISSUE` badge.
 
-**[ledger-T9-retire-rung-vocab]** Pane C's payload no longer computes or exposes the freshness/
+Pane C's payload no longer computes or exposes the freshness/
 cross-party/runtime-binding rung ladder (`rung`/`unilateral_fallback`) — it was never rendered
 here, only carried unused in the public JSON. `properties` above is this pane's one graded
 surface now; Pane A/B still name their own rung cells (§4/§5) — retiring those is separate,
