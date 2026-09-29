@@ -312,20 +312,31 @@ fn adjudication_ack_refused_records_are_byte_identical() {
             }
         };
     }
+    let head = "f".repeat(64);
     for key_id in [None, Some("e".repeat(64))] {
-        let old_record = old::seal_adjudication_ack_refused_record(
-            &refused!(old, key_id.as_deref()),
-            Some(&"f".repeat(64)),
-            &key(),
-        )
-        .unwrap();
-        let new_record = new::seal_adjudication_ack_refused_record(
-            &refused!(new, key_id.as_deref()),
-            Some(&"f".repeat(64)),
-            &key(),
-        )
-        .unwrap();
-        assert_local_parity("adjudication ack-refused record", &old_record, &new_record);
+        for chain_head in [None, Some(head.as_str())] {
+            let old_record = old::seal_adjudication_ack_refused_record(
+                &refused!(old, key_id.as_deref()),
+                chain_head,
+                &key(),
+            )
+            .unwrap();
+            let new_record = new::seal_adjudication_ack_refused_record(
+                &refused!(new, key_id.as_deref()),
+                chain_head,
+                &key(),
+            )
+            .unwrap();
+            assert_eq!(new_record.get("chain").is_some(), chain_head.is_some());
+            assert_local_parity(
+                &format!(
+                    "adjudication ack-refused record (chained {})",
+                    chain_head.is_some()
+                ),
+                &old_record,
+                &new_record,
+            );
+        }
     }
 }
 
