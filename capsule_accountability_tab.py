@@ -110,8 +110,7 @@ __all__ = [
 BLOCK_PENDING = assurance_map.STATE_NOT_CHECKED
 
 REFERENCES_PENDING_REASON = (
-    "what my counterparties report when asked about me is not available on this view yet: "
-    "pending [mesh-ask-the-references]"
+    "what my counterparties report when asked about me is not available on this view yet."
 )
 
 # The three-state discipline (TRUST-MODEL.md §10 Rule 1), plus an explicit
@@ -465,7 +464,7 @@ def build_counterparty_held_block(adjudications_summary: dict[str, Any]) -> dict
     ``self_accountability.adjudications_summary()`` (never re-derived) --
     ``source: self_held``, never claimed as this node's own property. The
     references path (what my counterparties report when *I* ask them) is
-    pending [mesh-ask-the-references]."""
+    pending."""
     tally = {k: adjudications_summary[k] for k in ("corroborated", "contradicted", "inconclusive")}
     received = sum(tally.values())
     return {

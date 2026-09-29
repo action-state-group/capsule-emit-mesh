@@ -609,7 +609,9 @@ def test_build_counterparty_held_block_counts_adjudications_naming_my_capsule_id
     # carry -- pin the actual value, not just the alias, so a future revert
     # of BLOCK_PENDING's definition back to a bare "pending" flips this.
     assert block["references"]["state"] == assurance_map.STATE_NOT_CHECKED
-    assert "mesh-ask-the-references" in block["references"]["text"]
+    assert block["references"]["text"] == (
+        "what my counterparties report when asked about me is not available on this view yet."
+    )
 
 
 def test_build_counterparty_held_block_never_counts_an_adjudication_about_someone_else():
