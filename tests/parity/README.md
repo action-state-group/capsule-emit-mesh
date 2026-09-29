@@ -119,6 +119,29 @@ port. A second step builds the receiver with the
 requires the parity run to fail on the claim cases. That shows the run
 catches a receiver that drops a check, not only a changed answer file.
 
+## Where the port deliberately differs
+
+`intended_differences.json` holds each case the port answers differently
+from the Python door, with the reason. There are six:
+
+- **Stricter reading of the bytes (3 cases).** A bundle marker of `true` or
+  `1.0` is not the integer 1. A UTF-16 body is not JSON (RFC 8259 §8.1).
+- **A resent record is held once (3 cases).** The same sender's record,
+  already held, is acknowledged again but not stored again. The door appends
+  it on every resend.
+
+Two more differences don't show in any corpus answer:
+
+- **Precedence.** This node's policy, then a sender with no announced key,
+  are refused before any work on the record's bytes. An unknown sender is
+  refused `signature_unverified` even when its record would also fail the
+  structure checks; the door would have said `request_malformed`.
+- **Local bookkeeping.** The rejected-push log stops at 4 MiB, after which
+  refusals are counted, not logged. Refusals issued before a record's
+  signature has verified may use only 256 KiB of it. A torn line in a held
+  store is skipped, not fatal, and the next line written after it starts on
+  its own line.
+
 ## Changing the corpus
 
 Add a case in `build_record_push_corpus.py`, then run:

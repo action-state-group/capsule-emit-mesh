@@ -199,6 +199,16 @@ jobs:
           echo "$out" | grep -q "claims_served_by_other" || { echo "$out"; echo "::error::the mutant failed, but not on the claim cases"; exit 1; }
           echo "mutant caught: $(echo "$out" | grep -m1 'case(s) differ')"
 
+      # serde_json's `unbounded_depth` is for the parity run's fixture reader
+      # only (a dev-dependency). It must never reach the plugin binary, where
+      # a pushed body is parsed under the default nesting limit.
+      - name: The plugin binary parses with serde_json's default nesting limit
+        run: |
+          if cargo tree --locked -e normal,features -i serde_json | grep -q unbounded_depth; then
+            echo "::error::serde_json/unbounded_depth is enabled outside the tests"
+            exit 1
+          fi
+
       - name: Interop tests (real Envelope wire protocol + real HTTP dispatch)
         run: cargo test --locked --test interop -- --test-threads=1
 

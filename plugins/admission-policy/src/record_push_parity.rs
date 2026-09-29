@@ -153,6 +153,7 @@ fn run_case(case: &Value, now: &str, seed: u8) -> Vec<Value> {
         signing_key: &signing_key,
         peer_keys: node["peer_keys_env"].as_str(),
         record_at_completion_off: node["record_at_completion"].as_str() == Some("off"),
+        rejected_log_limit: crate::record_push_receive::MAX_REJECTED_LOG_BYTES,
     };
     case["pushes"]
         .as_array()
