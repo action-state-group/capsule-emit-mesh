@@ -8,7 +8,7 @@
 //! three things an owner CAN do:
 //!
 //! 1. **Delete stored prompt and answer text** (`<ledger>/disclosures/*.json`,
-//!    and the host's per-exchange copies in `disclosures/by-exchange/`).
+//!    and the per-exchange copies in `disclosures/by-exchange/`, `exchange_text`).
 //!    That text is a local, out-of-band attachment -- never part of a signed
 //!    record -- so the records keep their digests and stay valid.
 //! 2. **Rebuild the index.** Re-open the ledger from disk, re-checking every
@@ -243,7 +243,7 @@ fn stored_text_ids(ledger_dir: &Path) -> Vec<String> {
     ids
 }
 
-/// Where the host keeps the owner's opted-in prompt and answer text, one file
+/// Where the owner's opted-in prompt and answer text is kept (`exchange_text`), one file
 /// per exchange, named by the exchange id rather than a record id.
 const BY_EXCHANGE_DIR: &str = "by-exchange";
 

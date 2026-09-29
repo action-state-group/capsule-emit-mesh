@@ -10,6 +10,7 @@ mod evidence_panes;
 #[cfg(test)]
 mod evidence_request_parity;
 mod evidence_routes;
+mod exchange_text;
 mod ledger_fetch_bridge;
 mod lifecycle_channel;
 mod mesh_evidence_bridge;
@@ -962,6 +963,26 @@ async fn main() -> anyhow::Result<()> {
                 if message.channel == OPENAI_EXCHANGE_CHANNEL {
                     match serde_json::from_slice::<OpenAiExchangeEnvelope>(&message.body) {
                         Ok(envelope) => {
+                            // The owner's opt-in to keep the text
+                            // (`exchange_text`), from the bodies an opted-in
+                            // host handed over. Independent of sealing.
+                            if let (Some(bodies), Some(exchange_id), true) = (
+                                envelope.exchange_bodies.clone(),
+                                envelope.exchange_id.clone(),
+                                envelope.phase == lifecycle_channel::Phase::Terminal
+                                    && exchange_text::enabled(),
+                            ) {
+                                let ledger_dir = capsules.ledger_dir().to_path_buf();
+                                let twin = envelope.twin_bracket_id.clone();
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    if let Err(error) =
+                                        exchange_text::keep(&ledger_dir, &exchange_id, twin.as_deref(), &bodies)
+                                    {
+                                        tracing::warn!(%error, "could not keep this exchange's text");
+                                    }
+                                })
+                                .await;
+                            }
                             // Seal-on-observe: a HOST-SERVED terminal exchange
                             // (a real loaded GGUF routed host->native-runtime)
                             // never reaches this plugin's own HTTP handler, so
@@ -1190,6 +1211,7 @@ mod push_eligibility_tests {
             reasoning_digest: None,
             twin_bracket_id: None,
             response_text_digest: None,
+            exchange_bodies: None,
         }
     }
 
