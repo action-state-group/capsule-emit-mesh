@@ -191,7 +191,7 @@ describe('SecurityChecksView — L-M: recomputed-here vs from-sidecar are visual
     expect(recomputedCell?.className).not.toBe(sidecarCell?.className)
   })
 
-  it('u108: says the source in words (no coloured bar), with the legend once under the header', () => {
+  it('says the source in words (no coloured bar), with the legend once under the header', () => {
     render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
     const recomputedCell = cellWithDetail('recomputed here')
     expect(recomputedCell?.className).not.toMatch(/border-l-2/)

@@ -10,7 +10,7 @@ afterEach(() => {
   cleanup()
 })
 
-describe('u109: see in Logs from an exchange row', () => {
+describe('see in Logs from an exchange row', () => {
   it('says in plain text that this page cannot open Logs there yet: no dead link', () => {
     render(<SeeInLogsLink exchangeKey={EXCHANGE_ID} />)
     expect(screen.getByText(SEE_IN_LOGS_NOT_ON_THIS_PAGE)).toBeInTheDocument()

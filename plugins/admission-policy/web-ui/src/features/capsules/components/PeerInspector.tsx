@@ -147,7 +147,7 @@ export function PeerInspector({ open, onClose, row, points }: PeerInspectorProps
               </DialogPrimitive.Close>
             </SharedModalHeader>
             <SharedModalBody className="min-h-0 flex-1 overflow-y-auto p-0">
-              {/* u100 (12): four tabs share the drill's width and a long label
+              {/* Four tabs share the drill's width and a long label
                  wraps, so the strip never clips "Exchanges" off its end. */}
               <TabPanel<PeerInspectorTab>
                 ariaLabel="Peer inspector sections"

@@ -65,7 +65,7 @@ function ChecksCell({
   // assert the two classes differ, not just eyeball it.
   return (
     <p
-      // u108: no coloured bar (it read as a selection cursor); the source
+      // No coloured bar (it read as a selection cursor); the source
       // is said in words beside any result.
       className={cn('flex items-baseline gap-1.5 text-xs', cell.recomputed ? 'text-foreground' : 'text-fg-dim')}
       data-detail={cell.detail}

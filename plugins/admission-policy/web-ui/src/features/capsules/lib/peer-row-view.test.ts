@@ -278,7 +278,7 @@ describe('matchTally — clean/mismatch of the halves the other side sent, via t
     expect(matchTallyText(matchTally(row))).toBe('9 · 1 differ')
   })
 
-  it('u102 (4): counts halves the door refused on their claims as differing, so Peers matches the hero', () => {
+  it('counts halves the door refused on their claims as differing, so Peers matches the hero', () => {
     const row = baseRow({
       confirmed_siblings: Array.from({ length: 3 }, () => confirmedSibling()),
       claims_refused: 2

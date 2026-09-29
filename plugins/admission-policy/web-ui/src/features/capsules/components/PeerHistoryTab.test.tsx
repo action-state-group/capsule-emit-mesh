@@ -1,4 +1,4 @@
-// [mesh-evidence-history-surface] The "Their history" tab, rendered. The
+// The "Their history" tab, rendered. The
 // acceptance line: on the two-node capture (nothing fetched, nothing asked),
 // "never asked" renders as never asked, not zero.
 import { render, screen, within } from '@testing-library/react'
@@ -49,7 +49,7 @@ describe('PeerHistoryTab', () => {
     }
   })
 
-  it('u106: the Their log hover says "checked" only when a fetched log was checked', () => {
+  it('the Their log hover says "checked" only when a fetched log was checked', () => {
     render(<PeerHistoryTab row={CAPTURED_PEER} />)
     const region = section('Their log, as shown to you')
     const hovers = Array.from(region.querySelectorAll('[aria-describedby]')).map(

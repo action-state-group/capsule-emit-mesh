@@ -579,7 +579,7 @@ export function buildChecksRows(
 
     let theirs: ChecksSideCell | null = null
     if (held) {
-      // u108: a pushed record the badge already judged (CLOSED / CONTRADICTED)
+      // A pushed record the badge already judged (CLOSED / CONTRADICTED)
       // fills THEIRS too, from the same evidence the gate reads
       // (`pushedHalfRecompute`): its id was redone in this browser (checked
       // here); its signature was checked by this node's door when it arrived

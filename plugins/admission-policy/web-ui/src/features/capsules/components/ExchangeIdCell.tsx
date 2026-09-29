@@ -13,7 +13,7 @@ function isRealExchangeId(exchangeKey: string): boolean {
   return !exchangeKey.startsWith('digest:')
 }
 
-/** u109: "see in Logs" from an exchange row. Opening Logs at one exchange
+/** "see in Logs" from an exchange row. Opening Logs at one exchange
  *  needs a host hook this page doesn't have yet (Logs carrying the exchange
  *  id), so the row says so in plain text; nothing shows for a digest-keyed
  *  row, which no Logs request can carry. */

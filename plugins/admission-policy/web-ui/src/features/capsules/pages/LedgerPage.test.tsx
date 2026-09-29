@@ -735,7 +735,7 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
 
 
   it('[ledger-T4-inline-inspector] renders a two-sided row per exchange (OPEN · not held for a peer-asserted id with no bytes held, OPEN for a unilateral one), the `▸ checks` toggle expands full detail inline', async () => {
-    // [mesh-console-evidence-tab-honesty-defects] finding 1: a peer-
+    // Finding 1: a peer-
     // asserted id with no held bytes is OPEN · not held, never CLOSED
     // -- this fixture used to read `theirs: { state: 'present', ... }` and
     // assert CLOSED off nothing but that presence, exactly the bug the

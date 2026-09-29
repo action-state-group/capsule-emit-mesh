@@ -87,7 +87,7 @@ export type PaneBHistoryCell = PaneState & {
     witnessed?: PaneState & { witnesses?: string[] }
     [key: string]: unknown
   } | null
-  /** [mesh-evidence-history-surface] `refusal_reason`, `segment` and
+  /** `refusal_reason`, `segment` and
    *  `adjudications` below: no producer emits them yet (the Python sidecar's
    *  `peer_history_cell` and the native reader carry none); each degrades to
    *  omission. `refusal_reason` is the signed refusal's registry token when
@@ -121,8 +121,8 @@ export type PaneBSegmentLink = {
 /** `history_card` `adjudications.delivered[<verdict>]`. */
 export type PaneBDeliveredVerdict = { delivered: number; acknowledged: number; disputed: number }
 
-/** One `received_log.jsonl` line (`evidence_server.ReceivedLogEntry`,
- *  [mesh-sharing-policy-v0]). The log is node-wide and `requester_id` is the
+/** One `received_log.jsonl` line (`evidence_server.ReceivedLogEntry`).
+ *  The log is node-wide and `requester_id` is the
  *  requester's self-declared id (`null` on a record push); the drill keeps only
  *  the `evidence-request` lines whose id matches this peer's row. */
 export type AskedOfYouEntry = {
@@ -231,7 +231,7 @@ export type PaneBRow = {
    *  (`verdict_counts.rs`). Absent from a plugin that predates it. */
   referee_verdicts?: RefereeVerdictCounts
   asked: PaneBAskedCell
-  /** [mesh-evidence-history-surface] Your node's `received_log.jsonl` lines,
+  /** Your node's `received_log.jsonl` lines,
    *  as the producer carries them to this row. No producer emits this yet; an
    *  absent field reads as "not shown in this view", never as zero requests. */
   /** `requester_id_source` is always `self_declared`: each entry's requester
@@ -424,7 +424,7 @@ export type PaneCRow = {
     /** Why the door refused, with `claims_refused`: `served_by_mismatch` or
      *  `model_mismatch`. */
     evidence_outcome_reason?: string | null
-    /** `[mesh-e9e10-pieces-3-4]` piece 3 -- the mesh peer id to fetch FROM
+    /** Piece 3 -- the mesh peer id to fetch FROM
      *  (`capsule_panes_native.rs::theirs_cell`'s `served_by_node_id`),
      *  present only alongside `theirs.state === 'NOT_CHECKED'` and a real
      *  `capsule_id`. Never guessed: `null`/absent means this row carries no

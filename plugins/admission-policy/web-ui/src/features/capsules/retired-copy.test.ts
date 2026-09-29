@@ -55,7 +55,7 @@ const RETIRED_PHRASES = [
   // 
   'no key bound', // records ARE signed by the node key -> "not linked to an owner"
   'open in Logs', // an inert control; returns only when it can link
-  // [mesh-evidence-hero-your-history-and-cleanup] the dead pill -> the
+  // The dead pill -> the
   // `Your records` button that opens the panel
   "This node's copy",
   'This node’s copy',
@@ -68,7 +68,7 @@ const RETIRED_PHRASES = [
   'Register your checkpoints',
   'inclusion proof',
   'nothing here is registered',
-  // [u105] tooltip honesty: no claim the code doesn't back.
+  // Tooltip honesty: no claim the code doesn't back.
   'Everything here is checked on this machine',
   'checkable only by you',
   'The next one will be checked against it',

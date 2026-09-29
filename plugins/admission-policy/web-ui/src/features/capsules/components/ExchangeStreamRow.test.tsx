@@ -293,11 +293,11 @@ describe('ExchangeStreamRow — the states render distinct text/status/action', 
     expect(within(head).getByText('response =')).toBeInTheDocument()
     const firstCell = head.querySelector('[data-closed-property-cell]') as HTMLElement
     expect(firstCell).toHaveAttribute('data-closed-property-cell', 'their_id')
-    // u109: opening Logs at this exchange needs a host hook, so the
+    // Opening Logs at this exchange needs a host hook, so the
     // expansion says so in plain text, never a dead link.
     expect(within(head).getByText(SEE_IN_LOGS_NOT_ON_THIS_PAGE)).toBeInTheDocument()
     expect(within(head).queryByRole('button', { name: /see in Logs/ })).not.toBeInTheDocument()
-    // u115: pointing Chat at one node needs a host hook: no such button here.
+    // Pointing Chat at one node needs a host hook: no such button here.
     expect(within(head).queryByRole('button', { name: 'Chat with this node' })).not.toBeInTheDocument()
   })
 
@@ -530,7 +530,7 @@ describe('ExchangeStreamRow — the two row toggles replace the modal', () => {
     expect(screen.getByRole('button', { name: 'What was said ▸' })).toHaveAttribute('aria-expanded', 'false')
   })
 
-  it('u105 (4): a CLOSED row whose own copy fails its checks says so, never a silent CLOSED', () => {
+  it('a CLOSED row whose own copy fails its checks says so, never a silent CLOSED', () => {
     vi.mocked(useRecomputedIdentity).mockReturnValue({ idMatch: false, signatureOk: true })
     try {
       render(<ExchangeStreamRow onAction={vi.fn()} {...toggleProps()} rail={NO_RAIL} row={makeRow('closed')} />)
@@ -550,7 +550,7 @@ describe('ExchangeStreamRow — the two row toggles replace the modal', () => {
     }
   })
 
-  it('u99 (6): Compare on a CONTRADICTED row opens its checks (yours beside theirs), never a silent no-op', async () => {
+  it('Compare on a CONTRADICTED row opens its checks (yours beside theirs), never a silent no-op', async () => {
     const user = userEvent.setup()
     const onAction = vi.fn()
     const onToggleChecks = vi.fn()

@@ -273,7 +273,7 @@ export function ExchangeStreamRow({
   const closedFromFetch =
     state.kind === 'closed' &&
     (askOutcome?.kind === 'record' || (peerFetch.status === 'found' && !pushedHalfRecompute(row.raw)))
-  // A15, u105 (4): your own copy failed "words match" or "signed". Whatever
+  // Your own copy failed "words match" or "signed". Whatever
   // the badge says (Confirmed included), the row says so.
   const ownRecordFails = entryRowChipMark(checksRows, 'content') === '✗' || entryRowChipMark(checksRows, 'sig') === '✗'
   // The bracket strip, drawn in words (UX §3): `Yours ● sealed —— Theirs ●
@@ -458,7 +458,7 @@ export function ExchangeStreamRow({
               <Button
                 className="ui-control h-7 w-fit gap-1 rounded-[var(--radius)] px-2 text-[length:var(--density-type-caption)]"
                 onClick={() =>
-                  // u99 (6): Compare opens this row's checks at "their record",
+                  // Compare opens this row's checks at "their record",
                   // where yours and theirs sit side by side. Other actions ask
                   // the page (a counterparty request, a statement to view).
                   state.kind === 'contradicted'

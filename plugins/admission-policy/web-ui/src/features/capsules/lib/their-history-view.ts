@@ -1,4 +1,4 @@
-// [mesh-evidence-history-surface] Pure view model for the peer drill's
+// Pure view model for the peer drill's
 // "Their history" tab (UX review §2 drill, §7.2 names). Four parts, each with
 // its own "not asked" state that is never rendered as a zero:
 //   (a) Their log, as shown to you -- the peer's chain segment as your node

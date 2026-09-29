@@ -1,4 +1,4 @@
-// [mesh-evidence-history-surface] The peer drill's "Their history" tab: your
+// The peer drill's "Their history" tab: your
 // dealings with them, their log as shown to you, what others say, verdicts
 // on their exchanges by provenance, and what they asked of you. Rendering only -- every
 // state and count comes from `their-history-view.ts`.

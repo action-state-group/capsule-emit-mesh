@@ -218,14 +218,14 @@ describe('deriveRightCellState — the ONE gate: pushed and fetched halves take 
     )
   })
 
-  it('u81(a) item 3: a pushed half from a node that did not serve us never CONTRADICTS, whatever its bytes', () => {
+  it('a pushed half from a node that did not serve us never CONTRADICTS, whatever its bytes', () => {
     const theirs = fixtureTheirsCell('disagrees')
     const record = fixtureHalfBody({ capsuleId: theirs.capsule_id ?? undefined, servedBy: 'd'.repeat(64) })
     expect(deriveRightCellState(pushedRow({ ...theirs, record })).kind).toBe('open_not_held')
     expect(deriveRightCellState(pushedRow({ ...theirs, record, id_match: false })).kind).toBe('open_not_held')
   })
 
-  it('u81(a) item 3: a FETCHED half keeps its id-recompute contradiction (it came from the peer we asked)', () => {
+  it('a FETCHED half keeps its id-recompute contradiction (it came from the peer we asked)', () => {
     const peerRecord = fixtureHalfBody({ capsuleId: 'a'.repeat(64), servedBy: 'd'.repeat(64) })
     const state = deriveRightCellState(pushedRow(fixtureTheirsCell('agrees')), fetched({ idMatch: false, peerRecord }))
     expect(state.kind).toBe('contradicted')

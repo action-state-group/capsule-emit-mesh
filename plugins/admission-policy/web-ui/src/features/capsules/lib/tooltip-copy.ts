@@ -16,7 +16,7 @@ export const HERO_TOOLTIPS = {
   local: 'Reading a saved local copy. This node’s API is not connected, so the records are not updating.',
   sample: 'Showing a saved sample run, not this node’s records. Nothing here updates.',
   yourRecords: 'The records this node keeps, sealed and checkpointed. Open to see where they are and what you share.',
-  // [mesh-evidence-hero-your-history-and-cleanup]: the storage-posture pills,
+  // The storage-posture pills,
   // mirroring Logs. Facts, not features.
   // Shown only when every switch under What you share is off.
   localOnly: 'Nothing is sent from this machine: every switch under What you share is off.',
@@ -72,7 +72,7 @@ export const SELF_REPORTED_TOOLTIP =
 export const PEER_INSPECTOR_HEADER =
   'What you’ve recorded with this peer. Their log, as shown to you, is what they and others let you see.'
 
-/** u106: the drill's "Their log, as shown to you" hover follows the
+/** The drill's "Their log, as shown to you" hover follows the
  *  section's state: "checked" only once a fetched log was checked
  *  (peer_evidence_client fails closed). */
 export const THEIR_LOG_TOOLTIPS = {
@@ -84,7 +84,7 @@ export const THEIR_LOG_TOOLTIPS = {
   not_asked: 'Your node hasn’t asked for their log, so nothing of it is checked here.'
 } as const
 
-/** [mesh-evidence-history-surface] The peer drill's "Their history" sections
+/** The peer drill's "Their history" sections
  *  (UX review §7.2 names). One tooltip per section heading. */
 export const PEER_HISTORY_TOOLTIPS = {
   dealings: 'Your exchanges with this peer, and how many of them their own signed record confirms.',
@@ -211,7 +211,7 @@ export const TWIN_VERDICT_TOOLTIPS = {
   not_comparable: 'The two answers were sampled, so a referee can’t compare them. This is never a disagreement.'
 } as const
 
-/** u106: one sentence per chip AND per state, plain words first, then what
+/** One sentence per chip AND per state, plain words first, then what
  *  was actually checked (TOOLTIPS-ASSESSMENT §0: C1 content binding and C2
  *  signature are redone in this browser, `recompute-identity.ts:28-80`; C10
  *  checkpoint coverage is a count, `integrity-view.ts:237-244`, so it is
@@ -411,7 +411,7 @@ export const CLOSE_CARD_TOOLTIP =
 export const CLOSE_CARD_COUNTS_TOOLTIP =
   'Counts over the exchanges shown here, none of them in an agreed period: how many the other side confirmed, and how many were paid and settled by your wallet.'
 
-/** u108: where a check result in the checks panel came from, in words. */
+/** Where a check result in the checks panel came from, in words. */
 export const CHECK_SOURCE_WORDS = { here: 'checked here', node: 'node says' } as const
 export const CHECK_SOURCE_LEGEND =
   'checked here = your browser redid this check just now; node says = taken from this node without re-checking.'

@@ -148,7 +148,7 @@ describe('judgeAskReply', () => {
     expect(stateAfterAsk(waitingRow(), outcome, null)).toEqual({ kind: 'open_asked', date: ASKED_AT })
   })
 
-  // EM adversarial read: a refusal must be theirs, and about this ask.
+  // Adversarial read: a refusal must be theirs, and about this ask.
   it('never takes a refusal signed with a throwaway key instead of their announced one', async () => {
     const throwaway = signedRefusal('no_such_record', { secret: ed25519.utils.randomSecretKey() })
     const outcome = await judgeAskReply(answer(throwaway), null, ASKED_AT)

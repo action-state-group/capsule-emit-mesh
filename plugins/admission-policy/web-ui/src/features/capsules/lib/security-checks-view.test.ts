@@ -789,7 +789,7 @@ describe('buildCommitsToRows — theirs column, finding 2 corrected', () => {
   })
 })
 
-describe('buildChecksRows — u108: a pushed record the badge judged fills THEIRS', () => {
+describe('buildChecksRows — a pushed record the badge judged fills THEIRS', () => {
   it('their id is redone in this browser (checked here); their signature was checked by this node (node says)', () => {
     const row = {
       exchange_key: 'exch-pushed',

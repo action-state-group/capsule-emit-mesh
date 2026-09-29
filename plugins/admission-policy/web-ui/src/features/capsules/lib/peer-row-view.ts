@@ -321,7 +321,7 @@ export function matchTally(row: PaneBRow): MatchTally {
   const siblings = row.confirmed_siblings ?? []
   return {
     clean: siblings.filter((sibling) => siblingGateState(sibling).kind === 'closed').length,
-    // u102 (4): a half the door refused because its signed claims contradict
+    // A half the door refused because its signed claims contradict
     // our record is a disagreement too, though it is never held as a sibling.
     mismatch:
       siblings.filter((sibling) => siblingGateState(sibling).kind === 'contradicted').length +
