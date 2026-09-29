@@ -402,7 +402,7 @@ export const SETTLEMENT_SOURCE_TOOLTIPS = {
 
 /** The Peers row's payments line. */
 export const PEER_PAYMENTS_TOOLTIP =
-  'Counts of your paid exchanges with this peer, from your own records. Lapsed payments and debts are kept in the provider’s book, which this node doesn’t have.'
+  'Counts of your paid exchanges with this peer, from your own records. The provider’s own book isn’t shared with this node.'
 
 /** Integrity's Close card: agreed periods, then the counts that are in none. */
 export const CLOSE_CARD_TOOLTIP =

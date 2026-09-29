@@ -177,9 +177,6 @@ describe('PeerTableRow -- payments with this peer', () => {
     paid_exchanges: 3,
     settled_payer_observed: 2,
     no_settlement_seen: 1,
-    settled_both_books: null,
-    lapsed: null,
-    debt: null,
     provider_book: 'not_available'
   }
 

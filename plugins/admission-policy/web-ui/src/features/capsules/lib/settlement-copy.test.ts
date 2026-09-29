@@ -21,7 +21,7 @@ import {
 import * as COPY from '@/features/capsules/lib/tooltip-copy'
 
 const BANNED_SETTLEMENT =
-  /\b(unpaid|balances?|owed?|owes|owing|pric(e|es|ed|ing)|price list|rates?|fees?|tariffs?|totals?|sum(s|med)?|relay(s|ed|ing)?|subscriptions?|markup|margin|invoice total)\b/i
+  /\b(unpaid|balances?|debts?|owed?|owes|owing|pric(e|es|ed|ing)|price list|rates?|fees?|tariffs?|totals?|sum(s|med)?|relay(s|ed|ing)?|subscriptions?|markup|margin|invoice total)\b/i
 
 function offenders(label: string, text: string): string[] {
   const match = text.match(BANNED_SETTLEMENT)
@@ -115,9 +115,6 @@ describe('settlement wording gate', () => {
       paid_exchanges: 3,
       settled_payer_observed: 1,
       no_settlement_seen: 2,
-      settled_both_books: null,
-      lapsed: null,
-      debt: null,
       provider_book: 'not_available'
     }
     rendered.push(['peer', peerSettlementText(counts) ?? ''])
@@ -151,6 +148,7 @@ describe('settlement wording gate', () => {
     for (const phrase of [
       'unpaid',
       'your balance',
+      'debts',
       'amount owed',
       'price',
       'priced',

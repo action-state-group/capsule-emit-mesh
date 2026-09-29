@@ -322,8 +322,9 @@ export type PayerBook = {
   exchange_ids?: string[]
 }
 
-/** Per-peer counts. Provider-side states are `null`: this node cannot see
- *  them, so they are not available rather than zero. */
+/** Per-peer counts, from this node's own records only. The provider's side
+ *  is not seen here at all (`provider_book: "not_available"`), so no
+ *  provider-side count is sent. */
 export type PeerSettlementCounts = {
   /** Exchanges with at least one invoice recorded. */
   paid_exchanges: number
@@ -331,9 +332,6 @@ export type PeerSettlementCounts = {
   terms_only?: number
   settled_payer_observed: number
   no_settlement_seen: number
-  settled_both_books: number | null
-  lapsed: number | null
-  debt: number | null
   provider_book: string
 }
 

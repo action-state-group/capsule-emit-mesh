@@ -149,21 +149,13 @@ export function settlementEntryViews(entries: readonly SettlementEntry[]): Settl
 }
 
 /** The Peers line: counts of this peer's paid exchanges, never amounts or a
- *  rate. Lapsed and debts are the provider's states, so they are named as not
- *  available rather than counted as zero. `null` when the peer has no paid
- *  exchange on record. */
+ *  rate. The provider's own book is named as not available, never counted as
+ *  zero. `null` when the peer has no paid exchange on record. */
 export function peerSettlementText(counts: PeerSettlementCounts | undefined): string | null {
   if (!counts || counts.paid_exchanges === 0) return null
   const parts = [`${counts.paid_exchanges} paid`, `${counts.settled_payer_observed} settled by your wallet`]
   if (counts.no_settlement_seen > 0) parts.push(`${counts.no_settlement_seen} no payment seen`)
-  if (counts.lapsed === null && counts.debt === null) {
-    parts.push(`lapsed and debts: ${PROVIDER_BOOK_NOT_AVAILABLE_TEXT}`)
-  } else {
-    // Each provider-side count on its own: a missing one is not available,
-    // never zero.
-    parts.push(counts.lapsed === null ? 'lapsed: not available' : `${counts.lapsed} lapsed`)
-    parts.push(counts.debt === null ? 'debts: not available' : `${counts.debt} debts`)
-  }
+  parts.push(PROVIDER_BOOK_NOT_AVAILABLE_TEXT)
   return parts.join(' · ')
 }
 

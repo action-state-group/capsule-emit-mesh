@@ -127,28 +127,17 @@ describe('peerSettlementText', () => {
     paid_exchanges: 3,
     settled_payer_observed: 2,
     no_settlement_seen: 1,
-    settled_both_books: null,
-    lapsed: null,
-    debt: null,
     provider_book: 'not_available'
   }
 
-  it('counts paid and settled, and names lapsed and debts as not available, never zero', () => {
+  it('counts paid and settled from your own records, and names the provider’s book as not available', () => {
     const text = peerSettlementText(counts)
-    expect(text).toBe(
-      '3 paid · 2 settled by your wallet · 1 no payment seen · lapsed and debts: provider’s book: not available'
-    )
-    expect(text).not.toMatch(/0 lapsed|0 debts/)
+    expect(text).toBe('3 paid · 2 settled by your wallet · 1 no payment seen · provider’s book: not available')
+    expect(text).not.toMatch(/lapsed|debt/)
   })
 
   it('never renders an amount or a rate', () => {
     expect(peerSettlementText(counts)).not.toMatch(/msat|%|rate/)
-  })
-
-  it('a provider-side count the host does not send reads not available, never zero', () => {
-    expect(peerSettlementText({ ...counts, lapsed: 2 })).toBe(
-      '3 paid · 2 settled by your wallet · 1 no payment seen · 2 lapsed · debts: not available'
-    )
   })
 
   it('says nothing for a peer with no paid exchange', () => {
