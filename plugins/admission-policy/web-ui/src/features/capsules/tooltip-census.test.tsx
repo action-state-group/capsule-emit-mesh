@@ -313,7 +313,9 @@ describe('tooltip census -- the copy itself', () => {
       ...Object.values(COPY.INTEGRITY_TILE_TOOLTIPS),
       COPY.CHAIN_STRIP_TOOLTIP,
       COPY.exchangeTextKeptNotice(30),
-      COPY.exchangeTextKeptNotice(1)
+      COPY.exchangeTextKeptNotice(1),
+      COPY.exchangeTextStillHeldNotice(3, 30),
+      COPY.exchangeTextStillHeldNotice(1, 1)
     ]
     const dig = Object.values(COPY.CHECK_CHIP_TOOLTIPS)
     for (const text of [...face, ...dig]) {

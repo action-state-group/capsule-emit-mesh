@@ -8,7 +8,12 @@ import type {
   RecordsStatus,
   SharingSwitchKey
 } from '@/features/capsules/api/recordsClient'
-import { SAMPLE_DATA_UNAVAILABLE, WITNESS_OFF, exchangeTextKeptNotice } from '@/features/capsules/lib/tooltip-copy'
+import {
+  SAMPLE_DATA_UNAVAILABLE,
+  WITNESS_OFF,
+  exchangeTextKeptNotice,
+  exchangeTextStillHeldNotice
+} from '@/features/capsules/lib/tooltip-copy'
 
 function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`
@@ -243,7 +248,18 @@ export function lastCheckpointFact(coveredRecords: number | null, noLaterThan: s
 
 /** The page's notice while this node keeps exchange text, or `null` when it
  *  doesn't (or the plugin can't say). */
-export function exchangeTextNotice(status: RecordsStatus | null | undefined): string | null {
+export type ExchangeTextNotice = { text: string; offerDelete: boolean }
+
+/** The page's notice about kept exchange text: while this node keeps it;
+ *  and, once keeping is off, for as long as kept text is still on disk (with
+ *  the way to delete it now). `null` when there is nothing to say, or the
+ *  plugin can't say. */
+export function exchangeTextNotice(status: RecordsStatus | null | undefined): ExchangeTextNotice | null {
   const text = status?.exchange_text
-  return text?.kept ? exchangeTextKeptNotice(text.retention_days) : null
+  if (!status || !text) return null
+  if (text.kept) return { text: exchangeTextKeptNotice(text.retention_days), offerDelete: false }
+  if (status.stored_text_count > 0) {
+    return { text: exchangeTextStillHeldNotice(status.stored_text_count, text.retention_days), offerDelete: true }
+  }
+  return null
 }

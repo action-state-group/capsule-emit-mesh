@@ -178,6 +178,91 @@ fn token_usage_from(usage: MirrorUsage) -> TokenUsage {
     }
 }
 
+/// One `openai.exchange.v1` event, as the channel handler takes it.
+///
+/// The bodies an opted-in host handed over come off the event first, always:
+/// nothing after this (the event window, the split collector, the log) ever
+/// holds them. They are written only when `keeping_text` (the owner's opt-in,
+/// `exchange_text`).
+///
+/// Seal-on-observe: a HOST-SERVED terminal exchange (a real loaded GGUF routed
+/// host->native-runtime) never reaches this plugin's own HTTP handler, so
+/// nothing else produces a capsule for it. When the observed terminal carries
+/// real served-model identity (only a real GGUF does; the plugin's own stub
+/// does not, so it is not double-sealed), seal a capsule from the observed
+/// serving provenance, real usage and the host-forwarded request digest.
+///
+/// Seal-on-observe, REQUESTER side (on a proxied exchange): a `RemoteMesh`
+/// terminal event means THIS node routed the exchange to a peer: it is the
+/// requester's own half. Mutually exclusive with the host-served branch (see
+/// `is_sealable_host_served`'s doc comment). The coordinator of a split holds
+/// its terminal event until the stage records are in (see `split_stage`); the
+/// background tick seals it.
+///
+/// Every event is recorded in `lifecycle_events`. Returns the envelope and
+/// the capsule just sealed for it, for the caller to push (a push needs the
+/// host context this function does not take).
+async fn observe_exchange_event(
+    body: &[u8],
+    keeping_text: bool,
+    capsules: &Arc<CapsuleState>,
+    splits: &Splits,
+    lifecycle_events: &ObservedLifecycleEvents,
+) -> Option<(OpenAiExchangeEnvelope, Value)> {
+    let mut envelope = match serde_json::from_slice::<OpenAiExchangeEnvelope>(body) {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            tracing::warn!(%error, "unparseable openai.exchange.v1 envelope");
+            return None;
+        }
+    };
+    if let Some(pending) = exchange_text::take(&mut envelope, keeping_text) {
+        let ledger_dir = capsules.ledger_dir().to_path_buf();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Err(error) = pending.write(&ledger_dir) {
+                tracing::warn!(%error, "could not keep this exchange's text");
+            }
+        })
+        .await;
+    }
+    let envelope = if ObservedLifecycleEvents::is_sealable_host_served(&envelope) {
+        let exchange_id = envelope.exchange_id.clone();
+        splits.collector.hold(exchange_id.as_deref(), envelope)?
+    } else {
+        envelope
+    };
+    if !(ObservedLifecycleEvents::is_sealable_host_served(&envelope)
+        || ObservedLifecycleEvents::is_sealable_requester_side(&envelope))
+    {
+        lifecycle_events.record(envelope);
+        return None;
+    }
+    // Seal on `spawn_blocking`: the emit path holds the std ledger mutex
+    // across two `sync_all()`s, which must not stall this tokio worker (the
+    // envelope moves into the closure and back out).
+    let capsules_for_seal = capsules.clone();
+    match tokio::task::spawn_blocking(move || {
+        let sealed = seal_observed_host_exchange(&capsules_for_seal, &envelope);
+        (envelope, sealed)
+    })
+    .await
+    {
+        Ok((envelope, sealed)) => {
+            let to_push = sealed.map(|capsule_json| (envelope.clone(), capsule_json));
+            lifecycle_events.record(envelope);
+            to_push
+        }
+        Err(join_error) => {
+            // Best-effort observability: a panicked/cancelled seal task is
+            // logged, never propagated (the envelope was consumed by the task,
+            // so there is nothing left to record).
+            tracing::warn!(%join_error, "observed-exchange seal task did not complete");
+            None
+        }
+    }
+}
+
+
 /// Seal a capsule for a host-served terminal exchange this plugin only OBSERVED.
 /// Best-effort observability: a producer error is logged, never propagated (an
 /// observe-path failure must not disturb the host). The three real facts —
@@ -892,6 +977,9 @@ async fn main() -> anyhow::Result<()> {
     let lifecycle_events_for_handler = lifecycle_events.clone();
     let splits = Splits::new();
     spawn_split_tick(capsules_for_handler.clone(), splits.clone(), lifecycle_events.clone());
+    // Kept exchange text ages out at start and hourly, whether or not keeping
+    // is still on (`exchange_text`).
+    exchange_text::spawn_retention(capsules_for_handler.ledger_dir().to_path_buf());
     let splits_for_handler = splits.clone();
     let splits_for_stream = splits.clone();
 
@@ -958,105 +1046,29 @@ async fn main() -> anyhow::Result<()> {
                     return Ok(());
                 }
                 if message.channel == OPENAI_EXCHANGE_CHANNEL {
-                    match serde_json::from_slice::<OpenAiExchangeEnvelope>(&message.body) {
-                        Ok(mut envelope) => {
-                            // The bodies an opted-in host handed over come off
-                            // the event here, always: nothing below (the
-                            // event window, the split collector, the log) ever
-                            // holds them. They are written only with the
-                            // owner's opt-in (`exchange_text`).
-                            if let Some(pending) = exchange_text::take(&mut envelope, exchange_text::enabled()) {
-                                let ledger_dir = capsules.ledger_dir().to_path_buf();
-                                let _ = tokio::task::spawn_blocking(move || {
-                                    if let Err(error) = pending.write(&ledger_dir) {
-                                        tracing::warn!(%error, "could not keep this exchange's text");
-                                    }
-                                })
-                                .await;
-                            }
-                            // Seal-on-observe: a HOST-SERVED terminal exchange
-                            // (a real loaded GGUF routed host->native-runtime)
-                            // never reaches this plugin's own HTTP handler, so
-                            // nothing else produces a capsule for it. When the
-                            // observed terminal carries real served-model
-                            // identity (only a real GGUF does — the plugin's own
-                            // stub does not, so it is not double-sealed), seal a
-                            // capsule from the observed serving provenance + real
-                            // usage + host-forwarded request digest.
-                            //
-                            // Seal-on-observe, REQUESTER side
-                            // (on a proxied exchange):
-                            // a `RemoteMesh` terminal event means THIS node
-                            // routed the exchange to a peer -- it is the
-                            // requester's own half, and until this closed, it
-                            // sealed nothing at all. Mutually exclusive with
-                            // the host-served branch above (see
-                            // `is_sealable_host_served`'s doc comment).
-                            // The coordinator of a split holds its terminal
-                            // event until the stage records are in (see
-                            // `split_stage`); the background tick seals it.
-                            let envelope = if ObservedLifecycleEvents::is_sealable_host_served(&envelope) {
-                                let exchange_id = envelope.exchange_id.clone();
-                                match splits.collector.hold(exchange_id.as_deref(), envelope) {
-                                    Some(envelope) => envelope,
-                                    None => return Ok(()),
-                                }
-                            } else {
-                                envelope
-                            };
-                            if ObservedLifecycleEvents::is_sealable_host_served(&envelope)
-                                || ObservedLifecycleEvents::is_sealable_requester_side(&envelope)
-                            {
-                                // Seal on `spawn_blocking`: the emit path
-                                // holds the std ledger mutex across two
-                                // `sync_all()`s, which must not stall this
-                                // tokio worker (the envelope moves into the
-                                // closure and back out, so no clone of the
-                                // whole event is needed).
-                                let capsules_for_seal = capsules.clone();
-                                match tokio::task::spawn_blocking(move || {
-                                    let sealed =
-                                        seal_observed_host_exchange(&capsules_for_seal, &envelope);
-                                    (envelope, sealed)
-                                })
-                                .await
-                                {
-                                    Ok((envelope, sealed)) => {
-                                        if let Some(capsule_json) = sealed {
-                                            // Seam A1:
-                                            // push this node's own just-sealed capsule
-                                            // to the counterparty at completion, when
-                                            // one is knowable and pushing is configured
-                                            // on. See `push_at_completion_if_configured`'s
-                                            // own doc for the honest-absence rules.
-                                            push_at_completion_if_configured(
-                                                context,
-                                                &envelope,
-                                                capsule_json,
-                                                checkpoints.as_ref(),
-                                                &self_peer,
-                                                &[],
-                                            )
-                                            .await;
-                                        }
-                                        lifecycle_events.record(envelope);
-                                    }
-                                    Err(join_error) => {
-                                        // Best-effort observability: a
-                                        // panicked/cancelled seal task is
-                                        // logged, never propagated (the
-                                        // envelope was consumed by the task,
-                                        // so there is nothing left to record).
-                                        tracing::warn!(%join_error, "observed-exchange seal task did not complete");
-                                    }
-                                }
-                            } else {
-                                lifecycle_events.record(envelope);
-                            }
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "unparseable openai.exchange.v1 envelope");
-                        }
+                    if let Some((envelope, capsule_json)) = observe_exchange_event(
+                        &message.body,
+                        exchange_text::enabled(),
+                        &capsules,
+                        &splits,
+                        &lifecycle_events,
+                    )
+                    .await
+                    {
+                        // Seam A1: push this node's own just-sealed capsule
+                        // to the counterparty at completion, when one is
+                        // knowable and pushing is configured on. See
+                        // `push_at_completion_if_configured`'s own doc for
+                        // the honest-absence rules.
+                        push_at_completion_if_configured(
+                            context,
+                            &envelope,
+                            capsule_json,
+                            checkpoints.as_ref(),
+                            &self_peer,
+                            &[],
+                        )
+                        .await;
                     }
                 } else if message.channel == settlement_channel::PAYMENT_LIFECYCLE_CHANNEL
                     && !settlement_channel::is_local_host_broadcast(
@@ -1404,27 +1416,21 @@ mod exchange_text_wiring_tests {
     use super::*;
     use std::path::Path;
 
-    /// A terminal event from a host that hands bodies to plugins, parsed the
-    /// way the channel handler parses it.
-    fn event_with_bodies() -> OpenAiExchangeEnvelope {
-        serde_json::from_str(
-            r#"{"dispatch_path":"raw_proxy","phase":"terminal","model":"m","status":200,
-                "exchange_id":"0f8fad5b-d9cb-469f-a165-70867728950e",
-                "exchange_bodies":{"request":{"messages":[{"role":"user","content":"SECRET-PROMPT"}]},
-                                   "response":{"choices":[{"message":{"content":"SECRET-ANSWER"}}]}}}"#,
-        )
-        .unwrap()
-    }
+    /// A terminal event from a host that hands bodies to plugins, as the
+    /// channel delivers it (wire bytes).
+    const EVENT_WITH_BODIES: &str = r#"{"dispatch_path":"raw_proxy","phase":"terminal","model":"m","status":200,
+        "exchange_id":"0f8fad5b-d9cb-469f-a165-70867728950e",
+        "exchange_bodies":{"request":{"messages":[{"role":"user","content":"SECRET-PROMPT"}]},
+                           "response":{"choices":[{"message":{"content":"SECRET-ANSWER"}}]}}}"#;
 
-    /// The handler's order: take the bodies, write them only when kept, then
-    /// hand the event on to the store.
-    fn observe(data_dir: &Path, keeping: bool) -> ObservedLifecycleEvents {
+    /// The channel handler's own path for this event
+    /// (`observe_exchange_event`), with the given keep-text switch.
+    async fn observe(data_dir: &Path, keeping: bool) -> ObservedLifecycleEvents {
+        let capsules = Arc::new(CapsuleState::open(data_dir, "wiring-test").unwrap());
         let store = ObservedLifecycleEvents::open(data_dir).unwrap();
-        let mut envelope = event_with_bodies();
-        if let Some(pending) = exchange_text::take(&mut envelope, keeping) {
-            pending.write(&data_dir.join("ledger")).unwrap();
-        }
-        store.record(envelope);
+        let pushed =
+            observe_exchange_event(EVENT_WITH_BODIES.as_bytes(), keeping, &capsules, &Splits::new(), &store).await;
+        assert!(pushed.is_none(), "an unsealable event is recorded, never pushed");
         store
     }
 
@@ -1441,10 +1447,10 @@ mod exchange_text_wiring_tests {
 
     /// Host on, plugin off: nothing on disk, and the text is held nowhere
     /// in memory or in the events log either.
-    #[test]
-    fn host_on_plugin_off_keeps_nothing_on_disk_or_in_memory() {
+    #[tokio::test]
+    async fn host_on_plugin_off_keeps_nothing_on_disk_or_in_memory() {
         let dir = tempfile::tempdir().unwrap();
-        let store = observe(dir.path(), false);
+        let store = observe(dir.path(), false).await;
         assert!(by_exchange(dir.path()).is_empty());
         assert!(store.snapshot().iter().all(|e| e.exchange_bodies.is_none()));
         let log = std::fs::read_to_string(dir.path().join("lifecycle-events.jsonl")).unwrap_or_default();
@@ -1452,10 +1458,10 @@ mod exchange_text_wiring_tests {
     }
 
     /// Plugin on: one file on disk, and still no copy in memory once written.
-    #[test]
-    fn plugin_on_writes_the_file_then_holds_no_copy() {
+    #[tokio::test]
+    async fn plugin_on_writes_the_file_then_holds_no_copy() {
         let dir = tempfile::tempdir().unwrap();
-        let store = observe(dir.path(), true);
+        let store = observe(dir.path(), true).await;
         assert_eq!(by_exchange(dir.path()), vec!["0f8fad5b-d9cb-469f-a165-70867728950e.json".to_string()]);
         assert!(store.snapshot().iter().all(|e| e.exchange_bodies.is_none()));
         let log = std::fs::read_to_string(dir.path().join("lifecycle-events.jsonl")).unwrap_or_default();
