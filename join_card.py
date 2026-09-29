@@ -761,8 +761,7 @@ def check_announcement_consistency(card: Card, observed_digest: str | None) -> d
     }
 
 
-#: The "higher-order bit" vocabulary (mesh-accountability-panes-v2-2026-09-05.md
-#: §-2): every card face and peer row leads with one of these four states,
+#: The "higher-order bit" vocabulary: every card face and peer row leads with one of these four states,
 #: never a fifth. `nothing_promised` is grey and must never be rendered as
 #: `kept` -- it means there was nothing comparable, not that a promise held.
 PROMISE_KEPT = "kept"

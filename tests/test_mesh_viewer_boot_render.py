@@ -2,7 +2,7 @@
 """Headless boot/render of the SELF-CONTAINED permalink -- the regression guard
 for the embed-serialization corruption AND the inference-forward render.
 
-The corruption we guard against (see mesh-live-demo-permalink.html.bak): the
+The corruption we guard against (seen in a real live-demo permalink): the
 base64url fragment was jammed into the JS boot GUARD
 (`if (embedded && embedded !== ""<base64>...`) instead of ONLY the
 `window.__MESH_FRAGMENT_B64U__="..."` placeholder -- a JS syntax error that

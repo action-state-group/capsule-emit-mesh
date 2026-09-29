@@ -28,8 +28,7 @@ Composes verbs that already exist; re-derives none of their evidence:
     own ``x-mesh-poc-v1.role``/``label_role()`` per record, folded to "you
     asked them" / "they asked you" / "both" plus a count each way. Never a
     trust signal, purely a direction-of-exchange fact.
-  - **history (theirs)**: v2 (mesh-accountability-panes-v2-2026-09-05.md
-    §2/§4) calls out that today's cell shows THIS node's own
+  - **history (theirs)**: the panes v2 design calls out that today's cell shows THIS node's own
     ``history_card.build_history_card()`` chain on every peer row -- a
     documented shortcut, not the peer's own card. There is still no evidence
     subject a peer's OWN history card can be fetched over (the merged
@@ -126,8 +125,7 @@ __all__ = [
     "witnessed_cell",
 ]
 
-# The honesty states a Pane B cell can carry (mesh-accountability-build-plan
-# §6, the batch-3 tab spec): a refusal is never folded into "absent", an
+# The honesty states a Pane B cell can carry: a refusal is never folded into "absent", an
 # absence names its own transport/timeout, "unilateral" is a first-class
 # state (not a lesser "present"), and a contradicted cell always carries the
 # adjudication it disagrees with. ``CELL_PRESENT``/``CELL_VERIFIED``/
@@ -164,7 +162,7 @@ UNKNOWN_PEER = "unknown"
 #: client, no send-log persistence) -- see `ASKED_ABSENT_REASON` below.
 ASKED_ABSENT_REASON = "Not yet counted — this node doesn't persist served/refused counts."
 
-#: v2 (mesh-accountability-panes-v2-2026-09-05.md §4): "History (theirs) must
+#: The rule: "History (theirs) must
 #: be THEIR card fetched via the evidence client (checkpoints subject,
 #: cached per pin)". No such subject exists yet -- the merged responder
 #: (capsule_emit.evidence_request.SUBJECT_KINDS) answers only
@@ -719,8 +717,8 @@ def build_peer_row(
     own_served_summary_value: dict[str, Any] | None = None,
     peer_fetch_result: "PeerFetchResult | None" = None,
 ) -> dict[str, Any]:
-    """One Pane B row for *peer_id* -- the 7 columns of
-    mesh-accountability-panes-v2-2026-09-05.md §2, plus a row-expand pair
+    """One Pane B row for *peer_id* -- the 7 Pane B
+    columns, plus a row-expand pair
     ledger (the "their card in Pane A layout" half of row-expand stays
     pending the same peer-fetch gap as ``peer_history_cell``)."""
     timestamps = [r.get("timestamp") for r in records if r.get("timestamp")]

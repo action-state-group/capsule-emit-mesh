@@ -12,9 +12,8 @@
 #      `feat/serving-provenance-capture` -- merged to main via #35).
 #   2. Starts that real host + plugin, real Metal GPU, on the SAME ports as
 #      this repo's own Demo 4 / 2-role runbooks (19337 / console 13131) --
-#      reconciled against `_work/two-mac-crossverify-runbook.md` and
-#      `_work/mesh-2role-live-adversarial-runbook.md`, both of which use
-#      19337 consistently; it was not stale.
+#      the two-Mac cross-verify and live 2-role adversarial runbooks both
+#      use 19337 consistently; it was not stale.
 #   3. Sends a silent warm-up request, THEN the ONE request you're inspecting
 #      (see "why a warm-up" below -- required, not padding).
 #   4. Seals a capsule (automatic, inside the plugin's own HTTP handler).

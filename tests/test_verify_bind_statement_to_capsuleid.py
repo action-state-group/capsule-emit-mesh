@@ -3,7 +3,7 @@
 """[mesh-verify-bind-statement-to-capsuleid] mutant tests.
 
 Reproduces the exact adversarial-review findings ADV-1/ADV-2
-(`_work/mesh-adversarial-review-2026-09-05.md`) against
+(an internal adversarial review) against
 `stranger_verify_bundle.py`'s and `capsule_mesh_view.py`'s detached-statement
 verify, and pins the fix (QUEUE_PROTOCOL §7 -- every check must fail its
 mutant, and must NOT fail the honest case):

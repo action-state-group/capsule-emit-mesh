@@ -1,6 +1,6 @@
 
     __( O)>  ● new session · mesh bartowski/Hermes-2-Pro-Mistral-7B-GGUF:Q4_K_M
-   \____)    20260811_14 · /Users/intangible/dev/asg/_work/capsule-emit-mesh-poc/poc
+   \____)    20260811_14 · <local-path>/capsule-emit-mesh-poc/poc
      L L     goose is ready
 
   ────────────────────────────────────────

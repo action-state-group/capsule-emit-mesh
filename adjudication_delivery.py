@@ -38,8 +38,7 @@ verdict, so the requester's OWN chain holds a record of the decline even
 where the judged node's chain shows nothing.
 
 **Only the citations this repo mints today are checked.** The full
-twin-adjudication design (``_work/mesh-referee-build-2026-09-02.md`` §2.1)
-cites FOUR records -- requester commitment, half A, half B, referee half --
+twin-adjudication design cites FOUR records -- requester commitment, half A, half B, referee half --
 but ``twin_adjudicator.seal_adjudication_capsule`` (E17a, offline-only, no
 live twin-send or referee step yet -- see that module's docstring) only
 ever embeds ``half_a_capsule_id``/``half_b_capsule_id``. `_cited_capsule_ids`

@@ -1096,8 +1096,7 @@ mod tests {
     /// PARITY PIN: `output_sub_digests` over the REAL SETI@Home / web_search
     /// response computes a `tool_calls_digest` byte-for-byte identical to the
     /// Python reference `agent_action_capsule.json_digest(tool_calls)` — the
-    /// value recorded requester-side in the live demo
-    /// (`_work/mesh-live-demo/b-tool_calls.json`). A non-reasoning model yields
+    /// value recorded requester-side in the live demo capture. A non-reasoning model yields
     /// an absent reasoning digest (honest null), never fabricated.
     #[test]
     fn output_sub_digests_over_real_seti_response_matches_python_reference() {
@@ -1434,8 +1433,8 @@ mod tests {
         let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
 
         // The REAL served SETI@Home response body carrying the model's real
-        // web_search tool call (the exact tool_calls from the live-demo capture
-        // _work/mesh-live-demo/b-tool_calls.json), plus real usage. The host
+        // web_search tool call (the exact tool_calls from the live-demo
+        // capture), plus real usage. The host
         // computes response_digest / tool_calls_digest over exactly this body at
         // its JSON-relay delivery point; we reproduce those here to bind the
         // exported capsule to real values throughout (no placeholder digests).

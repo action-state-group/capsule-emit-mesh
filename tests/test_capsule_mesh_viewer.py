@@ -1014,7 +1014,7 @@ def test_disclosure_status_present_takes_priority_over_purge_record():
 # fragment was jammed into the JS boot GUARD condition
 # (`if (embedded && embedded !== ""<base64>...`) instead of ONLY the
 # `window.__MESH_FRAGMENT_B64U__="..."` placeholder -- a JS syntax error that
-# blanked the page. See mesh-live-demo-permalink.html.bak.
+# blanked the page.
 # ---------------------------------------------------------------------------
 
 import re  # noqa: E402

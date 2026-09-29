@@ -1418,7 +1418,7 @@ def render_mesh_viewer_html(fragment: str) -> str:
     # the fragment. The earlier bug replaced a shared token in BOTH the
     # placeholder and the guard condition, jamming the base64 into
     # `if (embedded && embedded !== "...")` -> a JS syntax error that blanked the
-    # page (see mesh-live-demo-permalink.html.bak). Order matters: inline the JS
+    # page. Order matters: inline the JS
     # first, THEN substitute the single placeholder, and assert the fragment
     # appears exactly once in the output.
     embed = json.dumps(fragment)  # a JSON string literal: "<base64url>"

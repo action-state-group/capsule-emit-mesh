@@ -450,7 +450,7 @@
       // placeholder; because this string is assembled at runtime it can never be
       // overwritten by that substitution -- the exact bug that jammed base64 into
       // this condition (`if (embedded && embedded !== ""<base64>...`) and blanked
-      // the page. See mesh-live-demo-permalink.html.bak.
+      // the page.
       var UNFILLED = "@@" + "FRAGMENT" + "@@";
       if (embedded && embedded !== UNFILLED) payload = decodeFragment(embedded);
       var hash = location.hash.slice(1);

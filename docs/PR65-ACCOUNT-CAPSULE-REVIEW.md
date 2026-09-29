@@ -17,11 +17,10 @@ range only (never the un-anchored tail), plus a **Nostr publish path** (kind
 
 ## Against the referee doc and properties-not-scores
 
-Checked against `_work/mesh-referee-build-2026-09-02.md` §4 ("properties, not
-scores": "*a property is computed from the artifacts alone, by anyone holding
+Checked against the "properties, not scores" rule
+("*a property is computed from the artifacts alone, by anyone holding
 them, and reproduces exactly*... *a score is comparative and needs a scorer*")
-and `_work/mesh-history-proposal-2026-09-05.md` §4 (same ruling, mesh-history
-specific: `continuity`, `history_depth`, `reconciled_with`, `gaps_detected`,
+and the same rule applied to mesh history ( `continuity`, `history_depth`, `reconciled_with`, `gaps_detected`,
 `fingerprint_drift` as the property vocabulary; scores explicitly out of scope
 for the neutral layer).
 

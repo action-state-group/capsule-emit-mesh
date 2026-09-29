@@ -27,7 +27,7 @@
       "aiohttp-retry==2.9.1",
       "-e git+https://github.com/action-state-group/capsule-emit.git@7098c10455e42d827c7c86deeaecfaffeb498f82#egg=capsule_emit&subdirectory=../../_worktrees/capsule-emit/capsule-emit-float-in-digest-example-broken",
       "# Editable install with no version control (capsule-emit-nanda==0.1.0)",
-      "-e /Users/intangible/dev/asg/_work/nandatown/examples/capsule-emit",
+      "-e <local-path>/nandatown/examples/capsule-emit",
       "cbor2==5.8.0",
       "cryptography==46.0.7",
       "httpx==0.28.1",
