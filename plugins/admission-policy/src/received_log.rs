@@ -104,7 +104,7 @@ mod tests {
         Entry {
             ts: "2026-09-29T00:00:00Z",
             path: "evidence-request",
-            requester_id: Some("m3"),
+            requester_id: Some("node-a"),
             subject_kind: Some("record"),
             status: "refused",
             reason: Some("no_such_subject"),

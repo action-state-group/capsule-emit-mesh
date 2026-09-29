@@ -1229,7 +1229,7 @@ mod push_eligibility_tests {
     /// loaded model (a `weights_digest`), and `requested_by_node_id` naming the
     /// node that asked.
     fn tunneled_host_served_envelope(requested_by: Option<&str>) -> OpenAiExchangeEnvelope {
-        let mut envelope = remote_mesh_envelope(Some("self-m3"));
+        let mut envelope = remote_mesh_envelope(Some("self-node-a"));
         envelope.dispatch_path = DispatchPath::RawProxy;
         let provenance = envelope
             .serving_provenance
@@ -1245,22 +1245,22 @@ mod push_eligibility_tests {
     // "policy off -> no push" behavior.
     #[test]
     fn policy_off_never_pushes_even_with_a_known_counterparty_and_self_id() {
-        let envelope = remote_mesh_envelope(Some("peer-m3"));
-        assert_eq!(push_eligibility(&envelope, true, Some("self-m4")), None);
+        let envelope = remote_mesh_envelope(Some("peer-node-a"));
+        assert_eq!(push_eligibility(&envelope, true, Some("self-node-b")), None);
     }
 
     #[test]
     fn policy_on_pushes_when_counterparty_and_self_id_are_both_known() {
-        let envelope = remote_mesh_envelope(Some("peer-m3"));
+        let envelope = remote_mesh_envelope(Some("peer-node-a"));
         assert_eq!(
-            push_eligibility(&envelope, false, Some("self-m4")),
-            Some(("peer-m3", "self-m4"))
+            push_eligibility(&envelope, false, Some("self-node-b")),
+            Some(("peer-node-a", "self-node-b"))
         );
     }
 
     #[test]
     fn no_self_peer_id_configured_never_pushes() {
-        let envelope = remote_mesh_envelope(Some("peer-m3"));
+        let envelope = remote_mesh_envelope(Some("peer-node-a"));
         assert_eq!(push_eligibility(&envelope, false, None), None);
     }
 
@@ -1268,15 +1268,15 @@ mod push_eligibility_tests {
     // (the old silent skip) and the first assertion goes red.
     #[test]
     fn a_push_skipped_only_for_a_missing_self_id_is_reported() {
-        let envelope = remote_mesh_envelope(Some("peer-m3"));
+        let envelope = remote_mesh_envelope(Some("peer-node-a"));
         assert_eq!(
             skipped_for_missing_self_id(&envelope, false, None),
-            Some("peer-m3")
+            Some("peer-node-a")
         );
         // Not reported when the push goes ahead, when policy is off, or when
         // there is no counterparty to push to anyway.
         assert_eq!(
-            skipped_for_missing_self_id(&envelope, false, Some("self-m4")),
+            skipped_for_missing_self_id(&envelope, false, Some("self-node-b")),
             None
         );
         assert_eq!(skipped_for_missing_self_id(&envelope, true, None), None);
@@ -1290,18 +1290,18 @@ mod push_eligibility_tests {
     // arm and this goes red.
     #[test]
     fn host_served_terminal_pushes_to_the_node_that_asked() {
-        let envelope = tunneled_host_served_envelope(Some("peer-m4"));
+        let envelope = tunneled_host_served_envelope(Some("peer-node-b"));
         assert_eq!(
-            push_eligibility(&envelope, false, Some("self-m3")),
-            Some(("peer-m4", "self-m3"))
+            push_eligibility(&envelope, false, Some("self-node-a")),
+            Some(("peer-node-b", "self-node-a"))
         );
     }
 
     // Never to itself: the served-by id (this node) is not a counterparty.
     #[test]
     fn host_served_terminal_never_pushes_to_its_own_served_by_id() {
-        let envelope = tunneled_host_served_envelope(Some("peer-m4"));
-        assert_ne!(push_counterparty(&envelope), Some("self-m3"));
+        let envelope = tunneled_host_served_envelope(Some("peer-node-b"));
+        assert_ne!(push_counterparty(&envelope), Some("self-node-a"));
     }
 
     // A request on this node's local API has no requesting mesh node; the host
@@ -1309,20 +1309,20 @@ mod push_eligibility_tests {
     #[test]
     fn host_served_terminal_from_the_local_api_never_pushes() {
         let envelope = tunneled_host_served_envelope(None);
-        assert_eq!(push_eligibility(&envelope, false, Some("self-m3")), None);
+        assert_eq!(push_eligibility(&envelope, false, Some("self-node-a")), None);
     }
 
     #[test]
     fn host_served_terminal_with_unknown_requester_never_pushes() {
         let envelope = tunneled_host_served_envelope(Some("unknown"));
-        assert_eq!(push_eligibility(&envelope, false, Some("self-m3")), None);
+        assert_eq!(push_eligibility(&envelope, false, Some("self-node-a")), None);
     }
 
     // Policy off wins on the provider side too.
     #[test]
     fn host_served_terminal_with_policy_off_never_pushes() {
-        let envelope = tunneled_host_served_envelope(Some("peer-m4"));
-        assert_eq!(push_eligibility(&envelope, true, Some("self-m3")), None);
+        let envelope = tunneled_host_served_envelope(Some("peer-node-b"));
+        assert_eq!(push_eligibility(&envelope, true, Some("self-node-a")), None);
     }
 
     // Not a real served exchange (no loaded-model identity: the plugin's own
@@ -1335,33 +1335,33 @@ mod push_eligibility_tests {
             .serving_provenance
             .as_mut()
             .unwrap()
-            .requested_by_node_id = Some("peer-m4".to_string());
-        assert_eq!(push_eligibility(&envelope, false, Some("self-m3")), None);
+            .requested_by_node_id = Some("peer-node-b".to_string());
+        assert_eq!(push_eligibility(&envelope, false, Some("self-node-a")), None);
     }
 
     // The host's JSON field lands in the mirror (and is optional on the wire).
     #[test]
     fn requested_by_node_id_deserializes_from_the_host_envelope_and_defaults_absent() {
         let with: HostServingProvenance = serde_json::from_value(
-            serde_json::json!({"served_by_node_id": "m3", "requested_by_node_id": "m4"}),
+            serde_json::json!({"served_by_node_id": "node-a", "requested_by_node_id": "node-b"}),
         )
         .expect("parse");
-        assert_eq!(with.requested_by_node_id.as_deref(), Some("m4"));
+        assert_eq!(with.requested_by_node_id.as_deref(), Some("node-b"));
         let without: HostServingProvenance =
-            serde_json::from_value(serde_json::json!({"served_by_node_id": "m3"})).expect("parse");
+            serde_json::from_value(serde_json::json!({"served_by_node_id": "node-a"})).expect("parse");
         assert_eq!(without.requested_by_node_id, None);
     }
 
     #[test]
     fn remote_mesh_with_no_served_by_node_id_has_no_knowable_counterparty() {
         let envelope = remote_mesh_envelope(None);
-        assert_eq!(push_eligibility(&envelope, false, Some("self-m4")), None);
+        assert_eq!(push_eligibility(&envelope, false, Some("self-node-b")), None);
     }
 
     #[test]
     fn remote_mesh_with_unknown_served_by_node_id_has_no_knowable_counterparty() {
         let envelope = remote_mesh_envelope(Some("unknown"));
-        assert_eq!(push_eligibility(&envelope, false, Some("self-m4")), None);
+        assert_eq!(push_eligibility(&envelope, false, Some("self-node-b")), None);
     }
 }
 
