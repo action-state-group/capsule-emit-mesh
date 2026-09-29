@@ -39,11 +39,10 @@
 # requests -- a NEW subject kind evidence_request.answer() must recognize, which 0.7.1's
 # SUBJECT_KINDS predates (parse_request() refused it as request_malformed). 0.8.0 ships the
 # correlation subject (#155), the store-layout ledger show/read_ledger (#156), AND
-# capsule_emit.chain_segment (the module that motivated cutting 0.8.0 in the first place --
-# [capsule-emit-pypi-tag-behind-main]). Also folds in evidence_request.answer()'s range
-# cap/paging and pull-only-by-default allow_forced_checkpoint gate
-# ([adv-evidence-door-caps-and-subjects]) -- additive, this repo's callers pass no new arguments,
-# so the safe defaults apply automatically.
+# capsule_emit.chain_segment (the module that motivated cutting 0.8.0 in the first place:
+# the PyPI release had fallen behind main). Also folds in evidence_request.answer()'s range
+# cap/paging and pull-only-by-default allow_forced_checkpoint gate, both additive: this
+# repo's callers pass no new arguments, so the safe defaults apply automatically.
 capsule-emit[mcp]>=0.8.0
 # Floor is now 0.3.0, not 0.2.2: history_card.py's `_receipt_grade` reads
 # `ReceiptResult.protected_header_ext` (the generic pass-through for private
@@ -55,7 +54,7 @@ scitt-cose>=0.3.0
 cbor2
 mcp<2
 
-# [mesh-ledger-store-migration]: ledger_store_backend.py imports cll.ledger.store /
+# ledger_store_backend.py imports cll.ledger.store /
 # cll.ledger.segments directly (LedgerStore, segment rotation/archival, SegmentManifest) --
 # capsule-emit[mcp] only pulls checkpointed-local-log transitively for its own
 # cll.checkpoint core, so a direct pin is needed for the ledger submodule this repo now

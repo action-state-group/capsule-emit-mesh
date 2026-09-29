@@ -121,7 +121,7 @@ def test_frozen_digest_is_a_real_sha256_of_the_canonical_bytes():
     )
 
 
-# [capsule-emit-mesh-request-digest-unsafe-int-guard] -0.0 and 1e-05 are the
+# -0.0 and 1e-05 are the
 # two edge cases README's "Digest context" section names explicitly
 # (consequence 1: repr()'s sign-preserving negative zero, and its
 # exponential-notation threshold at decimal exponent < -4). Pinned here,

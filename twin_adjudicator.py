@@ -184,7 +184,7 @@ VERDICT_CONTRADICTED_PREFIX = "contradicted:"
 #: corroboration or contradiction, and is never either.
 VERDICT_NOT_COMPARABLE = "not_comparable"
 
-#: [mesh-fabric-vocab-alignment] the fabric's shared record-header vocabulary
+#: The fabric's shared record-header vocabulary
 #: convention: the adjudication capsule as a whole is
 #: this node's own judgment over the two halves + referee citation.
 EPISTEMIC_TYPE_ADJUDICATION = "adjudication"
@@ -196,7 +196,7 @@ EPISTEMIC_TYPE_ADJUDICATION = "adjudication"
 #: it.
 EPISTEMIC_TYPE_OBSERVED_EVENT = "observed_event"
 
-#: [mesh-fabric-vocab-alignment] the fabric's per-verdict status vocabulary
+#: The fabric's per-verdict status vocabulary
 #: convention that an adjudication bundle's `adjudication`
 #: block carries alongside its own `verdict`, never replacing it.
 STATUS_CONTRADICTED = "CONTRADICTED"
@@ -227,19 +227,19 @@ NO_VERDICT_SAME_OWNER_TWIN = "same_owner_twin"
 #: with neither provider at fault, so they are not comparable -- never
 #: ``contradicted``.
 NO_VERDICT_NOT_COMPARABLE = "not_comparable"
-#: [mesh-provider-no-body-persistence] The referee spec is explicit: the
+#: The referee spec is explicit: the
 #: REQUESTER holds both twin responses. A half whose sealed serving_provenance
 #: names it as the provider role -- and carries no disclosed response body --
 #: has no transcript this module could ever have compared; refuse cleanly
 #: (`inconclusive: no_requester_transcript`) instead of letting
 #: _verify_preimage_or_raise crash on an always-empty disclosed dict.
 NO_VERDICT_NO_REQUESTER_TRANSCRIPT = "no_requester_transcript"
-#: [mesh-referee-live-e17c] The caller-supplied `referee_owner_id` matches
+#: The caller-supplied `referee_owner_id` matches
 #: either half's `owner_id` -- refused BEFORE the referee is ever called;
 #: see the module docstring's independence-refusal paragraph.
 NO_VERDICT_REFEREE_NOT_INDEPENDENT = "referee_not_independent"
 
-#: [mesh-referee-capsule-citation] `RefereeResult.referee_record_status` /
+#: `RefereeResult.referee_record_status` /
 #: an `AdjudicationOutcome.references[]` entry's own `status` -- three
 #: states, never a silent fourth. `RESOLVED`: the referee node's own
 #: sealed half was found via `correlation{by: "nonce", ...}` against its
@@ -254,13 +254,13 @@ REFEREE_RECORD_RESOLVED = "resolved"
 REFEREE_RECORD_CITATION_UNVERIFIED = "citation_unverified"
 REFEREE_RECORD_UNRESOLVED = "unresolved"
 
-#: [mesh-adjudicator-owner-and-weights] Returned when either half's owner_id
+#: Returned when either half's owner_id
 #: is absent (None).  Absent identity must never grade better than
 #: declared-same-owner: a node that omits its owner_id would otherwise bypass
 #: the same_owner_twin guard entirely.
 NO_VERDICT_OWNER_ABSENT = "owner_absent"
 
-#: [mesh-referee-attribution] Returned when the referee callable raises any
+#: Returned when the referee callable raises any
 #: exception (referee unreachable or refused).  A first-class outcome, never
 #: propagated as-is -- callers see ``no_verdict_reason=referee_unreachable``,
 #: not a crash.
@@ -275,7 +275,7 @@ NO_VERDICT_REFEREE_UNREACHABLE = "referee_unreachable"
 #: its own.  The 0.9 threshold exists so that a single trailing token added
 #: by one twin does not force ``inconclusive``; evasion via systematic
 #: trailing-token injection raises the per-node inconclusive RATE, which is
-#: observable via [mesh-expectation-comparison].
+#: observable via the expectation comparison.
 DEFAULT_MARGIN_TAU = 0.9
 
 #: The denominator used when computing the margin fraction: the token count
@@ -291,7 +291,7 @@ MARGIN_TAU_RATIONALE = (
     "tokens matched / max(len_a, len_b); 0.9 means up to 10% trailing tokens"
     " differ without triggering inconclusive; evasion via systematic"
     " trailing-token injection raises the per-node inconclusive RATE observable"
-    " via [mesh-expectation-comparison]"
+    " via the expectation comparison (mesh_expectation_comparison.py)"
 )
 
 
@@ -317,7 +317,7 @@ class PreimageDigestMismatchError(RuntimeError):
 
 
 class UnattributableRefereeError(RuntimeError):
-    """[mesh-referee-attribution] A referee returned a result with no
+    """A referee returned a result with no
     ``RefereeIdentity`` (``identity=None``).  An unattributed verdict must
     never seal -- any callable that omits identity is rejected before its
     result can be acted upon.  Supply a ``RefereeIdentity`` with a non-empty
@@ -327,7 +327,7 @@ class UnattributableRefereeError(RuntimeError):
 
 @dataclass(frozen=True)
 class RefereeIdentity:
-    """[mesh-referee-attribution] Identity of the referee party that produced
+    """Identity of the referee party that produced
     a ``RefereeResult``.  Required: a ``RefereeResult`` with ``identity=None``
     raises ``UnattributableRefereeError`` before its verdict can be adopted.
 
@@ -361,7 +361,7 @@ class AdjudicationHalf:
     disclosed: dict[str, Any]
     owner_id: str | None = None
     weights_digest: str | None = None
-    #: [mesh-runtime-ext-payload-migration] This half's declared
+    #: This half's declared
     #: `model_attestation.compute_attestation.decoding` (`{temperature,
     #: seed}`, self_reported) -- the runtime/model extension draft's field,
     #: auto-extracted by `from_capsule_and_disclosure` the same way
@@ -575,7 +575,7 @@ class RefereeResult:
     this module -- callers supply a `Referee` that returns one (see
     `live_referee.py` for the live third-node implementation).
 
-    [mesh-referee-capsule-citation] `capsule_id` is set ONLY when
+    `capsule_id` is set ONLY when
     `referee_record_status == REFEREE_RECORD_RESOLVED` -- i.e. resolved via
     `correlation{by: "nonce", ...}` against the referee node's own evidence
     door and verified offline (see `live_referee.resolve_referee_record`),
@@ -592,7 +592,7 @@ class RefereeResult:
     capsule_id: str | None = None
     referee_record_status: str = REFEREE_RECORD_UNRESOLVED
     referee_record_nonce: str | None = None
-    #: [mesh-referee-attribution] Identity of the referee party.  Required:
+    #: Identity of the referee party.  Required:
     #: ``adjudicate()`` raises ``UnattributableRefereeError`` when this is
     #: ``None``.  Callers supply a ``RefereeIdentity`` with a non-empty
     #: ``referee_id``; see that dataclass for field semantics.
@@ -643,7 +643,7 @@ class AdjudicationOutcome:
     #: (see `references` below -- the nonce citation still survives even
     #: then).
     referee_capsule_id: str | None = None
-    #: [mesh-referee-capsule-citation] One entry per cited external record
+    #: One entry per cited external record
     #: this outcome could not fold into a plain `*_capsule_id` field --
     #: today, at most one: the referee's own nonce-correlation resolution,
     #: `{"kind": "referee_capsule", "nonce", "status", "capsule_id"}`.
@@ -652,7 +652,7 @@ class AdjudicationOutcome:
     #: gets an entry (nonce cited, `capsule_id: None`), never a silent
     #: omission. Empty tuple when no referee was called.
     references: tuple[dict[str, Any], ...] = ()
-    #: [mesh-referee-attribution] The ``referee_id`` string from the
+    #: The ``referee_id`` string from the
     #: ``RefereeResult.identity`` that was verified by ``adjudicate()``.
     #: ``None`` when no referee was called.  Stored here so
     #: ``seal_adjudication_capsule`` can cite it in the adjudication block
@@ -750,7 +750,7 @@ def adjudicate(
 
     1. Each half's capsule must pass its own `verify()` -- a forged half
        raises `ForgedHalfError`.
-    2. [mesh-provider-no-body-persistence] The referee spec requires the
+    2. The referee spec requires the
        REQUESTER to hold both twin responses. Either half being a
        provider-role capsule with no disclosed response body -- i.e. no
        requester-held transcript could exist for it, by construction --
@@ -849,7 +849,7 @@ def adjudicate(
             half_b_capsule_id=half_b_id,
         )
 
-    # [mesh-adjudicator-owner-and-weights] shared_weights_digest is only set
+    # shared_weights_digest is only set
     # when BOTH halves agree on the same non-None value.  When one side is
     # None, we cannot assert that a shared digest was used -- publishing the
     # other side's digest would be a false shared-weights claim.
@@ -858,7 +858,7 @@ def adjudicate(
     else:
         shared_weights_digest = None  # at least one unknown -- cannot assert shared
 
-    # [mesh-adjudicator-owner-and-weights] Absent owner_id must never grade
+    # Absent owner_id must never grade
     # better than declared-same-owner.  A node that omits owner_id entirely
     # would bypass the same_owner_twin guard, which is always wrong.
     if half_a.owner_id is None or half_b.owner_id is None:
@@ -917,7 +917,7 @@ def adjudicate(
         # own logprobs are never read here (see the module docstring's
         # 2026-09-08 ruling). Any divergence calls the referee.
         #
-        # [mesh-referee-attribution] Wrap in try/except: a referee that
+        # Wrap in try/except: a referee that
         # raises is referee_unreachable -- a first-class outcome, never a
         # crash propagated to the caller.
         try:
@@ -936,7 +936,7 @@ def adjudicate(
                 half_b_capsule_id=half_b_id,
             )
 
-        # [mesh-referee-attribution] An unattributed verdict must never seal.
+        # An unattributed verdict must never seal.
         if referee_result.identity is None:
             raise UnattributableRefereeError(
                 "referee result has no identity -- an unattributed verdict must not seal;"
@@ -952,7 +952,7 @@ def adjudicate(
         ):
             verdict = VERDICT_INCONCLUSIVE
 
-        # [mesh-referee-capsule-citation] Cite the referee's nonce
+        # Cite the referee's nonce
         # regardless of resolution outcome -- an unresolved/unverified
         # door still gets an entry naming the nonce, never a silent drop.
         references: tuple[dict[str, Any], ...] = ()
@@ -963,7 +963,7 @@ def adjudicate(
                     "nonce": referee_result.referee_record_nonce,
                     "status": referee_result.referee_record_status,
                     "capsule_id": referee_result.capsule_id,
-                    # [mesh-fabric-vocab-alignment] this node's own
+                    # This node's own
                     # observation of the referee's citation -- see
                     # EPISTEMIC_TYPE_OBSERVED_EVENT's docstring.
                     "epistemic_type": EPISTEMIC_TYPE_OBSERVED_EVENT,
@@ -1035,7 +1035,7 @@ def seal_adjudication_capsule(
         "source": outcome.source,
         "capture_method": outcome.capture_method,
         "verdict": outcome.verdict,
-        # [mesh-fabric-vocab-alignment] additive per-verdict fabric status
+        # Additive per-verdict fabric status
         # (see status_for_verdict) -- never replaces `verdict`, which stays
         # this module's own vocabulary (contradicted:<owner_id> in
         # particular carries the owner; `status` alone cannot).
@@ -1059,10 +1059,10 @@ def seal_adjudication_capsule(
     # disputants') actually ran.
     if outcome.referee_called:
         adjudication["referee_capsule_id"] = outcome.referee_capsule_id
-        # [mesh-referee-attribution] Cite the referee's identity so a
+        # Cite the referee's identity so a
         # verifier can trace which party produced this verdict.
         adjudication["referee_id"] = outcome.referee_identity_id
-        # [mesh-referee-capsule-citation] The nonce-correlation citation --
+        # The nonce-correlation citation --
         # present even when `referee_capsule_id` above is `None` (an
         # unresolved/unverified door still names the nonce it was asked
         # with; see `AdjudicationOutcome.references`'s own docstring).
@@ -1078,7 +1078,7 @@ def seal_adjudication_capsule(
         adjudication[key] = value
 
     compute_attestation = {
-        # [mesh-fabric-vocab-alignment] additive record-header field, a
+        # Additive record-header field, a
         # top-level sibling of "adjudication" (see EPISTEMIC_TYPE_ADJUDICATION).
         "epistemic_type": EPISTEMIC_TYPE_ADJUDICATION,
         "adjudication": adjudication,
@@ -1103,7 +1103,7 @@ def seal_adjudication_capsule(
         tool_name=action,
     )
 
-    # [adv-run-2-fix-batch] discipline: verify BEFORE returning -- an
+    # Discipline: verify BEFORE returning -- an
     # adjudication capsule that fails its own verify() must never be handed
     # to a caller that might persist it.
     result = verify_capsule(capsule)

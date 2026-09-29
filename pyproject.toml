@@ -16,7 +16,7 @@ dependencies = [
     "agent-action-capsule>=0.2.0",
     # Floor 0.8.0 (matches requirements.txt): ask_history.py's `references <X>`
     # BUILDS a correlation-subject request, which only ships from 0.8.0 (#155);
-    # 0.8.0 also carries chain_segment ([capsule-emit-pypi-tag-behind-main]),
+    # 0.8.0 also carries chain_segment,
     # the reason this release was cut. This floor is untested by CI (which
     # installs from requirements.txt, never builds this wheel) so it drifted
     # stale at 0.5.1 once before -- the exact broken version this sweep started
@@ -66,7 +66,7 @@ py-modules = [
     "requester_commitment",
     "capsule_coordinator_verify",
     "capsule_disclosure_endpoint",
-    # [mesh-served-summary-derivation]: evidence_responder.py's served_summary/1
+    # evidence_responder.py's served_summary/1
     # dispatch pulls in these three at runtime.
     "served_summary",
     "capsule_mesh_view",

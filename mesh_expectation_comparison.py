@@ -35,7 +35,7 @@ numerator and the denominator and never computing an aggregate itself.
      "N of M" counts, with no aggregate rating produced anywhere.
 
 **Coordination with mesh-adjudicator-margin-tau:**
-The ``[mesh-adjudicator-margin-tau]`` workstream owns the per-exchange
+The adjudicator margin/tau workstream owns the per-exchange
 ``inconclusive`` verdict logic (the margin/tau thresholds that make a single
 adjudication resolve as ``inconclusive``).  This module consumes the
 ACCUMULATED RATE of those verdicts — the ``inconclusive`` count from the

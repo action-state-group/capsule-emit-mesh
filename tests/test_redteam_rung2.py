@@ -180,7 +180,7 @@ def test_attack5_model_spoof_reconciles_clean_when_lie_is_consistent():
     Note: the overall is now `partial_match` rather than `match` because the
     advertisement only promised model_id and quantization; hardware facts were
     served but not promised (not_advertised).  `match` is now reserved for full
-    coverage -- [mesh-promise-reconciliation-grading] sub-defect 1.
+    coverage -- promise-reconciliation grading, sub-defect 1.
     """
     lie = "meta/Llama-3.2-70B-Instruct"           # the node CLAIMS the big model
     ad = Advertisement(node_id=NODE_ID_HEX, model_id=lie, quantization="Q8_0")
@@ -256,7 +256,7 @@ def test_attack6_quant_swap_reconciles_clean_when_consistent():
     Note: the overall is now `partial_match` rather than `match` because the
     advertisement only promised model_id and quantization; hardware facts were
     served but not promised (not_advertised).  `match` is now reserved for full
-    coverage -- [mesh-promise-reconciliation-grading] sub-defect 1.
+    coverage -- promise-reconciliation grading, sub-defect 1.
     """
     ad = Advertisement(node_id=NODE_ID_HEX, model_id="meta/Llama-3.2-3B", quantization="Q4_K_M")
     served = _served_record(

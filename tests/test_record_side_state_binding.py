@@ -816,7 +816,7 @@ class TestStructuralProperties:
 
 
 # ===========================================================================
-# 7. MISSING exchange_id — [mesh-rung12-adversarial-review] D2
+# 7. MISSING exchange_id — adversarial-review finding D2
 # ===========================================================================
 #
 # emit_lifecycle_record() requires exchange_id as a mandatory keyword

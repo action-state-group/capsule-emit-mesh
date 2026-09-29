@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-plugin-checkpoint-cadence] cross-language checkpoint invariance
+"""Cross-language checkpoint invariance
 oracle: given a `capsules.jsonl` this crate's `checkpoint.rs` checkpointed,
 independently recompute the MMR root over the SAME leaves in Python
 (`cll`'s reference MMR, via the `capsule_emit.checkpoint` re-export -- see

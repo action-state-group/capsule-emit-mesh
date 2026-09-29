@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-verify-bind-statement-to-capsuleid] mutant tests.
+"""Mutant tests.
 
 Reproduces the exact adversarial-review findings ADV-1/ADV-2
 (`_work/mesh-adversarial-review-2026-09-05.md`) against

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared helper: mint a REAL, verifiable COSE Receipt for stub-TS test
-doubles ([stamp-authenticity-on-read-not-presence]).
+doubles.
 
 Before this fix, every stub Transparency Service in this test suite
 returned literal garbage for ``receipt_b64``
@@ -68,7 +68,7 @@ def checkpoint_dict_from_cose(cose_bytes: bytes) -> dict:
     ``do_POST`` handler's own ``checkpoint_entry_hash``/receipt logic
     expects -- the wire body ``capsule_emit.checkpoint.emit
     .register_checkpoint`` now POSTs to ``/checkpoints`` is real COSE_Sign1/
-    CBOR bytes, not a plain JSON dict ([cll-checkpoint-cose-wire]). Raises
+    CBOR bytes, not a plain JSON dict. Raises
     ``ValueError`` if the COSE statement does not verify."""
     result = verify_checkpoint_cose_offline(cose_bytes)
     if not result.ok:

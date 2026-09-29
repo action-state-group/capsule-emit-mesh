@@ -433,9 +433,8 @@ one must.
 *Previous spec-feedback notes from this repo:*
 
 *Items 1–9 are in `docs/SPEC-FEEDBACK-1331.md` as produced by the
-delegation-chain verifier task (`[mesh-delegation-chain-verifier]`).
-Items 10–15 are from the two-mode exemplar task
-(`[mesh-exemplar-plugin-two-modes]`).  Items 16–17 are from the
-delegation-issuance/renewal service (`[mesh-delegation-issuance]`), the
+delegation-chain verifier task.
+Items 10–15 are from the two-mode exemplar task.  Items 16–17 are from the
+delegation-issuance/renewal service, the
 minting counterpart to the verifier.  These will be reconciled into one file
 when the PRs merge.*

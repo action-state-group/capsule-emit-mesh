@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[b4-who-did] The WHO+DID binding as it lands in the sidecar serving capsule.
+"""The WHO+DID binding as it lands in the sidecar serving capsule.
 
 These tests drive the REAL capsule_sidecar.build_capsule() and assert on the
 owner block it seals into x-mesh-poc-v1 provenance:
@@ -10,7 +10,7 @@ owner block it seals into x-mesh-poc-v1 provenance:
     stray caveat.
   BOUND: live matching cert + a sealed identity capsule -> owner_id sealed,
     the identity capsule_id cited (the did cites the who), AND
-    [mesh-e6-identity-owner-cert] owner_cert_ref cites the owner cert itself
+    owner_cert_ref cites the owner cert itself
     as a CPB typed digest reference, honesty grade present.
   INVALID: expired cert -> owner not bound, identity capsule NOT cited,
     owner_cert_ref NOT cited.
@@ -161,7 +161,7 @@ def test_serving_capsule_binds_owner_and_cites_identity_capsule():
     assert blk["owner_status"] == OWNER_STATUS_BOUND
     assert blk["owner_id"] == "owner-zzz"
     assert blk["identity_capsule_id"] == "cap-who-abc"  # did cites who
-    # [mesh-e6-identity-owner-cert] owner cert cited as a typed reference.
+    # Owner cert cited as a typed reference.
     assert blk["owner_cert_ref"] == owner_cert_reference(cert)
     assert blk["node_label"] == "studio"
     assert blk["identity_limitation"] == IDENTITY_LIMITATION_CAVEAT
@@ -190,7 +190,7 @@ def test_serving_capsule_expired_cert_not_bound_and_not_cited():
 
 
 def test_serving_capsule_swapped_cert_not_bound_and_ref_not_cited():
-    """[mesh-e6-identity-owner-cert] mutant: a cert with a swapped/mismatched
+    """Owner-cert mutant: a cert with a swapped/mismatched
     signature -> INVALID, and owner_cert_ref must not be cited."""
     key = Ed25519PrivateKey.generate()
     pub_hex = key.public_key().public_bytes(

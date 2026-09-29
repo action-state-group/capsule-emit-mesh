@@ -39,7 +39,7 @@ WHAT THIS IS NOT -- read before extending
     optional history sanity-check -- is an INJECTED callable
     (`HistoryCheck`), never something this module dials itself.
   - `select_referee`'s owner-independence gate is HARD, not just a scoring
-    penalty (added [mesh-referee-live-e17c], 2026-09-08): a candidate
+    penalty (added with the live referee, 2026-09-08): a candidate
     sharing an `owner_id` with either twin is excluded from the candidate
     pool entirely, not merely scored `0.0` on the owner-diversity
     component. When that hard exclusion would leave zero candidates --
@@ -235,7 +235,7 @@ class IndependenceBreakdown:
         }
 
 
-#: [mesh-referee-live-e17c] Recorded on `SelectionResult` (and echoed into
+#: Recorded on `SelectionResult` (and echoed into
 #: `selection_rationale_block`) whenever `select_referee`'s hard
 #: owner-exclusion left zero candidates and it fell back to the full
 #: (twin-excluded-only) comparable pool -- "distinct node key" instead of
@@ -495,8 +495,8 @@ def select_referee(
 ) -> SelectionResult:
     """Pick a referee independent of BOTH twins, same-model as both.
 
-    Wired to the live E17c third-node call (`live_referee.py`) as of
-    [mesh-referee-live-e17c]. `twin_a`/`twin_b` must already share one
+    Wired to the live E17c third-node call (`live_referee.py`).
+    `twin_a`/`twin_b` must already share one
     `weights_digest` (the same comparability gate `twin_adjudicator
     .adjudicate()` runs); if they disagree, neither is trusted as the target
     and the candidate pool is empty (`REASON_NO_COMPARABLE_TWIN`).

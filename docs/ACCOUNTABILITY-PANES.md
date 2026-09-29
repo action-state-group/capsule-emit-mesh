@@ -4,7 +4,7 @@
 `capsule_accountability_tab.py` (Pane A), `peer_accountability_tab.py` (Pane B),
 `capsule_exchange_tab.py` (Pane C), and `join_card.py`'s `promise_line()`, as of the
 `feat(accountability): wire panes v2` commit on `main`, updated for the
-`[mesh-panes-map-chips]` chip-map rewrite (the shared `assurance_map.py` module — see §3). Design
+chip-map rewrite (the shared `assurance_map.py` module — see §3). Design
 rationale and the parts not yet built live in `mesh-accountability-panes-v2-2026-09-05.md` (not
 this repo — cited, not duplicated) and the vocabulary source is
 `_work/consistency-realignment-2026-09-06.md` §1 (cited by name only, private working doc); this
@@ -58,7 +58,7 @@ normative for all three panes:
 
 | Source label | Means | Who can lie, and how it's caught |
 |---|---|---|
-| `self_derived` | A node's own deterministic fold over its own witnessed ledger (`history_card.py`'s history properties today; `served_summary/1`, once `[mesh-served-summary-derivation]` lands). | The node itself; a tampered count is a signed lie a witness-checkpoint cross-check can catch, never taken on say-so. |
+| `self_derived` | A node's own deterministic fold over its own witnessed ledger (`history_card.py`'s history properties today; `served_summary/1`, once the served-summary derivation lands). | The node itself; a tampered count is a signed lie a witness-checkpoint cross-check can catch, never taken on say-so. |
 | `sampled` | A relying party's own spot-check of a `self_derived` claim. | Nobody; this is the reader checking, cited alongside `self_derived`, never standing alone. |
 | `counterparty_held` (rendered `self_held` for this node's own retained copy of a counterparty fact) | A fact asserted by someone OTHER than the node it is about. | The node the fact is about cannot edit it. |
 
@@ -68,7 +68,7 @@ the promise line").
 
 ## 3. Chip / color states — the assurance map (v2.2)
 
-As of `[mesh-panes-map-chips]`, all three panes share one chip vocabulary and one renderer:
+As of the chip-map rewrite, all three panes share one chip vocabulary and one renderer:
 `assurance_map.py`. It replaces the old four-state ladder (`verified`/`present-unverified`/
 `failed`/`absent`, plus the ad hoc `pending`) with **five orthogonal states**, because a ladder
 implies one axis and rounds up — the bug this replaced was a per-exchange row whose only real gap
@@ -135,8 +135,8 @@ re-derived) plus the two genuinely new v2 pieces:
    (`history_card.build_history_card()`'s own properties: `continuity`, `checkpoint_count`,
    `unforked`, `witnessed`, `witnesses`, `cadence`, plus a separate `pair_sequencing` sub-block).
 3. **`served_summary`** — Block 2. **Pending** today: `served_summary.py`
-   (`[mesh-served-summary-derivation]`) does not exist on `main` yet, so this block is always
-   `{"state": "pending", "source": "self_derived", "text": "...pending [mesh-served-summary-derivation]"}`
+   (the served-summary derivation) does not exist on `main` yet, so this block is always
+   `{"state": "pending", "source": "self_derived", "text": "...pending the served-summary derivation"}`
    — never a fabricated count.
 4. **`counterparty_held`** — Block 3: `adjudications_received` (real, `source: self_held`, tallied
    from adjudication capsules naming one of this node's own sealed capsule ids) plus `references`
@@ -164,7 +164,7 @@ exchanges, no checkpoints, no native log supplied):
   },
   "served_summary": {
     "state": "pending",
-    "text": "counted-by-this-node served/completed/failed/refused summary is not available on this view yet: pending [mesh-served-summary-derivation]",
+    "text": "counted-by-this-node served/completed/failed/refused summary is not available on this view yet: pending the served-summary derivation",
     "source": "self_derived"
   },
   "counterparty_held": {
@@ -182,7 +182,7 @@ exchanges, no checkpoints, no native log supplied):
     "native_log_join": {"state": "pending", "text": "no native_log supplied to this view"},
     "refusals_issued": {
       "state": "absent", "source": null, "capture_method": null,
-      "reason": "evidence-request responder counts are not yet available on this node: [mesh-e14-evidence-responder]'s responder is merged (capsule-emit-mesh #83, [mesh-e15-evidence-http-route]), but nothing persists a served/refused count for it to tally"
+      "reason": "evidence-request responder counts are not yet available on this node: the evidence responder is merged (capsule-emit-mesh #83, with its HTTP route), but nothing persists a served/refused count for it to tally"
     },
     "absences_recorded_against_me": {
       "state": "pending",
@@ -218,7 +218,7 @@ Seven columns per row, replacing the pre-v2 eight:
 | **Node** | real | `capsule_mesh_view.label_counterparty()` from `cross_party.initiator_ref`; records with no such evidence group under an explicit `unknown` bucket, never presented as one identified peer |
 | **Role · exchanges** | real | `role_and_count_cell()` — `you→them` / `them→you` / `both`, with a count each way; never a trust signal |
 | **History (theirs)** | **pending** | honestly pending a peer-fetch carrier that doesn't exist yet — the merged evidence responder answers `record`/`range` only, never `checkpoints`/`full_history`; this node's own chain rides along under `mine_for_reference` rather than being mislabeled as the peer's (a documented pre-v2 shortcut this cell explicitly stopped doing) |
-| **Served (theirs)** | **pending** `[mesh-served-summary-derivation]` | `served_summary.py` does not exist on `main` yet |
+| **Served (theirs)** | **pending** the served-summary derivation | `served_summary.py` does not exist on `main` yet |
 | **Pair (me↔them)** | real | folds `capsule_exchange_tab.digest_match_grade` over every `exchange_id` this peer's records carry — the only cell that can say "missing" |
 | **Verdicts** | real for the self-sealed half | adjudication capsules in this node's own ledger naming one of this peer's capsule ids; the "held by others" half is **pending** (asking counterparties, `ask_history.py references`) |
 | **Asked** | **absent** (current, non-stale reason) | this node's own evidence-request carrier is merged and can *answer* a peer's request, but nothing yet logs requests this node *sends* to a peer |
@@ -237,7 +237,7 @@ checkpoints, no evidence-request log):
     "text": "this node cannot fetch the peer's OWN history card yet: ...",
     "mine_for_reference": {"history": {"state": "absent", "..."}}
   },
-  "served": {"state": "pending", "text": "pending [mesh-served-summary-derivation] -- served_summary.py does not exist on main yet", "source": "self_derived"},
+  "served": {"state": "pending", "text": "pending the served-summary derivation -- served_summary.py does not exist on main yet", "source": "self_derived"},
   "pair": {"state": "present", "text": "0 reconciled, 2 missing a half on this view", "verified": 0, "failed": 0, "missing": 2},
   "verdicts": {"state": "pending", "text": "...not available on this view yet.", "source": "self_sealed"},
   "asked": {"state": "absent", "text": "no log of evidence-requests this node has SENT to this peer exists yet: ...", "count": 0}
@@ -318,21 +318,21 @@ the pre-v2 text still called unmerged): twin/adjudication comparison
 (`TWIN_ADJUDICATION_PENDING_REASON`) is pending this view threading through served
 weights/logprobs it doesn't have on hand, not `twin_adjudicator.py` being unmerged (it is,
 PR #84); witness re-verify (`WITNESS_REVERIFY_PENDING_REASON`) is pending this view threading the
-checkpoint chain through, not `[mesh-e2-witness-checkpoints]` being unmerged (it is, PR #87).
+checkpoint chain through, not witness checkpoints being unmerged (they are, PR #87).
 
 ## 7. Wiring status — every cell, wired or pending, as of `main`
 
 | Cell | State | Pending on |
 |---|---|---|
 | A · history | wired | — |
-| A · served summary | pending | `[mesh-served-summary-derivation]` |
+| A · served summary | pending | the served-summary derivation |
 | A · adjudications received | wired | — |
 | A · references (counterparty-held) | pending | asking counterparties (`ask_history.py references`) |
 | A · native-log footer | wired (when `--native-log` supplied) | — |
 | A · refusals issued | absent (real, current reason) | a served/refused-count persistence layer |
 | B · node / role / pair / verdicts (self-sealed half) | wired | — |
 | B · history (theirs) | pending | no task id filed yet — a peer-fetch carrier |
-| B · served (theirs) | pending | `[mesh-served-summary-derivation]` |
+| B · served (theirs) | pending | the served-summary derivation |
 | B · verdicts (held-by-others half) | pending | asking counterparties (`ask_history.py references`) |
 | B · asked | absent (real, current reason) | no task id filed yet — a per-peer send-log |
 | C · list grouping, role tag, two-column halves, header = worst line | wired | — |

@@ -1,6 +1,6 @@
 # Milestone 2 report — chaining, ledger, keys, anchor, offline verify
 
-Task: `[mesh-rust-capsule-production-m2]`. Scope: build the rest of the
+Scope: build the rest of the
 #1332 producer deliverable in Rust on top of Milestone 1's proven crypto
 interop — hash-chaining, a durable local ledger, Ed25519 key persistence +
 rotation, an optional anchor client, and an offline verification command —

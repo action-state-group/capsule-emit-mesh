@@ -186,7 +186,7 @@ def _make_node_state():
 
 
 def test_plugin_ledger_dir_wires_a_second_read_only_checkpoint_state():
-    """[mesh-plugin-cll-consume] A3: --plugin-ledger-dir gives NodeState a
+    """A3: --plugin-ledger-dir gives NodeState a
     SECOND, independent CheckpointState over a ledger this process never
     wrote -- simulating the Rust plugin's own capsules.jsonl (two
     single-writer logs, one machine view; §4 A2/A3). Reconnecting it must
@@ -337,7 +337,7 @@ def test_client_nonce_labels_distinct():
 
 
 def test_client_nonce_replay_detected_and_labeled():
-    """[mesh-rung12-adversarial-review] D3 -- the SAME client-supplied nonce
+    """D3 -- the SAME client-supplied nonce
     replayed on a second, unrelated call must be labeled distinctly from a
     fresh client_supplied nonce, not silently accepted as equally fresh."""
     state = _make_node_state()

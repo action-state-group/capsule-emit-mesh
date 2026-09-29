@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-pane-c-exchange-subtab] Pane C "This exchange" -- the per-capsule
+"""Pane C "This exchange" -- the per-capsule
 record view, kept as the existing leaf viewer (``capsule_mesh_viewer.py``'s
 single-capsule fragment view + ``capsule_accountability_tab.py``'s rung
 grading), extended to show the PAIR: the requester half and the provider
@@ -12,7 +12,7 @@ Composes verbs that already exist; re-derives none of their evidence:
     "signed + anchored") are called here exactly as the existing leaf
     already calls it, per record, and render verbatim; this module adds no
     second implementation for them. ``build_verdict``'s third line ("who
-    asked") is NOT rendered verbatim here -- [mesh-panes-map-chips] its fact
+    asked") is NOT rendered verbatim here -- its fact
     is the assurance map's own ``identity_authority`` property (computed in
     ``build_assurance_map``), so the card renders that property's chip/text
     instead of the old free-text "Not yet proven: who asked ..." line
@@ -20,9 +20,9 @@ Composes verbs that already exist; re-derives none of their evidence:
     all three marks).
   - the requester/provider role label is ``capsule_mesh_view.label_role``;
     the exchange correlator is ``serving_provenance()["exchange_id"]``
-    ([b6a-requester-seal] / [mesh-b1-requestor-capsule-ledger]).
+    (the requester's own-half seal).
   - the identity chain is ``node_ownership``'s ``owner_provenance_block``,
-    already carried at ``x-mesh-poc-v1.owner`` ([mesh-e6-identity-owner-cert]).
+    already carried at ``x-mesh-poc-v1.owner``.
 
 Two pieces are genuinely new here:
 
@@ -49,15 +49,15 @@ Two pieces are genuinely new here:
 Two pieces are honest STUBS, pending upstream branches that are neither
 merged nor re-implemented here (never fabricated as a pass):
 
-  - ``twin_adjudication_placeholder`` -- [mesh-e17a-offline-adjudicator]
+  - ``twin_adjudication_placeholder`` -- the offline twin adjudicator
     (capsule-emit-mesh PR #84, HELD).
-  - ``witness_receipt_reverify_placeholder`` -- [mesh-e2-witness-checkpoints]
+  - ``witness_receipt_reverify_placeholder`` -- the witness-checkpoint change
     (capsule-emit-mesh PR #87, HELD) upgrades the existing presence-only
     witness line (``build_verdict``'s line 2, unchanged and still real
     here) to an actually re-verified tristate. Until that lands, this
     module surfaces the upgrade itself as not yet checked.
 
-[mesh-panes-map-chips]: the card's per-property evidence is now the shared
+The card's per-property evidence is now the shared
 nine-property ``assurance_map`` (content binding, producer signature, local
 inclusion, checkpoint signature, external registration, continuity,
 identity/authority, capture coverage, outcome corroboration), each an
@@ -146,8 +146,8 @@ SEQUENCE_CAVEAT = (
 )
 
 #: STALE REASON, SUPERSEDED (kept in this comment only so the history is
-#: legible): both [mesh-e17a-offline-adjudicator] (PR #84) and
-#: [mesh-e2-witness-checkpoints] (PR #87) are MERGED on `main` today.
+#: legible): both the offline twin adjudicator (PR #84) and
+#: witness checkpoints (PR #87) are MERGED on `main` today.
 #: `twin_adjudicator.py` and the re-verified witness path both exist -- the
 #: real, current gap is that THIS per-exchange view does not yet call them
 #: (a twin comparison needs the served weights + logprobs this view does
@@ -160,7 +160,7 @@ TWIN_ADJUDICATION_PENDING_REASON = (
 )
 WITNESS_REVERIFY_PENDING_REASON = (
     "the presence-only witness line above is real and unchanged; RE-VERIFYING the receipt is "
-    "possible now that [mesh-e2-witness-checkpoints] (PR #87) is merged, but this per-exchange "
+    "possible now that witness checkpoints (PR #87) are merged, but this per-exchange "
     "view does not yet thread the checkpoint chain through to call it"
 )
 
@@ -175,7 +175,7 @@ def _effect_block(record: dict[str, Any]) -> dict[str, Any]:
 
 def exchange_id_for(record: dict[str, Any]) -> str | None:
     """The record's raw host-minted ``exchange_id`` field
-    ([b6a-requester-seal]/[mesh-b1-requestor-capsule-ledger]), or ``None``/
+    (the requester's own-half seal), or ``None``/
     ``"unknown"`` when the record carries none.
 
     NOTE: this reads the bare field and is NOT a grouping key -- host-minted
@@ -340,8 +340,8 @@ def digest_match_grade(half_a: dict[str, Any] | None, half_b: dict[str, Any] | N
 
 def identity_chain_for(record: dict[str, Any]) -> dict[str, Any]:
     """The identity chain for one half -- node <- owner <- owner cert,
-    exactly as ``node_ownership.owner_provenance_block`` already sealed it
-    ([mesh-e6-identity-owner-cert]). Re-read here, never re-derived."""
+    exactly as ``node_ownership.owner_provenance_block`` already sealed it.
+    Re-read here, never re-derived."""
     poc = _poc_block(record)
     sp = serving_provenance(record)
     owner = poc.get("owner") or {
@@ -362,12 +362,12 @@ def identity_chain_for(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def twin_adjudication_placeholder() -> dict[str, Any]:
-    """[mesh-e17a-offline-adjudicator] STUB -- see module docstring."""
+    """Offline twin adjudicator STUB -- see module docstring."""
     return {"state": PENDING, "source": None, "capture_method": None, "reason": TWIN_ADJUDICATION_PENDING_REASON}
 
 
 def witness_receipt_reverify_placeholder() -> dict[str, Any]:
-    """[mesh-e2-witness-checkpoints] STUB -- see module docstring. Distinct
+    """Witness-checkpoint re-verify STUB -- see module docstring. Distinct
     from (and does not replace) the real presence-only witness line already
     carried in ``verdict``."""
     return {"state": PENDING, "source": None, "capture_method": None, "reason": WITNESS_REVERIFY_PENDING_REASON}
@@ -417,10 +417,9 @@ def build_assurance_map(
     verify_ran: bool,
     has_witness_checkpoint: bool,
 ) -> dict[str, dict[str, Any]]:
-    """The nine-property assurance map for one half ([mesh-panes-map-chips]
-    build item 2). Every property is independently
-    PASS/FAIL/NOT_PRESENT/NOT_CHECKED -- never a fabricated pass, and never
-    the old ladder's ``present-unverified``/``pending`` pair. Twin
+    """The nine-property assurance map for one half. Every
+    property is independently PASS/FAIL/NOT_PRESENT/NOT_CHECKED -- never a
+    fabricated pass, and never the old ladder's ``present-unverified``/``pending`` pair. Twin
     (outcome_corroboration) is NOT_PRESENT -- this view has no twin data at
     all, not merely an unchecked one. Checkpoint-derived properties
     (local_inclusion/checkpoint_signature/external_registration) are
@@ -463,7 +462,7 @@ def build_assurance_map(
         external_registration = assurance_map.chip(
             assurance_map.STATE_NOT_PRESENT,
             "no checkpoint supplied to this view; registered (+ continuity-witnessed once a checkpoint-aware "
-            "witness signs) is not reachable until [capsule-anchor-checkpoint-aware-witness] deploys",
+            "witness signs) is not reachable until a checkpoint-aware witness is deployed",
         )
 
     owner_status = identity_chain_for(record).get("owner_status")
@@ -529,7 +528,7 @@ def build_exchange_view(
     is computed ONCE per list/page and passed down when available; a caller
     that supplies neither ``verify_map`` nor an explicit ``verify_ok`` gets
     it computed here as a fallback so a single-record caller still gets a
-    real recompute, never a silent ``None`` [mesh-panes-map-chips]."""
+    real recompute, never a silent ``None``."""
     if verify_map is None:
         verify_map = build_verify_map(all_records, ledger_dir=ledger_dir)
     verify_result = verify_map.get(record.get("capsule_id"))
@@ -589,7 +588,7 @@ def build_exchange_view(
         },
         "twin_adjudication": twin_adjudication_placeholder(),
         "witness_receipt_reverify": witness_receipt_reverify_placeholder(),
-        # [mesh-panes-map-chips]: the nine-property assurance map + the
+        # The nine-property assurance map + the
         # Issues-filter signal it drives (any FAIL, or -- once Pane C grows a
         # promise line -- a broken/changed_without_saying promise; Pane C has
         # no promise line today, so only property FAILs and the pair's own
@@ -618,7 +617,7 @@ FILTER_SERVED = "served"
 FILTER_ASKED = "asked"
 FILTER_ISSUES = "issues"
 
-#: The worst-line fold rule ([mesh-exchange-card-mismatch-bug]'s principle,
+#: The worst-line fold rule (the exchange-card mismatch fix's principle,
 #: reapplied here for the list header -- that fix lives in
 #: mesh_viewer_static/mesh_verify.js for a different page; this is an
 #: independent implementation of the same principle for this module's own
@@ -639,7 +638,7 @@ _STATE_RANK = {
 
 def worst_state(view: dict[str, Any]) -> str:
     """The row header state = the worst line among this exchange's checks
-    ([mesh-exchange-card-mismatch-bug]'s rule): any real failure (a digest
+    (the exchange-card mismatch fix's rule): any real failure (a digest
     mismatch or a failed verdict line) forces ``STATE_FAILED`` regardless of
     what any other line says; any unverified/warn-shaped line (with nothing
     worse) forces ``STATE_PRESENT_UNVERIFIED``; only when every line is
@@ -721,7 +720,7 @@ def build_exchange_row(
         "exchange_key": exchange_key,
         "role_tag": role_tag,
         "header_state": worst_state(view) if view is not None else STATE_ABSENT,
-        # [mesh-panes-map-chips]: the row's real signal. A row with no view
+        # The row's real signal. A row with no view
         # (neither half resolvable) has nothing to check yet -- not an issue.
         "properties": view["properties"] if view is not None else None,
         "has_issue": view["has_issue"] if view is not None else False,
@@ -780,7 +779,7 @@ def filter_exchange_rows(rows: list[dict[str, Any]], filter_name: str) -> list[d
     row whose assurance map has a real FAIL (or, once Pane C carries a
     promise line, one that reads broken/changed_without_saying) -- an honest
     NOT_PRESENT/NOT_CHECKED row (nothing to check yet, or not wired into this
-    view yet) is never an issue on its own [mesh-panes-map-chips]. This
+    view yet) is never an issue on its own. This
     replaced the old `header_state in (FAILED, PRESENT_UNVERIFIED)` rule,
     which treated "not independently verified" the same as a real failure and
     made Issues return the whole set."""
@@ -857,7 +856,7 @@ def render_exchange_subtab_html(view: dict[str, Any]) -> str:
     """Render one Pane C "This exchange" card as a self-contained HTML
     fragment (no fetch, no external state) -- meant to be embedded as the
     subtab/drill-down leaf under the Accountability tab."""
-    # [mesh-panes-map-chips]: build_verdict's line 3 ("who asked") predates the
+    # build_verdict's line 3 ("who asked") predates the
     # nine-property map and still speaks the old free-text vocabulary ("Not yet
     # proven: who asked ..."). Its fact is now owned by the assurance map's own
     # identity/authority property (computed in build_assurance_map, already the
@@ -878,7 +877,7 @@ def render_exchange_subtab_html(view: dict[str, Any]) -> str:
         )
 
     digest = view["pair"]["digest_match"]
-    # [mesh-panes-map-chips] build item 4: a lone half never gets a fabricated
+    # A lone half never gets a fabricated
     # pair table -- one honest line, and the table only renders when both
     # halves are actually present.
     if digest["state"] == STATE_ABSENT and not digest["fields"]:

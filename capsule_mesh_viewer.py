@@ -63,7 +63,7 @@ except Exception:  # pragma: no cover - only when capsule-emit isn't installed
     read_ledger = None  # type: ignore[assignment]
 
 # The witness-receipt cryptographic recompute (never a presence check --
-# [mesh-e2-witness-checkpoints] W2): CheckpointRecord/WitnessRecord model the
+# witness checkpoints, W2): CheckpointRecord/WitnessRecord model the
 # on-disk checkpoints.jsonl shape, verify_witness_stamp_tristate actually
 # re-verifies the receipt against the checkpoint it claims to cover (never
 # trusting the plain presence of a `witnesses` entry), and StampVerdict names
@@ -178,7 +178,7 @@ def serving_provenance(record: dict[str, Any]) -> dict[str, Any]:
         "hostname": sp.get("hostname"),
         "served_by_node_id": sp.get("served_by_node_id"),
         "requesting_party": sp.get("requesting_party"),
-        # [mesh-provider-no-body-persistence] Which half of the exchange this
+        # Which half of the exchange this
         # record is ("provider"/"requester") -- read straight off the sealed
         # x-mesh-poc-v1.serving_provenance.role field (b6a-requester-seal).
         # `None` for a capsule sealed before that field existed.
@@ -719,7 +719,6 @@ def build_role_questions(
 # ---------------------------------------------------------------------------
 
 # --- response-body plain-JCS matching the mesh-llm host's construction -----
-# ([mesh-disclosure-recompute-jcs-float])
 #
 # `_json_body_digest` below (via `capsule_sidecar.digest_json`) reproduces the
 # STRICT construction: RFC 8785 JCS with every float pre-stringified via
@@ -970,7 +969,7 @@ def build_conversation(
     outcome, so the reader sees BOTH the words and the proof-or-honest-gap.
 
     ``purged_at``, when given (from ``load_disclosure_purges``), feeds
-    ``disclosure_status`` -- the [mesh-provider-no-body-persistence] per-record
+    ``disclosure_status`` -- the per-record
     persistence-honesty badge, distinct from the per-field ``disclosed``/
     ``verify`` above.
     """
@@ -1018,9 +1017,8 @@ def build_conversation(
         # the served-facts approximation below -- the strongest disclosure
         # proof this viewer can show, and a tampered body recomputes to a
         # DIFFERENT digest under BOTH known constructions (red). See
-        # `_response_body_verify` (module note above,
-        # [mesh-disclosure-recompute-jcs-float]) for why two constructions are
-        # tried.
+        # `_response_body_verify` (module note above) for why two
+        # constructions are tried.
         response_verify = _response_body_verify(response_body, response_digest)
     else:
         computed_facts = served_facts_digest(sp)
@@ -1066,7 +1064,7 @@ def build_conversation(
             "verify": response_verify,
         },
     }
-    # [mesh-provider-no-body-persistence] The per-record persistence-honesty
+    # The per-record persistence-honesty
     # badge -- computed from the prompt/response blocks just built above, not
     # duplicated logic.
     conversation["disclosure_status"] = disclosure_status(sp, conversation, purged_at)
@@ -1105,7 +1103,7 @@ def _disclosure_view(record: dict[str, Any], disclose: dict[str, str] | None) ->
 # REQUESTER-ROLE, opt-in (--disclose) preimage capture wrote next to the
 # ledger, so a sidecar-sealed capsule that opted in shows as DISCLOSED
 # without the caller having to pass --disclose to THIS tool by hand.
-# [mesh-provider-no-body-persistence] The provider role has no such file at
+# The provider role has no such file at
 # all -- it has no disclosure write path, structurally, not just a default
 # that's off. Capsules with no file here (provider role, a requester that
 # never passed --disclose, or a purged/expired disclosure -- see
@@ -1152,7 +1150,7 @@ def load_disclosures(ledger_dir: str | Path) -> dict[str, dict[str, Any]]:
     return disclosures
 
 
-#: [mesh-provider-no-body-persistence] Filename capsule_sidecar.
+#: Filename capsule_sidecar.
 #: prune_disclosures() (DISCLOSURES_PURGED_LOG there) appends a tombstone
 #: line to for every disclosure it prunes -- a sibling of capsules.jsonl in
 #: the same ledger_dir, never a subdirectory of disclosures/ itself.
@@ -1303,8 +1301,7 @@ def to_fragment_payload(
     ``disclose`` maps ``capsule_id -> {"request"|"response": revealed_text}``;
     any field not named there stays digest-only. ``disclosure_purges`` maps
     ``capsule_id -> purged_at`` (see ``load_disclosure_purges``), feeding each
-    record's ``conversation.disclosure_status``
-    [mesh-provider-no-body-persistence]. ``witness_checkpoint`` is the
+    record's ``conversation.disclosure_status``. ``witness_checkpoint`` is the
     optional COSE checkpoint receipt covering ``source_log``. ``ledger_dir``,
     when given, lets ``verify_results_for`` reach the DETACHED
     ``signed-statements/<capsule_id>.cose`` producer signatures next to the
@@ -1678,7 +1675,7 @@ def _cmd_html(args: argparse.Namespace) -> int:
     # Auto-load whatever capsule_sidecar.py's requester-role, opt-in
     # (--disclose) preimage capture wrote next to the ledger, then let
     # explicit --disclose / --disclose-file flags override individual fields
-    # on top of it. [mesh-provider-no-body-persistence] disclosure_purges
+    # on top of it. disclosure_purges
     # feeds the honesty badge for a disclosure that existed once and was
     # since pruned by retention (capsule_sidecar.prune_disclosures).
     merged_disclose = load_disclosures(ledger_dir)

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-live-tab-pane-proxy] L0 -- the CLI ledger_dir/read bug this task's
-Q3 ruling folds in: `capsule_accountability_tab.py`'s and
+"""L0 -- the CLI ledger_dir/read bug folded in by the live-tab pane-proxy
+work's Q3 ruling: `capsule_accountability_tab.py`'s and
 `capsule_exchange_tab.py`'s `_cmd_html`/`_cmd_list` used to read
 `--ledger .../capsules.jsonl` as a flat file via `capsule_emit.ledger.
 read_ledger(path)` -- which raises `FileNotFoundError` once a ledger dir is

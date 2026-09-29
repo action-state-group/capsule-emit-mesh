@@ -349,7 +349,7 @@ def test_witness_unreachable_keeps_checkpointing_locally_then_recovers(tmp_path,
 
 
 def test_witness_unreachable_via_url_error_not_just_checkpoint_error(tmp_path, monkeypatch):
-    """[adv-witness-outage-serving-path] register_checkpoint only wraps
+    """register_checkpoint only wraps
     urllib.error.HTTPError into CheckpointError; a connection-refused/DNS-down
     failure raises the unwrapped urllib.error.URLError. Catching only
     CheckpointError (the pre-fix code) lets that propagate out of tick() and
@@ -449,7 +449,7 @@ def test_build_state_rejects_config_without_checkpoint_table(tmp_path):
         )
 
 
-# -- [mesh-provider-no-body-persistence] disclosure prune, hourly cadence ----
+# -- disclosure prune, hourly cadence ----
 
 
 def test_run_daemon_prunes_disclosures_on_its_own_hourly_clock(tmp_path, fake_witness):

@@ -17,7 +17,7 @@ reachable against a real sidecar's ``NodeState`` — not yet reachable over
 the wire (the ``HttpBindingManifest`` route / ``evidence-request/1``
 subprotocol are separate, later work: E15/E16).
 
-**[mesh-served-summary-derivation] derivation-token dispatch.** The merged
+**Served-summary derivation-token dispatch.** The merged
 ``capsule_emit.evidence_request.answer()`` parses a request's ``derivation``
 field but never dispatches on it — it only ever builds ``bundle()``-shaped
 answers for ``record``/``range`` subjects. This module is the one place a
@@ -28,7 +28,7 @@ through to the generic bundle path, and answered from
 checkpoint chain. Any other (or absent) derivation falls through to
 ``answer()`` unchanged.
 
-**[mesh-fabric-vocab-alignment] additive `status`/`coverage_descriptor`.**
+**Fabric vocabulary alignment: additive `status`/`coverage_descriptor`.**
 ``answer()``'s own ``Artifact``/``Refusal`` objects (and this module's
 ``Refusal``-shaped served-summary refusal) never change — the fabric's
 shared record-header and per-answer status vocabulary convention is layered on ONLY at the
@@ -95,7 +95,7 @@ from share_policy import SharePolicy
 #: ``answer()`` below, unchanged.
 SERVED_SUMMARY_DERIVATION_TOKEN = "served_summary/1"
 
-#: [mesh-fabric-vocab-alignment] the fabric's additive per-answer status
+#: The fabric's additive per-answer status
 #: vocabulary -- see the module docstring.
 STATUS_SATISFIED = "SATISFIED"
 STATUS_NOT_FOUND = "NOT_FOUND"
@@ -125,7 +125,7 @@ def status_for_refusal_reason(reason: str) -> str | None:
     return _STATUS_BY_REFUSAL_REASON.get(reason)
 
 
-#: [mesh-fabric-vocab-alignment] the fabric's `coverage_descriptor` vocabulary
+#: The fabric's `coverage_descriptor` vocabulary
 #: -- what a bundle-tier answer can name
 #: itself as establishing. See `coverage_descriptor_for`'s docstring for
 #: which of these THIS responder is ever entitled to claim.
@@ -147,7 +147,7 @@ ALL_COVERAGE_DESCRIPTORS = frozenset(
 #: establish -- each requires a second party's ledger (`capture_coverage`,
 #: `reconciliation_coverage`) or a third party's judgment (`corroboration`),
 #: none of which this door alone ever has. Reconcile/Close v0
-#: (`[mesh-reconcile-and-close-v0]`) and the twin/referee path are the
+#: and the twin/referee path are the
 #: features that will eventually be entitled to claim these -- not this
 #: responder.
 _BILATERAL_ONLY_COVERAGE_DESCRIPTORS = frozenset(
@@ -195,7 +195,7 @@ def _validate_coverage_descriptor(subject_kind: str, establishes: list[str]) -> 
         )
 
 
-#: [mesh-fabric-vocab-alignment] the fabric's request `purpose` vocabulary
+#: The fabric's request `purpose` vocabulary
 #: (see `log_request_purpose`'s docstring for how this responder handles it).
 PURPOSE_COUNTERPARTY_CHECK = "counterparty_check"
 PURPOSE_STRANGER_SELECTION = "stranger_selection"
@@ -237,7 +237,7 @@ def log_request_purpose(request_bytes: bytes) -> None:
     if purpose is None and contract_ref is None:
         return
     unrecognized = "" if purpose is None or purpose in REQUEST_PURPOSES else " (unrecognized purpose)"
-    print(f"[mesh-fabric-vocab-alignment] evidence-request purpose={purpose!r} contract_ref={contract_ref!r}{unrecognized}")
+    print(f"evidence-request purpose={purpose!r} contract_ref={contract_ref!r}{unrecognized}")
 
 
 def augment_evidence_answer_dict(d: dict[str, Any]) -> dict[str, Any]:
@@ -577,7 +577,7 @@ def handle_evidence_request(
 
     Deliberately passes no ``allow_forced_checkpoint`` — that parameter is
     unreleased on capsule-emit's PyPI floor this repo pins
-    (``[adv-evidence-door-caps-and-subjects]``; ``requirements.txt``'s
+    (``requirements.txt``'s
     ``capsule-emit[mcp]>=0.7.1`` predates it). Once a release carrying it
     ships and the floor bumps, ``answer()``'s own default
     (``allow_forced_checkpoint=False``, pull-only) applies here
@@ -608,7 +608,7 @@ def handle_evidence_request(
 
     from ledger_store_backend import materialize_flat_view, read_all_capsules
 
-    # [mesh-fabric-vocab-alignment] side-effecting only -- see
+    # Fabric vocabulary alignment: side-effecting only -- see
     # log_request_purpose's docstring for the caller-invariance guarantee.
     log_request_purpose(request_bytes)
 
@@ -648,7 +648,7 @@ def handle_evidence_request(
         signer = _resolve_state_signer(state)
         return _sign_refusal(request_digest, "no_such_record", signer=signer, issued_at=issued_at)
 
-    # [mesh-ledger-store-migration] answer() only understands a flat JSONL
+    # Ledger-store migration: answer() only understands a flat JSONL
     # file -- materialize_flat_view is a no-op passthrough for a still-flat
     # ledger dir, and a fresh scratch re-derivation (never cached) for a
     # cll.ledger.store.LedgerStore-backed one, so this call's contract is

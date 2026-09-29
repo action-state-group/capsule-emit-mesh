@@ -11,7 +11,7 @@ compatible `/v1` HTTP surface. For every `/v1/chat/completions` call it:
   3. captures the real response (success or error) and digests it too;
   4. emits + signs an Agent Action Capsule recording the exchange, hash-
      chained to the previous capsule this sidecar emitted for this node;
-  5. [mesh-provider-no-body-persistence] REQUESTER ROLE ONLY, opt-in
+  5. REQUESTER ROLE ONLY, opt-in
      (``--disclose``, default OFF): ALSO persists the request+response TEXT
      PREIMAGE -- the exact JSON bodies just digested -- into a local
      ``<ledger_dir>/disclosures/<capsule_id>.json`` file. This is a LOCAL
@@ -119,7 +119,7 @@ CLIENT_NONCE_HEADER = "X-Capsule-Client-Nonce"
 #: minted it one hop upstream" even though both arrive as a present header.
 CLIENT_NONCE_ORIGIN_HEADER = "x-capsule-nonce-origin"
 CLIENT_NONCE_ORIGIN_LOCAL_INGRESS = "local_ingress"
-#: [mesh-requester-nonce-addendum] The rung-ladder response-leg header a
+#: The rung-ladder response-leg header a
 #: SERVED node stamps on its own response. When THIS sidecar is the
 #: requester, its upstream call may be routed (by mesh-llm) to a peer, so
 #: this header -- read back off that upstream response -- is the PEER's own
@@ -129,7 +129,7 @@ CLIENT_NONCE_ORIGIN_LOCAL_INGRESS = "local_ingress"
 PEER_CAPSULE_ID_HEADER = "X-Capsule-Id"
 SIG_ALG = "EdDSA"
 
-# [b6a-requester-seal] The two half-of-exchange roles a sidecar can seal.
+# The two half-of-exchange roles a sidecar can seal.
 # provider = the sharer's sidecar (attests what it SERVED); requester = the
 # requestor's own outbound sidecar (attests its OWN half — what it requested +
 # the response it received). Both halves of ONE exchange are lined up by a
@@ -138,7 +138,7 @@ ROLE_PROVIDER = "provider"
 ROLE_REQUESTER = "requester"
 ROLES = (ROLE_PROVIDER, ROLE_REQUESTER)
 
-#: [mesh-provider-no-body-persistence] Requester-side disclosure retention:
+#: Requester-side disclosure retention:
 #: today (pre-fix) there is NO ttl/prune/cap on disclosures/ -- unbounded,
 #: unexpiring. 7 days is the default age at which a disclosure preimage is
 #: pruned (see prune_disclosures()); same cadence PATTERN mesh-llm's own log
@@ -147,11 +147,10 @@ ROLES = (ROLE_PROVIDER, ROLE_REQUESTER)
 #: facing, not a serving-path log.
 DEFAULT_DISCLOSURE_TTL_SECONDS = 7 * 24 * 3600.0
 
-# PROVISIONAL: pending CPB #70 promotion ([mesh-exchange-role-field],
-# scitt-payload-binding's `mesh-inference-exchange` registry entry, issue
+# PROVISIONAL: pending CPB #70 promotion (scitt-payload-binding's `mesh-inference-exchange` registry entry, issue
 # #69, commit a5864d2). CPB #70 is not landed, so this sidecar hard-codes
 # the field here ahead of the registry entry's promotion (Steven,
-# 2026-09-03, task [mesh-b1-requestor-capsule-ledger]), matching #70's
+# 2026-09-03), matching #70's
 # proposed vocabulary and role/observation_point pairing exactly so
 # promotion is a rename, not a reshape. Single definition site — every
 # call site below reads these maps, never a hand-copied literal.
@@ -167,7 +166,7 @@ _LIFECYCLE_ROLE_BY_SIDECAR_ROLE = {
     ROLE_PROVIDER: LIFECYCLE_ROLE_SERVED,
 }
 
-# [mesh-fabric-vocab-alignment] epistemic_type -- the evidence fabric's
+# epistemic_type -- the evidence fabric's
 # shared record-header vocabulary convention: a provider
 # half is this node's own claim about what it served (`producer_claim`); a
 # requester half is this node's own observation of what it received
@@ -248,7 +247,7 @@ IDENTITY_LIMITATION_CAVEAT = (
 #: keys/ is gitignored.
 NODE_KEY_FILENAME = "node-key.pem"
 
-# [mesh-native-log-join] The node's OWN operational request log --
+# The node's OWN operational request log --
 # native_log.jsonl -- written for every /v1/chat/completions request this
 # sidecar handles, regardless of whether sealing succeeded. This is what a
 # coverage join reconciles against capsules.jsonl: see native_log_join.py.
@@ -455,7 +454,7 @@ def derive_cross_party_rung(cross_party: dict[str, Any] | None, has_verified_ack
         ``capsule_id`` has been produced, establishing that both parties signed
         over the same exchange.
 
-    ⚠ [mesh-rung12-adversarial-review] D1 — WHAT THIS FUNCTION DOES NOT AND
+    ⚠ WHAT THIS FUNCTION DOES NOT AND
     CANNOT CHECK, stated precisely because "checks presence" is easy to
     misread as "checks validity":
 
@@ -494,7 +493,7 @@ def derive_cross_party_rung(cross_party: dict[str, Any] | None, has_verified_ack
 def identity_limitation_for_rung(rung: str) -> str | None:
     """Return the identity-limitation caveat for a derived cross_party_rung.
 
-    [mesh-rung12-adversarial-review] D1 — derive_cross_party_rung() cannot
+    derive_cross_party_rung() cannot
     confirm ``initiator_ref`` or the client ack's key belong to a party
     independent of the node (see its docstring). ``full_bilateral`` is
     therefore never disclosed alone: every caller that surfaces a rung MUST
@@ -641,7 +640,7 @@ class NodeState:
     runtime_label: str
     runtime_digest: str
     ledger_dir: Path
-    #: [b6a-requester-seal] Which half of an exchange this sidecar seals.
+    #: Which half of an exchange this sidecar seals.
     #: ``"provider"`` (default) — the sharer's sidecar, in front of its own
     #: serving node; the capsule attests what it SERVED. ``"requester"`` — the
     #: requestor's own outbound sidecar; the capsule attests what it REQUESTED
@@ -664,7 +663,7 @@ class NodeState:
     advertisement: Advertisement | None = None
     last_capsule_id: str | None = None
     emitted: list[dict[str, Any]] = field(default_factory=list)
-    #: [mesh-rung12-adversarial-review] D3 — client-supplied nonces this node
+    #: Client-supplied nonces this node
     #: has already seen, in-memory, this process's lifetime. rung-1's claim
     #: is equivocation resistance: the node cannot have precomputed a record
     #: before seeing the client's nonce. A captured genuine nonce replayed
@@ -675,7 +674,7 @@ class NodeState:
     #: _resolve_client_nonce()'s docstring.
     seen_client_nonces: set[str] = field(default_factory=set)
     checkpoint_config_path: Path | None = None
-    #: [mesh-plugin-cll-consume] A3 — the Rust plugin's OWN, separately-owned
+    #: The Rust plugin's OWN, separately-owned
     #: `<plugin_ledger_dir>/capsules.jsonl` (two single-writer logs, one
     #: machine view; §4 A2/A3 rev 3). When set, this sidecar process ALSO
     #: checkpoints that log (read-only: it is never written here — see
@@ -692,7 +691,7 @@ class NodeState:
     #: policy for both logs); give a dedicated file for the "independent
     #: checkpoint cadence (serving runs hotter)" case rev 3 calls out.
     plugin_checkpoint_config_path: Path | None = None
-    #: [b4-who-did] WHO+DID binding. mesh-llm's OPT-IN owner-identity cert
+    #: WHO+DID binding. mesh-llm's OPT-IN owner-identity cert
     #: (``SignedNodeOwnership``), loaded from ``~/.mesh-llm/node-ownership.json``
     #: or an override path. ``None`` (the DEFAULT) means owner identity is off —
     #: serving capsules then seal ``served_by_node_id`` only and mark the owner
@@ -707,7 +706,7 @@ class NodeState:
     #: capsule_id of the sealed identity capsule (the "who"), cited by every
     #: serving capsule whose owner re-check passes (the "did" cites the "who").
     identity_capsule_id: str | None = None
-    #: [mesh-provider-no-body-persistence] Whether this sidecar persists the
+    #: Whether this sidecar persists the
     #: request + response TEXT PREIMAGE (the exact JSON bodies it just
     #: digested) into ``<ledger_dir>/disclosures/<capsule_id>.json``.
     #: REQUESTER ROLE ONLY, opt-in, DEFAULT OFF (``--disclose`` turns it on;
@@ -720,7 +719,7 @@ class NodeState:
     #: recompute-and-match it against the sealed request_digest/
     #: response_digest. See persist_disclosure_preimage().
     disclose_preimage: bool = False
-    #: [mesh-provider-no-body-persistence] Requester-side retention bounds for
+    #: Requester-side retention bounds for
     #: disclosures/ -- see prune_disclosures(). Meaningless for the provider
     #: role (there is nothing to prune there). Applied once at sidecar
     #: startup (main()) and, for a long-running node, on the checkpoint
@@ -728,7 +727,7 @@ class NodeState:
     #: working across restarts without depending on the sidecar staying up.
     disclosure_ttl_seconds: float = DEFAULT_DISCLOSURE_TTL_SECONDS
     disclosure_max_bytes: int | None = None
-    #: [mesh-fabric-vocab-alignment] this node's Nostr discovery pubkey (hex,
+    #: This node's Nostr discovery pubkey (hex,
     #: NIP-01 x-only), when known -- `join_card.Card.principal_ref`'s
     #: `nostr-pubkey` host-principal profile binding statement is populated
     #: from this. `None` by default: this sidecar has no read access to the
@@ -739,7 +738,7 @@ class NodeState:
     nostr_pubkey_hex: str | None = None
 
     def __post_init__(self) -> None:
-        # [mesh-provider-no-body-persistence] Structural invariant, checked at
+        # Structural invariant, checked at
         # construction time (not just at the CLI layer): a provider-role node
         # can never be configured to retain a disclosure preimage. This is
         # the property TRUST-MODEL.md states -- there is no configuration
@@ -759,13 +758,13 @@ class NodeState:
         if self.role == ROLE_REQUESTER and self.disclose_preimage:
             self.disclosures_dir.mkdir(parents=True, exist_ok=True)
 
-        # [mesh-sequence-per-counterparty] Per-(self, counterparty) seq
+        # Per-(self, counterparty) seq
         # cache, a sibling of capsules.jsonl -- see sequence_counter.py's
         # module docstring for why this file is never the source of truth
         # for continuity.
         self.sequence_counters = SequenceCounterStore(self.ledger_dir / "sequence_counters.json")
 
-        # [mesh-native-log-join] The operational request log + lifecycle
+        # The operational request log + lifecycle
         # marker log, siblings of capsules.jsonl in the same ledger_dir --
         # native_log_join.py reconciles the three against each other.
         self.native_log_path = self.ledger_dir / "native_log.jsonl"
@@ -774,13 +773,13 @@ class NodeState:
         # this IS the "sealing resumed" marker a coverage join looks for.
         record_lifecycle_event(self, LIFECYCLE_RUNTIME_SHUTDOWN_END)
 
-        # [b4-who-did] Default the expected endpoint id from the loaded cert, so
+        # Default the expected endpoint id from the loaded cert, so
         # a matching cert re-checks green without extra config. When no cert is
         # loaded this stays None and the owner block is simply ABSENT.
         if self.owner_node_endpoint_id is None and self.node_ownership is not None:
             self.owner_node_endpoint_id = self.node_ownership.claim.node_endpoint_id
 
-        # [mesh-ledger-store-migration] cll.ledger.store.LedgerStore is this
+        # cll.ledger.store.LedgerStore is this
         # sidecar's own capsule backend now -- it already satisfies the same
         # LogSource shape (append/scan/fetch/find_gaps/verify,
         # record.seq/record.capsule_id) checkpointing.CheckpointState needs,
@@ -944,7 +943,7 @@ def persist_disclosure_preimage(
     and-match). Best-effort: a write failure here must never break request
     handling that already succeeded and was recorded in the ledger.
 
-    [mesh-provider-no-body-persistence] Structural invariant, not a setting:
+    Structural invariant, not a setting:
     this function REFUSES to run for the provider role. ``NodeState``'s own
     ``__post_init__`` already rejects ``disclose_preimage=True`` combined with
     ``role="provider"`` at construction time, and both call sites in this
@@ -997,7 +996,7 @@ def prune_disclosures(
     the directory's total size exceeds *max_bytes*, the OLDEST remaining
     files (by mtime) until back under budget.
 
-    [mesh-provider-no-body-persistence] Requester-side retention: today there
+    Requester-side retention: today there
     is no bound on disclosures/ at all -- this is the fix. Purging a
     disclosure NEVER touches ``capsules.jsonl`` or any signed artifact: the
     capsule's digests and the ledger record are untouched and stay
@@ -1099,7 +1098,7 @@ def build_capsule(
     # Rust producer, which sees the host serving-provenance event, fills the
     # richer block; the reconcile function is identical over either shape.
     #
-    # [b6a-requester-seal] serving_provenance is now EMITTED into the capsule
+    # serving_provenance is now EMITTED into the capsule
     # (previously it was a local reconcile-only var and never sealed on the
     # Python path). It carries the shared exchange_id + the role of this half,
     # so a third party can line up the requester's own-half capsule and the
@@ -1114,7 +1113,7 @@ def build_capsule(
     #               sidecar sees the served MODEL but not the serving node's
     #               id at the /v1 wire — never fabricated).
     #
-    # [mesh-requester-nonce-addendum] counterparty_ref/counterparty_ref_provenance
+    # counterparty_ref/counterparty_ref_provenance
     # narrow that "unknown" gap for the requester half only: `peer_capsule_id`
     # is the peer's own `X-Capsule-Id`, read back off the raw-proxy return
     # (this sidecar's upstream response headers) by the caller. It is an
@@ -1130,7 +1129,7 @@ def build_capsule(
         requesting_party = state.node_id
         counterparty_ref = peer_capsule_id
         counterparty_ref_provenance = "peer_asserted" if peer_capsule_id else None
-        # [adv-stream-membership-authenticated] The requester's outbound
+        # The requester's outbound
         # sidecar has no cryptographic (or even self-reported) signal for
         # WHO served it -- see the block comment above. `counterparty_ref`
         # is a per-exchange capsule id, not a stable node identity, so it
@@ -1145,7 +1144,7 @@ def build_capsule(
         requesting_party = bilateral_eval.initiator_ref if bilateral_verified else "unknown"
         counterparty_ref = None
         counterparty_ref_provenance = None
-        # [adv-stream-membership-authenticated] Stream membership on the
+        # Stream membership on the
         # provider side is bound to `initiator_ref` only when the caller's
         # bilateral request attestation verified (Move 2, signature-checked
         # against the presented pubkey) -- a real, if non-conformant,
@@ -1162,7 +1161,7 @@ def build_capsule(
         # `pair_sequencing.unauthenticated_records` (self_accountability.py)
         # surfaces in aggregate so the bucket can never blend in silently.
         counterparty_id_provenance = "bilateral_verified" if bilateral_verified else "unauthenticated"
-    # [mesh-sequence-per-counterparty] Per-(self, counterparty) monotone seq
+    # Per-(self, counterparty) monotone seq
     # (history proposal §1 -- continuity is bilateral only). `self` is
     # always this node (state.node_id); the counterparty is the OTHER half
     # of the pair -- served_by_node_id when this record is the requester's
@@ -1189,7 +1188,7 @@ def build_capsule(
         "quantization": "unknown",
         "counterparty_ref": counterparty_ref,
         "counterparty_ref_provenance": counterparty_ref_provenance,
-        # [adv-stream-membership-authenticated] Whether `counterparty_id`
+        # Whether `counterparty_id`
         # (the value actually fed to the sequence counter above) came from
         # an authenticated binding -- "bilateral_verified" (provider role,
         # verified Move 2 signature) or "unauthenticated" (every other
@@ -1200,7 +1199,7 @@ def build_capsule(
     }
     reconciliation = reconcile_advertised_vs_served(state.advertisement, serving_provenance)
 
-    # [mesh-runtime-ext-payload-migration] model_attestation fields from the
+    # model_attestation fields from the
     # runtime/model extension draft. agent_action_capsule.ModelAttestation
     # (the external contracts dataclass) has no top-level slot for
     # model_revision/weights_digest/quantization/decoding/source -- only
@@ -1283,7 +1282,7 @@ def build_capsule(
         # renders it either shape.
         "runtime": runtime_block,
         "attestation_refs": [],
-        # [mesh-fabric-vocab-alignment] additive record-header field, a
+        # Additive record-header field, a
         # top-level sibling of x-mesh-poc-v1 (never nested inside it --
         # epistemic_type is fabric vocabulary, not a PoC extension). See
         # _EPISTEMIC_TYPE_BY_SIDECAR_ROLE above.
@@ -1301,7 +1300,7 @@ def build_capsule(
             "model_package_digest": state.model_package_digest,
             "generation_parameters": generation_parameters,
             "latency_ms": _committed_latency_ms(latency_ms),
-            # [b6a-requester-seal] The observed serving facts for THIS half,
+            # The observed serving facts for THIS half,
             # including the shared exchange_id both halves record identically
             # and the role of this record. Emitted on the Python path (was
             # reconcile-only before) so the same field the Rust plugin fills is
@@ -1388,12 +1387,12 @@ def build_capsule(
             "identity_limitation": (
                 IDENTITY_LIMITATION_CAVEAT
             ) if bilateral_eval and bilateral_eval.present else None,
-            # [b4-who-did] WHO+DID binding. served_by_node_id (in
+            # WHO+DID binding. served_by_node_id (in
             # serving_provenance above) is the "did" — this endpoint served this
             # exchange. This block binds the "who" — the node OWNER's identity —
             # into that same record, and (when a valid cert is present) cites the
             # sealed identity capsule (identity_capsule_id) as the signed "who"
-            # record, AND [mesh-e6-identity-owner-cert] carries the owner cert
+            # record, AND carries the owner cert
             # itself as a CPB typed digest reference (owner_cert_ref — see
             # node_ownership.owner_cert_reference()), computed directly from the
             # cert's own bytes so the binding doesn't depend on identity-capsule
@@ -1497,7 +1496,7 @@ def sign_capsule(state: NodeState, capsule: dict[str, Any]) -> bytes:
 
 
 def record_capsule(state: NodeState, capsule: dict[str, Any], signed_statement: bytes) -> None:
-    # [adv-run-2-fix-batch] B3: verify BEFORE either disk write -- a capsule
+    # Verify BEFORE either disk write -- a capsule
     # that fails its own verify() must never be persisted to the ledger or
     # have a signed .cose statement written for it, even transiently.
     result = verify_capsule(capsule)
@@ -1511,7 +1510,7 @@ def record_capsule(state: NodeState, capsule: dict[str, Any], signed_statement: 
         try:
             state.checkpoint.record_appended()
         except Exception as exc:  # noqa: BLE001 -- best-effort, availability-only guard
-            # [adv-witness-outage-serving-path] Mirrors the plugin leg's
+            # Mirrors the plugin leg's
             # guard below: checkpointing.py's own registration retry already
             # keeps a down/unreachable witness off this call's critical path
             # (see its module docstring / TRUST-MODEL.md §8.4), but this
@@ -1548,7 +1547,7 @@ def record_capsule(state: NodeState, capsule: dict[str, Any], signed_statement: 
 
 
 def maybe_seal_identity_capsule(state: NodeState) -> str | None:
-    """[b4-who-did] Seal + record the identity capsule (the "who") for this node.
+    """Seal + record the identity capsule (the "who") for this node.
 
     Called once at startup when a cert is present. Sets
     ``state.identity_capsule_id`` so serving capsules can cite it. The capsule is
@@ -1574,7 +1573,7 @@ def maybe_seal_identity_capsule(state: NodeState) -> str | None:
         expected_node_endpoint_id=state.owner_node_endpoint_id or "",
     )
     print(
-        f"[b4-who-did] identity capsule sealed: {state.identity_capsule_id} "
+        f"identity capsule sealed: {state.identity_capsule_id} "
         f"owner_id={state.node_ownership.claim.owner_id} recheck_valid={recheck.valid} "
         f"({recheck.reason})"
     )
@@ -1582,7 +1581,7 @@ def maybe_seal_identity_capsule(state: NodeState) -> str | None:
 
 
 def seal_join_card(state: NodeState) -> str:
-    """[mesh-join-card] Seal + record this node's join card -- what it
+    """Seal + record this node's join card -- what it
     currently claims about itself (hardware, served models + weights_digest,
     measurement rung, a digest of its own current advertisement) -- so
     `join_card.card_consistency` has something to check every later exchange
@@ -1630,14 +1629,14 @@ def seal_join_card(state: NodeState) -> str:
     )
     signed = sign_capsule(state, capsule)
     record_capsule(state, capsule, signed)
-    print(f"[mesh-join-card] join card sealed: {capsule['capsule_id']} supersedes={prior_card_digest}")
+    print(f"join card sealed: {capsule['capsule_id']} supersedes={prior_card_digest}")
     return capsule["capsule_id"]
 
 
 def _resolve_client_nonce(state: NodeState, headers: dict[str, str]) -> tuple[str, str]:
     """Resolve the client nonce and label its source honestly.
 
-    [mesh-rung12-adversarial-review] D3 — a captured genuine client nonce
+    A captured genuine client nonce
     replayed verbatim on a later, unrelated exchange used to be
     indistinguishable from a fresh one: both returned ``client_supplied``
     with no dedup, no rejection, no warning, weakening the one property
@@ -1693,7 +1692,7 @@ def _seal_chat_completion(
     peer_capsule_id: str | None = None,
 ) -> dict[str, Any]:
     response_digest = _safe_digest_json(response_json, field="response_digest[seal_chat_completion]")
-    # [b6a-requester-seal] The shared per-exchange correlator, off the response
+    # The shared per-exchange correlator, off the response
     # id — recorded identically by whichever role's sidecar seals this half.
     exchange_id, exchange_id_source = exchange_id_from_response(response_json)
     # response_digest is None only when the response body itself could not be
@@ -1746,7 +1745,7 @@ def _seal_chat_completion(
         )
     signed_statement = sign_capsule(state, capsule)
     record_capsule(state, capsule, signed_statement)
-    # [mesh-provider-no-body-persistence] Requester-role-only call: the
+    # Requester-role-only call: the
     # provider half of this shared seal function never reaches this line.
     if state.role == ROLE_REQUESTER:
         persist_disclosure_preimage(state, capsule, request_json, response_json)
@@ -1943,7 +1942,7 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
         with urllib.request.urlopen(req, timeout=60) as resp:
             status_code = resp.status
             response_body = resp.read()
-            # [mesh-requester-nonce-addendum] mesh-llm may have routed this
+            # mesh-llm may have routed this
             # call to a mesh peer instead of serving it locally -- if so, the
             # peer's own X-Capsule-Id rides this response header, relayed
             # byte-for-byte. See PEER_CAPSULE_ID_HEADER's docstring: this is
@@ -1966,7 +1965,7 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
     # normalizer was active (same field as in the streaming path).
     _, _, upstream_ids = build_forwarded_copy(response_json)
     forwarded_copy = forwarded_copy_record(response_json, [], upstream_ids)
-    # [b6a-requester-seal] Shared correlator off the response id (see
+    # Shared correlator off the response id (see
     # _seal_chat_completion / the streaming twin — same derivation everywhere).
     exchange_id, exchange_id_source = exchange_id_from_response(response_json)
 
@@ -2027,7 +2026,7 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
 
     signed_statement = sign_capsule(state, capsule)
     record_capsule(state, capsule, signed_statement)
-    # [mesh-provider-no-body-persistence] Requester-role-only call: the
+    # Requester-role-only call: the
     # provider half of this shared handler never reaches this line.
     if state.role == ROLE_REQUESTER:
         persist_disclosure_preimage(state, capsule, request_json, response_json)
@@ -2036,7 +2035,7 @@ def handle_chat_completion(state: NodeState, upstream_base: str, headers: dict[s
     return status_code, response_body, out_headers
 
 
-#: [mesh-live-tab-pane-proxy] Q2 ruling default -- the fork tab's dashboard
+#: Q2 ruling default -- the fork tab's dashboard
 #: origin this sidecar's Ledger-pane routes answer CORS preflight for. A
 #: caller can override via ``--pane-dashboard-origin``; ``None`` disables
 #: the pane routes' CORS header entirely (same-origin/non-browser callers
@@ -2063,7 +2062,7 @@ def make_handler(state: NodeState, upstream_base: str, *, pane_dashboard_origin:
             if self.path != "/v1/chat/completions":
                 self._proxy_passthrough("POST", raw)
                 return
-            # [mesh-native-log-join] request_id identifies this native_log row
+            # request_id identifies this native_log row
             # independent of whatever capsule (if any) ends up sealed for it.
             request_id = uuid.uuid4().hex
             headers = {k.lower(): v for k, v in self.headers.items()}
@@ -2111,7 +2110,7 @@ def make_handler(state: NodeState, upstream_base: str, *, pane_dashboard_origin:
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-            # [mesh-native-log-join] capsule_id is None exactly when the except
+            # capsule_id is None exactly when the except
             # branch above ran -- handle_chat_completion seals on every path it
             # completes, so an uncaught sidecar-internal exception is the one
             # gap left for the join to surface here.
@@ -2166,7 +2165,7 @@ def make_handler(state: NodeState, upstream_base: str, *, pane_dashboard_origin:
             try:
                 with urllib.request.urlopen(req, timeout=120) as resp:
                     status_code = resp.status
-                    # [mesh-requester-nonce-addendum] see PEER_CAPSULE_ID_HEADER's
+                    # See PEER_CAPSULE_ID_HEADER's
                     # docstring -- the peer's unverified, self-asserted capsule id.
                     peer_capsule_id = resp.headers.get(PEER_CAPSULE_ID_HEADER)
                     for raw_line in resp:
@@ -2311,7 +2310,7 @@ def make_handler(state: NodeState, upstream_base: str, *, pane_dashboard_origin:
             self.send_header("Vary", "Origin")
 
         def _handle_pane_route(self, parsed: urllib.parse.ParseResult) -> None:
-            """[mesh-live-tab-pane-proxy] L1 -- GET /accountability/pane-a|
+            """GET /accountability/pane-a|
             b|c, JSON, loopback + CORS-allowlisted (Q2 ruling). Lazily
             imported for the same reason ``_handle_finder`` imports
             ``ledger_finder`` lazily: this module is still mid-way through
@@ -2364,7 +2363,7 @@ def make_handler(state: NodeState, upstream_base: str, *, pane_dashboard_origin:
             self.wfile.write(body)
 
         def _handle_finder(self, parsed: urllib.parse.ParseResult) -> None:
-            """[mesh-ui-ledger-finder] The Accountability page's Finder,
+            """The Accountability page's Finder,
             served fresh from this node's own ledger on every request (same
             "re-derive every call, never cache" discipline as
             ``evidence_server._merged_evidence_view`` -- see
@@ -2515,7 +2514,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--pane-dashboard-origin",
         default=DEFAULT_PANE_DASHBOARD_ORIGIN,
-        help="[mesh-live-tab-pane-proxy] CORS allowlist (exactly one origin, never a wildcard) for "
+        help="CORS allowlist (exactly one origin, never a wildcard) for "
         "GET /accountability/pane-a|b|c -- the fork tab's Ledger panes read these directly from "
         "this sidecar (Q2 ruling). Pass an empty string to disable the CORS header entirely.",
     )
@@ -2563,7 +2562,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         default=False,
         help=(
-            "[mesh-provider-no-body-persistence] requester role only, opt-in, default OFF: persist "
+            "requester role only, opt-in, default OFF: persist "
             "the request+response TEXT PREIMAGE -- the exact JSON bodies just digested -- into "
             "<ledger-dir>/disclosures/<capsule_id>.json, so a human operator can see the actual "
             "exchange in capsule-mesh-viewer and it can recompute-and-match the text against the "
@@ -2629,7 +2628,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--node-ownership",
-        help="[b4-who-did] path to mesh-llm's signed owner-identity cert "
+        help="path to mesh-llm's signed owner-identity cert "
         "(node-ownership.json, written by `mesh-llm auth init`). OPT-IN / off by "
         "default: without it, serving capsules seal served_by_node_id only and "
         "mark the owner ABSENT (never fabricated). With it, an identity capsule "
@@ -2640,7 +2639,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--nostr-pubkey",
-        help="[mesh-fabric-vocab-alignment] this node's Nostr discovery pubkey (hex, NIP-01 x-only), "
+        help="this node's Nostr discovery pubkey (hex, NIP-01 x-only), "
         "e.g. the SAME key mesh-llm signs its Kind-31990 listing with. When given, the join card's "
         "principal_ref binds this node's Ed25519 ledger key to this Nostr key under the nostr-pubkey "
         "host-principal profile. Omit to leave principal_ref "
@@ -2649,7 +2648,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    # [mesh-provider-no-body-persistence] --disclose is requester-only. Catch
+    # --disclose is requester-only. Catch
     # this at the CLI layer (a clear, immediate error) rather than letting it
     # fall through to NodeState.__post_init__'s ValueError -- same invariant,
     # a friendlier message at the point the operator made the mistake.
@@ -2666,7 +2665,7 @@ def main(argv: list[str] | None = None) -> int:
         runtime_digest = "0" * 64
         print("WARNING: no --runtime-artifact given; runtime_digest is a placeholder. See README.")
 
-    # [b4-who-did] Load mesh-llm's opt-in owner cert if a path was given. Absent
+    # Load mesh-llm's opt-in owner cert if a path was given. Absent
     # (the default) degrades gracefully to did-only, owner ABSENT.
     node_ownership = None
     if args.node_ownership:
@@ -2700,7 +2699,7 @@ def main(argv: list[str] | None = None) -> int:
         nostr_pubkey_hex=args.nostr_pubkey,
     )
 
-    # [mesh-provider-no-body-persistence] One prune pass at startup (covers a
+    # One prune pass at startup (covers a
     # restart after a long-idle disclosures/ backlog); a long-running node
     # additionally wants checkpoint_daemon.py's hourly cadence alongside this
     # sidecar so retention keeps working without depending on a restart.
@@ -2713,7 +2712,7 @@ def main(argv: list[str] | None = None) -> int:
         if startup_pruned:
             print(f"disclosure prune at startup: removed {len(startup_pruned)} expired file(s)")
 
-    # [b4-who-did] Seal the identity capsule (the "who") ONCE at startup, if a
+    # Seal the identity capsule (the "who") ONCE at startup, if a
     # cert is present. Serving capsules then cite its capsule_id. Only cited when
     # the first-serve re-check passes, so an expired/mismatched cert is sealed as
     # a record but never presented as a live owner binding.

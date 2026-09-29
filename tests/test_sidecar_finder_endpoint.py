@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-ui-ledger-finder] The sidecar's own `/accountability/finder` route
+"""The sidecar's own `/accountability/finder` route
 (``capsule_sidecar.Handler.do_GET`` -> ``_handle_finder``), driven end-to-end
 over real HTTP against a live ``run_sidecar`` instance -- the same live-
 server pattern `test_native_log_sidecar.py` uses, for the same reason: the

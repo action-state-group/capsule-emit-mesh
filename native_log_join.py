@@ -3,7 +3,7 @@
 """native-log-join -- join a node's operational request truth to sealed
 capsule truth, and report the gap as a self-coverage FINDING.
 
-[mesh-native-log-join] Two sources, never blended:
+Two sources, never blended:
 
   - ``native_log.jsonl`` (``source: native_log``) -- capsule_sidecar.py's OWN
     record of every ``/v1/chat/completions`` request it handled, written
@@ -225,7 +225,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def _cmd_join(args: argparse.Namespace) -> int:
     native_entries = _read_jsonl(Path(args.native_log))
-    # [mesh-ledger-store-migration] args.ledger names this node's ledger dir
+    # args.ledger names this node's ledger dir
     # -- store-aware (manifest.json present) with a labeled, read-only
     # flat-file fallback for a not-yet-migrated dir.
     from ledger_store_backend import read_all_capsules

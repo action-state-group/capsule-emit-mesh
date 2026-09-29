@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-live-tab-pane-proxy] L1 -- the sidecar's own GET /accountability/
+"""L1 -- the sidecar's own GET /accountability/
 pane-a|b|c routes (``capsule_sidecar.Handler.do_GET``/``do_OPTIONS`` ->
 ``_handle_pane_route``), driven end-to-end over real HTTP against a live
 ``run_sidecar`` instance -- same live-server pattern
@@ -302,7 +302,7 @@ def test_pane_dashboard_origin_none_disables_cors_header_entirely(cs, stub_upstr
 
 
 def test_main_cli_wires_pane_dashboard_origin_through_to_run_sidecar(cs, tmp_path, monkeypatch):
-    """[mesh-live-tab-pane-proxy] every other pane-route test drives
+    """Every other pane-route test drives
     ``run_sidecar()`` directly; nothing exercised the CLI entry point itself
     -- ``args.pane_dashboard_origin`` -> ``main()`` -> ``run_sidecar(...,
     pane_dashboard_origin=...)``. ``run_sidecar``/``serve_until_shutdown`` are

@@ -148,7 +148,7 @@ def test_freshness_grade_replay_is_an_explicit_failure_not_amber():
 
 @pytest.mark.parametrize("source", ["sidecar_generated_fallback", "local_ingress", "plugin_generated_fallback"])
 def test_freshness_grade_node_side_sources_are_not_checked(source):
-    """[mesh-live-tab-pane-proxy] L2: a node-minted nonce source carries no
+    """A node-minted nonce source carries no
     client-supplied freshness claim to verify -- assurance_map.STATE_NOT_CHECKED,
     not the retired ``present-unverified`` ladder word (§7 ruling)."""
     assert freshness_grade(source)["state"] == assurance_map.STATE_NOT_CHECKED
@@ -604,7 +604,7 @@ def test_build_counterparty_held_block_counts_adjudications_naming_my_capsule_id
     assert held["tally"]["contradicted"] == 1
     assert held["source"] == "self_held"
     assert block["references"]["state"] == BLOCK_PENDING
-    # [mesh-live-tab-pane-proxy] L2: BLOCK_PENDING is the five-state map's
+    # BLOCK_PENDING is the five-state map's
     # NOT_CHECKED now, not the ad hoc "pending" string this block used to
     # carry -- pin the actual value, not just the alias, so a future revert
     # of BLOCK_PENDING's definition back to a bare "pending" flips this.
@@ -642,7 +642,7 @@ def test_build_footer_block_pending_without_native_log_never_a_fabricated_zero()
     assert footer["native_log_join"]["state"] == BLOCK_PENDING
     assert footer["refusals_issued"]["state"] == BLOCK_PENDING
     assert footer["absences_recorded_against_me"]["state"] == BLOCK_PENDING
-    # [mesh-live-tab-pane-proxy] L2: same pin as the counterparty-held block
+    # Same pin as the counterparty-held block
     # above -- these three are the five-state map's NOT_CHECKED now.
     assert footer["native_log_join"]["state"] == assurance_map.STATE_NOT_CHECKED
     assert footer["refusals_issued"]["state"] == assurance_map.STATE_NOT_CHECKED

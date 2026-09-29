@@ -172,7 +172,7 @@ def test_rung_ordering_is_strict():
 
 
 # ===========================================================================
-# identity_limitation_for_rung — [mesh-rung12-adversarial-review] D1
+# identity_limitation_for_rung — rung-1/2 adversarial review, D1
 #
 # derive_cross_party_rung() cannot confirm initiator_ref or the client ack's
 # key belong to a party independent of the node -- a lone attacker playing
@@ -196,7 +196,7 @@ def test_caveat_present_for_full_bilateral():
 
 
 def test_self_minted_ack_spoof_reaches_full_bilateral_but_is_labeled():
-    """[mesh-rung12-adversarial-review] Attack 5a repro: has_verified_ack=True
+    """Rung-1/2 adversarial review, Attack 5a repro: has_verified_ack=True
     passed directly with a fabricated, never-checked initiator_ref. The rung
     cannot be prevented from this direct call (inherent -- the function is
     stateless and this is a documented caller contract, see
@@ -480,7 +480,7 @@ def test_bilateral_demo_e2e():
     # Verify both rungs appear in the output.
     assert "full_bilateral" in result.stdout
     assert "unilateral_fallback" in result.stdout
-    # [mesh-rung12-adversarial-review] D1 — every full_bilateral derivation
+    # Rung-1/2 adversarial review D1 — every full_bilateral derivation
     # in this demo (verify_exchange's live findings, and the offline
     # capsule-1-with-ack re-derivation) must carry the identity_limitation
     # caveat in the real output, not just in a unit test against a stub.

@@ -8,13 +8,13 @@ Implements the record shape and producer invariants defined in
 produces over a split-inference run's own stage order: which hops happened,
 in what order, and whether each stage's bundle was obtained.
 
-SCOPE — [mesh-b3-coordinator-receipt-producer] (Phase B6-code)
+SCOPE — coordinator receipt producer (Phase B6-code)
     This module only builds and emits the record from an already-resolved
     topology and per-stage bundle state. It does NOT request bundles from
     participants, does NOT call received() to carry them into the
     coordinator's own log, and does NOT call push(). That auto-request /
-    carry logic is Phase B6-final
-    ([mesh-b6-coordinator-autorequest-composer-log]) — a caller of
+    carry logic is Phase B6-final (the coordinator auto-request
+    composer log) — a caller of
     emit_coordinator_receipt() is expected to have already carried each
     `present` stage's bundle bytes via capsule_emit.surface.received() and
     to pass in the resulting capsule_id as that stage's bundle_ref.
@@ -164,7 +164,7 @@ def _validate_assignment(assignment: StageAssignment) -> None:
 class TopologyEntry:
     """One hop in the coordinator's own claim of what it routed (§3.1).
 
-    `role` reuses [mesh-exchange-role-field] A1's registry-defined enum once
+    `role` reuses the exchange role field's registry-defined enum once
     it lands in this repo's code (design doc §3.1) — not validated against a
     closed set here because that enum does not exist in code yet; only
     non-empty-string is enforced. `observation_point`, when given, reuses

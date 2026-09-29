@@ -44,7 +44,7 @@ never a trust-rating number.
 refuses outright unless the requester supplies `expected_pin` -- the root of a
 checkpoint it already expects (a previously-published, static export). This
 mirrors the evidence-request carrier's `expected_pin` coverage resolution
-(`[mesh-e14-evidence-responder]`, not yet merged as of this module -- the
+(the evidence responder, not yet merged as of this module -- the
 carrier's request/response *shape* is cited here, not its code) and rules out
 a node answering "what is your full history right now" freshly, on demand,
 for an arbitrary asker -- the answer is only ever a pin match against a
@@ -233,7 +233,7 @@ HISTORY_CARD_SCHEMA = "mesh-history-card/1"
 #: `account_capsule.ACCOUNT_SUBJECT_KEY`.
 HISTORY_SUBJECT_KEY = "x-mesh-history-v1"
 
-#: [mesh-fabric-vocab-alignment] the fabric's shared record-header vocabulary
+#: The fabric's shared record-header vocabulary
 #: convention: a history card is a derived
 #: aggregate/fold over this node's own checkpoint chain, never a claim about
 #: a single exchange and never an observation of one.
@@ -253,7 +253,7 @@ HISTORY_CHAIN_RELATION = "checkpoint_prev"
 HISTORY_SUPERSEDES_RELATION = "supersedes"
 
 #: Refusal reasons, named so a caller (and the evidence-request carrier, once
-#: [mesh-e14-evidence-responder] lands) can pattern-match on them rather than
+#: the evidence responder lands) can pattern-match on them rather than
 #: parsing prose.
 REQUEST_MALFORMED = "request_malformed"
 COVERAGE_UNSATISFIABLE = "coverage_unsatisfiable"
@@ -353,7 +353,7 @@ class HistoryProperties:
     #: verifier can decode; the bound is structural (presence of a real receipt),
     #: not numeric.
     #:
-    #: [mesh-history-card-time-provenance]: no published temporal property may
+    #: No published temporal property may
     #: be derivable purely from producer-written timestamps without this label.
     temporal_provenance: str = "producer_asserted"
 
@@ -506,7 +506,7 @@ class HistoryCard:
     #: this dict beside `witnessed`, never render `witnessed` alone as
     #: consistency-verified. See `witness_words()`.
     receipt_grades: dict[str, str | None] = field(default_factory=dict)
-    #: peer checkpoint-root reconciliation ([mesh-peer-root-exchange]) --
+    #: peer checkpoint-root reconciliation --
     #: OUTSIDE `properties`/`core_account()` deliberately: these come from a
     #: separate observation store (the mesh plugin's gossip-fed reconciliation
     #: ledger), not from this log's own checkpoint chain, so they must never
@@ -516,7 +516,7 @@ class HistoryCard:
     forks_observed: int = 0
     #: Integrity signal for the forks count -- distinguishes honest absence
     #: (plugin never ran) from unreadable/tampered state.  "State unreadable"
-    #: must never grade as "no forks observed" ([mesh-forks-observed-integrity]).
+    #: must never grade as "no forks observed".
     forks_state: str = FORKS_STATE_ABSENT
     #: The references counts (discovery mechanism 1) -- ALSO outside
     #: `properties`/`core_account()`: these come from `ask_history.py
@@ -682,7 +682,7 @@ def reconciliation_counts_from_ledger_dir(ledger_dir: Path) -> tuple[int, int, s
     - ``FORKS_STATE_UNREADABLE`` ("unreadable"): JSONDecodeError OR the `forks`
       key is missing from the parsed JSON (both indicate corruption or tampering).
       "State unreadable" must NEVER grade as "no forks observed"
-      ([mesh-forks-observed-integrity]: an attacker can `jq 'del(.forks)'` to
+      (an attacker can `jq 'del(.forks)'` to
       remove just that key while keeping the file valid JSON).
     - ``FORKS_STATE_OK`` ("ok"): normal read, all expected fields present.
 
@@ -719,7 +719,7 @@ def with_peer_reconciliation(card: HistoryCard, ledger_dir: Path) -> HistoryCard
 
     When `forks_state` is FORKS_STATE_UNREADABLE, `to_value()` emits
     `forks_observed: null` rather than a false zero -- "state unreadable" must
-    never grade as "no forks observed" ([mesh-forks-observed-integrity])."""
+    never grade as "no forks observed"."""
     reconciled_with, forks_observed, forks_state = reconciliation_counts_from_ledger_dir(ledger_dir)
     return replace(card, reconciled_with=reconciled_with, forks_observed=forks_observed, forks_state=forks_state)
 
@@ -846,7 +846,7 @@ def build_history_card(
     continuity, unforked, depth, verified_prefix = _walk_chain(in_range, cose_by_size, boundary=boundary)
     cadence = _cadence(verified_prefix)
 
-    # [mesh-history-card-time-provenance]: determine whether the temporal
+    # Determine whether the temporal
     # properties (history_depth, cadence) are bounded by external witness
     # receipts or are purely producer-asserted.  A verified witness receipt
     # on ANY checkpoint in the verified prefix places an external constraint
@@ -992,7 +992,7 @@ def verify_history_card(
     except ValueError as exc:
         return HistoryVerifyResult(ok=False, errors=[str(exc)])
 
-    # [mesh-history-card-enrichment-verify]: peer_reconciliation and references
+    # peer_reconciliation and references
     # live OUTSIDE core_account() -- they come from a separate observation store
     # (the mesh plugin's gossip-fed reconciliation ledger and ask_history counts),
     # not from the checkpoint chain.  build_history_card() always returns a card
@@ -1003,7 +1003,7 @@ def verify_history_card(
     # cryptographic chain-walk check: those properties live in
     # recomputed.properties (inside core_account()) which is untouched here.
     #
-    # [mesh-forks-observed-integrity]: forks_state must also be folded so that
+    # forks_state must also be folded so that
     # to_value() re-derives forks_observed correctly for the recomputed card.
     # When forks_state=="unreadable", to_value() emits forks_observed=None;
     # the stored forks_observed field value is irrelevant in that case (to_value
@@ -1064,7 +1064,7 @@ def seal_history_card(
     """
     history_subject = dict(card.to_value())
     compute_attestation = {
-        # [mesh-fabric-vocab-alignment] additive record-header field, a
+        # Additive record-header field, a
         # top-level sibling of HISTORY_SUBJECT_KEY (see
         # EPISTEMIC_TYPE_DERIVED_METRIC).
         "epistemic_type": EPISTEMIC_TYPE_DERIVED_METRIC,
@@ -1107,7 +1107,7 @@ def answer_full_history_request(
 ) -> dict[str, Any]:
     """Answer the `subject: full_history` leg of the evidence-request carrier
     (`derivation: checkpoints_only`, digests-only tier) -- cited by shape from
-    `[mesh-e14-evidence-responder]`'s request map, not by import (that
+    the evidence responder's request map, not by import (that
     responder is not merged yet).
 
     **Fail-closed on `expected_pin` -- this is the whole point.** A caller

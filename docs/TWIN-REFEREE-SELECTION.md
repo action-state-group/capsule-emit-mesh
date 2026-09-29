@@ -83,7 +83,7 @@ BOTH twins at once, and additionally requires `twin_a`/`twin_b` to already
 share one `weights_digest`. Unlike `select_twin`, owner independence here is
 a **hard gate**: a candidate whose `owner_id` is known to equal either
 twin's is excluded from the candidate pool outright, not merely scored
-`0.0` on the owner-diversity component ([mesh-referee-live-e17c],
+`0.0` on the owner-diversity component (live referee,
 2026-09-08 — a mesh where all comparable peers share one operator must
 never silently corroborate itself via a same-owner "referee"). If that
 hard exclusion leaves zero candidates, `select_referee` falls back to the
@@ -151,4 +151,4 @@ sample is thin.
 policy weights used, and the honesty caveat text — meant to be attached to
 the REQUESTER's own record (e.g. its `compute_attestation`), never used to
 mutate or re-seal the twin's already-sealed capsule (same discipline as the
-provider-ack leg of `[mesh-b2-cite-and-ack-wire]`).
+provider-ack leg of the cite-and-ack wire).

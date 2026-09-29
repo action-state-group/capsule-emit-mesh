@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[b4-who-did] WHO+DID binding tests — bind mesh-llm's node-owner identity.
+"""WHO+DID binding tests — bind mesh-llm's node-owner identity.
 
 Covers node_ownership.py end-to-end AND its binding into the sidecar's serving
 capsule (capsule_sidecar.build_capsule):
@@ -280,7 +280,7 @@ def test_owner_block_bound_cites_identity_capsule_and_owner_cert_ref():
     assert blk["owner_id"] == cert.claim.owner_id
     assert blk["identity_capsule_id"] == "cap-who-123"  # the did cites the who
     assert blk["recheck_valid"] is True
-    # [mesh-e6-identity-owner-cert] the owner cert itself as a typed ref.
+    # The owner cert itself as a typed ref.
     assert blk["owner_cert_ref"] == owner_cert_reference(cert)
     assert blk["owner_cert_ref"]["type"] == OWNER_CERT_REF_TYPE
     assert blk["owner_cert_ref"]["digest_alg"] == DIGEST_ALG_SHA256
@@ -326,7 +326,7 @@ def test_owner_cert_digest_changes_on_different_owner_id():
 
 
 def test_owner_block_swapped_signature_is_invalid_and_ref_not_cited():
-    """[mesh-e6-identity-owner-cert] mutant: a swapped/mismatched cert (bad
+    """Mutant: a swapped/mismatched cert (bad
     signature) -> owner_status=invalid AND owner_cert_ref=None. An invalid
     cert must never be cited as though it were a live binding."""
     key = _owner_key()
@@ -341,7 +341,7 @@ def test_owner_block_swapped_signature_is_invalid_and_ref_not_cited():
 
 
 def test_owner_block_wrong_node_cert_is_invalid_and_ref_not_cited():
-    """[mesh-e6-identity-owner-cert] mutant: a cert bound to a DIFFERENT
+    """Mutant: a cert bound to a DIFFERENT
     node (swapped in wholesale) -> owner_status=invalid, ref not cited."""
     cert = _signed_cert(_owner_key(), node_id_hex=OTHER_NODE_HEX)
     blk = owner_provenance_block(

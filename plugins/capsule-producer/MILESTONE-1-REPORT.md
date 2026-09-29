@@ -1,6 +1,6 @@
 # Milestone 1 report — Rust capsule production, crypto interop
 
-Task: `[mesh-rust-capsule-production]`. Scope: emit ONE valid Agent Action
+Task: Rust capsule production. Scope: emit ONE valid Agent Action
 Capsule in Rust and prove byte-exact / cross-language conformance with the
 Python reference and an independent Go COSE verifier, before touching
 chaining/ledger/rotation/anchoring.

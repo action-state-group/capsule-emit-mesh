@@ -11,7 +11,7 @@ peer can ask for a ``record``/``range`` and get back exactly what
 ``answer()`` returns -- an ``Artifact`` or a signed ``Refusal`` -- never a
 new artifact shape, never beyond the bundle tier (never ``disclose()``).
 
-STANDALONE by design ([mesh-e15-evidence-http-route], Lane B): its own
+STANDALONE by design (evidence HTTP route, Lane B): its own
 module importing ``evidence_responder``, never wired into
 ``capsule_sidecar.py``'s own request handling -- every Batch-1 item touches
 that file, so this stays out of the merge-order queue and runs against
@@ -29,7 +29,7 @@ requests, it never seals a capsule.
 **The plugin-ledger bridge (Step 0 finding).** The live serving path on a
 mesh node is the Rust plugin, which owns ``<data_dir>/ledger/capsules.jsonl``
 + ``signed-statements/`` -- ``capsule_sidecar.py``'s ``NodeState.
-plugin_checkpoint`` wiring ([mesh-plugin-cll-consume] A2/A3) then
+plugin_checkpoint`` wiring (plugin ledger consumption, A2/A3) then
 checkpoints that log READ-ONLY, into a SIBLING ``checkpoints.jsonl``
 (``checkpointing.CheckpointState`` never becomes a second writer into a
 ledger it does not own). ``capsule_emit.bundle.bundle()`` (what ``answer()``
@@ -379,14 +379,14 @@ def make_evidence_handler(state: EvidenceServerState):
                 # reproducing pre-sharing-policy behavior exactly
                 # (`policy` gates on it only when BOTH are supplied).
                 requester_id = self.headers.get("X-Mesh-Requester-Id") or None
-                # [mesh-ledger-store-migration] handle_evidence_request's
+                # Since the ledger-store migration, handle_evidence_request's
                 # own generic path now does this bridging itself (see
                 # evidence_responder.py), so this door hands it state
                 # unchanged rather than pre-building a merged view.
                 result = handle_evidence_request(
                     state, request_bytes, requester_id=requester_id, policy=state.share_policy
                 )
-                # [mesh-served-summary-derivation] a served_summary/1 success
+                # A served_summary/1 success
                 # is already a plain dict (no .to_dict()); an Artifact/Refusal
                 # is not. augment_evidence_answer_dict is additive-only either
                 # way (a no-op on a shape it does not recognize).
@@ -481,7 +481,7 @@ def main(argv: list[str] | None = None) -> int:
         "--ledger-dir",
         required=True,
         help="this node's ledger directory -- a cll.ledger.store.LedgerStore if migrated "
-        "([mesh-ledger-store-migration]), else a legacy flat capsules.jsonl -- e.g. this "
+        "(after the ledger-store migration), else a legacy flat capsules.jsonl -- e.g. this "
         "sidecar's own ledger_dir, or the Rust plugin's <data_dir>/ledger for the live serving "
         "path (auto-bridged if a sibling checkpoints.jsonl is present)",
     )

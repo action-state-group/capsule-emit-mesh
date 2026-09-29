@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-adjudication-delivery-ack] -- deliver a sealed twin-adjudication
+"""Deliver a sealed twin-adjudication
 capsule (`twin_adjudicator.seal_adjudication_capsule`) to each cited
 party's evidence door, so the verdict actually reaches the judged node's
 own chain instead of staying stranded on the requester's alone ("the twin
@@ -121,7 +121,7 @@ def _owner_id(capsule: dict[str, Any]) -> str | None:
 
 def _refuse(request_digest: str, reason: str, *, state: Any, issued_at: str) -> dict[str, Any]:
     """Sign a refusal and return its wire dict, with the fabric's additive
-    `status` (`[mesh-fabric-vocab-alignment]`) layered on beside `reason` --
+    `status` layered on beside `reason` --
     `WITHHELD` for `policy_decline`, absent for `request_malformed` (see
     `evidence_responder.status_for_refusal_reason`'s own docstring)."""
     signer = resolve_signer(str(state.ledger_dir), key_path=state.signing_key_path)
@@ -231,7 +231,7 @@ def seal_adjudication_ack_refused(
         if isinstance(original_verdict, str) and original_verdict.startswith("contradicted:")
         else None
     )
-    # [mesh-referee-attribution] Forward referee_id from the original
+    # Forward referee_id from the original
     # adjudication block so a reader of the refusal can see who judged.
     # `ask_history._classify_receipts_for_x` does not take this field's word:
     # it counts a refusal only when `adjudication_capsule_id` names a verdict
@@ -256,7 +256,7 @@ def seal_adjudication_ack_refused(
         provenance="referee",
         tool_name="adjudication_ack_refused",
     )
-    # [adv-run-2-fix-batch] discipline: verify BEFORE returning -- matches
+    # Same discipline: verify BEFORE returning -- matches
     # twin_adjudicator.seal_adjudication_capsule.
     result = verify_capsule(capsule)
     if not result.ok:

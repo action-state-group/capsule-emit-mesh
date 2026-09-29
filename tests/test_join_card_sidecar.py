@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-join-card] `capsule_sidecar.seal_join_card` -- the Python
+"""`capsule_sidecar.seal_join_card` -- the Python
 sidecar mirror of the card-sealing path, end to end through REAL signing +
 REAL ledger recording (not mocked), then re-read from disk and checked with
 `join_card.card_consistency`.
@@ -106,7 +106,7 @@ def test_seal_join_card_first_start_has_no_supersedes(cs):
 
 
 def test_seal_join_card_on_model_change_supersedes_the_first(cs):
-    """[mesh-join-card] acceptance: start -> card #1; load a second model ->
+    """Acceptance: start -> card #1; load a second model ->
     card #2 `supersedes` #1."""
     tmp_dir = pathlib.Path(tempfile.mkdtemp())
     state = _make_state(cs, tmp_dir)

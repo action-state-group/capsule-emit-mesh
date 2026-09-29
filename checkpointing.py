@@ -9,8 +9,8 @@ install and a strictly stronger claim:
                                                           the Rust plugin's ledger.rs)
     LAYER 1  a local, append-only MMR over that log  -- THIS MODULE, opt-in
     LAYER 2  a periodic, signed COSE-wire checkpoint  -- THIS MODULE, opt-in
-             (`kind="cll-checkpoint"`, peak-list commitment,
-             [cll-checkpoint-cose-wire]/[cll-commitment-interop])
+             (`kind="cll-checkpoint"`, the cll COSE wire form with its
+             peak-list commitment)
     LAYER 3  an independent witness co-signs it       -- register_checkpoint(), opt-in per URL,
                                                           default target witness.agentactioncapsule.org
 
@@ -377,7 +377,7 @@ class CheckpointState:
         prev_before = self.last_checkpoint
         cp = emit_checkpoint(self.mmr, self.signer, log_id=self.log_id, prev=prev_before)
 
-        # COSE-wire form ([cll-checkpoint-cose-wire]/[cll-commitment-interop]):
+        # COSE-wire form:
         # the witness's /checkpoints route is COSE-only (single-host ruling,
         # 2026-08-27) -- register_checkpoint no longer accepts a plain JSON
         # CheckpointRecord. Built the same way capsule_emit.witness's own

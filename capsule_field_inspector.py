@@ -7,7 +7,7 @@ this module takes the JSON the admission-policy plugin returned for ONE
 `/v1/chat/completions` exchange (`.admission_policy` from the HTTP response)
 plus the checkpoint status line `checkpoint_ledger.py` printed, and renders a
 single labeled report answering "on whose hardware, which model, over which
-bytes" -- the exact field list `[mesh-capsule-data-inspector-onemac]` asks
+bytes" -- the exact field list asked
 for: model_id, quantization, hardware{gpu,vram_bytes,is_soc}, hostname,
 served_by_node_id, token counts, agent_input_digest, agent_output_digest,
 client_nonce+source, effect_type, gate verdict, capsule_id, chain parent,

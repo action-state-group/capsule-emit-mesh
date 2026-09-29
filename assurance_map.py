@@ -4,7 +4,7 @@
 three Accountability panes (``capsule_accountability_tab.py`` Pane A,
 ``peer_accountability_tab.py`` Pane B, ``capsule_exchange_tab.py`` Pane C).
 
-[mesh-panes-map-chips]. Replaces the ladder-shaped four-state discipline
+The chip-map rewrite. Replaces the ladder-shaped four-state discipline
 (``verified``/``present-unverified``/``absent``/``failed`` plus the ad hoc
 ``pending``) with the orthogonal nine-property map from the 2026-09-06
 vocabulary realignment (``_work/consistency-realignment-2026-09-06.md`` §1):

@@ -262,7 +262,7 @@ def test_verify_history_card_catches_a_tampered_ledger_behind_a_stale_published_
 
 
 def test_verify_history_card_rejects_a_stolen_history_republished_under_a_stranger_node_id(tmp_path, fake_witness):
-    """The exact `[adv-history-card-identity-binding]` mallory reproduction:
+    """The exact history-card identity-binding mallory reproduction:
     a real, honestly witnessed, structurally-valid checkpoint chain
     republished under a `node_id` that is not its own -- the chain itself
     recomputes and matches fine, so this must be caught by the identity
@@ -336,7 +336,7 @@ def test_inclusion_and_consistency_proofs_are_logarithmic_not_linear(tmp_path, n
     assert total_consistency_hashes <= bound, "consistency proof size grew faster than O(log n)"
 
 
-# -- [mesh-peer-root-exchange]: reconciled_with / forks_observed folded in
+# -- Peer root exchange: reconciled_with / forks_observed folded in
 # from the mesh plugin's own on-disk reconciliation store, cross-language --
 
 
@@ -419,7 +419,7 @@ def test_with_peer_reconciliation_never_changes_the_chain_walk_verification(tmp_
 
 
 # --------------------------------------------------------------------------- #
-# [mesh-history-card-float-cadence]: cadence stats are exact decimal STRINGS  #
+# Cadence stats are exact decimal STRINGS                                     #
 # --------------------------------------------------------------------------- #
 def test_multi_checkpoint_cadence_seals_and_round_trip_verifies(tmp_path, fake_witness):
     # A >=2-checkpoint selection populates span_seconds/mean_interval_seconds/
@@ -438,20 +438,20 @@ def test_multi_checkpoint_cadence_seals_and_round_trip_verifies(tmp_path, fake_w
     assert cap["action_type"] == "fyi"
     assert isinstance(cap["capsule_id"], str) and len(cap["capsule_id"]) == 64
     assert verify_capsule(cap).ok
-    # [mesh-fabric-vocab-alignment] additive record-header field: a history
+    # Fabric vocabulary alignment, additive record-header field: a history
     # card is a derived aggregate over this node's own checkpoint chain.
     assert cap["model_attestation"]["compute_attestation"]["epistemic_type"] == "derived_metric"
 
 
 # --------------------------------------------------------------------------- #
-# [mesh-forks-observed-integrity] adversarial tests                           #
+# forks_observed integrity: adversarial tests                                #
 # --------------------------------------------------------------------------- #
 
 
 def test_missing_forks_key_in_ledger_is_unreadable_never_zero(tmp_path):
     """Deleting just the 'forks' key from reconciliation_state.json (while
     keeping 'reconciled_peers') must produce forks_state='unreadable', not
-    forks_observed=0.  This is the [mesh-forks-observed-integrity] attack:
+    forks_observed=0.  This is the forks_observed-integrity attack:
     `jq 'del(.forks)' reconciliation_state.json > tmp && mv tmp reconciliation_state.json`
     then asking for a history card must never publish forks_observed: 0."""
     # File present, parses OK, but 'forks' key deleted (the attack)
@@ -512,7 +512,7 @@ def test_cadence_raw_float_fails_closed_with_float_in_digest_error(tmp_path, fak
 
 
 # --------------------------------------------------------------------------- #
-# [mesh-history-card-time-provenance] (P1)                                    #
+# History-card time provenance (P1)                                          #
 # Temporal properties derived from producer-written cp.timestamp are labelled #
 # producer_asserted; real witness receipts flip the label to receipt_bounded.  #
 # --------------------------------------------------------------------------- #
@@ -522,7 +522,7 @@ def test_temporal_provenance_is_producer_asserted_with_stub_witnesses(tmp_path, 
     """A card built from checkpoints whose only witnesses are stubs (is_stub=True)
     must label its temporal properties as producer_asserted.
 
-    Adversarial-council finding [mesh-history-card-time-provenance]: an actor
+    Adversarial-council finding on history-card time provenance: an actor
     can backdate cp.timestamp at zero cost -- generate a log, checkpoint N times
     with backdated timestamps, sign each.  'Three years of unbroken 60-second
     cadence' is an afternoon's work.  Temporal properties derived purely from
@@ -606,7 +606,7 @@ def test_backdated_card_is_still_labelled_producer_asserted_not_silently_accepte
 
 
 # --------------------------------------------------------------------------- #
-# [mesh-history-card-enrichment-verify] (P2)                                  #
+# History-card enrichment verify (P2)                                        #
 # Enriched cards (with_peer_reconciliation / with_references) must verify.    #
 # --------------------------------------------------------------------------- #
 
@@ -615,7 +615,7 @@ def test_enriched_card_via_peer_reconciliation_verifies(tmp_path, fake_witness):
     """An enriched card (via with_peer_reconciliation) must pass its own offline
     verification.
 
-    Adversarial-council finding [mesh-history-card-enrichment-verify]: before
+    Adversarial-council finding on history-card enrichment verify: before
     the fix, to_value() always emitted peer_reconciliation at the enriched
     values but build_history_card() always used defaults (zero), so any enriched
     card failed verify_history_card() with 'recomputed card does not match the
@@ -649,8 +649,8 @@ def test_enriched_card_via_with_references_verifies(tmp_path, fake_witness):
     verification.
 
     Both enrichment paths must verify: with_peer_reconciliation AND
-    with_references (the full regression as stated in
-    [mesh-history-card-enrichment-verify])."""
+    with_references (the full regression as stated in the
+    enrichment-verify finding)."""
     lines = _build_chain(tmp_path, 3)
     node_id = node_id_from_key_id(lines[0]["key_id"])
     card = build_history_card(node_id=node_id, log_id="log-a", checkpoint_lines=lines, since_size=0)

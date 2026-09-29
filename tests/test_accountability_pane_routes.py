@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-live-tab-pane-proxy] L1 -- accountability_pane_routes.build_pane_a_json/
+"""accountability_pane_routes.build_pane_a_json/
 build_pane_b_json/build_pane_c_json, the JSON builders behind the sidecar's
 GET /accountability/pane-a|b|c. Exercises them directly (no HTTP server) over
 a real capsule_sidecar.NodeState + its real cll.ledger.store.LedgerStore --
@@ -139,7 +139,7 @@ def _find_state_values(value, out):
 
 
 def test_pane_a_json_never_carries_the_retired_pending_stub_state(node_state):
-    """[mesh-live-tab-pane-proxy] L2: Pane A's ``references``/``absences_
+    """Pane A's ``references``/``absences_
     recorded_against_me``/``refusals_issued``/``native_log_join`` blocks
     used to carry the ad hoc ``"pending"`` string for a mechanism that does
     not exist in this repo yet -- ``capsule_accountability_tab.
@@ -164,7 +164,7 @@ def test_pane_a_json_never_carries_the_retired_pending_stub_state(node_state):
 
 
 def test_pane_a_json_freshness_fallback_nonce_is_not_checked_not_present_unverified(node_state):
-    """[mesh-live-tab-pane-proxy] L2: seed a record whose freshness rung took
+    """Seed a record whose freshness rung took
     the node-generated fallback path and confirm the row's rendered
     freshness state is the five-state ``NOT_CHECKED``, never the retired
     ``present-unverified`` ladder word, end to end through the real sidecar

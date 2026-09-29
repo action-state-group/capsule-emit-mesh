@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-ui-ledger-finder] The Accountability page's Finder: a small query
+"""The Accountability page's Finder: a small query
 bar (never a pane -- mesh-accountability-panes-v2-2026-09-05.md §3) over
 this node's own capsule ledger: time range · exchange id / capsule id /
 digest · peer. A hit opens the same Pane C ("This exchange") drawer
@@ -21,7 +21,7 @@ exists to offer:
   ``SegmentUnmounted`` for the WHOLE call and every already-resolved record
   in that batch is lost with it (see that method's own docstring). That is
   exactly the failure mode ``read_all_capsules``/``_read_store_page``
-  ([mesh-ledger-store-migration]) was already written to avoid -- "one
+  (the ledger-store migration) was already written to avoid -- "one
   archived segment never blocks reading the records before or after it".
   Filtering ``read_all_capsules``'s already-segment-safe output in Python
   keeps that property for every Finder query, not just a full scan.
@@ -34,7 +34,7 @@ exists to offer:
   confirmed empirically against both real, git-tracked demo ledgers that
   ``by_correlation(<a real exchange_id>)`` returns nothing for a mesh
   capsule. This is a pre-existing gap in what
-  ``[mesh-ledger-store-migration]`` declared, not something to invent a fix
+  the ledger-store migration declared, not something to invent a fix
   for here -- flagging it rather than silently working around it with a
   correlation-field rename this task was never scoped to make. ``capsule_id``
   digest lookup still works fine either way, since that field IS top-level;

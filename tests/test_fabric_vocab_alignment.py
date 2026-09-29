@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-fabric-vocab-alignment] -- epistemic_type on every record the
+"""epistemic_type on every record the
 plugin/sidecar seals: provider half producer_claim, requester half
 observed_event, join card producer_claim, adjudication adjudication,
 history-card outputs derived_metric. One additive field, checked at each

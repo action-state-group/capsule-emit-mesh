@@ -62,7 +62,7 @@ proposed upstream. Typed refs and digests only: no BOLT11 strings, no preimages,
 records beyond the pointer fields named here.
 
 **Field change against the previous draft (Steven/PM ruling, 2026-09-23, on the sibling
-`[mesh-paid-inference-fixtures]` item, applied here since it is exactly this block's
+paid-inference fixtures item, applied here since it is exactly this block's
 shape):** `payment_intent_digest` is **dropped**. The previous draft had the requester hash
 its own local-only `PaymentIntent` as a second, distinct digest from the provider's
 `RequestTerms` digest — but no such requester-intent digest exists upstream, and the ruling
@@ -138,7 +138,7 @@ previous draft — nothing here proposes new status vocabulary.
 ## 3. "Why unpaid" — derivation from the payer's own sealed lifecycle alone
 
 This is the concrete use of the reconcile/close design
-(`[a18-mesh-reconcile-close-v0-design]`, `docs/DESIGN-reconcile-close-v0.md` on its own
+(`docs/DESIGN-reconcile-close-v0.md` on its own
 branch) — that design defines how two sovereign ledgers get compared; this section only
 states what a **single** sealed lifecycle (ours, the payer's `payment.lifecycle.v1`
 events) can and cannot conclude on its own, and is deliberately not a restatement of that
@@ -170,12 +170,12 @@ mesh-llm's own payments vocabulary, cited against its source, not our renaming o
 
 ## 5. Fixture re-capture — **not done in this document, blocked-on-branch**
 
-Do-step (4) of `[mesh-paid-inference-evidence-align-1926-head]` (re-capture fixtures on
+Do-step (4) of the paid-inference evidence alignment task (re-capture fixtures on
 `166cc72c4` with `payment.lifecycle.v1` declared: happy path, long output pause/resume,
 never-pays lapse+auto-admit, killed-after-delivery blocked→self-paid-on-restart) is not
-attempted here. It depends on `[mesh-provider-lifecycle-events-upstream-pr-prep]`'s fork
+attempted here. It depends on the provider lifecycle-events upstream PR prep's fork
 branch (claimed `c-provider-lifecycle`, still `in-progress` at time of writing) and on
-`[mesh-paid-inference-fixtures]` building against that branch, per the dependency note on
+the paid-inference fixtures building against that branch, per the dependency note on
 this task. Duplicating either here was explicitly out of scope. Pick this design's rows 8–11
 and §3's derivation table up unchanged once that branch is ready — nothing above should need
 to change to add the fixtures, only to exercise it.

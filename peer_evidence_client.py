@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-peers-live-fetch] Peer evidence client.
+"""Peer evidence client.
 
 Sends evidence-request messages to a peer's HTTP door (POST /evidence-request),
 verifies responses OFFLINE, and fills Pane B cells with LIVE verified data.

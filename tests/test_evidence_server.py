@@ -3,7 +3,7 @@
 and its plugin-ledger bridge (``_merged_evidence_view``).
 
 Two ledger shapes are exercised, matching the two callers named in
-[mesh-e15-evidence-http-route]:
+the evidence HTTP route change:
 
   * a SELF-checkpointed ledger (``capsule_sidecar.NodeState``'s own log,
     checkpointed in-band via ``capsule_emit.witness.push()``) -- the
@@ -87,7 +87,7 @@ def _seal_and_checkpoint(state, n: int) -> list[str]:
     convenient, already-verified builder), land them in the sidecar's REAL
     cll.ledger.store.LedgerStore -- ``state.log_source`` -- and force a real
     checkpoint through the sidecar's OWN (out-of-band) checkpointing, same
-    as [mesh-ledger-store-migration]'s test_evidence_responder.py."""
+    as the ledger-store migration's test_evidence_responder.py."""
     caps = []
     for i in range(n):
         scratch_ledger = tempfile.mktemp(suffix="-capsule-emit-seal-scratch.jsonl")
@@ -210,7 +210,7 @@ class TestSelfCheckpointedLedgerOverHTTP:
         assert ok is False
 
     def test_get_root_never_leaks_the_ledger_filesystem_path(self, running_server):
-        """[adv-evidence-door-caps-and-subjects] ADV-10: GET / used to echo
+        """GET / used to echo
         this node's absolute ledger path -- a gratuitous local-filesystem
         disclosure a neutral witness has no reason to make. It must carry
         no evidence, and in particular no path."""
@@ -246,7 +246,7 @@ class TestServerWithNoLedgerAtAll:
 
 
 class TestPluginLedgerBridge:
-    """[mesh-e15-evidence-http-route] Step 0's finding: a ledger checkpointed
+    """An earlier finding: a ledger checkpointed
     READ-ONLY via ``checkpointing.CheckpointState`` into a sibling
     ``checkpoints.jsonl`` (the Rust-plugin shape) is invisible to
     ``bundle()`` unless bridged -- ``_merged_evidence_view`` does that."""

@@ -11,7 +11,7 @@ DEVELOPMENT RIG — NOT AN IMPLEMENTATION
 
 DEPENDENCY ON MOCK LIFECYCLE HOST
     This module imports types and enums from mock_lifecycle_host.py (the
-    development rig produced by [mesh-1331-mock-lifecycle-host]).  That file is
+    development rig).  That file is
     not yet in origin/main — tests/conftest.py adds its worktree to sys.path
     at test time.  Once the rig merges, the import below is a plain sibling
     import at the project root.
@@ -188,7 +188,7 @@ class PluginLifecycleHost:
         """Whether a DENY returned by the loaded plugin should actually
         terminate the exchange.
 
-        [adv-run-2-fix-batch] B2: decision_mode is a manifest DECLARATION,
+        decision_mode is a manifest DECLARATION,
         not previously an enforced constraint — the host checked `decision`
         as a bare string and would honor DENY from any plugin, letting a
         plugin declared observe_only escalate to full admission control.
@@ -453,7 +453,7 @@ SPEC_FEEDBACK: dict[str, str] = {
     "decision_mode_enforcement": (
         "The manifest declares decision_mode='observe_only' or "
         "'admission_policy', but #1331 does not specify whether the host "
-        "enforces this at the call site.  [adv-run-2-fix-batch] This exemplar's "
+        "enforces this at the call site.  This exemplar's "
         "host now enforces it (PluginLifecycleHost._honor_deny): only an "
         "admission_policy plugin's DENY terminates the exchange; DENY from any "
         "other decision_mode is logged and treated as abstain.  #1331 should "

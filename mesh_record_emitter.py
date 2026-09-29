@@ -53,8 +53,8 @@ FIELD DESIGN  (x-mesh-lifecycle-v1 inside compute_attestation)
                           made it — a lone actor can self-mint both halves
                           with no external identity anchor. Mirrors the
                           identity_limitation capsule_sidecar.build_capsule()
-                          already attaches for the #1233 receipt tuple; see
-                          [mesh-rung12-adversarial-review] D1.
+                          already attaches for the #1233 receipt tuple (an
+                          earlier adversarial review's finding D1).
 """
 from __future__ import annotations
 
@@ -261,7 +261,7 @@ def emit_lifecycle_record(
         },
         "requester_commitment": requester_commitment,
         "requester_identity_binding": requester_identity_binding,
-        # [mesh-rung12-adversarial-review] D1(a) — restores the honesty
+        # Adversarial-review finding D1(a) — restores the honesty
         # caveat the old capsule_sidecar.build_capsule() path already
         # carries (identity_limitation, attached whenever bilateral evidence
         # is present). Attached whenever a requester_commitment is passed,

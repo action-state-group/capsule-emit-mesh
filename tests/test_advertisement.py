@@ -213,7 +213,7 @@ def _all_keys(obj) -> set:
     return keys
 
 
-# ---- [mesh-promise-reconciliation-grading] adversarial tests ----
+# ---- promise-reconciliation grading adversarial tests ----
 
 def test_promising_nothing_does_not_outgrade_promising_something_and_missing_one():
     """Node A promises 1 trivial field (model_id), Node B promises 6 fields
@@ -255,7 +255,7 @@ def test_self_reported_unknown_is_self_reported_absent_not_honest_absent():
     """The serving node writes 'unknown' in serving_provenance for fields it
     doesn't want reconciled.  This self-selected absence must produce
     VERDICT_SELF_REPORTED_ABSENT, not VERDICT_ABSENT -- byte-identical to
-    honest absence is the [mesh-promise-reconciliation-grading] defect 2."""
+    honest absence is the promise-reconciliation grading defect 2."""
     ad = _llama_q4_ad()
     # The serving node self-reports quantization as "unknown"
     served = _served(quantization="unknown")
@@ -273,7 +273,7 @@ def test_self_reported_unknown_is_self_reported_absent_not_honest_absent():
 def test_advertisement_digest_is_bound_into_reconciliation_result():
     """reconcile_advertised_vs_served() must include 'advertisement_digest' in
     its output so a relying party can independently verify the advertisement
-    was prior to the exchange -- the [mesh-promise-reconciliation-grading] defect 3."""
+    was prior to the exchange -- the promise-reconciliation grading defect 3."""
     ad = _llama_q4_ad()
     result = reconcile_advertised_vs_served(ad, _served())
     assert "advertisement_digest" in result, "advertisement_digest must be in reconciliation output"

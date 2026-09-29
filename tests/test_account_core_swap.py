@@ -49,7 +49,7 @@ coincurve = pytest.importorskip("coincurve", reason="Nostr Schnorr signing needs
 # it as a literal is the "before" fixed point: any change to it flags that the #
 # definition DOCUMENT moved — never an accidental internals change.            #
 #                                                                              #
-# Updated 2026-09-05 [mesh-account-role-conflict-blindness]: `reads` narrowed  #
+# Updated 2026-09-05 (role-conflict fix): `reads` narrowed                     #
 # from the old local-heuristic field list to `("effect.status", "role")` when  #
 # `_role_of` was switched to delegate to `capsule_mesh_view.label_role`        #
 # (closing #127's conflict-blindness gap) — a genuine DOCUMENT change, so this #

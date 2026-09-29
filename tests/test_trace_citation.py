@@ -283,7 +283,7 @@ def test_no_declared_measurement_no_lift():
 # --------------------------------------------------------------------------- record-envelope mutant
 
 _SCHEMA_BLOCKS_EVIDENCE_REASON = (
-    "BLOCKED [mesh-trace-v02-schema-fixture-update]: agentrust-trace's real v0.2 "
+    "BLOCKED on a v0.2 schema fixture update: agentrust-trace's real v0.2 "
     "schema has `additionalProperties: false` on `runtime` and does not recognize "
     "`runtime.evidence` at all, so `verify_record` raises a schema ValidationError "
     "on ANY record built by `_record()` before it ever reaches the signature check "

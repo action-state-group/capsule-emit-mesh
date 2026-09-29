@@ -24,14 +24,14 @@ Steven Mih · 2026-08-16 · offered for discussion, revision, or re-homing.
 > `full_bilateral` derivation, which still requires a client acknowledgment (Move 4) as well as a
 > request attestation (Move 1) — see the scoping note after §4.1.
 
-> **Revision 2026-08-21 (remediation).** [mesh-rung12-adversarial-review] ran seven adversarial
+> **Revision 2026-08-21 (remediation).** An adversarial review of rungs 1-2 ran seven adversarial
 > attacks against the rung-1/rung-2 code above and found `full_bilateral` self-mintable by a lone
 > node in both mechanisms (§4.1a's new addendum), an unhardened nonce-replay gap (R3, corrected
 > above), and an unrelated hygiene default. §4.1a now discloses the self-mint finding and the
 > code-level honest-labeling fix; R3's status is corrected to reflect the (scoped) replay-detection
 > fix. Nothing else in this document changed.
 >
-> **Revision 2026-09-03 ([mesh-e2-witness-checkpoints], W5 — reconciliation).** A3/A4 (§Class A) and
+> **Revision 2026-09-03 (witness checkpoints, W5 — reconciliation).** A3/A4 (§Class A) and
 > R6 (§2.2) said "registration missing" / "Not built" even though checkpoint-by-default
 > (`docs/CHECKPOINT-BY-DEFAULT.md`, `checkpointing.py`) already shipped it and had already run live
 > once (`ledger-checkpoint-demo/checkpoint-demo-transcript.txt`, 2026-08-22) — §12.6's own accrual
@@ -55,12 +55,12 @@ Steven Mih · 2026-08-16 · offered for discussion, revision, or re-homing.
 > single-witness registration (what is built) is not the multi-witness/collusion-resistant bar A4's
 > own "Does not establish" column describes — see the corrected A4 row for the precise line.
 >
-> **Revision 2026-09-03 ([mesh-b7-w5-trust-model-reconcile], W5 continued — C3/R2/D1).** The prior
+> **Revision 2026-09-03 (W5 continued — C3/R2/D1).** The prior
 > W5 pass above reconciled A3/A4/R6; this pass closes the two rows it left stale, each caught by
 > comparing this document against what the batch that just merged actually ships:
 >
 > - **C3 (§3, Class C) and R2 (§2.2)** said "Not built" for execution attestation. `trace_citation.py`
->   ([mesh-tee-rung-trace-citation], merged 2026-09-03) closes this by composition: a mesh capsule
+>   (TEE-rung trace citation, merged 2026-09-03) closes this by composition: a mesh capsule
 >   cites a foreign TRACE Trust Record's TDX quote (never re-implementing attestation — TDX
 >   parsing/verification is `agent_manifest`'s, imported unmodified) and grades the citation
 >   `unattested` / `platform-attested` / `attested`. Real usage — a 2-quote GCP TDX capture from
@@ -88,7 +88,7 @@ Steven Mih · 2026-08-16 · offered for discussion, revision, or re-homing.
 > written and in review but not yet posted; where this document relies on text that appears only in
 > those, it says **[forthcoming revision]**. Nothing here asserts adoption by anyone.
 >
-> **Revision 2026-09-07 ([mesh-requester-side-seal-on-proxy]).** A 2026-09-07 live twin run found
+> **Revision 2026-09-07.** A 2026-09-07 live twin run found
 > that on the Rust admission-policy plugin's automatic mesh-routing path, when a node proxies a chat
 > completion to a peer (`dispatch_path: RemoteMesh`), only the peer sealed a capsule for its served
 > half — the routing/requesting node sealed nothing for its own. That gap is now closed: the routing
@@ -172,7 +172,7 @@ inside the mesh's own console is not evidence to anyone who matters in a dispute
 |---|---|---|---|
 | R1 | Substituted quantization or different weights | Model package digest bound into the receipt (step 2) | Manifests largely carry it; needs tag-not-branch discipline and a declared equivalence class |
 | R2 | A canned answer with no computation | TEE / execution evidence (step 5) | Partly built via composition — `trace_citation.py` cites a foreign TRACE Trust Record's TDX quote (`agent-manifest`'s verifier, never re-implemented) and reaches `platform-attested` (genuine TDX silicon reported the cited measurement) on a real capture; the `attested` grade that would fully close this fear is specified but unreachable from any artifact held today (see C3, §3) |
-| R3 | Replay of earlier work as fresh | **Client-contributed nonce** bound into the receipt | Partly built (2026-08-21) — `capsule_sidecar.py`'s `_resolve_client_nonce()` now tracks client-supplied nonces per node, in-memory, for that node's running lifetime; a replayed nonce is labeled `client_supplied_replayed` rather than accepted as indistinguishably fresh (closes the gap [mesh-rung12-adversarial-review] found: a captured nonce replayed onto an unrelated exchange previously read as an ordinary `client_supplied` value). Scope, stated honestly: this catches replay within one running node's process only — not across a restart (the tracking set is not persisted) or across independently-operated nodes. Today's *fallback* nonce (minted when the client sends none) remains node-side and is explicitly not anti-replay evidence; that half is unchanged. **A third tier, `local_ingress`, was added 2026-08-23**: mesh-llm's own local ingress may mint the nonce one hop upstream of the sidecar and mark its own injection with `x-capsule-nonce-origin: local_ingress`, so the sidecar can tell "the harness sent it" from "ingress minted it" instead of overclaiming `client_supplied`. Naming it is not authenticating it: **records admitted via local_ingress are self-attested at admission; the header is a routing hint, not authentication.** Nothing here Ed25519-verifies the origin header the way `evaluate_bilateral_attestation` verifies bilateral request headers elsewhere in the same file — deliberately: enforcement belongs on trust-deciding paths, and `local_ingress` is a PoC routing path, not one today. `client_nonce_source` (including this tier) is committed into `compute_attestation`, which is itself committed into `capsule_id` (§1's second consequence: self-attestation is the floor, not a flaw, and saying so plainly is what makes the record usable as evidence) — so the degradation travels with the record into any bundle or checkpoint a downstream reader sees, not only in this document. Ed25519 enforcement is filed as a follow-up, gated on this path graduating from PoC to one that drives a real trust decision (`[mesh-local-ingress-ed25519-when-graduated]`). |
+| R3 | Replay of earlier work as fresh | **Client-contributed nonce** bound into the receipt | Partly built (2026-08-21) — `capsule_sidecar.py`'s `_resolve_client_nonce()` now tracks client-supplied nonces per node, in-memory, for that node's running lifetime; a replayed nonce is labeled `client_supplied_replayed` rather than accepted as indistinguishably fresh (closes the gap the rung-1/rung-2 adversarial review found: a captured nonce replayed onto an unrelated exchange previously read as an ordinary `client_supplied` value). Scope, stated honestly: this catches replay within one running node's process only — not across a restart (the tracking set is not persisted) or across independently-operated nodes. Today's *fallback* nonce (minted when the client sends none) remains node-side and is explicitly not anti-replay evidence; that half is unchanged. **A third tier, `local_ingress`, was added 2026-08-23**: mesh-llm's own local ingress may mint the nonce one hop upstream of the sidecar and mark its own injection with `x-capsule-nonce-origin: local_ingress`, so the sidecar can tell "the harness sent it" from "ingress minted it" instead of overclaiming `client_supplied`. Naming it is not authenticating it: **records admitted via local_ingress are self-attested at admission; the header is a routing hint, not authentication.** Nothing here Ed25519-verifies the origin header the way `evaluate_bilateral_attestation` verifies bilateral request headers elsewhere in the same file — deliberately: enforcement belongs on trust-deciding paths, and `local_ingress` is a PoC routing path, not one today. `client_nonce_source` (including this tier) is committed into `compute_attestation`, which is itself committed into `capsule_id` (§1's second consequence: self-attestation is the floor, not a flaw, and saying so plainly is what makes the record usable as evidence) — so the degradation travels with the record into any bundle or checkpoint a downstream reader sees, not only in this document. Ed25519 enforcement is filed as a follow-up, gated on this path graduating from PoC to one that drives a real trust decision. |
 | R4 | The response received is not the response signed | Request and output digests under one signature | Built |
 | R5 | Later denial or rewriting | Signed, hash-chained records | Built, per node |
 | R6 | A different story per audience | Registration to a Transparency Service, and a witnessed log so the log cannot equivocate either | Chaining built; checkpoint-level registration + a single witness's receipt now built and proven live end-to-end (checkpoint-by-default, re-verified 2026-09-03) — the residual gap is that ONE witness is registered, not several independently operated ones, so the collusion-resistant bar this row names is not yet reached (see A4) |
@@ -548,7 +548,7 @@ exchange in §4's opening paragraph:
   more than freshness evidence in either mechanism; only a verified signed commitment reaches
   `full_bilateral` in either.
 - **What `full_bilateral` still does not prove, in either mechanism — found by
-  [mesh-rung12-adversarial-review] (2026-08-21) and now disclosed in code, not just here.** §4.1's
+  the rung-1/rung-2 adversarial review (2026-08-21) and now disclosed in code, not just here.** §4.1's
   spectrum table above says a self-held key is "an identifier, not a vouched identity"; the concrete
   consequence for this rung is stronger than that reads on its own: **the node itself can generate a
   fresh requester (or client-ack) keypair and satisfy every check either `derive_cross_party_rung()`
@@ -593,7 +593,7 @@ key rather than the node owner's endpoint.
   an analogous shape of evidence (a signed commitment plus a second, independent binding), though the
   underlying checks remain mechanism-specific and are not interchangeable claims (§4.1a's caution about
   comparing `full_bilateral` across mechanisms still applies).
-- **What this closes.** The [mesh-rung12-adversarial-review] D1 repro exactly as documented above — a
+- **What this closes.** The adversarial review's D1 repro exactly as documented above — a
   node minting a fresh commitment keypair inline, with nothing behind it — now grades at
   `acknowledged_receipt`, never `full_bilateral`. Before this change that repro reached `full_bilateral`
   outright (labeled with a caveat, never prevented). After: the zero-effort, single-artifact self-mint

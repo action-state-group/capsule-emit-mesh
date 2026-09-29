@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[buzz-moderation-profile-spike] The `moderation_decision` record.
+"""The `moderation_decision` record.
 
 Buzz asked for compliance-grade content moderation; the accountable answer is
 not a better classifier, it's a SEALED record of every moderation call a
@@ -13,7 +13,7 @@ Design note: internal moderation-accountability profile note (spec lane).
 (deterministic -- a referee recomputes a token), a moderation call is a
 judgment: reasonable reviewers can disagree, so the epistemic type differs
 from `join_card`/`twin_adjudicator`'s `producer_claim`/`adjudication` (see
-`[mesh-fabric-vocab-alignment]`, `twin_adjudicator.EPISTEMIC_TYPE_ADJUDICATION`).
+`twin_adjudicator.EPISTEMIC_TYPE_ADJUDICATION`).
 
 **Never the message text.** `subject_ref` carries only a digest + typed room
 reference -- the affected user already holds their own message and can
@@ -84,7 +84,7 @@ MODERATION_SUBJECT_KEY = "x-mesh-moderation-decision-v1"
 #: shape it does not understand rather than mis-read it.
 MODERATION_SCHEMA = "capsule-emit-mesh/moderation-decision/v1"
 
-#: [mesh-fabric-vocab-alignment] the fabric's shared record-header vocabulary
+#: The fabric's shared record-header vocabulary
 #: convention, extended with the one value the spike's internal design
 #: note (sec.1) introduces: a moderation decision is a semantic JUDGMENT, never a
 #: deterministic recompute (`twin_adjudicator.EPISTEMIC_TYPE_ADJUDICATION`)
@@ -255,7 +255,7 @@ def seal_moderation_decision(
     """Seal a `moderation_decision` -- same pattern as `join_card.seal_card`
     / `twin_adjudicator.seal_adjudication_capsule`: a CAPSULE built with
     `agent_action_capsule.emit()`, verified BEFORE it is handed to a caller
-    that might persist it (`[adv-run-2-fix-batch]` discipline).
+    that might persist it (verify-before-write discipline).
 
     `expected_weights_digest`, when supplied, is compared against the
     classifier's own claimed `model_attestation.weights_digest` -- a
@@ -265,7 +265,7 @@ def seal_moderation_decision(
     claimed_weights_digest = decision.model_attestation.get("weights_digest")
     mismatch = check_weights_digest_claim(claimed_weights_digest, expected_weights_digest)
     compute_attestation = {
-        # [mesh-fabric-vocab-alignment] additive record-header field, a
+        # Additive record-header field (fabric vocabulary alignment), a
         # top-level sibling of MODERATION_SUBJECT_KEY.
         "epistemic_type": EPISTEMIC_TYPE_SEMANTIC_JUDGMENT,
         MODERATION_SUBJECT_KEY: decision.to_value(weights_digest_mismatch=mismatch),

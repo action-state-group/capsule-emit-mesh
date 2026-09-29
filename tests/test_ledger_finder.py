@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-ui-ledger-finder] The Accountability page's Finder: query bar
+"""The Accountability page's Finder: query bar
 (time range / exchange id / capsule id / digest / peer) over
 ``ledger_store_backend.read_all_capsules``, results wired straight into the
 existing Pane C drawer (``capsule_exchange_tab.build_exchange_view`` /

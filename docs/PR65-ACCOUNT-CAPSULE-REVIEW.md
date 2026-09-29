@@ -2,9 +2,9 @@
 
 **Status of this review: informational only.** This does not change PR #65's own
 disposition (it stays **HELD** — the Nostr publish path overlaps the open NIP-56
-question) and does not merge any of its code. It is the step-1 review
-`[mesh-review-pr65-account-capsule]` asked for, folded into
-`[mesh-history-card-verb]`'s own step 1, so `history_card()` is not built twice
+question) and does not merge any of its code. It is the step-1 review of
+PR #65's account capsule, folded into the history-card verb's own step 1,
+so `history_card()` is not built twice
 against the same fold core PR #65 already demonstrates.
 
 ## What PR #65 builds
@@ -46,8 +46,8 @@ for the neutral layer).
   reason, unrelated to this reuse question.
 
 **Verdict: PR #65's account/fold construction is sound and reusable as-is.**
-Nothing about it needs to change before `history_card()` or
-`[mesh-e18-pair-account]` build on the same underlying core.
+Nothing about it needs to change before `history_card()` or the pair
+account build on the same underlying core.
 
 ## The reuse boundary — what "build on #65's account code" means in practice
 
@@ -61,7 +61,7 @@ this repo, for a **range**-kind selection (input identity = `(coverage_root,
 
 The reusable boundary is the **neutral core**, not PR #65's own module:
 
-- `history_card()` (`[mesh-history-card-verb]`, this task) needs a
+- `history_card()` (the history-card verb, this task) needs a
   **chain_segment**-kind selection, not range — it walks the checkpoint chain
   itself (self-verifying from two boundary digests + the traversal relation),
   not a fold over a leaf range. `capsule_emit.account`'s `chain_segment` kind
@@ -71,7 +71,7 @@ The reusable boundary is the **neutral core**, not PR #65's own module:
   `account_capsule.py` itself. This means `history_card()` ships independently
   of PR #65's HELD status: nothing in it depends on the Nostr path, and nothing
   in it is blocked by the open NIP-56 question.
-- `[mesh-e18-pair-account]` (the double-entry (me, you) account) IS a
+- The pair account (the double-entry (me, you) account) IS a
   **range**-kind selection over the same checkpoint-covered-range discipline
   PR #65 already built — that item should import and extend
   `account_capsule.py`'s actual fold helpers (`_role_of`, `_fold_range`'s

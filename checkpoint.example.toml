@@ -28,7 +28,7 @@ max_lag_entries = 40
 # EMPTY BY DEFAULT: registration is opt-in, always. Uncomment to submit each
 # COSE-wire checkpoint (kind="cll-checkpoint") to the free public-good,
 # checkpoint-only witness tier -- any conforming SCITT Transparency Service
-# accepting the [cll-checkpoint-cose-wire] shape may be substituted
+# accepting the cll COSE-wire checkpoint shape may be substituted
 # (capsule_emit.checkpoint.DEFAULT_TS_URL is this same
 # witness.agentactioncapsule.org tier). A checkpoint emitted with ts_urls = []
 # is Layer 2 only: locally committed and signed, but NOT independently

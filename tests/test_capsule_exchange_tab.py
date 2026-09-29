@@ -282,8 +282,7 @@ def test_twin_adjudication_placeholder_is_pending_not_a_pass():
 def test_witness_receipt_reverify_placeholder_is_pending_not_a_pass():
     placeholder = witness_receipt_reverify_placeholder()
     assert placeholder["state"] == PENDING
-    assert "mesh-e2-witness-checkpoints" in placeholder["reason"]
-    assert "is merged" in placeholder["reason"]
+    assert "witness checkpoints (PR #87) are merged" in placeholder["reason"]
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +356,7 @@ def test_render_exchange_subtab_html_escapes_hostile_owner_id():
 
 # ---------------------------------------------------------------------------
 # worst_state -- the header = the worst line among this exchange's checks
-# ([mesh-exchange-card-mismatch-bug]'s principle, reapplied to this module)
+# (the exchange-card mismatch fix's principle, reapplied to this module)
 # ---------------------------------------------------------------------------
 
 
@@ -588,7 +587,7 @@ def test_render_exchange_list_html_empty_never_crashes():
 
 
 def test_render_exchange_list_html_row_carries_chip_strip_and_data_issue():
-    """[mesh-panes-map-chips] item 1: the row no longer renders the bare
+    """Item 1: the row no longer renders the bare
     header_state pill (which could leak literal "present-unverified") --
     it carries a chip strip plus a machine-readable data-issue attribute."""
     requester, provider = _pair(exchange_id="ex-1")
@@ -607,7 +606,7 @@ def test_render_exchange_list_html_issues_filter_reads_data_issue():
 
 
 # ---------------------------------------------------------------------------
-# build_assurance_map -- the nine-property map ([mesh-panes-map-chips])
+# build_assurance_map -- the nine-property map
 # ---------------------------------------------------------------------------
 
 
@@ -780,7 +779,7 @@ def test_build_assurance_map_result_is_always_a_complete_map():
 
 
 def test_rendered_html_never_leaks_the_old_four_state_vocabulary():
-    """[mesh-panes-map-chips]'s whole point: a ladder-shaped vocabulary
+    """The panes map-chips change's whole point: a ladder-shaped vocabulary
     rounding an honest "not checked yet" up to a rendered "present-unverified"
     (or "pending") is the regression this module exists to prevent. Render
     both the list and the card for a small fixture and grep the HTML."""
@@ -802,7 +801,7 @@ def test_rendered_html_never_leaks_the_old_four_state_vocabulary():
 
 
 def test_rendered_card_never_leaks_build_verdicts_not_yet_proven_line():
-    """[mesh-panes-map-chips] step 5: `_pair()` has no `cross_party` block, so
+    """Step 5: `_pair()` has no `cross_party` block, so
     `label_counterparty` returns "unknown" and `build_verdict`'s line 3 takes
     its warn branch -- the literal "Not yet proven: who asked ..." free-text
     the live Pane C card was leaking. That line must never render verbatim;

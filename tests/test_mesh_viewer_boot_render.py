@@ -98,7 +98,7 @@ def _demo_capsule_with_real_capsule_id(*, response_digest_matches: bool):
     facts-vs-sealed-response_digest check alone.
 
     ``response_digest_matches=False`` reproduces
-    [mesh-exchange-card-mismatch-bug]: the seal path computed `response_digest`
+    the exchange-card mismatch bug: the seal path computed `response_digest`
     wrong (or something changed the served facts after sealing) -- the
     envelope itself is untampered, but the served facts do not recompute to
     the sealed digest. This must flip the card header red, not leave it green
@@ -255,7 +255,7 @@ def test_delivered_file_boots_clean_and_renders_conversations(tmp_path):
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available; delivered-file boot is a local/CI-with-node check")
 def test_card_header_is_the_worst_line_in_the_checks_block(tmp_path):
-    """[mesh-exchange-card-mismatch-bug]: the card header (the badge next to
+    """Exchange-card mismatch bug: the card header (the badge next to
     the title) must reflect the WORST line in the checks block -- not just
     the capsule_id recompute. Two capsules, identical except for whether the
     served facts recompute to the sealed `response_digest`; both have a REAL

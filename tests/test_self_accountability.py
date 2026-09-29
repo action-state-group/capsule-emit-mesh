@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-pane-a-self-accountability-tab] Pane A "This node" card.
+"""Pane A "This node" card.
 
 Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its
 mutant. Each acceptance mutant from the inbox item gets its own test:
@@ -153,7 +153,7 @@ def test_history_summary_on_empty_log_is_honestly_empty():
     assert summary["continuous_since"] is None
 
 
-# ── history_summary.pair_sequencing -- [mesh-sequence-per-counterparty] ──
+# ── history_summary.pair_sequencing ──
 
 
 def _pair_capsule(*, self_id: str, counterparty_id: str, seq: int, prev_seq: int | None) -> dict:
@@ -205,7 +205,7 @@ def test_mutant_reset_counter_reports_a_broken_pair_not_a_fresh_start():
 
 
 def test_mutant_exchanges_filed_under_unknown_are_counted_and_labeled_not_blended():
-    """[adv-stream-membership-authenticated] ADV-6's concealment attack: a
+    """ADV-6's concealment attack: a
     dishonest provider files exchanges it wants deniable under the shared
     `unknown` counterparty bucket while keeping a named pair's stream fully
     contiguous. `m4` here has a clean 3-record `m4::m3` stream AND 2 records

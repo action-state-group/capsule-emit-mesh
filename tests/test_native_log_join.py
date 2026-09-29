@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-native-log-join] Join the node's operational native_log truth to
+"""Join the node's operational native_log truth to
 sealed capsule truth + self-coverage count.
 
 Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its

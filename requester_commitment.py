@@ -54,7 +54,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 #: than the single-hop #1233 receipt tuple.
 COMMITMENT_TYPE = "x-mesh-requester-commitment/1"
 
-#: [mesh-rung12-adversarial-review] D1 — verify_requester_commitment() below
+#: Rung-1/2 adversarial review D1 — verify_requester_commitment() below
 #: confirms a commitment's signature is internally self-consistent and bound
 #: to a record's own request_digest/exchange_id; it does NOT confirm the
 #: embedded public key belongs to anyone other than whoever produced the

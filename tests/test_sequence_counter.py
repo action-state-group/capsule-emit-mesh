@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-sequence-per-counterparty] Per-(self, counterparty) monotone seq.
+"""Per-(self, counterparty) monotone seq.
 
 Two layers under test:
 
@@ -125,7 +125,7 @@ def test_pair_counterparty_authenticated_is_false_only_for_the_unknown_bucket() 
 
 
 def test_concurrent_next_seq_never_loses_an_update_or_crashes(tmp_path: Path) -> None:
-    """[adv-stream-membership-authenticated] ADV-6's threading finding:
+    """ADV-6's threading finding:
     `sequence_counter.py`'s unlocked read-modify-write plus a shared `.tmp`
     filename crashed and/or lost updates under concurrent callers -- the
     sidecar's `ThreadingHTTPServer` calls `next_seq` from a fresh thread per
@@ -339,7 +339,7 @@ def test_requester_role_seals_seq_keyed_on_served_by_node_id(tmp_path: Path) -> 
 
 
 def test_requester_role_counterparty_id_provenance_is_unauthenticated(tmp_path: Path) -> None:
-    """[adv-stream-membership-authenticated] The requester's `unknown` bucket
+    """The requester's `unknown` bucket
     must be LABELED, not just named -- a reader must not have to infer
     authentication status from the string "unknown" alone."""
     cs_mod = _real_capsule_sidecar()
@@ -349,7 +349,7 @@ def test_requester_role_counterparty_id_provenance_is_unauthenticated(tmp_path: 
 
 
 def test_provider_role_with_verified_bilateral_eval_binds_authenticated_provenance(tmp_path: Path) -> None:
-    """[adv-stream-membership-authenticated] A provider that DOES verify the
+    """A provider that DOES verify the
     caller's bilateral request attestation must bind stream membership to
     that authenticated `initiator_ref` -- and say so explicitly via
     `counterparty_id_provenance`, never leaving it to look identical to an

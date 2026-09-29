@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[capsule-emit-mesh-request-digest-unsafe-int-guard] Before this task, NONE of
+"""Before this task, NONE of
 the sidecar's six ``digest_json()`` call sites (``_seal_chat_completion``,
 ``forwarded_copy_record``, ``handle_chat_completion`` x2, ``do_POST``,
 ``_handle_streaming_chat_completion``) caught ``UnsafeIntegerError`` /

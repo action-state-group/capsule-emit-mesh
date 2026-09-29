@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[buzz-moderation-profile-spike] `moderation_properties.py` unit tests."""
+"""`moderation_properties.py` unit tests."""
 from __future__ import annotations
 
 import hashlib

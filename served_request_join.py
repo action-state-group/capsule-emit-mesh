@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """B2 — the served<->request cryptographic join.
 
-[mesh-b1-requestor-capsule-ledger] sealed two independent half-records for
+The requester capsule ledger sealed two independent half-records for
 one exchange — the provider's served-half capsule and the requester's own
 own-half capsule — correlated only by a shared, unauthenticated string:
 `serving_provenance.exchange_id`. That correlator ties the two halves for a
@@ -19,7 +19,7 @@ it yet, hence `_with_references` below). The reference is a claim this new
 capsule's own digest covers: citing a record is itself a digest-committed
 assertion.
 
-[adv-served-join-signed] The join capsule alone is still only a
+The join capsule alone is still only a
 self-attestation, exactly like every other `emit()`-sealed capsule in this
 codebase — no key material, digest-only. A stranger checking ONLY the join
 capsule's bytes cannot tell it apart from a join anyone could mint over
@@ -165,7 +165,7 @@ SIG_ALG = "EdDSA"
 #: +json; profile=..." convention with this module's own schema tag.
 JOIN_CONTENT_TYPE = f"application/vnd.agent-action-capsule+json; profile={JOIN_SCHEMA}"
 
-#: [adv-served-join-signed] Sealed INTO the join capsule's own content
+#: Sealed INTO the join capsule's own content
 #: (compute_attestation.served_request_join.assertion_limitation) so the
 #: honesty grade travels with the bytes, same discipline as
 #: node_ownership.IDENTITY_LIMITATION_CAVEAT / requester_commitment.
@@ -240,7 +240,7 @@ class ConflictingCorrelationError(ValueError):
 class JoinerNotRequesterError(ValueError):
     """*joiner_node_id* is not the node the requester half names as itself.
 
-    [adv-served-join-signed]: the join chains onto the REQUESTER's own
+    The join chains onto the REQUESTER's own
     ledger stream ({{xref}}'s same-producer-stream rule), so only the node
     the requester half's own `serving_provenance.requesting_party` names may
     mint it. Refusing this up front — rather than minting a join a

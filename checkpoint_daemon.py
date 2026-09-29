@@ -88,7 +88,7 @@ from padding_record import refuse_unpadded_witnessing
 #: flag-overridable.
 DEFAULT_INTERVAL_SECONDS = 300
 
-#: [mesh-provider-no-body-persistence] The disclosure-prune clock -- a
+#: The disclosure-prune clock -- a
 #: DIFFERENT, coarser cadence than the anchor clock above. Anchoring is
 #: privacy-sensitive (batches to avoid leaking activity timing); pruning
 #: disclosures/ is not, so it runs on its own fixed hourly tick regardless of
@@ -171,7 +171,7 @@ def run_daemon(
     of the witness path -- an unreachable witness is handled inside
     `CheckpointState` (offline-first), so the loop keeps running.
 
-    [mesh-provider-no-body-persistence] When `disclosures_dir` is given, this
+    When `disclosures_dir` is given, this
     loop ALSO prunes it on its own `disclosure_prune_interval_seconds` clock
     (default hourly), independent of the anchor `interval_seconds` -- see
     `prune_disclosures()`. `monotonic` is injectable (a test's hand-cranked
@@ -247,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
         "--disclosure-ttl",
         type=float,
         default=DEFAULT_DISCLOSURE_TTL_SECONDS,
-        help=f"[mesh-provider-no-body-persistence] prune <ledger-dir>/disclosures/ files older than this "
+        help=f"prune <ledger-dir>/disclosures/ files older than this "
         f"many seconds (default {DEFAULT_DISCLOSURE_TTL_SECONDS!r}s = 7 days), on an hourly clock. A "
         "no-op when the directory doesn't exist (provider role, or a requester that never used --disclose).",
     )

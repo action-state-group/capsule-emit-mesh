@@ -204,10 +204,10 @@ class TestAssuranceLabelNeverSilentlyUpgraded:
         assert verdict.requester_commitment_valid is False
 
     def test_valid_commitment_alone_reaches_only_acknowledged_receipt(self) -> None:
-        """[requester-identity-binding] AFTER: a valid commitment with no
+        """AFTER: a valid commitment with no
         identity binding behind its key no longer reaches full_bilateral —
         see TestIdentityBindingClosesTheSelfMintGap for the exact
-        [mesh-rung12-adversarial-review] repro this closes."""
+        adversarial-review repro this closes."""
         node = default_node_state()
         key = RequesterKey.generate()
         commitment = make_requester_commitment(
@@ -240,7 +240,7 @@ class TestAssuranceLabelNeverSilentlyUpgraded:
 
 
 class TestIdentityLimitationCaveat:
-    """[mesh-rung12-adversarial-review] D1 — a lone node can self-mint a
+    """Adversarial-review finding D1 — a lone node can self-mint a
     fully self-consistent requester_commitment (fresh keypair, signs over
     its own record's request_digest/exchange_id) with no real requester
     ever involved.
@@ -459,9 +459,9 @@ class TestTwoNodeExchange:
 
 
 # ===========================================================================
-# 4. [requester-identity-binding] IDENTITY BINDING CLOSES THE SELF-MINT GAP
+# 4. IDENTITY BINDING CLOSES THE SELF-MINT GAP
 #
-# TRUST-MODEL.md §4.1a / [mesh-rung12-adversarial-review] D1 disclosed that a
+# TRUST-MODEL.md §4.1a / adversarial-review finding D1 disclosed that a
 # lone node can mint a fresh requester_commitment keypair inline, sign a
 # fully self-consistent commitment, and reach full_bilateral with no real
 # requester ever involved. This section proves the exact repro now fails to
@@ -485,7 +485,7 @@ class TestIdentityBindingClosesTheSelfMintGap:
         )
 
     def test_exact_d1_self_mint_repro_no_longer_reaches_full_bilateral(self) -> None:
-        """The exact [mesh-rung12-adversarial-review] D1 repro: the node
+        """The exact adversarial-review D1 repro: the node
         mints its own fresh commitment key and signs a self-consistent
         commitment -- no identity binding at all, no real requester ever
         involved. BEFORE this change: full_bilateral (labeled). AFTER: this
