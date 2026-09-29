@@ -59,6 +59,10 @@ const RETIRED_PHRASES = [
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const EVIDENCE_UI_ROOT = resolve(HERE, '../..')
+/** The plugin's Rust panes: what the page shows comes from here too. */
+const PANE_SOURCES = ['../../src/evidence_panes.rs', '../../src/evidence_panes/settlement.rs'].map((path) =>
+  resolve(EVIDENCE_UI_ROOT, path)
+)
 
 function shippedSources(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -71,6 +75,13 @@ function shippedSources(dir: string): string[] {
 /** Drop block and line comments; keep `://` inside strings (URLs). */
 function withoutComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+}
+
+/** A Rust file's shipped part: everything before its test module. (A lone
+ *  `#[cfg(test)]` on a helper is not the test module, so it doesn't cut.) */
+function rustShippedPart(source: string): string {
+  const tests = source.search(/#\[cfg\(test\)\]\s*mod \w+/)
+  return tests === -1 ? source : source.slice(0, tests)
 }
 
 function offenders(files: Array<{ label: string; code: string }>): string[] {
@@ -92,6 +103,17 @@ describe('retired Evidence copy stays retired', () => {
       label: relative(EVIDENCE_UI_ROOT, path),
       code: withoutComments(readFileSync(path, 'utf8'))
     }))
+    expect(offenders(files)).toEqual([])
+  })
+
+  it('the Rust panes that feed the page carry no retired phrase', () => {
+    const files = PANE_SOURCES.map((path) => ({
+      label: relative(EVIDENCE_UI_ROOT, path),
+      code: withoutComments(rustShippedPart(readFileSync(path, 'utf8')))
+    }))
+    // The shipped part is real code, not an empty cut.
+    expect(files[0].code).toContain('fn build_pane_c_list_with_settlements')
+    expect(files[1].code).toContain('fn payer_book')
     expect(offenders(files)).toEqual([])
   })
 })
