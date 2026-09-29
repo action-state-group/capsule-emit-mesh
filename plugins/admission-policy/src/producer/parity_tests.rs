@@ -327,6 +327,7 @@ fn adjudication_ack_refused_records_are_byte_identical() {
                 &key(),
             )
             .unwrap();
+            assert_eq!(old_record.get("chain").is_some(), chain_head.is_some());
             assert_eq!(new_record.get("chain").is_some(), chain_head.is_some());
             assert_local_parity(
                 &format!(
