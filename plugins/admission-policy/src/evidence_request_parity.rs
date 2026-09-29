@@ -81,17 +81,17 @@ fn foreign_half() -> String {
 /// padding to 300 (checkpoint 1), and one record no checkpoint covers yet.
 pub(crate) fn corpus_ledger() -> Vec<Value> {
     let mut ledger = vec![
-        served("m3", "model-x", "confirmed", "10.000", json!({"nonce": "n-1"})),
-        served("m4", "model-x", "confirmed", "20.000", json!({"nonce": "n-2"})),
-        served("m3", "model-x", "failed", "30.000", json!({"exchange_id": "ex-1"})),
-        served("m3", "model-y", "confirmed", "5.000", json!({})),
-        served("m3", "model-x", "confirmed", "40.000", json!({"nonce": "n-1"})),
+        served("node-a", "model-x", "confirmed", "10.000", json!({"nonce": "n-1"})),
+        served("node-b", "model-x", "confirmed", "20.000", json!({"nonce": "n-2"})),
+        served("node-a", "model-x", "failed", "30.000", json!({"exchange_id": "ex-1"})),
+        served("node-a", "model-y", "confirmed", "5.000", json!({})),
+        served("node-a", "model-x", "confirmed", "40.000", json!({"nonce": "n-1"})),
         sealed(json!({
             "action_type": "inference",
             "effect": {"status": "confirmed"},
             "model_attestation": {"compute_attestation": {"x-mesh-poc-v1": {
                 "role": "requested",
-                "serving_provenance": {"model_canonical_ref": "model-x", "served_by_node_id": "m4"},
+                "serving_provenance": {"model_canonical_ref": "model-x", "served_by_node_id": "node-b"},
             }}},
         })),
     ];
@@ -100,7 +100,7 @@ pub(crate) fn corpus_ledger() -> Vec<Value> {
         "references": [{"type": "capsule", "digest_alg": "SHA-256", "digest": foreign_half(), "citation_purpose": "counterparty_half"}],
         "model_attestation": {"compute_attestation": {"x-mesh-poc-v1": {
             "role": "served",
-            "serving_provenance": {"model_canonical_ref": "model-z", "requesting_party": "m4"},
+            "serving_provenance": {"model_canonical_ref": "model-z", "requesting_party": "node-b"},
         }}},
     })));
     let judged = ledger[0]["capsule_id"].clone();
@@ -113,7 +113,7 @@ pub(crate) fn corpus_ledger() -> Vec<Value> {
         ledger.push(padding(ledger.len()));
     }
     for latency in ["50.000", "60.000", "70.000", "80.000", "90.000"] {
-        ledger.push(served("m3", "model-x", "confirmed", latency, json!({})));
+        ledger.push(served("node-a", "model-x", "confirmed", latency, json!({})));
     }
     ledger.push(sealed(json!({
         "action_type": "fyi",
@@ -122,7 +122,7 @@ pub(crate) fn corpus_ledger() -> Vec<Value> {
     while ledger.len() < 300 {
         ledger.push(padding(ledger.len()));
     }
-    ledger.push(served("m3", "model-x", "confirmed", "99.000", json!({})));
+    ledger.push(served("node-a", "model-x", "confirmed", "99.000", json!({})));
     ledger
 }
 
@@ -185,17 +185,17 @@ fn corpus_cases(ledger: &[Value], cps: &[CheckpointRecord]) -> Vec<Value> {
     let mut cases = vec![
         // Records, and who may have them.
         case("record_to_its_counterparty", "a record goes to the node it names as the other side", "prospective",
-             with(req(json!({"record": id(0)}), &latest), "requester_id", json!("m3"))),
+             with(req(json!({"record": id(0)}), &latest), "requester_id", json!("node-a"))),
         case("record_to_another_node", "a record does not go to a node it does not name", "prospective",
-             with(req(json!({"record": id(0)}), &latest), "requester_id", json!("m4"))),
+             with(req(json!({"record": id(0)}), &latest), "requester_id", json!("node-b"))),
         case("record_to_a_stranger", "an asker naming no id is nobody's counterparty", "prospective",
              req(json!({"record": id(0)}), &latest)),
         case("record_under_peers", "under peers a record goes to anyone", "peers",
              req(json!({"record": id(0)}), &latest)),
         case("record_sharing_off", "off serves no record, even to its counterparty", "off",
-             with(req(json!({"record": id(0)}), &latest), "requester_id", json!("m3"))),
+             with(req(json!({"record": id(0)}), &latest), "requester_id", json!("node-a"))),
         case("record_counterparties_tier", "counterparties serves a record to its counterparty", "counterparties",
-             with(req(json!({"record": id(1)}), &first), "requester_id", json!("m4"))),
+             with(req(json!({"record": id(1)}), &first), "requester_id", json!("node-b"))),
         case("record_local_block_never_leaves", "a local block is never served, even under peers", "peers",
              req(json!({"record": id(21)}), &latest)),
         case("record_unknown", "a record this node does not hold", "peers",
@@ -212,9 +212,9 @@ fn corpus_cases(ledger: &[Value], cps: &[CheckpointRecord]) -> Vec<Value> {
         case("range_under_peers", "a range carries every leaf, padding included, with a range proof", "peers",
              req(json!({"range": [5, 12]}), &first)),
         case("range_to_a_counterparty", "a range naming only one counterparty's records goes to it", "prospective",
-             with(req(json!({"range": [16, 20]}), &latest), "requester_id", json!("m3"))),
+             with(req(json!({"range": [16, 20]}), &latest), "requester_id", json!("node-a"))),
         case("range_mixed_counterparties", "a range with another node's record is refused whole, never filtered", "prospective",
-             with(req(json!({"range": [0, 4]}), &latest), "requester_id", json!("m3"))),
+             with(req(json!({"range": [0, 4]}), &latest), "requester_id", json!("node-a"))),
         case("range_with_a_local_block", "a range holding a local block is refused whole, even under peers", "peers",
              req(json!({"range": [20, 22]}), &latest)),
         case("range_past_anchor", "a range ending past the anchor", "peers",
@@ -227,7 +227,7 @@ fn corpus_cases(ledger: &[Value], cps: &[CheckpointRecord]) -> Vec<Value> {
              req(json!({"full_history": null}), &first)),
         // Correlation and exchange.
         case("correlation_to_its_counterparty", "records carrying one nonce, all naming the asker", "prospective",
-             with(req(json!({"correlation": "n-1"}), &latest), "requester_id", json!("m3"))),
+             with(req(json!({"correlation": "n-1"}), &latest), "requester_id", json!("node-a"))),
         case("correlation_by_exchange_id", "an exchange_id is a correlation identifier", "peers",
              req(json!({"correlation": "ex-1"}), &latest)),
         case("correlation_unknown", "no record carries this identifier", "peers",
@@ -287,7 +287,6 @@ fn build_corpus() -> Value {
         "v": 1,
         "path": "evidence-request",
         "now": NOW,
-        "node_key_seed": hex::encode(NODE_KEY_SEED),
         "ledger": ledger,
         "checkpoints": cps,
         "cases": cases,
@@ -334,9 +333,10 @@ fn summarize(request_bytes: &[u8], outcome: &Outcome, key: &SigningKey, cps: &[V
 }
 
 fn run(corpus: &Value) -> BTreeMap<String, Value> {
-    let key = SigningKey::from_bytes(
-        &hex::decode(corpus["node_key_seed"].as_str().unwrap()).unwrap().try_into().unwrap(),
-    );
+    // The node's key is the runner's own fixed test key, never read from the
+    // corpus: a data file carries no private key material, not even a test
+    // key's.
+    let key = SigningKey::from_bytes(&NODE_KEY_SEED);
     let data = tempfile::tempdir().unwrap();
     let ledger_dir = data.path().join("ledger");
     std::fs::create_dir_all(&ledger_dir).unwrap();
