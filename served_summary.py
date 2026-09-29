@@ -31,7 +31,7 @@ neutral core ``history_card.py``/``account_capsule.py`` already use.
     confirm they agree with the summary's claims. A verification METHOD, not
     a fourth source -- cited alongside ``self_derived``, never standing alone.
   * **counterparty_held** / ``self_held`` -- twin-adjudication verdicts ABOUT
-    this node come from its counterparties (``[mesh-ask-the-references]``),
+    this node come from its counterparties (asked with ``ask_history.py references``),
     never from this module. ``adjudications_received`` below is labeled
     ``self_held``: this node's own retained count of verdicts it
     ``received()`` into its log, not a self-derived property of what it
@@ -380,7 +380,7 @@ def _adjudications_received(ledger_records: list[dict[str, Any]], *, own_capsule
     -> ``capsule_accountability_tab``). Total only: this field is labeled
     ``self_held`` and deliberately does not break out corroborated/
     contradicted/inconclusive here -- that breakdown belongs to the
-    counterparty-held references path ([mesh-ask-the-references]), not to
+    counterparty-held references path, not to
     what this node counts about its own served exchanges."""
     received = 0
     for record in ledger_records:
@@ -501,7 +501,7 @@ class ServedSummary:
                 "note": (
                     "verdicts this node has received() into its own log about its served "
                     "exchanges -- not this node's own judgment of itself. The counterparty-held "
-                    "references path ([mesh-ask-the-references]) is what carries weight in an "
+                    "references path (its counterparties asked about it) is what carries weight in an "
                     "adversarial reading; this count is never presented as a substitute for it."
                 ),
             },
@@ -741,7 +741,7 @@ def sample_positions(n_total: int, k: int, *, nonce: str) -> list[int]:
     ``[0, n_total)``, keyed by ``nonce`` so two independent verifiers who
     agree on a nonce pick the SAME sample (mirrors the "deterministic by
     nonce so two askers pick the same set" discipline
-    ``[mesh-ask-the-references]`` uses for its counterparty sample) -- never
+    the references path uses for its counterparty sample) -- never
     a fresh random draw that a re-run cannot reproduce."""
     if n_total <= 0 or k <= 0:
         return []

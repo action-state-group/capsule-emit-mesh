@@ -258,11 +258,26 @@ export function askReplyNote(outcome: AskOutcome): { verified: boolean; text: st
     case 'refused':
     case 'no_record':
       return { verified: true, text: 'Their reply is verified: signed with their announced key, for this request' }
-    case 'record':
-      return {
-        verified: true,
-        text: 'Their reply is verified: the record is in their log, under a checkpoint signed with their announced key'
+    case 'record': {
+      // The plugin proved the record is in their log; the record itself is
+      // verified only if its id recomputes AND it is signed with their
+      // announced key. Anything less is said, never rounded up.
+      const { idMatch, signatureOk } = outcome.evidence
+      if (idMatch === true && signatureOk === true) {
+        return {
+          verified: true,
+          text: 'Their reply is verified: the record is in their log, under a checkpoint signed with their announced key'
+        }
       }
+      const problems = [
+        idMatch === true ? null : idMatch === false ? 'its id does not recompute' : 'its id could not be recomputed',
+        signatureOk === true ? null : 'it is not signed with their announced key'
+      ].filter((p): p is string => p !== null)
+      return {
+        verified: false,
+        text: `Their record is in their log, but it is not verified: ${problems.join('; ')}`
+      }
+    }
   }
 }
 

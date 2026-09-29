@@ -64,7 +64,7 @@ against it, unchanged. ``--max-pages`` (default 1000) bounds the loop so a
 misbehaving door handing back an ever-repeating token cannot hang this
 client forever.
 
-``--subject references`` -- ``[mesh-ask-the-references]``, discovery
+``--subject references`` -- asking a node's counterparties about it, discovery
 mechanism 1: how a STRANGER finds a verdict about node ``X`` that ``X``
 itself won't hold (a pruned/declined record never reaches ``X``'s own
 chain -- see ``adjudication_delivery.seal_adjudication_ack_refused``), with
@@ -144,7 +144,7 @@ _VERDICT_NOT_COMPARABLE = "not_comparable"
 #: walks generically rather than assuming one path).
 _COUNTERPARTY_NAMING_KEYS = frozenset({"requesting_party", "served_by_node_id", "counterparty_ref"})
 
-#: Default sample size for `references` -- k=3, per [mesh-ask-the-references].
+#: Default sample size for `references`: k=3.
 DEFAULT_REFERENCE_K = 3
 
 
@@ -307,7 +307,7 @@ def sample_reference_candidates(
     the candidate set)``, never of who is asking or of any randomness. Two
     independent strangers who discover the same candidate set for the same
     ``X`` always pick the same sample without coordinating, exactly the
-    property ``[mesh-ask-the-references]`` calls for."""
+    property the references sample calls for."""
     uniq = sorted(set(candidates))
     ranked = sorted(uniq, key=lambda c: hashlib.sha256(f"{subject_node_id}:{c}".encode()).hexdigest())
     return ranked[:k]
@@ -384,7 +384,7 @@ class ReferencesResult:
     itself flip ``continuity`` to ``"broken"`` (``PairContinuity``'s own
     discipline: a gap and a regression are different findings), so a
     caller that only reads ``continuity`` would miss exactly the
-    ``[mesh-ask-the-references]`` prune mutant this field exists to catch.
+    references prune mutant this field exists to catch.
     """
 
     x_node_id: str
