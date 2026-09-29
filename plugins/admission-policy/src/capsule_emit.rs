@@ -846,7 +846,7 @@ pub struct ObservedHostExchange<'a> {
     /// (2026-09-06 role ruling). See `lifecycle_channel::DispatchPath`.
     pub dispatch_path: DispatchPath,
     /// The client-forwarded nonce off the terminal event, when the host
-    /// reported one (`[mesh-requester-side-seal-on-proxy]`, 2026-09-07) --
+    /// reported one (requester-side sealing on a proxied exchange) --
     /// this is the JOIN KEY between a proxied exchange's two sealed halves
     /// (this node's requester-role capsule and the peer's served-role
     /// capsule): both sides forward the SAME client nonce, while
@@ -1169,7 +1169,7 @@ impl CapsuleState {
             runtime: observer_runtime_field(&binary_attestation),
             mesh_poc: MeshPocV1 {
                 // The host-forwarded terminal-event nonce, when present
-                // (`[mesh-requester-side-seal-on-proxy]`, 2026-09-07) -- THE JOIN
+                // (requester-side sealing on a proxied exchange) -- THE JOIN
                 // KEY between a proxied exchange's two sealed halves (see
                 // `ObservedHostExchange::nonce`). A host that did not forward one
                 // (predates the forwarding, or a locally-served exchange whose
@@ -2979,7 +2979,7 @@ mod tests {
         }
     }
 
-    /// [mesh-sequence-per-counterparty] Two exchanges served for the SAME
+    /// Sequence per counterparty: two exchanges served for the SAME
     /// requesting party get a monotone `seq`/`prev_seq` for that pair
     /// (1 -> None, 2 -> Some(1)); a THIRD exchange for a DIFFERENT
     /// requesting party is an independent counter starting back at 1 -- the
@@ -3592,7 +3592,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `[mesh-requester-side-seal-on-proxy]` (2026-09-07): the host-forwarded
+    /// Requester-side sealing on a proxied exchange: the host-forwarded
     /// terminal-event nonce becomes `client_nonce`/`client_nonce_source` on a
     /// `RemoteMesh` (requester-side) observed capsule -- THE JOIN KEY a
     /// proxied exchange's two halves share. Absent nonce keeps the
@@ -3622,7 +3622,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// [mesh-e9e10-peer-fetch-two-sided-ledger] piece 1: the requester-side
+    /// The two-sided ledger's peer fetch: the requester-side
     /// capsule carries the PEER's self-asserted capsule id -- the lookup key
     /// an evidence-door fetch will dereference to populate the two-sided
     /// ledger's "theirs" column. Forwarded verbatim, labeled as self-attested
@@ -3696,7 +3696,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// THE ACCEPTANCE TEST for `[mesh-requester-side-seal-on-proxy]`: a
+    /// THE ACCEPTANCE TEST for requester-side sealing on a proxied exchange: a
     /// proxied exchange (peer serves it, router routes it) seals TWO
     /// independently offline-verifiable capsules -- `served` on the peer,
     /// `requested` on the router -- joined by the SHARED nonce, never by

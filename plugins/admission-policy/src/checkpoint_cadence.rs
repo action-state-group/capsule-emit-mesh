@@ -2,9 +2,8 @@
 //! `capsule_producer::checkpoint::CheckpointState` over this node's ledger,
 //! replacing `checkpoint_daemon.py` once a node cuts over.
 //!
-//! **On by default, local-only (`[mesh-plugin-release-checkpoint-default-flip]`,
-//! superseding `[mesh-plugin-checkpoint-cadence]`'s off-by-default launch;
-//! `docs/DESIGN-fold-sidecar-into-plugin.md`).** The cadence task now runs
+//! **On by default, local-only (superseding the cadence task's
+//! off-by-default launch; `docs/DESIGN-fold-sidecar-into-plugin.md`).** The cadence task now runs
 //! unless the operator opts OUT by setting [`ENV_ENABLE`] to `"off"` --
 //! "on by default" is local checkpointing only: [`ENV_WITNESS_URLS`] stays
 //! empty/unset by default, so no network call ever happens unless the
@@ -112,7 +111,7 @@ fn config_from_env() -> CheckpointCadenceConfig {
 }
 
 /// The latest signed checkpoint head this node has produced, held in
-/// memory. `[mesh-checkpoint-head-source]`'s sending half reads this to
+/// memory. The checkpoint-head source's sending half reads this to
 /// feed `peer_root_ledger.rs`'s outbound side / `PeerAnnouncement.checkpoint`
 /// -- this task itself does not gossip anything; it only produces and holds
 /// the head.
@@ -120,7 +119,7 @@ fn config_from_env() -> CheckpointCadenceConfig {
 pub struct LatestHead(Arc<RwLock<Option<CheckpointRecord>>>);
 
 impl LatestHead {
-    /// Not read anywhere in this binary yet -- `[mesh-checkpoint-head-source]`'s
+    /// Not read anywhere in this binary yet -- the checkpoint-head source's
     /// sending half is the intended caller (see this struct's doc comment).
     /// Kept as the accessor that wiring needs, same "tested, ready-to-wire"
     /// pattern `peer_root_ledger.rs`'s module doc uses for its own

@@ -1,4 +1,4 @@
-//! [mesh-plugin-checkpoint-cadence] acceptance: the checkpoint this crate's
+//! Checkpoint cadence acceptance: the checkpoint this crate's
 //! `checkpoint::CheckpointState` produces over a `capsules.jsonl` must carry
 //! the SAME MMR root an independent Python recomputation gets over the
 //! identical leaves, and the COSE-wire statement must verify under the

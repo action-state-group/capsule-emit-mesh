@@ -357,8 +357,8 @@ impl ObservedLifecycleEvents {
     /// model-identity fact only a real served model has -- not a heuristic.
     ///
     /// Requires: a `Terminal` phase, a 2xx status (a served success), a
-    /// serving-provenance block, real model identity in it, and
-    /// (`[mesh-requester-side-seal-on-proxy]`, 2026-09-07) a NON-`RemoteMesh`
+    /// serving-provenance block, real model identity in it, and a
+    /// NON-`RemoteMesh`
     /// dispatch path -- a `RemoteMesh` terminal event is this node's
     /// REQUESTER-side half (see `is_sealable_requester_side`), never the
     /// served half, no matter what a forwarded serving-provenance block might
@@ -408,7 +408,7 @@ impl ObservedLifecycleEvents {
 
     /// Whether this observed envelope is the REQUESTER'S half of a proxied
     /// exchange this plugin should seal a capsule for
-    /// (`[mesh-requester-side-seal-on-proxy]`, 2026-09-07 -- the accountability
+    /// (requester-side sealing on a proxied exchange -- the accountability
     /// gap the 2026-09-07 live twin run surfaced: when this node proxies a chat
     /// completion to a peer via the `RemoteMesh` dispatch path, the peer seals a
     /// `served`-role capsule for its half, but the routing/requesting node
@@ -911,7 +911,7 @@ mod tests {
         assert_eq!(peer_capsule_id_for_seal(&env), None);
     }
 
-    /// THE GAP `[mesh-requester-side-seal-on-proxy]` CLOSES: a `RemoteMesh`
+    /// THE GAP REQUESTER-SIDE SEALING CLOSES: a `RemoteMesh`
     /// terminal event (this node routed the exchange to a peer) is sealable as
     /// the REQUESTER'S half, even with no `serving_provenance` at all (the
     /// router legitimately may not know the peer's hardware) -- and it is

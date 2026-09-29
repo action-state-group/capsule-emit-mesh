@@ -1,5 +1,5 @@
-//! Peer checkpoint-root reconciliation — the receiving half of
-//! `[mesh-peer-root-exchange]`. mesh-llm's fork carries an optional
+//! Peer checkpoint-root reconciliation — the receiving half of the peer
+//! checkpoint-root exchange. mesh-llm's fork carries an optional
 //! `checkpoint: {log_id, mmr_size, root, timestamp_unix_ms, signature}` head
 //! on `PeerAnnouncement` (and the plugin-facing `MeshPeer` mirror); this
 //! module is what a plugin does with it once received.

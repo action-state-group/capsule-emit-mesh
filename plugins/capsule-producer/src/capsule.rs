@@ -385,7 +385,7 @@ impl MeshPocV1 {
     }
 }
 
-/// [mesh-fabric-vocab-alignment] `epistemic_type` (the fabric's shared
+/// `epistemic_type` (the fabric's shared
 /// record-header vocabulary convention) for the SAME `x-mesh-poc-v1.role` value this record carries.
 /// `None` for `"conflict"`/`"unknown"`/anything else unrecognized -- an
 /// ambiguous or unlabelable role must never be rounded up to either claim.
@@ -711,7 +711,7 @@ pub(crate) fn seal_body(input: &CapsuleInput) -> Result<Map<String, Value>, Seal
     compute_attestation.insert("runtime".into(), input.runtime.clone());
     compute_attestation.insert("attestation_refs".into(), json!([]));
 
-    // [mesh-runtime-ext-payload-migration] model_attestation fields from the
+    // model_attestation fields from the
     // runtime/model extension draft. agent_action_capsule.ModelAttestation
     // (the Python contracts dataclass this producer stays byte-compatible
     // with) has no top-level slot for model_revision/weights_digest/
@@ -796,7 +796,7 @@ pub(crate) fn seal_body(input: &CapsuleInput) -> Result<Map<String, Value>, Seal
     invocation.insert("source".into(), Value::Object(invocation_source));
     compute_attestation.insert("invocation".into(), Value::Object(invocation));
 
-    // [mesh-fabric-vocab-alignment] additive record-header field, a
+    // An additive record-header field, a
     // top-level sibling of x-mesh-poc-v1 (never nested inside it --
     // epistemic_type is fabric vocabulary, not a PoC extension). Derived
     // from the SAME x-mesh-poc-v1.role signal, never re-guessed: "served"
@@ -2053,7 +2053,7 @@ mod tests {
         assert_eq!(prov["usage"]["total_tokens"], 33);
     }
 
-    /// [mesh-fabric-vocab-alignment] `epistemic_type` -- additive, a
+    /// `epistemic_type` -- additive, a
     /// top-level sibling of `x-mesh-poc-v1`, derived from the SAME `role`
     /// signal `capsule_mesh_view.label_role()` already treats as
     /// authoritative. `served` -> `producer_claim` (this node's own claim

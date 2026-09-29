@@ -121,7 +121,7 @@ struct AppState {
     lifecycle_events: Arc<ObservedLifecycleEvents>,
     /// This node's latest self-produced checkpoint head, if the checkpoint
     /// cadence task is enabled (`checkpoint_cadence::is_enabled`) --
-    /// `[mesh-checkpoint-head-source]`'s sending half reads this to feed
+    /// the checkpoint-head source's sending half reads this to feed
     /// `PeerAnnouncement.checkpoint`. On by default; `None` when the
     /// operator has opted out (`ADMISSION_POLICY_CHECKPOINT_CADENCE=off`)
     /// or hasn't produced a checkpoint since startup.
@@ -959,7 +959,7 @@ async fn main() -> anyhow::Result<()> {
                             // usage + host-forwarded request digest.
                             //
                             // Seal-on-observe, REQUESTER side
-                            // (`[mesh-requester-side-seal-on-proxy]`, 2026-09-07):
+                            // (on a proxied exchange):
                             // a `RemoteMesh` terminal event means THIS node
                             // routed the exchange to a peer -- it is the
                             // requester's own half, and until this closed, it

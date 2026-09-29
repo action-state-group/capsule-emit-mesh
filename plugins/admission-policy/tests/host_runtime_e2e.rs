@@ -221,7 +221,7 @@ impl RealHost {
     /// real model is servable at `local-gguf/sha256-<content-hash>` (mesh-llm
     /// mints the model id from the file's own bytes; see
     /// `discover_local_gguf_model_id`). Used only by
-    /// `[mesh-sidecar-provenance-fold-option3]`'s real-hardware-fold test --
+    /// the sidecar provenance fold's real-hardware test --
     /// every other test in this file uses the plain `spawn()` (no GPU/model
     /// file required).
     async fn spawn_with_gguf(gguf_path: &str) -> Self {
@@ -373,7 +373,7 @@ async fn discover_local_gguf_model_id(console_port: u16, gguf_path: &str) -> Str
 }
 
 /// Manages a real `capsule_sidecar.py` subprocess fronting a `RealHost`, for
-/// `[mesh-sidecar-provenance-fold-option3]`'s real-hardware-fold test. A thin
+/// the sidecar provenance fold's real-hardware test. A thin
 /// wrapper, not a reimplementation -- the actual reverse-proxy/capsule-sealing
 /// logic under test is the real Python process, not this harness.
 struct SidecarProcess {
@@ -470,7 +470,7 @@ impl SidecarProcess {
     }
 
     /// The most recently sealed capsule from the sidecar's own
-    /// `cll.LedgerStore` backend (`[mesh-b1-ledger]` #128 -- segment files
+    /// `cll.LedgerStore` backend (#128 -- segment files
     /// under `sidecar-ledger/segments/`, NOT a flat `capsules.jsonl` the way
     /// the Rust plugin's ledger still is).
     fn latest_capsule(&self) -> serde_json::Value {
@@ -500,7 +500,7 @@ impl Drop for SidecarProcess {
     }
 }
 
-/// The `[mesh-sidecar-provenance-fold-option3]` acceptance test: seals a REAL
+/// The sidecar provenance fold's acceptance test: seals a REAL
 /// model exchange (an actual loaded GGUF, real inference, no plugin-served
 /// stub) through a REAL `capsule_sidecar.py` fronting a REAL `mesh-llm serve
 /// --gguf` host with the REAL admission-policy plugin registered, and asserts
