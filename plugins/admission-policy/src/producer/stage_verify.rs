@@ -12,7 +12,7 @@
 //! reference (`mesh_split_stage.py`) implements the same function and both
 //! run over `tests/fixtures/split-stage/hop-cases.json`.
 //! [`verify_split_records`] wraps it for sealed records: it recomputes every
-//! `capsule_id` first. Signatures are the door's check on receipt, not
+//! `capsule_id` first. Signatures are checked by the receiver on receipt, not
 //! repeated here.
 
 use std::collections::{BTreeMap, BTreeSet};

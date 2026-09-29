@@ -51,8 +51,8 @@
 //! hardware register is involved — so it must never be confused with
 //! `tee_measured` (unbuilt; would require a TEE measuring into a hardware
 //! register before `exec`, e.g. Linux+TPM or SEV-SNP). A root attacker with
-//! SIP disabled is the named residual only `tee_measured` closes; see
-//! `docs/REDTEAM-RUNG3.md`.
+//! SIP disabled (able to swap the binary under a valid code signature) is
+//! the named residual only `tee_measured` closes.
 //!
 //! ## Graceful degradation
 //!
@@ -93,7 +93,7 @@ pub enum MeasurementClass {
     /// with `TeeMeasured`.
     OsMeasured,
     /// A TEE measured the binary into a hardware register before it ran. NOT
-    /// emitted yet (out of scope for this rung; see `docs/REDTEAM-RUNG3.md`).
+    /// emitted yet (out of scope for this rung).
     TeeMeasured,
 }
 
@@ -461,7 +461,7 @@ mod kernel_attest {
     // `CS_OPS_CDHASH` / `CS_VALID` / `CS_SIGNED` / `CS_PLATFORM_BINARY` and
     // `csr_get_active_config`'s "0 == fully enabled" convention were each
     // cross-checked against `codesign -dvvv` / `csrutil status` ground truth
-    // on this exact host before shipping — see `docs/REDTEAM-RUNG3.md`.
+    // on a macOS host before shipping.
     const CS_OPS_STATUS: c_uint = 0;
     const CS_OPS_CDHASH: c_uint = 5;
     const CS_CDHASH_LEN: usize = 20;
@@ -634,8 +634,8 @@ mod tests {
     /// `measure_path` is path-parameterized and can ONLY ever produce
     /// `self_measured` — there is no kernel cdhash for an arbitrary file (the
     /// kernel measurer is PID-bound, see [`kernel_attest`]). This holds on
-    /// every platform, including macOS, and is why the rung-2 decoy test
-    /// (`redteam_rung2_self_measured.rs`) stays valid unmodified.
+    /// every platform, including macOS, so a record measured this way never
+    /// claims more than `self_measured`.
     #[test]
     fn measure_path_never_produces_kernel_signing_even_on_macos() {
         let keys = KeyPair::generate();
@@ -733,8 +733,9 @@ mod tests {
     /// verification. This is what upgrades the rung-2 attack-9 decoy trick
     /// (self_measured's residual: an internally-perfect record pointed at a
     /// pristine decoy) from residual to CAUGHT under os_measured: even if an
-    /// attacker could get a kernel cdhash for a decoy (they cannot — see
-    /// `docs/REDTEAM-RUNG3.md`), splicing it onto a different digest, or vice
+    /// attacker could get a kernel cdhash for a decoy (they cannot: the kernel
+    /// reports the cdhash of the running process only), splicing it onto a
+    /// different digest, or vice
     /// versa, invalidates the signature.
     #[cfg(target_os = "macos")]
     #[test]

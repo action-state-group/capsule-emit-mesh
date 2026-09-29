@@ -1,8 +1,7 @@
 //! The plugin's own checkpoint cadence: a tokio background task that runs
 //! `crate::producer::checkpoint::CheckpointState` over this node's ledger.
 //!
-//! **On by default, local-only (superseding the cadence task's
-//! off-by-default launch; `docs/DESIGN-fold-sidecar-into-plugin.md`).** The cadence task now runs
+//! **On by default, local-only.** The cadence task runs
 //! unless the operator opts OUT by setting [`ENV_ENABLE`] to `"off"` --
 //! "on by default" is local checkpointing only: [`ENV_WITNESS_URLS`] stays
 //! empty/unset by default, so no network call ever happens unless the

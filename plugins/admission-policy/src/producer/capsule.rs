@@ -148,7 +148,7 @@ pub struct ServingProvenance {
     pub prev_seq: Option<u64>,
     /// On a `role: "requested"` record: the capsule id the PEER asserted for
     /// its own (served-side) half of this exchange -- the lookup key an
-    /// evidence-door fetch dereferences to populate the two-sided ledger's
+    /// evidence request dereferences to populate the two-sided ledger's
     /// "theirs" column. Forwarded verbatim off the host's `RemoteMesh`
     /// terminal envelope (`mesh-llm-host-runtime`'s
     /// `CapsuleIdProvenance::PeerAsserted`) -- an unauthenticated,
@@ -666,23 +666,23 @@ fn mesh_extensions(input: &CapsuleInput) -> Map<String, Value> {
 // ---------------------------------------------------------------------------
 
 /// The provenance facts a citing record carries about the received half it
-/// cites -- the door-verified triple plus the structural `digest_match` grade
-/// (the pane's CLOSED-gate input). Every field is a real value the door
+/// cites -- the receiver-verified triple plus the structural `digest_match` grade
+/// (the pane's CLOSED-gate input). Every field is a real value the receiver
 /// established or the responder computed; nothing is fabricated.
 pub struct ReceivedHalfProvenance<'a> {
     /// The foreign half's own `capsule_id` -- the citation target
     /// (`references[0].digest`) AND the key it is stored under in the
     /// held-artifact store `received-capsules.jsonl`.
     pub foreign_capsule_id: &'a str,
-    /// The claimed sender's mesh peer id, as the door verified it against the
-    /// announced key (`record_push.py`'s `sender_peer_id`).
+    /// The claimed sender's mesh peer id, as the receiver verified it against
+    /// the announced key.
     pub received_from: &'a str,
     /// The carrier the half arrived over -- `"push"` for record-push.
     pub via: &'a str,
-    /// When this node received the half (the door's `received_at`).
+    /// When this node received the half (the receiver's `received_at`).
     pub received_at: &'a str,
-    /// The door's recorded signature verdict -- always `true` here, since the
-    /// door refuses (and this seal never runs) when the signature did not
+    /// The receiver's recorded signature verdict -- always `true` here, since
+    /// the receiver refuses (and this seal never runs) when the signature did not
     /// verify.
     pub signature_ok: bool,
     /// The structural `digest_match` grade the responder computed between the
@@ -728,7 +728,7 @@ pub fn seal_citing_record(
 
     // The citing record's own compute_attestation. It carries NO x-mesh-poc-v1
     // serving block (this node served nothing here -- it RECEIVED a half),
-    // only the honest facts of the receiving event: the door's provenance
+    // only the honest facts of the receiving event: the receiver's provenance
     // triple + verdict, the structural digest_match grade, and the foreign
     // half's own digests (so the pane's digest-first `exchange_key_for`
     // correlates this citing record with our own half of the same exchange).
@@ -943,7 +943,7 @@ pub const REFERENCE_TYPE_CHECKPOINT: &str = "cll-checkpoint";
 /// The facts a `counterparty_inclusion` citing record carries: which held
 /// half the evidence is about, where it came from, the leaf position and
 /// covering size, and the digests of the two held artifacts it cites. Every
-/// value is what the door verified and stored; nothing is fabricated.
+/// value is what the receiver verified and stored; nothing is fabricated.
 pub struct InclusionCitation<'a> {
     /// The held half the proof is for -- already cited by this node's earlier
     /// `counterparty_half` record, never re-cited here.
@@ -1075,7 +1075,7 @@ pub fn peer_commitment(peer_id: &str, salt: &[u8; 32]) -> String {
 /// `chain_head` like every other local record.
 ///
 /// The record names the peer only by [`peer_commitment`]. A `range` answer
-/// from this node's evidence door returns whole records to any asker, so a
+/// from this node's evidence responder returns whole records to any asker, so a
 /// record that named the peer in clear would tell the peer, and everyone else,
 /// who was blocked; the commitment keeps "nobody else is told" true for the
 /// record itself (`routing_choice_names_the_peer_only_by_commitment`).
@@ -1592,8 +1592,7 @@ mod tests {
 
     /// The inline `key_id` is the RAW 32-byte Ed25519 public key, hex (64
     /// chars) -- exactly `capsule_emit.seal()`'s `capsule["key_id"]` and what
-    /// the door's announced-key registry (`peer_keys.py` /
-    /// `ADMISSION_POLICY_PEER_KEYS`) keys off. NOT this crate's own short
+    /// the announced-key registry (`ADMISSION_POLICY_PEER_KEYS`) keys off. NOT this crate's own short
     /// SHA-256-based `keys::key_id` (16 chars).
     #[test]
     fn attached_key_id_is_the_raw_public_key_hex_not_the_short_key_id() {

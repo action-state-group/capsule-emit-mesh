@@ -86,7 +86,7 @@ Every case runs against the same node at the corpus's clock, `now`.
    said `no_such_record`).
 2. A signed refusal is a refusal, never an absence.
 3. Requests use -00's six subject forms; the door's `{"kind": ...}` shape is
-   `request_malformed` (`old_door_shape`).
+   `request_malformed` (`pre_draft_request_shape`).
 4. `coverage` is required and carries exactly one member (`coverage_missing`,
    `coverage_both_members`).
 5. A record id is the whole digest; a prefix is `request_malformed`

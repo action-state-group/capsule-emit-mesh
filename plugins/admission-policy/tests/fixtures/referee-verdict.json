@@ -1,5 +1,5 @@
 {
-  "note": "A verdict signed by the Python referee door (referee_service.py), for the Rust verifier. Regenerate: see adjudication_records.rs tests.",
+  "note": "A verdict signed by a reference referee, for the verifier in adjudication_records.rs. Regenerate: see its tests.",
   "referee_key_id": "6a9a93a3af20ca17d85764e3206fd1d0417ea943f53f07157792299ba9b6f033",
   "verdict_capsule": {
     "spec_version": "draft-mih-scitt-agent-action-capsule-04",

@@ -262,7 +262,7 @@ fn corpus_cases(ledger: &[Value], cps: &[CheckpointRecord]) -> Vec<Value> {
         case("coverage_by_time", "min_freshness as a time picks a checkpoint issued since", "peers",
              req(json!({"checkpoints": null}), &json!({"min_freshness": "2026-09-28T06:00:00Z"}))),
         // Malformed, late, large.
-        case("old_door_shape", "the earlier door's request shape is not a -00 request", "peers",
+        case("pre_draft_request_shape", "a request in the shape used before -00 (a kind and capsule_id subject) is not a -00 request", "peers",
              json!({"subject": {"kind": "record", "capsule_id": id(0)}})),
         case("deadline_passed", "a deadline already past at receipt", "peers",
              with(req(json!({"checkpoints": null}), &latest), "deadline", json!("2026-09-28T00:00:00Z"))),

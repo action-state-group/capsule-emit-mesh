@@ -173,7 +173,7 @@ fn run_case(case: &Value, now: &str, seed: u8) -> Vec<Value> {
 }
 
 #[test]
-fn the_rust_receiver_answers_the_corpus_as_the_python_door_does() {
+fn the_receiver_answers_the_corpus_as_recorded() {
     let dir = parity_dir();
     let corpus = read_json(&dir.join("corpus/record_push.json"));
     let golden = read_json(&dir.join("golden/record_push.json"));
