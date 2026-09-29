@@ -4,7 +4,11 @@ mod data_dir;
 mod door_auth;
 mod checkpoint_cadence;
 mod decision;
+mod evidence_answer;
+mod evidence_log;
 mod evidence_panes;
+#[cfg(test)]
+mod evidence_request_parity;
 mod evidence_routes;
 mod ledger_fetch_bridge;
 mod lifecycle_channel;
@@ -15,9 +19,11 @@ mod record_push_bridge;
 mod record_push_receive;
 #[cfg(test)]
 mod record_push_parity;
+mod received_log;
 mod routing_choice_bridge;
 mod routing_rule;
 mod self_peer;
+mod served_summary;
 /// Not wired into `on_mesh_event` yet -- see the module doc for why
 /// (`mesh-llm-plugin = "0.75"` predates the `checkpoint` field this needs to
 /// read off `event.peer`). Exercised entirely by its own unit tests today;
@@ -648,15 +654,18 @@ fn with_evidence_operations(
     builder = builder.mcp_item(
         mcp::tool(EVIDENCE_REQUEST_OPERATION)
             .description(
-                "Ask a mesh peer's admission-policy plugin for E15 evidence (an E14 request map) over \
-                 the plugin mesh stream, for peers with no reachable evidence_server.py HTTP door \
-                 (e.g. relay-only). Returns the peer's own Artifact-or-Refusal JSON unchanged.",
+                "Ask a mesh peer's admission-policy plugin for evidence (a \
+                 draft-mih-agent-evidence-request-00 request map) over the plugin mesh stream. \
+                 Returns the peer's own artifact or signed refusal unchanged; with verify, beside \
+                 its verification against the peer's announced key.",
             )
             .input::<MeshEvidenceRequestArgs>()
             .handle({
                 let ledger_dir = capsules_for_delivery.ledger_dir().to_path_buf();
+                let self_peer = self_peer.clone();
                 move |args, context| {
-                    Box::pin(mesh_evidence_bridge::handle_mesh_evidence_request(args, context, ledger_dir.clone()))
+                    let self_id = self_peer.current();
+                    Box::pin(mesh_evidence_bridge::handle_mesh_evidence_request(args, context, ledger_dir.clone(), self_id))
                 }
             }),
     );

@@ -997,7 +997,7 @@ fn theirs_cell(record: &Value) -> Value {
 /// for `"plugin"` is `"served"` (`capsule_mesh_view.py:81-83`) -- both of
 /// today's real writers (sidecar, plugin) observe this machine acting as
 /// the serving provider, never a requestor elsewhere.
-fn label_role(record: &Value) -> &'static str {
+pub(crate) fn label_role(record: &Value) -> &'static str {
     if let Some(role) = poc_block(record)
         .and_then(|poc| poc.get("role"))
         .and_then(Value::as_str)

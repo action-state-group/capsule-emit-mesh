@@ -209,6 +209,28 @@ jobs:
             exit 1
           fi
 
+      # The in-process evidence responder against its corpus
+      # (tests/parity/evidence_request/): every answer must equal the
+      # reviewed -00 golden answer. Already part of the unit tests above;
+      # named here because it is the merge gate for the responder.
+      - name: Evidence-request parity (Rust responder vs the reviewed -00 golden answers)
+        run: |
+          cargo test --locked --bin admission-policy-plugin -- evidence_request_parity::
+
+      # An implementation mutant: the responder built without its
+      # sharing-policy gate must FAIL the parity run, on the not_authorized
+      # cases. The build must succeed first, so a compile error can never
+      # pass as "the mutant was caught".
+      - name: Evidence-request parity catches a responder that drops a check (mutant must fail)
+        run: |
+          cargo test --locked --bin admission-policy-plugin --features mutant-evidence-skips-policy-gate --no-run
+          if out=$(cargo test --locked --bin admission-policy-plugin --features mutant-evidence-skips-policy-gate -- evidence_request_parity:: 2>&1); then
+            echo "::error::the parity run passed a responder that skips the sharing-policy gate"
+            exit 1
+          fi
+          echo "$out" | grep -q "record_to_a_stranger" || { echo "$out"; echo "::error::the mutant failed, but not on the policy cases"; exit 1; }
+          echo "mutant caught: $(echo "$out" | grep -m1 'case(s) differ')"
+
       - name: Interop tests (real Envelope wire protocol + real HTTP dispatch)
         run: cargo test --locked --test interop -- --test-threads=1
 

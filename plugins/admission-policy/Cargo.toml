@@ -23,6 +23,10 @@ mutant-allow-malformed = []
 # run to FAIL, so the parity run is shown to catch a receiver that drops a
 # check, not only a changed answer file.
 mutant-record-push-skips-claims = []
+# Deliberately-broken responder: answers evidence requests without the
+# sharing-policy gate. CI builds it and requires the evidence-request parity
+# run to FAIL on the not_authorized cases.
+mutant-evidence-skips-policy-gate = []
 
 [dependencies]
 mesh-llm-plugin = "0.76"
@@ -61,6 +65,12 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # this crate already has a `capsule_emit` module.
 capsule-emit-lib = { package = "capsule-emit", git = "https://github.com/action-state-group/capsule-emit", rev = "69ba8166cf2f12badb38a5d98ebf80a66cb9c103" }
 cll = { package = "checkpointed-local-log", version = "0.2.0" }
+# Evidence requests are answered in-process (`evidence_answer`): parsing,
+# resolution, signed refusals and the artifact answer come from the protocol
+# crate (draft-mih-agent-evidence-request-00). Git-pinned to the same
+# capsule-emit commit as `capsule-emit-lib`, so the lock carries one checkout;
+# 0.0.1 on crates.io predates the answer path.
+capsule-emit-evidence-request = { git = "https://github.com/action-state-group/capsule-emit", rev = "6e8108ddb99b144f0076cf116d1fdbe73bf9f2b7" }
 
 [dev-dependencies]
 # The record-push parity run reads its own golden answers, which hold a record
