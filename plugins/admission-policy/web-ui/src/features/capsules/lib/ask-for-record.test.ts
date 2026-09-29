@@ -253,6 +253,22 @@ describe('judgeAskReply', () => {
     expect(askReplyNote({ kind: 'asking', at: ASKED_AT })).toBeNull()
   })
 
+  it('says a record is verified only when its id recomputes and its signature holds', async () => {
+    const theirs = { ...fixtureHalfBody({ capsuleId: 'theirs-1' }), signature: 'aa', key_id: 'bb' }
+    const judged = (judges: AskJudges) =>
+      judgeAskReply(answer(artifact([theirs])), FIXTURE_REQUEST_DIGEST, ASKED_AT, judges)
+    expect(askReplyNote(await judged(trustingJudges))?.verified).toBe(true)
+    expect(askReplyNote(await judged({ ...trustingJudges, producerSignatureVerifies: () => false }))).toEqual({
+      verified: false,
+      text: 'Their record is in their log, but it is not verified: it is not signed with their announced key'
+    })
+    expect(askReplyNote(await judged({ ...trustingJudges, recomputeIdMatch: async () => false }))).toEqual({
+      verified: false,
+      text: 'Their record is in their log, but it is not verified: its id does not recompute'
+    })
+    expect(askReplyNote(await judged({ ...trustingJudges, recomputeIdMatch: async () => null }))?.verified).toBe(false)
+  })
+
   it('reads only the records the plugin proved', async () => {
     const theirs = { ...fixtureHalfBody({ capsuleId: 'theirs-1' }), signature: 'aa', key_id: 'bb' }
     const outcome = await judgeAskReply(

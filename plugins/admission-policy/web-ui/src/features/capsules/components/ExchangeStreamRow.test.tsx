@@ -1319,6 +1319,26 @@ describe('ExchangeStreamRow — whether their reply to "Ask them for their recor
     expect(note).toHaveTextContent('Their reply is verified')
   })
 
+  it('never says verified for a record whose signature does not hold', () => {
+    const theirs = { ...LOCAL_RECORD_WITH_DIGESTS, capsule_id: 'theirs-1' } as Record<string, unknown>
+    render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        {...toggleProps()}
+        askOutcome={{
+          kind: 'record',
+          at: '2026-09-28T23:00:00Z',
+          evidence: { status: 'found', idMatch: true, signatureOk: false, peerRecord: theirs, fetch: vi.fn() }
+        }}
+        rail={NO_RAIL}
+        row={makeRow('open_not_given')}
+      />
+    )
+    const note = document.querySelector('[data-ask-reply-verified]') as HTMLElement
+    expect(note).toHaveAttribute('data-ask-reply-verified', 'false')
+    expect(note).toHaveTextContent('it is not signed with their announced key')
+  })
+
   it('shows no note while the ask is in flight', () => {
     render(
       <ExchangeStreamRow

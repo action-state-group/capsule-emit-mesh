@@ -283,7 +283,7 @@ pub fn summary_value(
             "source": "self_held",
             "note": "verdicts this node has received() into its own log about its served \
                      exchanges -- not this node's own judgment of itself. The counterparty-held \
-                     references path ([mesh-ask-the-references]) is what carries weight in an \
+                     references path (its counterparties asked about it) is what carries weight in an \
                      adversarial reading; this count is never presented as a substitute for it.",
         },
         "no_requester_identifiers": "this summary reads and reports no requester-identity field \
