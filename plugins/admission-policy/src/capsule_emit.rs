@@ -1581,12 +1581,14 @@ impl CapsuleState {
         peer_id: &str,
         until: Option<&str>,
         salt: &[u8; 32],
+        rule: Option<&capsule_producer::capsule::RoutingRuleCitation<'_>>,
     ) -> anyhow::Result<EmittedRoutingChoice> {
         let choice = capsule_producer::capsule::LocalRoutingChoice {
             change,
             peer_id,
             salt,
             until,
+            rule,
         };
         let mut ledger = self
             .ledger
@@ -1725,10 +1727,11 @@ mod tests {
                 &peer,
                 Some("2026-10-04T00:00:00Z"),
                 &block_salt,
+                None,
             )
             .expect("seal block");
         let unblock = state
-            .emit_local_routing_choice(RoutingChoiceChange::Unblock, &peer, None, &unblock_salt)
+            .emit_local_routing_choice(RoutingChoiceChange::Unblock, &peer, None, &unblock_salt, None)
             .expect("seal unblock");
 
         let ledger = std::fs::read_to_string(dir.join("ledger").join("capsules.jsonl")).expect("ledger");

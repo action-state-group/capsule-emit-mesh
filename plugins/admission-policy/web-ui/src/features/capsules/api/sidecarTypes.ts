@@ -175,6 +175,9 @@ export type PaneBRow = {
    *  half, never a fabricated confirmation. */
   confirmed_siblings?: PaneBConfirmedSibling[]
   verdicts: PaneBVerdictsCell
+  /** Referee-signed verdicts about this peer, from this node's own chain
+   *  (`verdict_counts.rs`). Absent from a plugin that predates it. */
+  referee_verdicts?: RefereeVerdictCounts
   asked: PaneBAskedCell
   exchange_count: number
   first_seen: string | null
@@ -185,6 +188,15 @@ export type PaneBRow = {
   }
   [key: string]: unknown
 }
+
+/** One bucket of `referee_verdicts`: how many, and which verdict records. */
+export type RefereeVerdictBucket = { count: number; verdict_capsule_ids: string[] }
+
+export type RefereeVerdictBucketKey = 'corroborated' | 'contradicted' | 'inconclusive' | 'not_comparable'
+
+/** Only verdicts whose referee signature this node's door verified; all four
+ *  buckets present, zero included. */
+export type RefereeVerdictCounts = Record<RefereeVerdictBucketKey, RefereeVerdictBucket>
 
 export type PaneBJson = {
   peer_count: number

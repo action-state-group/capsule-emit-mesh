@@ -12,6 +12,7 @@ mod mesh_evidence_bridge;
 mod owner_maintenance;
 mod record_push_bridge;
 mod routing_choice_bridge;
+mod routing_rule;
 mod self_peer;
 /// Not wired into `on_mesh_event` yet -- see the module doc for why
 /// (`mesh-llm-plugin = "0.75"` predates the `checkpoint` field this needs to
@@ -23,6 +24,7 @@ mod peer_root_ledger;
 mod settlement_channel;
 mod share_policy;
 mod split_stage;
+mod verdict_counts;
 mod web_ui_manifest;
 
 use axum::{
@@ -827,6 +829,9 @@ async fn main() -> anyhow::Result<()> {
         chain_head = ?capsules.chain_head(),
         "capsule-producer ready"
     );
+    // The opt-in stop-routing rule (off unless its N is set) also runs once
+    // at start, for verdicts recorded while it was off.
+    routing_rule::spawn_evaluate(capsules.clone());
     let lifecycle_events = Arc::new(ObservedLifecycleEvents::open(&data_dir)?);
     let self_peer = self_peer::SelfPeer::new(&data_dir);
     let self_peer_for_events = self_peer.clone();

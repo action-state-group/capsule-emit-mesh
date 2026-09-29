@@ -102,14 +102,15 @@ pub async fn seal_issued(capsules: &Arc<CapsuleState>, reply: &Value) -> anyhow:
     let verdict = verdict_from(reply).ok_or_else(|| anyhow::anyhow!("issued reply lacks the verdict facts"))?;
     let referee_capsule_id = text(reply, "referee_capsule_id");
     let issued_at = text(reply, "issued_at").unwrap_or_else(capsule_producer::timestamp::utc_now_minute);
-    let capsules = capsules.clone();
+    let sealer = capsules.clone();
     let emitted = tokio::task::spawn_blocking(move || {
-        capsules.emit_adjudication_issued(&verdict.facts(), referee_capsule_id.as_deref(), &issued_at)
+        sealer.emit_adjudication_issued(&verdict.facts(), referee_capsule_id.as_deref(), &issued_at)
     })
     .await
     .map_err(|e| anyhow::anyhow!("adjudication seal task did not complete: {e}"))??;
     if let Some(emitted) = emitted {
         tracing::info!(capsule_id = %emitted.capsule_id, "SEALED adjudication_issued record");
+        crate::routing_rule::spawn_evaluate(capsules.clone());
     }
     Ok(())
 }
@@ -124,14 +125,15 @@ pub async fn seal_received(capsules: &Arc<CapsuleState>, door_reply: &Value) -> 
     let held_half = text(facts, "held_half_capsule_id").ok_or_else(|| anyhow::anyhow!("door reply names no held half"))?;
     let received_from = text(facts, "received_from").ok_or_else(|| anyhow::anyhow!("door reply names no courier"))?;
     let received_at = text(facts, "received_at").unwrap_or_else(capsule_producer::timestamp::utc_now_minute);
-    let capsules = capsules.clone();
+    let sealer = capsules.clone();
     let emitted = tokio::task::spawn_blocking(move || {
-        capsules.emit_adjudication_received(&verdict.facts(), &held_half, &received_from, &received_at)
+        sealer.emit_adjudication_received(&verdict.facts(), &held_half, &received_from, &received_at)
     })
     .await
     .map_err(|e| anyhow::anyhow!("adjudication seal task did not complete: {e}"))??;
     if let Some(emitted) = emitted {
         tracing::info!(capsule_id = %emitted.capsule_id, "SEALED adjudication_received record");
+        crate::routing_rule::spawn_evaluate(capsules.clone());
     }
     Ok(())
 }

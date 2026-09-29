@@ -34,6 +34,7 @@ import {
 } from '@/features/capsules/lib/peer-row-view'
 import { dealingsLines } from '@/features/capsules/lib/peer-routing-view'
 import { PeerExchangeInspector } from '@/features/capsules/components/PeerExchangeInspector'
+import { RefereeVerdictCounts } from '@/features/capsules/components/RefereeVerdictCounts'
 import {
   PEER_INSPECTOR_HEADER,
   ROUTING_NOT_ON_THIS_PAGE,
@@ -80,6 +81,7 @@ function PeerOverviewTab({ row, meshStatus }: { row: PaneBRow; meshStatus: PeerM
         ))}
         <p>{withYouCountsText(counts)}</p>
       </section>
+      <RefereeVerdictCounts row={row} />
       <p className="text-fg-faint">{chain.text}</p>
       <section
         aria-label={ROUTING_NOT_ON_THIS_PAGE.sectionTitle}

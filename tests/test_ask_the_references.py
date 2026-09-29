@@ -54,6 +54,8 @@ import ask_history as ah
 import capsule_sidecar as cs
 import evidence_server as es
 from adjudication_delivery import seal_adjudication_ack_refused
+from capsule_emit.signing import LocalKeypairSigner, sign_producer_envelope
+from peer_keys import ENV_PEER_KEYS
 from twin_adjudicator import (
     AdjudicationHalf,
     RefereeIdentity,
@@ -64,6 +66,22 @@ from twin_adjudicator import (
 )
 
 REQUEST_DIGEST = "a" * 64
+REFEREE = "m4-referee-node"
+
+
+def _sign_as_referee(capsule: dict, signer: LocalKeypairSigner) -> dict:
+    """What `referee_service` does to a verdict before it leaves: the
+    referee's node key signs it."""
+    capsule["signature"], capsule["key_id"] = sign_producer_envelope(signer, capsule["capsule_id"])
+    return capsule
+
+
+@pytest.fixture
+def referee_key(tmp_path_factory, monkeypatch) -> LocalKeypairSigner:
+    """The referee's node key, announced as `REFEREE`'s."""
+    signer = LocalKeypairSigner(tmp_path_factory.mktemp("referee-keys") / "r.pem")
+    monkeypatch.setenv(ENV_PEER_KEYS, json.dumps({REFEREE: signer.key_id}))
+    return signer
 
 
 @pytest.fixture(autouse=True)
@@ -205,7 +223,7 @@ def _seed(state, capsule: dict) -> None:
     state.log_source.append(capsule)
 
 
-def _build_gcp_caught_by_m4(tmp_path, *, prune_seq_1: bool = False):
+def _build_gcp_caught_by_m4(tmp_path, referee_key: LocalKeypairSigner, *, prune_seq_1: bool = False):
     """Build GCP's ledger (an ordinary served exchange with M4, seq=1 then
     seq=2 -- or just seq=2 when *prune_seq_1*, simulating GCP dropping the
     earlier record) and M4's ledger (the adjudication `contradicted:gcp`
@@ -244,10 +262,18 @@ def _build_gcp_caught_by_m4(tmp_path, *, prune_seq_1: bool = False):
         referee=lambda a, b, c: RefereeResult(
             verdict=contradicted("gcp"),
             margin=c.margin,
-            identity=RefereeIdentity(referee_id="m4-referee-node"),
+            identity=RefereeIdentity(referee_id=REFEREE),
         ),
     )
-    adjudication = seal_adjudication_capsule(outcome, operator="test-org", developer="referee@v1")
+    adjudication = _sign_as_referee(
+        seal_adjudication_capsule(
+            outcome,
+            operator="test-org",
+            developer="referee@v1",
+            extra={"referee_node_id": REFEREE, "half_a_node_id": "m4", "half_b_node_id": "gcp"},
+        ),
+        referee_key,
+    )
 
     gcp_door_state = es.EvidenceServerState(
         ledger_dir=gcp_state.ledger_dir, ledger_path=gcp_state.ledger_path, signing_key_path=gcp_state.signing_key_path
@@ -319,27 +345,114 @@ def test_discover_counterparties_reads_nested_and_top_level_fields():
     assert found == ["aws", "m4"]
 
 
-def test_classify_receipt_only_attributes_owner_naming_verdicts_to_x():
-    tally = {"corroborated": 0, "contradicted": 0, "inconclusive": 0, "ack_refusals": 0}
-    ah._classify_receipt_for_x(
-        {"model_attestation": {"compute_attestation": {"adjudication": {"verdict": "contradicted:gcp"}}}},
+def _verdict(verdict: str, *, halves: tuple[str, str] = ("gcp", "aws"), referee: str = REFEREE) -> dict:
+    """An unsigned verdict capsule, shaped as `referee_service` seals one."""
+    cap_a, disc_a = _make_served_half("hello world", owner_id=halves[0])
+    cap_b, disc_b = _make_served_half("goodbye world", owner_id=halves[1])
+    outcome = adjudicate(
+        AdjudicationHalf.from_capsule_and_disclosure(cap_a, disc_a),
+        AdjudicationHalf.from_capsule_and_disclosure(cap_b, disc_b),
+        referee=lambda a, b, c: RefereeResult(verdict=verdict, margin=c.margin, identity=RefereeIdentity(referee_id=referee)),
+    )
+    capsule = seal_adjudication_capsule(
+        outcome,
+        extra={"referee_node_id": referee, "half_a_node_id": halves[0], "half_b_node_id": halves[1]},
+    )
+    assert capsule is not None
+    return capsule
+
+
+def _tally() -> dict[str, int]:
+    return {"corroborated": 0, "contradicted": 0, "inconclusive": 0, "not_comparable": 0, "ack_refusals": 0}
+
+
+def test_only_verdicts_the_referee_signed_count(referee_key, tmp_path):
+    signed = _sign_as_referee(_verdict(contradicted("gcp")), referee_key)
+    unsigned = _verdict(contradicted("gcp"))
+    stranger = _sign_as_referee(_verdict(contradicted("gcp")), LocalKeypairSigner(tmp_path / "stranger.pem"))
+    for receipts, expected in (
+        ([signed], 1),
+        ([unsigned], 0),
+        ([stranger], 0),
+    ):
+        tally = _tally()
+        ah._classify_receipts_for_x(receipts, "gcp", tally)
+        assert tally["contradicted"] == expected, receipts
+
+
+def test_a_bare_adjudication_block_is_not_a_verdict(referee_key):
+    tally = _tally()
+    ah._classify_receipts_for_x(
+        [{"model_attestation": {"compute_attestation": {"adjudication": {"verdict": "contradicted:gcp", "referee_id": REFEREE}}}}],
         "gcp",
         tally,
     )
-    ah._classify_receipt_for_x(
-        {"model_attestation": {"compute_attestation": {"adjudication": {"verdict": "contradicted:aws"}}}},
-        "gcp",
-        tally,
+    assert tally == _tally()
+
+
+def test_a_verified_verdict_lands_in_the_judged_twins_bucket(referee_key):
+    tally = _tally()
+    receipts = [
+        _sign_as_referee(_verdict(contradicted("gcp")), referee_key),
+        # The referee sided with gcp against aws.
+        _sign_as_referee(_verdict(contradicted("aws")), referee_key),
+        # Not about gcp at all.
+        _sign_as_referee(_verdict(contradicted("aws"), halves=("aws", "m4")), referee_key),
+    ]
+    ah._classify_receipts_for_x(receipts, "gcp", tally)
+    assert tally == {**_tally(), "contradicted": 1, "corroborated": 1}
+
+
+def test_one_verdict_held_by_two_references_counts_once(referee_key):
+    verdict = _sign_as_referee(_verdict(contradicted("gcp")), referee_key)
+    tally = _tally()
+    ah._classify_receipts_for_x([verdict, dict(verdict)], "gcp", tally)
+    assert tally["contradicted"] == 1
+
+
+def test_one_referee_counts_once_per_pair_of_halves(referee_key):
+    """A referee that signs several verdicts about one pair (each its own
+    capsule id) counts once: the first stands."""
+    first = _verdict(contradicted("gcp"))
+    second = seal_adjudication_capsule(
+        adjudicate(
+            AdjudicationHalf.from_capsule_and_disclosure(*_make_served_half("x", owner_id="gcp")),
+            AdjudicationHalf.from_capsule_and_disclosure(*_make_served_half("y", owner_id="aws")),
+            referee=lambda a, b, c: RefereeResult(verdict=contradicted("gcp"), margin=c.margin, identity=RefereeIdentity(referee_id=REFEREE)),
+        ),
+        extra={"referee_node_id": REFEREE, "half_a_node_id": "gcp", "half_b_node_id": "aws"},
     )
-    # [mesh-referee-attribution] ack_refusals are only counted when the
-    # adjudication_ack_refused block carries a non-empty referee_id --
-    # i.e. the verdict originated from an identified referee.
-    ah._classify_receipt_for_x(
-        {"model_attestation": {"compute_attestation": {"adjudication_ack_refused": {"verdict": "contradicted:gcp", "referee_id": "node-xyz"}}}},
-        "gcp",
-        tally,
-    )
-    assert tally == {"corroborated": 0, "contradicted": 1, "inconclusive": 0, "ack_refusals": 1}
+    block = second["model_attestation"]["compute_attestation"]["adjudication"]
+    for key in ("half_a_capsule_id", "half_b_capsule_id"):
+        block[key] = first["model_attestation"]["compute_attestation"]["adjudication"][key]
+    from agent_action_capsule.canonical import compute_capsule_id
+
+    second["capsule_id"] = compute_capsule_id({k: v for k, v in second.items() if k not in ("capsule_id", "signature", "key_id")})
+    receipts = [_sign_as_referee(first, referee_key), _sign_as_referee(second, referee_key)]
+    assert receipts[0]["capsule_id"] != receipts[1]["capsule_id"]
+    tally = _tally()
+    ah._classify_receipts_for_x(receipts, "gcp", tally)
+    assert tally["contradicted"] == 1
+
+
+def test_an_ack_refusal_counts_only_for_a_verified_verdict(referee_key):
+    signed = _sign_as_referee(_verdict(contradicted("gcp")), referee_key)
+    unsigned = _verdict(contradicted("gcp"))
+    refusal = {"reason": "policy_decline"}
+    held_refusal = seal_adjudication_ack_refused(signed, refusal)
+    forged_refusal = seal_adjudication_ack_refused(unsigned, refusal)
+
+    tally = _tally()
+    ah._classify_receipts_for_x([signed, held_refusal], "gcp", tally)
+    assert tally["ack_refusals"] == 1
+
+    tally = _tally()
+    ah._classify_receipts_for_x([unsigned, forged_refusal], "gcp", tally)
+    assert tally["ack_refusals"] == 0
+
+    tally = _tally()
+    ah._classify_receipts_for_x([held_refusal], "gcp", tally)
+    assert tally["ack_refusals"] == 0, "a refusal whose verdict was not verified here counts nowhere"
 
 
 # ---------------------------------------------------------------------------
@@ -348,8 +461,8 @@ def test_classify_receipt_only_attributes_owner_naming_verdicts_to_x():
 
 
 class TestReferencesEndToEnd:
-    def test_stranger_gets_m4s_verdict_and_held_refusal_about_gcp(self, tmp_path, stub_witness):
-        gcp_state, m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path)
+    def test_stranger_gets_m4s_verdict_and_held_refusal_about_gcp(self, tmp_path, stub_witness, referee_key):
+        gcp_state, m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path, referee_key)
 
         gcp_server, gcp_thread, gcp_url = _run_server(gcp_state)
         m4_server, m4_thread, m4_url = _run_server(m4_state)
@@ -371,7 +484,7 @@ class TestReferencesEndToEnd:
         assert result.references_asked == 1
         assert result.references_answered == 1
         assert result.unreachable_references == []
-        assert result.adjudications_about_x == {"corroborated": 0, "contradicted": 1, "inconclusive": 0}
+        assert result.adjudications_about_x == {"corroborated": 0, "contradicted": 1, "inconclusive": 0, "not_comparable": 0}
         assert result.ack_refusals_about_x == 1
 
         pair = result.continuity["gcp::m4"]
@@ -388,22 +501,22 @@ class TestReferencesEndToEnd:
         assert "REFERENCES x=gcp" in rendered
         assert "ack_refusals_about_x=1" in rendered
 
-    def test_gcp_never_holds_the_verdict_itself(self, tmp_path, stub_witness):
+    def test_gcp_never_holds_the_verdict_itself(self, tmp_path, stub_witness, referee_key):
         """The point of the whole mechanism: GCP's OWN chain never carries
         the contradicted verdict or the ack-refused record -- only M4's
         does. If this ever stopped being true the `references` ask would
         be finding nothing new."""
         from ledger_store_backend import read_all_capsules
 
-        gcp_state, _m4_state, _cids = _build_gcp_caught_by_m4(tmp_path)
+        gcp_state, _m4_state, _cids = _build_gcp_caught_by_m4(tmp_path, referee_key)
         gcp_entries, _archived = read_all_capsules(gcp_state.ledger_dir)
         for entry in gcp_entries:
             block = (entry.get("model_attestation") or {}).get("compute_attestation") or {}
             assert "adjudication" not in block
             assert "adjudication_ack_refused" not in block
 
-    def test_unreachable_reference_is_counted_not_raised(self, tmp_path, stub_witness):
-        gcp_state, _m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path)
+    def test_unreachable_reference_is_counted_not_raised(self, tmp_path, stub_witness, referee_key):
+        gcp_state, _m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path, referee_key)
         gcp_server, gcp_thread, gcp_url = _run_server(gcp_state)
         try:
             result = ah.run_references(
@@ -420,7 +533,7 @@ class TestReferencesEndToEnd:
         assert result.references_asked == 1
         assert result.references_answered == 0
         assert result.unreachable_references == ["m4"]
-        assert result.adjudications_about_x == {"corroborated": 0, "contradicted": 0, "inconclusive": 0}
+        assert result.adjudications_about_x == {"corroborated": 0, "contradicted": 0, "inconclusive": 0, "not_comparable": 0}
 
     def test_x_refuses_its_own_pull_raises(self, tmp_path, stub_witness):
         gcp_state = _node_state(tmp_path, "gcp")
@@ -452,15 +565,15 @@ class TestReferencesEndToEnd:
 
 
 class TestPruneMutant:
-    def test_pruned_prefix_is_a_visible_gap_even_though_continuity_stays_unbroken(self, tmp_path, stub_witness):
+    def test_pruned_prefix_is_a_visible_gap_even_though_continuity_stays_unbroken(self, tmp_path, stub_witness, referee_key):
         """The acceptance mutant: GCP drops the seq=1 exchange record with
         M4 from its own ledger before checkpointing. `continuity` alone
         reads "unbroken" either way (a dropped PREFIX is self-consistent,
         never a regression) -- `gaps_detected` is the field that actually
         surfaces the prune. A check that only looked at `continuity` would
         never catch this; this test fails if that ever regresses."""
-        baseline_gcp, _m4, baseline_cids = _build_gcp_caught_by_m4(tmp_path / "baseline", prune_seq_1=False)
-        pruned_gcp, _m4b, pruned_cids = _build_gcp_caught_by_m4(tmp_path / "pruned", prune_seq_1=True)
+        baseline_gcp, _m4, baseline_cids = _build_gcp_caught_by_m4(tmp_path / "baseline", referee_key, prune_seq_1=False)
+        pruned_gcp, _m4b, pruned_cids = _build_gcp_caught_by_m4(tmp_path / "pruned", referee_key, prune_seq_1=True)
 
         baseline_server, baseline_thread, baseline_url = _run_server(baseline_gcp)
         pruned_server, pruned_thread, pruned_url = _run_server(pruned_gcp)
