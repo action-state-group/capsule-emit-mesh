@@ -29,6 +29,7 @@ use serde_json::{json, Value};
 use crate::evidence_panes::{
     attach_asked_of_you, build_pane_json, read_capsule_records, read_received_log,
 };
+use crate::peer_keys::{announced_key_in, ENV_PEER_KEYS};
 
 /// The directory this node's log of requests made of it
 /// (`received_log.jsonl`, written by `received_log`) lives in: the drill's
@@ -55,25 +56,10 @@ pub struct PeerKeyArgs {
     pub peer: Value,
 }
 
-/// Peer id -> the key that peer signs with, as a JSON object, set by the
-/// operator. The record-push receiver checks pushed records against the same
-/// map.
-pub const ENV_PEER_KEYS: &str = "ADMISSION_POLICY_PEER_KEYS";
-
-/// The key `peer` is announced with in `registry` (the JSON object in
-/// [`ENV_PEER_KEYS`]), exactly as the operator wrote it. `None` when the map
-/// is unset, empty, not JSON, not a JSON object, or has no non-empty string
-/// for `peer`: never a guess. The same rule as the record-push receiver's;
-/// replace with the plugin's shared
-/// `peer_keys::announced_key_in` once that lands, so the rule has one copy.
-pub fn announced_key_for(registry: Option<&str>, peer: &str) -> Option<String> {
-    let registry: Value = serde_json::from_str(registry.filter(|r| !r.is_empty())?).ok()?;
-    let key = registry.as_object()?.get(peer)?.as_str()?;
-    (!key.is_empty()).then(|| key.to_string())
-}
-
 /// `peer-key`: what "Ask them for their record" judges a reply under. The
-/// page never takes the key a reply names for itself.
+/// page never takes the key a reply names for itself. The key is read by the
+/// same rule the record-push receiver uses (`peer_keys::announced_key_in`),
+/// from the same operator map (`peer_keys::ENV_PEER_KEYS`).
 pub fn peer_key_json(registry: Option<&str>, peer: &Value) -> Result<Value, PluginError> {
     let Some(peer) = peer
         .as_str()
@@ -84,7 +70,7 @@ pub fn peer_key_json(registry: Option<&str>, peer: &Value) -> Result<Value, Plug
             "peer must be a 64-hex endpoint id",
         ));
     };
-    Ok(json!({ "announced_key_id": announced_key_for(registry, peer) }))
+    Ok(json!({ "announced_key_id": announced_key_in(registry, peer) }))
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -526,11 +512,11 @@ mod tests {
             );
         }
         assert_eq!(
-            announced_key_for(Some(&format!("{{\"{peer}\": \"\"}}")), &peer),
+            announced_key_in(Some(&format!("{{\"{peer}\": \"\"}}")), &peer),
             None
         );
         assert_eq!(
-            announced_key_for(Some(&format!("{{\"{peer}\": 7}}")), &peer),
+            announced_key_in(Some(&format!("{{\"{peer}\": 7}}")), &peer),
             None
         );
         for bad in [json!("ab"), json!(7), json!(null)] {

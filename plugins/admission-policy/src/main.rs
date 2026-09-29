@@ -1466,7 +1466,6 @@ mod exchange_text_wiring_tests {
         assert!(!log.contains("SECRET"), "{log}");
     }
 
-    /// Plugin on: one file on disk, and still no copy in memory once written.
     /// The background tasks `main` starts include the kept-text age-out: a
     /// stale text goes without any write. MUTANT: drop `spawn_retention` from
     /// `start_background_tasks` and the stale text stays.
@@ -1493,6 +1492,7 @@ mod exchange_text_wiring_tests {
         panic!("the stale kept text was not aged out by the background tasks");
     }
 
+    /// Plugin on: one file on disk, and still no copy in memory once written.
     #[tokio::test]
     async fn plugin_on_writes_the_file_then_holds_no_copy() {
         let dir = tempfile::tempdir().unwrap();
