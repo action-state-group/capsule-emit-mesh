@@ -115,29 +115,67 @@ fn prefix(text: &str, max: usize) -> &str {
 }
 
 /// Remove kept texts (and leftover temp files) last written more than
-/// `max_age` before `now`. Returns how many were removed.
+/// `max_age` before `now`. Returns how many were removed. Only a directory
+/// that can't be listed fails the pass; a file that can't be read or removed
+/// is logged and counted, and the pass goes on to the next one, so one stuck
+/// file never keeps every later text from ageing out.
 fn prune(dir: &Path, max_age: Duration, now: SystemTime) -> std::io::Result<usize> {
-    let mut removed = 0;
+    let pruned = prune_with(dir, max_age, now, &|path| std::fs::remove_file(path))?;
+    if pruned.failed > 0 {
+        tracing::warn!(
+            failed = pruned.failed,
+            removed = pruned.removed,
+            "some kept exchange text could not be aged out"
+        );
+    }
+    Ok(pruned.removed)
+}
+
+/// What one prune pass did.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Pruned {
+    removed: usize,
+    /// Files that could not be read or removed, skipped.
+    failed: usize,
+}
+
+/// [`prune`], with the file removal given (so a test can make one fail).
+fn prune_with(
+    dir: &Path,
+    max_age: Duration,
+    now: SystemTime,
+    remove: &dyn Fn(&Path) -> std::io::Result<()>,
+) -> std::io::Result<Pruned> {
+    let mut pruned = Pruned::default();
     for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if !(name.ends_with(".json") || name.ends_with(".json.tmp")) {
-            continue;
-        }
-        let metadata = entry.metadata()?;
-        if !metadata.is_file() {
-            continue;
-        }
-        let age = now
-            .duration_since(metadata.modified()?)
-            .unwrap_or(Duration::ZERO);
-        if age > max_age {
-            std::fs::remove_file(entry.path())?;
-            removed += 1;
+        let stale = entry.and_then(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !(name.ends_with(".json") || name.ends_with(".json.tmp")) {
+                return Ok(None);
+            }
+            let metadata = entry.metadata()?;
+            if !metadata.is_file() {
+                return Ok(None);
+            }
+            let age = now
+                .duration_since(metadata.modified()?)
+                .unwrap_or(Duration::ZERO);
+            Ok((age > max_age).then(|| entry.path()))
+        });
+        match stale.and_then(|path| match path {
+            Some(path) => remove(&path).map(|()| true),
+            None => Ok(false),
+        }) {
+            Ok(true) => pruned.removed += 1,
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(%error, "could not age out one kept exchange text; going on");
+                pruned.failed += 1;
+            }
         }
     }
-    Ok(removed)
+    Ok(pruned)
 }
 
 /// Prune `dir` unless it was pruned within the last `PRUNE_EVERY`. A failed
@@ -442,6 +480,56 @@ mod tests {
         assert!(!dir.path().join(".old.json.tmp").exists());
         assert!(dir.path().join("fresh.json").exists());
         assert!(dir.path().join("not-ours.txt").exists());
+    }
+
+    /// One file that can't be removed is counted and skipped; every other
+    /// stale file still goes. The removal fails on whichever file comes
+    /// first, so the pass must go on past an error to pass. MUTANT: stop the
+    /// pass on the first error and the other stale files stay.
+    #[test]
+    fn one_unremovable_file_never_blocks_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let day = Duration::from_secs(24 * 60 * 60);
+        let stale: Vec<PathBuf> = (0..5)
+            .map(|n| {
+                dir.path()
+                    .join(format!("0f8fad5b-d9cb-469f-a165-00000000000{n}.json"))
+            })
+            .collect();
+        for path in &stale {
+            file_aged(path, 31 * day);
+        }
+        let fresh = dir.path().join("0f8fad5b-d9cb-469f-a165-000000000009.json");
+        file_aged(&fresh, day);
+        let stuck: std::cell::RefCell<Option<PathBuf>> = std::cell::RefCell::new(None);
+        let remove = |path: &Path| {
+            let mut stuck = stuck.borrow_mut();
+            if stuck.is_none() {
+                *stuck = Some(path.to_path_buf());
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "stuck",
+                ));
+            }
+            std::fs::remove_file(path)
+        };
+
+        let pruned = prune_with(dir.path(), retention(None), SystemTime::now(), &remove).unwrap();
+
+        assert_eq!(
+            pruned,
+            Pruned {
+                removed: 4,
+                failed: 1
+            }
+        );
+        let stuck = stuck
+            .into_inner()
+            .expect("one removal was attempted and failed");
+        for path in &stale {
+            assert_eq!(path.exists(), *path == stuck, "{}", path.display());
+        }
+        assert!(fresh.exists());
     }
 
     #[test]

@@ -496,6 +496,18 @@ fn seal_released_splits(capsules: &CapsuleState, splits: &Splits, lifecycle_even
     }
 }
 
+/// The plugin's background tasks, started once from `main`: the split tick,
+/// and the age-out of kept exchange text, which runs at start and hourly
+/// whether or not keeping is still on (`exchange_text`).
+fn start_background_tasks(
+    capsules: &Arc<CapsuleState>,
+    splits: &Splits,
+    lifecycle_events: &Arc<ObservedLifecycleEvents>,
+) {
+    spawn_split_tick(capsules.clone(), splits.clone(), lifecycle_events.clone());
+    exchange_text::spawn_retention(capsules.ledger_dir().to_path_buf());
+}
+
 fn spawn_split_tick(capsules: Arc<CapsuleState>, splits: Splits, lifecycle_events: Arc<ObservedLifecycleEvents>) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(200));
@@ -976,10 +988,7 @@ async fn main() -> anyhow::Result<()> {
 
     let lifecycle_events_for_handler = lifecycle_events.clone();
     let splits = Splits::new();
-    spawn_split_tick(capsules_for_handler.clone(), splits.clone(), lifecycle_events.clone());
-    // Kept exchange text ages out at start and hourly, whether or not keeping
-    // is still on (`exchange_text`).
-    exchange_text::spawn_retention(capsules_for_handler.ledger_dir().to_path_buf());
+    start_background_tasks(&capsules_for_handler, &splits, &lifecycle_events);
     let splits_for_handler = splits.clone();
     let splits_for_stream = splits.clone();
 
@@ -1458,6 +1467,32 @@ mod exchange_text_wiring_tests {
     }
 
     /// Plugin on: one file on disk, and still no copy in memory once written.
+    /// The background tasks `main` starts include the kept-text age-out: a
+    /// stale text goes without any write. MUTANT: drop `spawn_retention` from
+    /// `start_background_tasks` and the stale text stays.
+    #[tokio::test]
+    async fn the_background_tasks_age_out_kept_text_without_a_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let capsules = Arc::new(CapsuleState::open(dir.path(), "retention-test").unwrap());
+        let by_exchange = capsules.ledger_dir().join("disclosures/by-exchange");
+        std::fs::create_dir_all(&by_exchange).unwrap();
+        let stale = by_exchange.join("0f8fad5b-d9cb-469f-a165-000000000000.json");
+        std::fs::write(&stale, b"{}").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(400 * 24 * 60 * 60);
+        std::fs::File::options().write(true).open(&stale).unwrap().set_modified(old).unwrap();
+        let store = Arc::new(ObservedLifecycleEvents::open(dir.path()).unwrap());
+
+        start_background_tasks(&capsules, &Splits::new(), &store);
+
+        for _ in 0..100 {
+            if !stale.exists() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("the stale kept text was not aged out by the background tasks");
+    }
+
     #[tokio::test]
     async fn plugin_on_writes_the_file_then_holds_no_copy() {
         let dir = tempfile::tempdir().unwrap();
