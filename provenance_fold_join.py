@@ -59,8 +59,8 @@ identical requests through the real host both digested to the value above).
 `find_host_provenance_capsule()` resolves ambiguity by returning the MOST
 RECENTLY sealed match; a caller joining a high-traffic node with frequently
 repeated prompts should additionally narrow by timestamp proximity. This is
-a real, disclosed correlator weakness -- raised under `## Needs decision`
-in the outbox for this task, not silently accepted as sufficient forever.
+a real, disclosed correlator weakness -- raised as an open decision, not
+silently accepted as sufficient forever.
 
 This module never touches the sidecar's own `serving_provenance` block --
 hardware there stays exactly what `capsule_sidecar.py` already honestly

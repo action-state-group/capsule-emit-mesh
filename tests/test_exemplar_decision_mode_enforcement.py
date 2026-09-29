@@ -10,7 +10,7 @@ REQUEST_RECEIVED or BACKEND_SELECTED and the host would honor it, escalating
 the plugin to full admission control despite its declared mode
 (SPEC_FEEDBACK["decision_mode_enforcement"] named this gap without fixing it).
 
-Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its mutant.
+Negative-check mandate: every check must fail its mutant.
 """
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for the E17a offline referee adjudicator (`twin_adjudicator.py`).
 
-Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its
+Negative-check mandate: every check must fail its
 mutant. Each acceptance mutant from the inbox item gets its own test:
 
   - bytes != digest -> abort            (PreimageDigestMismatchError)

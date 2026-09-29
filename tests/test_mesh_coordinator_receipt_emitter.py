@@ -4,19 +4,18 @@
 
 PURPOSE
     [mesh-b3-coordinator-receipt-producer] (Phase B6-code). Prove
-    mesh_coordinator_receipt_emitter.py builds the record shape defined in
-    `_work/mesh-coordinator-receipt-artifact-type-2026-08-28.md` §3.1/§3.2/§6
-    and — the load-bearing part — that the two producer invariants from §6
+    mesh_coordinator_receipt_emitter.py builds the coordinator-receipt record
+    shape and — the load-bearing part — that the two producer invariants
     cannot be silently violated: a `present` stage without a `bundle_ref`,
     and an `absent`/`not_requested` stage carrying one, both raise instead
     of emitting a record a naive verifier would wrongly accept.
 
 WHAT IS TESTED
     1. HAPPY PATH — topology + stages round-trips through
-       capsule_to_bytes()/json.loads() with the exact shape §3.1 defines:
+       capsule_to_bytes()/json.loads() with the exact documented shape:
        two separate arrays, ordered topology, one stages[] entry per hop.
     2. THREE-STATE FIELD — present/absent/not_requested each build; absent
-       and not_requested carry NO bundle_ref key at all (§3.2: "there is
+       and not_requested carry NO bundle_ref key at all ("there is
        nothing carried and nothing to cite"), not a null placeholder.
     3. MUTANT: present without bundle_ref — StageEntry construction raises.
     4. MUTANT: absent/not_requested WITH a bundle_ref attached — StageEntry
@@ -94,7 +93,7 @@ class TestHappyPath:
         assert present_entry["bundle"] == "present"
         assert present_entry["bundle_ref"] == _bundle_ref(_digest("a"))
         assert absent_entry["bundle"] == "absent"
-        # §3.2: "absent/not_requested carry no bundle_ref at all" — key
+        # "absent/not_requested carry no bundle_ref at all" — key
         # absent entirely, not present-with-null.
         assert "bundle_ref" not in absent_entry
 
@@ -115,7 +114,7 @@ class TestHappyPath:
 
 
 # ===========================================================================
-# 3-4. MUTANT: the §6 producer invariant on bundle_ref presence
+# 3-4. MUTANT: the producer invariant on bundle_ref presence
 # ===========================================================================
 
 class TestBundleRefPresenceInvariant:

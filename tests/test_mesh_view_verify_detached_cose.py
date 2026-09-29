@@ -8,7 +8,7 @@ ever writes. Before the fix, every genuinely-signed mesh capsule reported
 verify=✗ in the machine view (misleading -- honest fail-closed for the
 wrong reason: the viewer never looked at the evidence that exists).
 
-Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its
+Negative-check mandate: every check must fail its
 mutant -- this file tampers a real .cose statement and confirms verify
 flips to False, and confirms a missing statement also reports False (never
 silently True).
@@ -116,7 +116,7 @@ class TestVerifyResultsForDetachedStatement:
         assert any(f.code == "producer_signature_invalid" for f in results[0].findings)
 
     def test_tampered_detached_statement_byte_flips_verify_to_false(self, tmp_path: Path) -> None:
-        # QUEUE_PROTOCOL §7 mutant: a check that can only ever pass isn't a
+        # Mutant: a check that can only ever pass isn't a
         # check. Flip one byte inside the real .cose statement and confirm
         # the machine view goes red for it.
         state, capsule = _build_recorded_capsule(tmp_path)

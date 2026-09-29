@@ -176,7 +176,7 @@ THEIRS_HISTORY_PENDING_REASON = (
     "this node cannot fetch the peer's OWN history card yet: the evidence-request carrier only "
     "answers record/range subjects, not checkpoints/full_history -- showing this node's own chain "
     "here would misrepresent it as the peer's, so this cell is pending a peer-fetch carrier "
-    "(no task id filed yet for this gap -- flagged in the outbox)"
+    "(an open, disclosed gap -- not yet built)"
 )
 
 #: [mesh-served-summary-derivation] ``served_summary.py`` now exists, but

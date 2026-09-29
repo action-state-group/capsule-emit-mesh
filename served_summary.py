@@ -798,8 +798,7 @@ def verify_served_summary(summary_value: dict[str, Any], sampled_capsules: list[
 
 # ---------------------------------------------------------------------------
 # CLI -- `served_summary.py build` mirrors self_accountability.py's shape;
-# `served_summary.py verify --sample k` is the sampled-check entry point the
-# design doc names.
+# `served_summary.py verify --sample k` is the sampled-check entry point.
 # ---------------------------------------------------------------------------
 
 

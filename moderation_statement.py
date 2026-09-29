@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """[buzz-moderation-profile-spike] The Art. 17 statement of reasons.
 
-Design doc §4/§6: "the Art. 17 statement of reasons is generated from the
-records alone." DSA Art. 17 requires, for every content restriction: the
+The rule: the Art. 17 statement of reasons is generated from the
+records alone. DSA Art. 17 requires, for every content restriction: the
 facts and circumstances, whether automated means were used, the legal or
 contractual ground, and the redress options available.
 

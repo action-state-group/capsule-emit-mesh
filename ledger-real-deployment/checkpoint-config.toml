@@ -2,4 +2,4 @@
 log_id = "mesh-real-deployment-demo-1"
 cadence_entries = 2
 max_lag_entries = 10
-# ts_urls left empty deliberately -- see this script's header + outbox report
+# ts_urls left empty deliberately -- see this script's header

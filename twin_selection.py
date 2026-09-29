@@ -165,8 +165,7 @@ class SelectionPolicy:
     """Tunable, documented weights for `select_twin`/`select_referee`.
 
     Defaults: the four independence components start EQUALLY weighted (the
-    design note's own instruction -- "weights are the tunable policy, start
-    equal"). A deployment that has reason to trust one signal more (e.g. it
+    rule: weights are the tunable policy, and they start equal). A deployment that has reason to trust one signal more (e.g. it
     has enough owner-cert adoption that `owner_verified` is common) can
     raise that weight without touching this module's logic.
 
@@ -212,8 +211,8 @@ HistoryCheck = Callable[[PeerInfo], HistorySanityResult]
 @dataclass(frozen=True)
 class IndependenceBreakdown:
     """The four 0-1 components for one candidate plus their weighted
-    combination -- the "why" a verifier inspects (design note item 3:
-    "selection is itself evidence")."""
+    combination -- the "why" a verifier inspects (selection is itself
+    evidence)."""
 
     peer_id: str
     network_distance: float
@@ -545,8 +544,8 @@ def select_referee(
 
 def selection_rationale_block(result: SelectionResult) -> dict[str, Any]:
     """The selection's rationale as a JSON-safe block, ready to be recorded
-    alongside the resulting twin capsule (design note item 3: "selection is
-    itself evidence a verifier can inspect").
+    alongside the resulting twin capsule (selection is itself evidence a
+    verifier can inspect).
 
     This never mutates or re-seals the twin's own already-sealed capsule --
     same discipline as `mesh-b2-cite-and-ack-wire`'s provider-ack item: a

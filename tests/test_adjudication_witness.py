@@ -13,7 +13,7 @@ contract.
 `recompute_adjudication_from_witness` is pure/offline and is tested against
 real sealed capsules built the same way `test_twin_adjudicator.py` does.
 
-Negative-check mandate (QUEUE_PROTOCOL §7): the acceptance mutant --
+Negative-check mandate: the acceptance mutant --
 "a forged verdict citing a half X never signed -> recompute fails at the
 citation, labeled citation_unverified" -- gets its own test.
 """

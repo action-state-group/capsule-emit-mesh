@@ -248,8 +248,8 @@ Row-expand carries `expand.pair_ledger` (per-`exchange_id` reconciliation states
 `expand.their_card` (the peer's card in Pane A layout — pending the same peer-fetch gap as the
 History column).
 
-**Two honest gaps with no task id filed yet** (flagged in the wiring-v2 outbox, not silently
-absorbed into an existing id): the peer-fetch carrier for History(theirs), and a per-peer
+**Two honest gaps, not yet built** (tracked as open gaps, not silently absorbed into
+existing work): the peer-fetch carrier for History(theirs), and a per-peer
 send-log for Asked.
 
 ## 6. Pane C — "This exchange"

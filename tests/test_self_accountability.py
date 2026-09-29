@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """[mesh-pane-a-self-accountability-tab] Pane A "This node" card.
 
-Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its
+Negative-check mandate: every check must fail its
 mutant. Each acceptance mutant from the inbox item gets its own test:
 
   - an unsealed request -> card shows `coverage: N unsealed`

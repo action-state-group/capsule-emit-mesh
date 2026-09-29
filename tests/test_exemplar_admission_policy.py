@@ -18,7 +18,7 @@ OPENAI-SHAPED ERROR
                    "param": null}}
     This is stable: the same bytes are returned on every denial.
 
-Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its mutant.
+Negative-check mandate: every check must fail its mutant.
 """
 from __future__ import annotations
 

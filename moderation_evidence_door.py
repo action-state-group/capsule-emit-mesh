@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """[buzz-moderation-profile-spike] The redress-scoped evidence door.
 
-Design doc §4: "why was my message removed?" -> an Evidence Request
+The redress flow: "why was my message removed?" -> an Evidence Request
 (``purpose: redress``, subject = message digest) -> a bundle: the decision
 record, the policy version, the adjudication if any, with
 ``SATISFIED``/``NOT_FOUND``/``WITHHELD`` honesty. Reuses
@@ -23,7 +23,7 @@ reusing the wire vocabulary, not the identity-blind dispatch.
 ``principal_ref`` -- they sign the request under the SAME key the claimed
 ``nostr-pubkey:<hex>`` names, so a stranger who merely observed the message
 digest (rooms are not private) cannot forge a match. This is the
-requester-held-half pattern design doc §2 cites, made concrete: signature
+requester-held-half pattern made concrete: signature
 verification proves the requester CONTROLS the claimed identity;
 comparing that identity against the decision's own bound ``principal_ref``
 (set once, at seal time, by the platform -- never by the requester) proves
@@ -47,7 +47,8 @@ request type can even represent -- there is no field, anywhere in
 ``RedressRequest``, that could name a principal and ask for everything they
 were ever moderated for. A caller cannot construct the request this would
 require; there is no code path to refuse at runtime because there is no
-code path at all (design doc §5, "No user scores").
+code path at all (the rule: no user scores -- moderation evidence is only
+ever answerable per message, never per person).
 """
 from __future__ import annotations
 

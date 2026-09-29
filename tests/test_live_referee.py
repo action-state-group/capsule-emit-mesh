@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for the live E17c third-node referee call (`live_referee.py`).
 
-Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its
+Negative-check mandate: every check must fail its
 mutant.
 
   - the outbound request carries `x-mesh-target: <target_peer_id>`, the

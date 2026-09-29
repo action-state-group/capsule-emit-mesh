@@ -772,7 +772,7 @@ def test_rendered_card_never_leaks_build_verdicts_not_yet_proven_line():
     its warn branch -- the literal "Not yet proven: who asked ..." free-text
     the live Pane C card was leaking. That line must never render verbatim;
     the card renders the assurance map's own `identity_authority` property
-    (chip + text) in its place. MUTANT check (QUEUE_PROTOCOL §7): reverting
+    (chip + text) in its place. MUTANT check (a check must be able to fail): reverting
     the `render_exchange_subtab_html` slice back to `view["verdict"]` (all
     three lines, unsliced) must flip this test to failing -- confirmed by
     hand before landing."""
