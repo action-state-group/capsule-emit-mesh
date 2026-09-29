@@ -60,7 +60,7 @@ REQ = "b" * 64
 RESP = "c" * 64
 ASKED = "1" * 64
 SWAP = "2" * 64
-SENDER = "m3"
+SENDER = "node-a"
 
 
 class Key:
@@ -252,7 +252,7 @@ def build() -> dict:
     add(case("bare_unknown_sender", "a sender absent from the registry",
              [push(body(half), sender="m9")], peer_keys=reg))
     add(case("bare_registry_unset", "no registry configured at all", [push(body(half))], peer_keys=None))
-    add(case("bare_registry_not_json", "a registry that does not parse", [push(body(half))], peer_keys="{m3:"))
+    add(case("bare_registry_not_json", "a registry that does not parse", [push(body(half))], peer_keys="{node-a:"))
     add(case("bare_registry_not_object", "a registry that is a JSON array", [push(body(half))], peer_keys=[k.key_id]))
     add(case("bare_registry_key_not_string", "the sender's entry is not a string",
              [push(body(half))], peer_keys={SENDER: 7}))

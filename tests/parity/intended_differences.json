@@ -6,7 +6,7 @@
      "appended": {
       "received-capsules.jsonl": [
        {
-        "action_id": "serve_exchange/6e13ffa1-67cb-4892-8c7b-ac60b80e8e6e",
+        "action_id": "serve_exchange/c79b9e3c-75b1-4ddf-b917-d38da457a94b",
         "action_type": "decide",
         "assurance": {
          "attestation_mode": "self_attested",
@@ -14,7 +14,7 @@
          "ledger_mode": "standalone"
         },
         "canonicalization_id": "jcs",
-        "capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "capsule_id": "d804c0bfc4df59def6edce207cefea1d6e4656792da7a1aeb3586017f2c977d5",
         "developer": "mesh-node@v1",
         "disposition": {
          "approver": "policy",
@@ -30,23 +30,23 @@
          "type": "inference_completion"
         },
         "format_version": "4",
-        "key_id": "33dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e250",
+        "key_id": "1d2ffc84c4a0bbeee8bae343e01feff0419e9f9f989cc5dc6ed3bdac3e40cbb9",
         "model_attestation": {
          "compute_attestation": {
           "note": "half"
          }
         },
         "operator": "op",
-        "signature": "d284584ca30378236170706c69636174696f6e2f6167656e742d616374696f6e2d63617073756c652d696404582033dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e2500127a058201077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db605840dc1f2056c891eab97cd9844379b812143b8f27129e3b66d31b1b6f766bc73cd480dae28b9a20fc7fe7dae08f4e4bfd0e588a801526ecba7448644be098ca9603",
+        "signature": "d284584ca30378236170706c69636174696f6e2f6167656e742d616374696f6e2d63617073756c652d69640458201d2ffc84c4a0bbeee8bae343e01feff0419e9f9f989cc5dc6ed3bdac3e40cbb90127a05820d804c0bfc4df59def6edce207cefea1d6e4656792da7a1aeb3586017f2c977d558404b1c6168643add502ffdbe7568016acbad69bf6b478705347cb8aaf516e5bea9d8a1e13c93c7f026b4c4238709550645678e06990b1fa6f2979ba5fb0d68ae01",
         "spec_version": "draft-mih-scitt-agent-action-capsule-05",
-        "timestamp": "2026-09-29T14:37:32.966308Z"
+        "timestamp": "2026-09-29T21:29:03.254362Z"
        }
       ],
       "received-provenance.jsonl": [
        {
-        "capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "capsule_id": "d804c0bfc4df59def6edce207cefea1d6e4656792da7a1aeb3586017f2c977d5",
         "received_at": "2026-09-29T00:00:00Z",
-        "received_from": "m3",
+        "received_from": "node-a",
         "signature_ok": true,
         "via": "push"
        }
@@ -101,7 +101,7 @@
      "appended": {
       "received-capsules.jsonl": [
        {
-        "action_id": "serve_exchange/6e13ffa1-67cb-4892-8c7b-ac60b80e8e6e",
+        "action_id": "serve_exchange/c79b9e3c-75b1-4ddf-b917-d38da457a94b",
         "action_type": "decide",
         "assurance": {
          "attestation_mode": "self_attested",
@@ -109,7 +109,7 @@
          "ledger_mode": "standalone"
         },
         "canonicalization_id": "jcs",
-        "capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "capsule_id": "d804c0bfc4df59def6edce207cefea1d6e4656792da7a1aeb3586017f2c977d5",
         "developer": "mesh-node@v1",
         "disposition": {
          "approver": "policy",
@@ -125,23 +125,23 @@
          "type": "inference_completion"
         },
         "format_version": "4",
-        "key_id": "33dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e250",
+        "key_id": "1d2ffc84c4a0bbeee8bae343e01feff0419e9f9f989cc5dc6ed3bdac3e40cbb9",
         "model_attestation": {
          "compute_attestation": {
           "note": "half"
          }
         },
         "operator": "op",
-        "signature": "d284584ca30378236170706c69636174696f6e2f6167656e742d616374696f6e2d63617073756c652d696404582033dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e2500127a058201077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db605840dc1f2056c891eab97cd9844379b812143b8f27129e3b66d31b1b6f766bc73cd480dae28b9a20fc7fe7dae08f4e4bfd0e588a801526ecba7448644be098ca9603",
+        "signature": "d284584ca30378236170706c69636174696f6e2f6167656e742d616374696f6e2d63617073756c652d69640458201d2ffc84c4a0bbeee8bae343e01feff0419e9f9f989cc5dc6ed3bdac3e40cbb90127a05820d804c0bfc4df59def6edce207cefea1d6e4656792da7a1aeb3586017f2c977d558404b1c6168643add502ffdbe7568016acbad69bf6b478705347cb8aaf516e5bea9d8a1e13c93c7f026b4c4238709550645678e06990b1fa6f2979ba5fb0d68ae01",
         "spec_version": "draft-mih-scitt-agent-action-capsule-05",
-        "timestamp": "2026-09-29T14:37:32.966308Z"
+        "timestamp": "2026-09-29T21:29:03.254362Z"
        }
       ],
       "received-provenance.jsonl": [
        {
-        "capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "capsule_id": "d804c0bfc4df59def6edce207cefea1d6e4656792da7a1aeb3586017f2c977d5",
         "received_at": "2026-09-29T00:00:00Z",
-        "received_from": "m3",
+        "received_from": "node-a",
         "signature_ok": true,
         "via": "push"
        }
@@ -156,19 +156,19 @@
       "received-inclusion.jsonl": [
        {
         "checkpoint": {
-         "key_id": "33dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e250",
+         "key_id": "1d2ffc84c4a0bbeee8bae343e01feff0419e9f9f989cc5dc6ed3bdac3e40cbb9",
          "kind": "mmr_checkpoint",
          "log_id": "sender-log",
          "mmr_size": 10,
          "prev_root": "",
          "prev_size": 0,
-         "root": "c5d4a4a5da118141cbde783b16a1ec3358b3b1eb5f21f6fb4a4baa9155316058",
-         "signature": "39ea93f92624123bd1fed6049866c3c79b0a8ef3ecc526bb1aa23c3e612fddf6f798e01d18fdcd92ee9eeeb162bdabaa86e01bd4a64a002b99462e11ef8cda08",
+         "root": "6473683c244f0220be10b3ee131a978bafbc29097a5563645a3258352aea0047",
+         "signature": "e5783347bc7400e44902dd43d3b98c809d42226d1a5d3b0ae67996f726e424e449f957753953f00c3619425a505562310700e9fd7d80da1bea4768fb174af806",
          "timestamp": "2026-09-27T00:00:10Z",
          "v": 1
         },
-        "checkpoint_digest": "333dbb831b97d0002118df4754290bbff531ebdad16f39c1e390fe7e831e148d",
-        "half_capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "checkpoint_digest": "2f422cddf1542415ab115c43fb232bf097bbfc09a0868e1467ce5a5132212587",
+        "half_capsule_id": "d804c0bfc4df59def6edce207cefea1d6e4656792da7a1aeb3586017f2c977d5",
         "inclusion_proof": {
          "kind": "inclusion",
          "leaf_index": 4,
@@ -186,15 +186,15 @@
         "leaf_index": 4,
         "mmr_size": 10,
         "received_at": "2026-09-29T00:00:00Z",
-        "received_from": "m3",
+        "received_from": "node-a",
         "via": "push"
        }
       ]
      },
      "reply": {
       "inclusion": {
-       "checkpoint_digest": "333dbb831b97d0002118df4754290bbff531ebdad16f39c1e390fe7e831e148d",
-       "half_capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+       "checkpoint_digest": "2f422cddf1542415ab115c43fb232bf097bbfc09a0868e1467ce5a5132212587",
+       "half_capsule_id": "d804c0bfc4df59def6edce207cefea1d6e4656792da7a1aeb3586017f2c977d5",
        "inclusion_proof_digest": "d6756d96aa88e619e35ce4c2a7884e1a72a59dea23a66d39b21d91dd2b5d5ff2",
        "leaf_index": 4,
        "mmr_size": 10,
@@ -212,7 +212,7 @@
      "appended": {
       "received-capsules.jsonl": [
        {
-        "action_id": "serve_exchange/6e13ffa1-67cb-4892-8c7b-ac60b80e8e6e",
+        "action_id": "serve_exchange/c79b9e3c-75b1-4ddf-b917-d38da457a94b",
         "action_type": "decide",
         "assurance": {
          "attestation_mode": "self_attested",
@@ -220,7 +220,7 @@
          "ledger_mode": "standalone"
         },
         "canonicalization_id": "jcs",
-        "capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "capsule_id": "d804c0bfc4df59def6edce207cefea1d6e4656792da7a1aeb3586017f2c977d5",
         "developer": "mesh-node@v1",
         "disposition": {
          "approver": "policy",
@@ -236,34 +236,34 @@
          "type": "inference_completion"
         },
         "format_version": "4",
-        "key_id": "33dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e250",
+        "key_id": "1d2ffc84c4a0bbeee8bae343e01feff0419e9f9f989cc5dc6ed3bdac3e40cbb9",
         "model_attestation": {
          "compute_attestation": {
           "note": "half"
          }
         },
         "operator": "op",
-        "signature": "d284584ca30378236170706c69636174696f6e2f6167656e742d616374696f6e2d63617073756c652d696404582033dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e2500127a058201077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db605840dc1f2056c891eab97cd9844379b812143b8f27129e3b66d31b1b6f766bc73cd480dae28b9a20fc7fe7dae08f4e4bfd0e588a801526ecba7448644be098ca9603",
+        "signature": "d284584ca30378236170706c69636174696f6e2f6167656e742d616374696f6e2d63617073756c652d69640458201d2ffc84c4a0bbeee8bae343e01feff0419e9f9f989cc5dc6ed3bdac3e40cbb90127a05820d804c0bfc4df59def6edce207cefea1d6e4656792da7a1aeb3586017f2c977d558404b1c6168643add502ffdbe7568016acbad69bf6b478705347cb8aaf516e5bea9d8a1e13c93c7f026b4c4238709550645678e06990b1fa6f2979ba5fb0d68ae01",
         "spec_version": "draft-mih-scitt-agent-action-capsule-05",
-        "timestamp": "2026-09-29T14:37:32.966308Z"
+        "timestamp": "2026-09-29T21:29:03.254362Z"
        }
       ],
       "received-inclusion.jsonl": [
        {
         "checkpoint": {
-         "key_id": "33dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e250",
+         "key_id": "1d2ffc84c4a0bbeee8bae343e01feff0419e9f9f989cc5dc6ed3bdac3e40cbb9",
          "kind": "mmr_checkpoint",
          "log_id": "sender-log",
          "mmr_size": 18,
          "prev_root": "",
          "prev_size": 0,
-         "root": "5bd5840adb889c6a3f1ca2270f6f9ada16686a58363ec5350eb1dd782a9e03b7",
-         "signature": "1b9a1193fe6d967565b91309d564c85b89eb2ec46fca1857a199a2ac5a0952cd22a9349af08840ce006dd2576e59b54dd814dae621f6c10d852372d9aaf68a0f",
+         "root": "88ced81cc9dc10dfa4514f6426e32d25e0e5b6be6d4b09eaa13fe8dfb5fc7667",
+         "signature": "c2803704d6205360af5c72948332402d36243b2e0645e83736ec8329358967a602a91a037c400e03528fa9b78df19ae955e537289cc06c8a146a08c4d57f0803",
          "timestamp": "2026-09-27T00:00:18Z",
          "v": 1
         },
-        "checkpoint_digest": "70d036e112b1b90fc1fa1740748e659b657398db3fce528113bca16f7ce046f0",
-        "half_capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "checkpoint_digest": "67a472e86bee496409c870d8cd8a1f9b6304ed94d8ba2f2f6702c08badd60107",
+        "half_capsule_id": "d804c0bfc4df59def6edce207cefea1d6e4656792da7a1aeb3586017f2c977d5",
         "inclusion_proof": {
          "kind": "inclusion",
          "leaf_index": 8,
@@ -281,15 +281,15 @@
         "leaf_index": 8,
         "mmr_size": 18,
         "received_at": "2026-09-29T00:00:00Z",
-        "received_from": "m3",
+        "received_from": "node-a",
         "via": "push"
        }
       ],
       "received-provenance.jsonl": [
        {
-        "capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "capsule_id": "d804c0bfc4df59def6edce207cefea1d6e4656792da7a1aeb3586017f2c977d5",
         "received_at": "2026-09-29T00:00:00Z",
-        "received_from": "m3",
+        "received_from": "node-a",
         "signature_ok": true,
         "via": "push"
        }
@@ -297,8 +297,8 @@
      },
      "reply": {
       "inclusion": {
-       "checkpoint_digest": "70d036e112b1b90fc1fa1740748e659b657398db3fce528113bca16f7ce046f0",
-       "half_capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+       "checkpoint_digest": "67a472e86bee496409c870d8cd8a1f9b6304ed94d8ba2f2f6702c08badd60107",
+       "half_capsule_id": "d804c0bfc4df59def6edce207cefea1d6e4656792da7a1aeb3586017f2c977d5",
        "inclusion_proof_digest": "a0dfc7444da50c0227a272f6ad560e1156479f3d703396cff075f48d96fdf0d5",
        "leaf_index": 8,
        "mmr_size": 18,
@@ -312,19 +312,19 @@
       "received-inclusion.jsonl": [
        {
         "checkpoint": {
-         "key_id": "33dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e250",
+         "key_id": "1d2ffc84c4a0bbeee8bae343e01feff0419e9f9f989cc5dc6ed3bdac3e40cbb9",
          "kind": "mmr_checkpoint",
          "log_id": "log-2",
          "mmr_size": 4,
          "prev_root": "",
          "prev_size": 0,
-         "root": "91760e172dc71ac4e3e57ed428dcff6121bba7bd3d46654275024de40bbbe721",
-         "signature": "0a40da0f9dd63e4cdf2fc2ff11ba00378bdfb5d78052ab3ef3237e3805edf8d370bf7781480a99cb7236923b7828e74153bc1e58482ecd558d8c6d97e082bc05",
+         "root": "acb6608136f58431fbfb8f85cde3cc4f403c4b4da4b6c6a2676a244827596a09",
+         "signature": "24a551251809b3150f41f18017c332f3a7a03f7ba2d09b3f498bc351ffdaa747f7c18bfe17692dacc0ace68e09b7d0b5c56db2dff6dd1cbab70fb7de83e5b400",
          "timestamp": "2026-09-27T00:00:04Z",
          "v": 1
         },
-        "checkpoint_digest": "0d09bdfc72011996f24451ce46af83d1a010aa65b51b2d6e672eb19b0d661188",
-        "half_capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "checkpoint_digest": "907b9ba259df2afa9bbbb49927b64e5f2d29ec9b417dc25c38c4703f897862c3",
+        "half_capsule_id": "d804c0bfc4df59def6edce207cefea1d6e4656792da7a1aeb3586017f2c977d5",
         "inclusion_proof": {
          "kind": "inclusion",
          "leaf_index": 2,
@@ -340,15 +340,15 @@
         "leaf_index": 2,
         "mmr_size": 4,
         "received_at": "2026-09-29T00:00:00Z",
-        "received_from": "m3",
+        "received_from": "node-a",
         "via": "push"
        }
       ]
      },
      "reply": {
       "inclusion": {
-       "checkpoint_digest": "0d09bdfc72011996f24451ce46af83d1a010aa65b51b2d6e672eb19b0d661188",
-       "half_capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+       "checkpoint_digest": "907b9ba259df2afa9bbbb49927b64e5f2d29ec9b417dc25c38c4703f897862c3",
+       "half_capsule_id": "d804c0bfc4df59def6edce207cefea1d6e4656792da7a1aeb3586017f2c977d5",
        "inclusion_proof_digest": "2a03e7843e62a2c64a77cf71d106ece44ca7a3e6f9eb9051ff354925f6ff5474",
        "leaf_index": 2,
        "mmr_size": 4,

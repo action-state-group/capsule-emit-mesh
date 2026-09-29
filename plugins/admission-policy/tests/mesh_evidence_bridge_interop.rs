@@ -316,7 +316,7 @@ async fn responder_answers_an_evidence_request_in_process() {
     harness.initialize().await;
 
     let stream = harness.open_evidence_stream().await;
-    let request_bytes = br#"{"subject":{"checkpoints":null},"coverage":{"min_freshness":1},"requester_id":"m3"}"#;
+    let request_bytes = br#"{"subject":{"checkpoints":null},"coverage":{"min_freshness":1},"requester_id":"node-a"}"#;
     let response: serde_json::Value =
         serde_json::from_slice(&ask_over_stream(stream, request_bytes).await).expect("a JSON answer");
 
@@ -333,7 +333,7 @@ async fn responder_answers_an_evidence_request_in_process() {
         .expect("the request was logged");
     let line: serde_json::Value = serde_json::from_str(log.trim()).expect("one JSON line");
     assert_eq!(line["path"], "evidence-request");
-    assert_eq!(line["requester_id"], "m3");
+    assert_eq!(line["requester_id"], "node-a");
     assert_eq!(line["subject_kind"], "checkpoints");
     assert_eq!(line["status"], "refused");
     assert_eq!(line["reason"], "coverage_unsatisfiable");

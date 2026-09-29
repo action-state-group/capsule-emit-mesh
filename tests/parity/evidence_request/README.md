@@ -27,17 +27,17 @@ requires the golden value to equal it.
 
 | File | What it is |
 | --- | --- |
-| `corpus.json` | The node: a signing-key seed (a throwaway test key, public by design), 301 ledger lines, two signed checkpoints, and the cases. |
+| `corpus.json` | The node: 301 ledger lines, two signed checkpoints, and the cases. The node signs with the runner's own fixed test key (`NODE_KEY_SEED` in `evidence_request_parity.rs`); no key material is in this file. |
 | `golden.json` | The answer each case must get. |
 | `test_served_summary_parity.py` | The served summary in the golden answers is the Python fold's value. |
 
 ## The node
 
-Ledger lines 0-7 are records of several kinds: records served to `m3` and
-`m4` (two carry nonce `n-1`, one exchange id `ex-1`), a requested-role record,
+Ledger lines 0-7 are records of several kinds: records served to `node-a` and
+`node-b` (two carry nonce `n-1`, one exchange id `ex-1`), a requested-role record,
 a record citing another node's half, and an adjudication verdict record.
 Padding fills to 16 lines, where checkpoint 0 is cut. Lines 16-20 are five
-more records served to `m3`, and line 21 is a local block (it never leaves
+more records served to `node-a`, and line 21 is a local block (it never leaves
 the node). Padding fills to 300 lines, where checkpoint 1 is cut, with one
 witness. Line 300 is a record no checkpoint covers yet.
 
@@ -48,7 +48,7 @@ witness. Line 300 is a record no checkpoint covers yet.
  "covers": "a record goes to the node it names as the other side",
  "history_segments": "prospective",
  "request": {"subject": {"record": "<id>"}, "coverage": {"expected_pin": "<checkpoint 1>"},
-             "requester_id": "m3"}}
+             "requester_id": "node-a"}}
 ```
 
 - `history_segments` is the node's sharing switch

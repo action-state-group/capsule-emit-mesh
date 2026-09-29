@@ -8,7 +8,7 @@
 //!
 //! **Config, not discovery.** The operator sets `ADMISSION_POLICY_PEER_KEYS`
 //! on the node to a JSON object mapping peer id to that peer's `key_id` (the
-//! raw Ed25519 public key, lowercase hex), e.g. `{"m3": "3a1f…", "m4":
+//! raw Ed25519 public key, lowercase hex), e.g. `{"node-a": "3a1f…", "node-b":
 //! "9c02…"}`. A peer absent from the map is unknown. Every way the value can
 //! fail (unset, empty, not JSON, not an object, the entry not a non-empty
 //! string) means "cannot verify", never a guessed or default key.
@@ -37,20 +37,20 @@ mod tests {
 
     #[test]
     fn only_a_configured_non_empty_string_is_an_announced_key() {
-        let registry = r#"{"m3": "ab", "m4": "", "m5": 7}"#;
+        let registry = r#"{"node-a": "ab", "node-b": "", "node-c": 7}"#;
         assert_eq!(
-            announced_key_in(Some(registry), "m3").as_deref(),
+            announced_key_in(Some(registry), "node-a").as_deref(),
             Some("ab")
         );
-        assert_eq!(announced_key_in(Some(registry), "m4"), None, "empty key");
-        assert_eq!(announced_key_in(Some(registry), "m5"), None, "not a string");
+        assert_eq!(announced_key_in(Some(registry), "node-b"), None, "empty key");
+        assert_eq!(announced_key_in(Some(registry), "node-c"), None, "not a string");
         assert_eq!(announced_key_in(Some(registry), "m9"), None, "unknown peer");
         assert_eq!(announced_key_in(Some(registry), ""), None, "no peer id");
-        assert_eq!(announced_key_in(None, "m3"), None, "unset");
-        assert_eq!(announced_key_in(Some(""), "m3"), None, "empty");
-        assert_eq!(announced_key_in(Some("{m3:"), "m3"), None, "not JSON");
+        assert_eq!(announced_key_in(None, "node-a"), None, "unset");
+        assert_eq!(announced_key_in(Some(""), "node-a"), None, "empty");
+        assert_eq!(announced_key_in(Some("{node-a:"), "node-a"), None, "not JSON");
         assert_eq!(
-            announced_key_in(Some(r#"["ab"]"#), "m3"),
+            announced_key_in(Some(r#"["ab"]"#), "node-a"),
             None,
             "not an object"
         );

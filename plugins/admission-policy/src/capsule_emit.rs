@@ -1773,7 +1773,7 @@ mod tests {
         let foreign_id = "d".repeat(64);
         let prov = ReceivedHalfProvenance {
             foreign_capsule_id: &foreign_id,
-            received_from: "m4",
+            received_from: "node-b",
             via: "push",
             received_at: "2026-09-25T00:00:00Z",
             signature_ok: true,
@@ -1847,7 +1847,7 @@ mod tests {
         let half = "d".repeat(64);
         let prov = ReceivedHalfProvenance {
             foreign_capsule_id: &half,
-            received_from: "m4",
+            received_from: "node-b",
             via: "push",
             received_at: "2026-09-27T00:00:00Z",
             signature_ok: true,
@@ -1858,7 +1858,7 @@ mod tests {
         let half_citation = state.emit_citing_record(&prov).unwrap().unwrap();
         let citation = InclusionCitation {
             half_capsule_id: &half,
-            received_from: "m4",
+            received_from: "node-b",
             via: "push",
             received_at: "2026-09-27T00:00:00Z",
             leaf_index: 3,

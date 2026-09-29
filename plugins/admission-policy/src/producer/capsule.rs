@@ -2336,7 +2336,7 @@ mod tests {
     fn sample_prov<'a>(foreign_capsule_id: &'a str) -> ReceivedHalfProvenance<'a> {
         ReceivedHalfProvenance {
             foreign_capsule_id,
-            received_from: "m4",
+            received_from: "node-b",
             via: "push",
             received_at: "2026-09-25T00:00:00Z",
             signature_ok: true,
@@ -2377,7 +2377,7 @@ mod tests {
         );
         // The receiving-event facts ride in compute_attestation.received_half.
         let rh = &capsule["model_attestation"]["compute_attestation"]["received_half"];
-        assert_eq!(rh["received_from"], json!("m4"));
+        assert_eq!(rh["received_from"], json!("node-b"));
         assert_eq!(rh["signature_ok"], json!(true));
         assert_eq!(rh["cited_capsule_id"], json!(foreign));
         // Inline producer envelope attached (one-capsule-shape), excluded from id.
@@ -2415,7 +2415,7 @@ mod tests {
     fn sample_inclusion<'a>(half: &'a str) -> InclusionCitation<'a> {
         InclusionCitation {
             half_capsule_id: half,
-            received_from: "m4",
+            received_from: "node-b",
             via: "push",
             received_at: "2026-09-27T00:00:00Z",
             leaf_index: 6,
