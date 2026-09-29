@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[b6a-requester-seal] Requester own-half seal + exchange_id correlation.
+"""Requester own-half seal + exchange_id correlation.
 
 Proves the two rung-1/2 mechanics this task makes first-class:
 
@@ -234,7 +234,7 @@ def test_requester_capsule_does_not_carry_move4_ack(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4b. [mesh-requester-nonce-addendum] serving_provenance.counterparty_ref —
+# 4b. serving_provenance.counterparty_ref —
 #     the peer's own X-Capsule-Id, read back off the raw-proxy return.
 #
 # Distinct from the Move-4/bilateral `cross_party.counterparty_ref` the scope
@@ -305,7 +305,7 @@ def test_provider_capsule_never_carries_a_counterparty_ref(tmp_path: Path) -> No
 
 
 # ---------------------------------------------------------------------------
-# 5. [mesh-b1-requestor-capsule-ledger] PROVISIONAL role/observation_point
+# 5. PROVISIONAL role/observation_point
 #    (CPB #70 vocabulary, hard-coded ahead of its promotion)
 # ---------------------------------------------------------------------------
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-served-summary-derivation] ``served_summary()`` -- "what did this
+"""``served_summary()`` -- "what did this
 stranger actually serve" -- a node's own fold over what it SERVED, mirroring
 ``history_card.py`` and ``account_capsule.py``'s shape but over a different
 question. Today's history card publishes structural facts about the
@@ -135,7 +135,7 @@ SERVED_SUMMARY_SUBJECT_KEY = "x-mesh-served-summary-v1"
 SERVED_SUMMARY_SUPERSEDES_RELATION = "supersedes"
 
 #: The evidence-request-carrier derivation token this summary answers under
-#: (cited by shape from [mesh-e14-evidence-responder]'s request map, wired in
+#: (cited by shape from the evidence responder's request map, wired in
 #: ``evidence_responder.handle_evidence_request``).
 SERVED_SUMMARY_DERIVATION_TOKEN = "served_summary/1"
 
@@ -683,7 +683,7 @@ def answer_served_summary_request(
 ) -> dict[str, Any]:
     """Answer the ``derivation: served_summary/1`` leg of the evidence-request
     carrier (digests-only tier) -- cited by shape from
-    ``[mesh-e14-evidence-responder]``'s request map and wired live in
+    the evidence responder's request map and wired live in
     ``evidence_responder.handle_evidence_request``, same shape
     ``history_card.answer_full_history_request`` uses for ``checkpoints_only``.
 

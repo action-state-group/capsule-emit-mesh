@@ -169,7 +169,7 @@ def _seal_exchange(state, *, requesting_party: str, served_by_node_id: str, seq:
     ``seal()`` (a convenient, already-verified builder) into a scratch
     ledger it owns exclusively, then landed in the sidecar's REAL
     cll.ledger.store.LedgerStore -- ``state.log_source`` -- same pattern as
-    [mesh-ledger-store-migration]'s test_evidence_responder.py."""
+    the ledger-store migration's test_evidence_responder.py."""
     import tempfile
 
     scratch_ledger = tempfile.mktemp(suffix="-capsule-emit-seal-scratch.jsonl")
@@ -253,7 +253,7 @@ def _build_gcp_caught_by_m4(tmp_path, referee_key: LocalKeypairSigner, *, prune_
     cap_a, _disc_a = _make_served_half("hello world", owner_id="m4")
     half_a = AdjudicationHalf.from_capsule_and_disclosure(cap_a, _disc_a)
     half_b = AdjudicationHalf.from_capsule_and_disclosure(cap_b, _disc_b)
-    # [mesh-referee-attribution] Use an attributed referee so the sealed
+    # Use an attributed referee so the sealed
     # adjudication capsule carries referee_id -- ack_refusals are only
     # counted when the referenced adjudication is attributed.
     outcome = adjudicate(

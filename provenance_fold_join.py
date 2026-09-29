@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-sidecar-provenance-fold-option3] Option 3b -- the sidecar<->plugin
+"""Option 3b -- the sidecar<->plugin
 hardware-provenance join.
 
 Two producers on the SAME node observe the SAME real host-served exchange

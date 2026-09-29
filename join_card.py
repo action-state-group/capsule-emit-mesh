@@ -22,7 +22,7 @@ from an earlier one, and checked against every exchange sealed since.
     nested here rather than reinvented.
   * `models[].weights_digest` is exactly the `weights_digest` the Rust
     producer already mirrors from the host at load time
-    (`[mesh-weights-digest-at-load]`) -- a hash of the served GGUF's BYTES,
+    (the weights-digest-at-load change) -- a hash of the served GGUF's BYTES,
     landing on every exchange at
     `x-mesh-poc-v1.serving_provenance.model.weights_digest`. This module does
     not compute it a second way; it only compares the card's copy against the
@@ -39,7 +39,7 @@ describes `announcement_digest` as a hash of the node's own current
 admission-policy plugin has NO read access to that struct's bytes: no gossip/
 announcement/topology field reaches `lifecycle_channel.rs` today (that is a
 real, separate host-wiring gap -- the same shape of gap
-`[mesh-peer-root-exchange]` closes for the checkpoint field, not this task's
+the peer root exchange closes for the checkpoint field, not this task's
 scope, whose repo line names `capsule-emit-mesh` only). Rather than fabricate
 that hookup, `announcement_digest` is defined here as the digest of this
 node's own `Advertisement` -- the one artifact this codebase already treats
@@ -82,7 +82,7 @@ reconciled and none to have broken. Byte-identical `STATUS_OK` for "verified"
 and "nothing to verify" is exactly the silent pass this module's status set
 promises never to produce.
 
-**[mesh-fabric-vocab-alignment] `principal_ref` under the `nostr-pubkey`
+**Fabric vocabulary alignment: `principal_ref` under the `nostr-pubkey`
 host-principal profile.** Under the shared host-principal profile convention,
 `nostr-pubkey` is the first concrete profile: `principal_ref` holds a Nostr
 public key, and under this profile it identifies "the holder of this Nostr
@@ -165,7 +165,7 @@ CARD_SUBJECT_KEY = "x-mesh-join-card-v1"
 #: as `history_card.HISTORY_SUPERSEDES_RELATION`.
 CARD_SUPERSEDES_RELATION = "supersedes"
 
-#: [mesh-fabric-vocab-alignment] the fabric's shared record-header vocabulary
+#: The fabric's shared record-header vocabulary
 #: convention: a join card is this node's own claim
 #: about itself, never an observation of something else.
 EPISTEMIC_TYPE_PRODUCER_CLAIM = "producer_claim"
@@ -255,7 +255,7 @@ def _values_equal(a: Any, b: Any) -> bool:
 class ModelRef:
     """One currently-served model, named + content-addressed. `weights_digest`
     is `None` when the host has not yet emitted one for this model (a host
-    predating `[mesh-weights-digest-at-load]`) -- absent, never fabricated."""
+    predating the weights-digest-at-load change) -- absent, never fabricated."""
 
     name: str
     weights_digest: str | None = None
@@ -293,7 +293,7 @@ class Card:
     #: Content-addressed (not a capsule_id) so a holder of just the two card
     #: bodies -- no ledger access -- can already tell they chain.
     supersedes: str | None = None
-    #: [mesh-fabric-vocab-alignment] this node's `principal_ref` under the
+    #: This node's `principal_ref` under the
     #: `nostr-pubkey` host-principal profile -- see the
     #: module docstring. `None` when this node has no Nostr identity wired in
     #: (the HONEST GAP this module already documents for `announcement_digest`),
@@ -373,7 +373,7 @@ def seal_card(
     """
     card_subject = dict(card.to_value())
     compute_attestation = {
-        # [mesh-fabric-vocab-alignment] additive record-header field, a
+        # Additive record-header field (fabric vocabulary alignment), a
         # top-level sibling of CARD_SUBJECT_KEY (see EPISTEMIC_TYPE_PRODUCER_CLAIM).
         "epistemic_type": EPISTEMIC_TYPE_PRODUCER_CLAIM,
         CARD_SUBJECT_KEY: {

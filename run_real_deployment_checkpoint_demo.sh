@@ -7,7 +7,7 @@
 # Unlike run_checkpoint_demo.py (mock_mesh_node.py, synthetic capsules), this
 # drives the SAME checkpoint machinery against a REAL, locally-running
 # mesh-llm serve process and a REAL downloaded GGUF model -- closing the gap
-# flagged in [mesh-llm-deployment-checkpoint-e2e]: the standalone checkpoint
+# flagged in an earlier review: the standalone checkpoint
 # demo was never driven by an actual mesh-llm deployment run.
 #
 # No goose / tool-call leg here on purpose -- this item is about the

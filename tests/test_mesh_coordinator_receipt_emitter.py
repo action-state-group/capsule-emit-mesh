@@ -3,7 +3,7 @@
 """Coordinator-receipt artifact-type producer tests.
 
 PURPOSE
-    [mesh-b3-coordinator-receipt-producer] (Phase B6-code). Prove
+    Coordinator receipt producer (Phase B6-code). Prove
     mesh_coordinator_receipt_emitter.py builds the record shape defined in
     `_work/mesh-coordinator-receipt-artifact-type-2026-08-28.md` §3.1/§3.2/§6
     and — the load-bearing part — that the two producer invariants from §6

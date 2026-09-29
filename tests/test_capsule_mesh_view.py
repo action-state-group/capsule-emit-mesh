@@ -92,7 +92,7 @@ def test_role_via_observation_point_alone_for_an_unrecognized_source_log():
 
 
 def test_role_reads_the_provisional_capsule_field_when_present():
-    """[mesh-b1-requestor-capsule-ledger]: capsule_sidecar.py now
+    """capsule_sidecar.py now
     provisionally emits x-mesh-poc-v1.role for real. When a record carries
     it, that field is authoritative -- read directly, not re-derived."""
     rec = _capsule("a" * 64, "2026-08-28T00:00:00Z", role="requested", observation_point="client_egress")

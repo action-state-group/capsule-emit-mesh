@@ -133,7 +133,7 @@ def test_handle_evidence_request_caller_invariance(node_state):
     assert json.dumps(result_a.to_dict(), sort_keys=True) == json.dumps(result_b.to_dict(), sort_keys=True)
 
 
-# [mesh-fabric-vocab-alignment] --------------------------------------------
+# Fabric-vocabulary alignment ---------------------------------------------
 
 
 def test_purpose_and_contract_ref_are_logged_never_change_answer_bytes(node_state, capsys):

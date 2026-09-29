@@ -103,7 +103,7 @@ OWNER_STATUS_ABSENT = "absent"          # no cert present -> did-only, never fab
 OWNER_STATUS_BOUND = "bound"            # cert present, re-check passed, cited
 OWNER_STATUS_INVALID = "invalid"        # cert present but re-check failed -> owner not bound
 
-#: [mesh-e6-identity-owner-cert] CPB typed digest reference shape
+#: CPB typed digest reference shape
 #: ({type, digest_alg, digest}) — the same shape
 #: mesh_coordinator_receipt_emitter._validate_bundle_ref enforces for its
 #: `bundle_ref` citations, reused here rather than inventing a second
@@ -449,7 +449,7 @@ def owner_provenance_block(
     The identity_limitation caveat is present whenever a cert is present at all —
     a reader must never see an owner_id without the honesty grade attached.
 
-    [mesh-e6-identity-owner-cert] `owner_cert_ref` carries the owner cert
+    `owner_cert_ref` carries the owner cert
     itself as a CPB typed digest reference ({type, digest_alg, digest} —
     see owner_cert_reference()), binding node key <- owner cert directly
     from the cert's own bytes. It is separate from `identity_capsule_id`

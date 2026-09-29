@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[buzz-moderation-profile-spike] The redress-scoped evidence door.
+"""The redress-scoped evidence door.
 
 Design doc §4: "why was my message removed?" -> an Evidence Request
 (``purpose: redress``, subject = message digest) -> a bundle: the decision
@@ -35,8 +35,8 @@ own request-signature check uses Ed25519 (the one signature primitive this
 repo already depends on everywhere else -- ``requester_identity_binding.py``,
 ``node_ownership.py``). Verifying an actual Nostr signature is a real Nostr
 client concern, out of scope for this spike (principal_ref binding itself
-is an "HONEST GAP... absent by default" per `[mesh-fabric-vocab-alignment]`'s
-own DONE stanza) -- this door proves "the requester controls the private key
+is an "HONEST GAP... absent by default" per the fabric-vocabulary
+alignment work) -- this door proves "the requester controls the private key
 behind the exact identity string the decision cites," which is the
 structural property redress scoping needs, independent of which curve a
 production deployment eventually binds.

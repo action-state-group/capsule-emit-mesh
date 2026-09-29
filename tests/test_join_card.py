@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-join-card] The `card` record + `card_consistency` verifier.
+"""The join `card` record + `card_consistency` verifier.
 
 Exchange ledger lines are hand-built in the REAL Rust-producer nested shape
 (`serving_provenance.model.{canonical_ref,weights_digest}`,

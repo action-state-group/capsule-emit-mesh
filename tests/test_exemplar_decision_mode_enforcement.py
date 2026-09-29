@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[adv-run-2-fix-batch] B2 regression: PluginLifecycleHost must enforce a
+"""B2 regression: PluginLifecycleHost must enforce a
 loaded plugin's declared manifest.decision_mode, not just check the returned
 decision as a bare string.
 

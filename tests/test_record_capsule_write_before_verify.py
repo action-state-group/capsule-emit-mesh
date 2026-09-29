@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[adv-run-2-fix-batch] B3 regression: capsule_sidecar.record_capsule() must
+"""B3 regression: capsule_sidecar.record_capsule() must
 verify a capsule BEFORE writing anything to disk, not after.
 
 Before the fix, record_capsule() appended to the ledger and wrote a signed

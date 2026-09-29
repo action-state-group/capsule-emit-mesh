@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[buzz-moderation-profile-spike] Twin + referee for `moderation_decision`.
+"""Twin + referee for `moderation_decision`.
 
 Reuses `twin_adjudicator.py`'s verdict vocabulary (`VERDICT_CORROBORATED`/
 `VERDICT_INCONCLUSIVE`/`contradicted()`), its `status_for_verdict` mapping,
 its `RefereeIdentity`/`RefereeResult` wire shapes, and its
 `RELATION_ADJUDICATES`/`EPISTEMIC_TYPE_ADJUDICATION` constants directly --
-same rail, same vocabulary (`[mesh-fabric-vocab-alignment]`), NOT the same
+same rail, same vocabulary, NOT the same
 comparison engine. `twin_adjudicator.adjudicate()` compares two DETERMINISTIC
 token sequences (a referee recomputes a token); a moderation decision is a
 CATEGORICAL judgment (`allow`/`remove`/`restrict`/`escalate`) where
@@ -15,7 +15,7 @@ the decider can't forge."
 
 **The referee can be a human.** `twin_adjudicator.RefereeIdentity` already
 carries an optional `signature` field for exactly this case
-(`[mesh-referee-attribution]`) -- `referee_from_human_report()` below
+-- `referee_from_human_report()` below
 packages a `human_report` capsule (signed under the reviewer's OWN
 persistent key, same discipline as `node_ownership.py`'s owner cert) into
 that same shape, so a moderation twin's adjudication capsule cites a human
@@ -86,7 +86,7 @@ HUMAN_REPORT_SCHEMA = "capsule-emit-mesh/human-report/v1"
 HUMAN_REPORT_SUBJECT_KEY = "x-mesh-human-report-v1"
 MODERATION_ADJUDICATION_SCHEMA = "capsule-emit-mesh/moderation-adjudication/v1"
 
-#: [buzz-moderation-profile-spike] the record type this module adds to the
+#: the record type this module adds to the
 #: fabric's epistemic_type vocabulary: a signed human reviewer's OWN report,
 #: never a model's self-report (`producer_claim`) and never this node's own
 #: recompute (`adjudication`).
@@ -451,7 +451,7 @@ def seal_moderation_twin_capsule(
     adjudication: dict[str, Any] = {
         "schema": MODERATION_ADJUDICATION_SCHEMA,
         "verdict": outcome.verdict,
-        # [mesh-fabric-vocab-alignment] additive per-verdict fabric status.
+        # Additive per-verdict fabric status.
         "status": status_for_verdict(outcome.verdict),
         "twin_owner_distinct": outcome.twin_owner_distinct,
         "weights_digest": outcome.weights_digest,

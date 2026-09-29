@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-provider-no-body-persistence] CI enforcement: the provider role must
+"""CI enforcement: the provider role must
 have NO code path that can write a disclosure preimage to disk -- structural,
 not a runtime setting someone could flip back on.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-live-tab-pane-proxy] L1 -- the JSON this repo's sidecar serves at
+"""The JSON this repo's sidecar serves at
 ``GET /accountability/pane-a``, ``/pane-b``, ``/pane-c?exchange_id=`` for the
 fork tab's Ledger panes (Q2 ruling: the proxy lives in the SIDECAR's own
 HTTP surface; the tab calls it directly, never through a mesh-llm host

@@ -70,7 +70,7 @@ class SequenceCounterStore:
     the ledger. See the module docstring for why this cache is never the
     source of truth for continuity.
 
-    [adv-stream-membership-authenticated] `next_seq` is called from the
+    `next_seq` is called from the
     sidecar's `ThreadingHTTPServer` request handler, so concurrent requests
     call it concurrently on the SAME store instance. An unlocked
     read-modify-write here lets two threads issue the same `seq` twice (a

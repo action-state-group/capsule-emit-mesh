@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[adv-witness-outage-serving-path] regression: a due checkpoint with an
+"""Regression: a due checkpoint with an
 unreachable witness must never fail the serving request.
 
 Before the fix, capsule_sidecar.record_capsule() called

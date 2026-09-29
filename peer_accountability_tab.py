@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-pane-b-peers-accountability-tab] Pane B "Peers" -- one row per node
+"""Pane B "Peers" -- one row per node
 this machine has exchanged capsules with, every cell recomputed from THAT
 peer's own artifacts and carrying an explicit honesty state -- never a
 blank cell, and never a trust score.
@@ -40,8 +40,8 @@ Composes verbs that already exist; re-derives none of their evidence:
     grading logic (``history_cell`` / ``continuity_cell`` / ``witnessed_cell``)
     stays, unchanged and still tested, as the "mine, for reference" detail
     under that pending cell.
-  - **served (theirs)**: ``served_summary.py`` now exists
-    ([mesh-served-summary-derivation]), but this cell is still honestly
+  - **served (theirs)**: ``served_summary.py`` now exists,
+    but this cell is still honestly
     ``pending`` -- same peer-fetch gap as History (theirs): nothing here
     SENDS a ``served_summary/1`` request to a peer, the merged responder
     only ANSWERS one sent to it. This node's OWN served summary rides along
@@ -58,7 +58,7 @@ Composes verbs that already exist; re-derives none of their evidence:
     counterparties report when *I* ask them -- is pending
     (``ask_history.py references``).
   - **asked**: this node's own evidence-request carrier now exists
-    ([mesh-e14-evidence-responder] / [mesh-e15-evidence-http-route], both
+    (the evidence responder and its HTTP route, both
     merged) -- but that carrier only ANSWERS requests a peer sends to this
     node; nothing yet logs requests this node SENDS to a peer, so this cell
     stays honestly ``absent`` for a different, current reason (see
@@ -141,7 +141,7 @@ CELL_VERIFIED = "verified"
 CELL_FAILED = "failed"
 CELL_UNILATERAL = "unilateral"
 CELL_CONTRADICTED = "contradicted"
-#: [mesh-live-tab-pane-proxy] L2: history (theirs) / served (theirs) / the
+#: History (theirs) / served (theirs) / the
 #: "held by others" half of verdicts are each a peer-fetch mechanism that
 #: does not exist in this repo yet -- exactly ``assurance_map.STATE_NOT_
 #: CHECKED``'s definition ("this view's own wiring doesn't check it yet"),
@@ -157,9 +157,9 @@ CELL_PENDING = assurance_map.STATE_NOT_CHECKED
 UNKNOWN_PEER = "unknown"
 
 #: STALE REASON, SUPERSEDED (kept only in this comment so the history is
-#: legible): "[mesh-e14-evidence-responder] is not merged yet (capsule-emit-
+#: legible): "the evidence responder is not merged yet (capsule-emit-
 #: mesh PR #83 CI red, pending upstream capsule-emit PR #148)". Both #83 and
-#: [mesh-e15-evidence-http-route] are MERGED on `main` today -- the carrier
+#: the evidence HTTP route are MERGED on `main` today -- the carrier
 #: that ANSWERS a peer's request exists. The current, real gap is different:
 #: nothing yet logs the requests THIS node SENDS to a peer (no evidence
 #: client, no send-log persistence) -- see `ASKED_ABSENT_REASON` below.
@@ -180,7 +180,7 @@ THEIRS_HISTORY_PENDING_REASON = (
     "(no task id filed yet for this gap -- flagged in the outbox)"
 )
 
-#: [mesh-served-summary-derivation] ``served_summary.py`` now exists, but
+#: ``served_summary.py`` now exists, but
 #: there is still no evidence-request CLIENT on this node to PULL a peer's
 #: OWN served summary -- the same peer-fetch gap
 #: ``THEIRS_HISTORY_PENDING_REASON`` documents for history (the merged

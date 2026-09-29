@@ -322,7 +322,7 @@ def test_bad_signature_detected_before_expiry():
 
 
 # ===========================================================================
-# Identity mode and evidence state tests — [mesh-identity-mode-assurance-labels]
+# Identity mode and evidence state tests
 #
 # THE TESTS THAT MATTER ARE THE NON-UPGRADE ONES.
 # #1331: "No mode silently upgrades its assurance label."

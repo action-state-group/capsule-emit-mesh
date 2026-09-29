@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """assurance_map.py: the shared five-state/nine-property chip module used by
-all three Accountability panes ([mesh-panes-map-chips]).
+all three Accountability panes.
 
 Focus: the five states never round up (only FAIL is an issue; NOT_PRESENT
 and NOT_CHECKED are distinct honest facts, both neutral), the nine

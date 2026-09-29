@@ -14,7 +14,7 @@ On the mesh's proxied path (`dispatch_path: RemoteMesh`), the routing node now r
 same chain for its own requester-role half — joined to the peer's served-role chain by
 the shared client nonce, never `exchange_id` (minted independently per node) — so a
 proxied exchange yields two independently offline-verifiable capsules, not just the
-peer's (`[mesh-requester-side-seal-on-proxy]`, 2026-09-07).
+peer's (requester-side seal on proxy, 2026-09-07).
 
 Standards this builds on: **RFC 8785** (JCS canonical JSON), **RFC 9052/9053** (COSE /
 `COSE_Sign1`), **RFC 9162** (the SHA-256 Merkle verifiable data structure), **RFC
@@ -114,7 +114,7 @@ Standards this builds on: **RFC 8785** (JCS canonical JSON), **RFC 9052/9053** (
 
 - **Proves:** the node committed, under its signature, to the entire state of its log at
   a specific size and time — so it can't later present a different history for that size.
-- **Mechanism:** a **`COSE_Sign1` `cll-checkpoint`** (the `[cll-checkpoint-cose-wire]`
+- **Mechanism:** a **`COSE_Sign1` `cll-checkpoint`** (the cll COSE-wire checkpoint
   spec): `kind="cll-checkpoint"`, `log_size`, a **peak-list `commitment`** (the MMR
   peaks, *not* a bagged root — the root derives from it), `prev_size` / `prev_commitment`
   for the previous checkpoint, and `issued_at`. The signing body is the spec's 8 fields;

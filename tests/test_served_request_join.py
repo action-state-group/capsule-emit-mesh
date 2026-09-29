@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-b2-served-request-join] The served<->request cryptographic join.
+"""The served<->request cryptographic join.
 
 Proves `served_request_join.join_served_request` mints a join capsule that:
 
@@ -19,7 +19,7 @@ Proves `served_request_join.join_served_request` mints a join capsule that:
      halves do not share one `exchange_id`; the joiner is not the node the
      requester half itself names as the requesting party.
 
-[adv-served-join-signed] Also proves the cryptographic half that used to be
+Also proves the cryptographic half that used to be
 missing entirely: `sign_served_request_join()` / `verify_served_request_join_
 signature()` make the module docstring's long-standing claim ("a stranger
 checks the join's signature") literally true, and the join honestly labels
@@ -205,7 +205,7 @@ def test_join_carries_the_shared_exchange_id_self_contained(tmp_path: Path) -> N
 
 
 def test_join_honestly_labels_who_asserts_it(tmp_path: Path) -> None:
-    """[adv-served-join-signed] The join's own sealed content names WHO is
+    """The join's own sealed content names WHO is
     asserting it, plus the one-party limitation -- never presented as a
     mutual attestation the provider agreed to."""
     _, srj_mod = _real_modules()
@@ -408,7 +408,7 @@ def test_refuses_an_unverifiable_requester_half(tmp_path: Path) -> None:
 
 
 def test_refuses_when_joiner_is_not_the_requester(tmp_path: Path) -> None:
-    """[adv-served-join-signed] core fix: a node that merely HOLDS a real,
+    """Core fix: a node that merely HOLDS a real,
     disclosed requester-half capsule (relay-visible provider capsule +
     requester capsule fetched via an evidence door, say) cannot mint a join
     claiming to have been that requester -- only the node the requester half
@@ -426,7 +426,7 @@ def test_refuses_when_joiner_is_not_the_requester(tmp_path: Path) -> None:
 
 
 def test_two_requesters_same_provider_each_join_independently_verifiable(tmp_path: Path) -> None:
-    """Mirrors [mesh-b1-requestor-capsule-ledger]'s 'two requesters, same
+    """Mirrors the requester capsule ledger's 'two requesters, same
     exchange -> each half independently offline-verifiable' acceptance, one
     level up: two DIFFERENT requester nodes each join against the SAME
     provider capsule. Both joins verify on their own bytes; both cite the
@@ -590,7 +590,7 @@ def test_verify_join_signature_rejects_bytes_from_a_different_capsule(tmp_path: 
 # ---------------------------------------------------------------------------
 # 7. Mallory -- one-party assertion, never mutual
 #
-# [adv-served-join-signed] The adversarial scenario the fix closes: the
+# The adversarial scenario the fix closes: the
 # provider's served-half capsule is relay-visible (Mallory can observe it on
 # the wire), and `exchange_id` is a provider-chosen, copyable string. Before
 # this fix, `join_served_request()` produced an unsigned dict indistinguish-

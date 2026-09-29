@@ -136,7 +136,7 @@ topology. `tests/host_runtime_e2e.rs`'s third test verifies what the real
 host actually does instead (fails safe at its own layer, never a silent 200),
 and its doc comment records this finding in full so it isn't silently lost.
 
-## `[mesh-sidecar-provenance-fold-option3]` — a false assumption found and corrected (2026-09-06)
+## Sidecar provenance fold (option 3) — a false assumption found and corrected (2026-09-06)
 
 `sidecar_and_plugin_hardware_provenance_join_for_a_real_gguf_exchange` (added
 by this task) drives a REAL loaded GGUF (`mesh-llm serve --gguf`, real Apple
@@ -202,9 +202,9 @@ recently sealed match; a high-traffic node with frequently repeated prompts
 would need a stronger disambiguator. Raised under `## Needs decision` in the
 `neutral` lane outbox rather than silently accepted.
 
-## `[mesh-sidecar-provenance-fold-option3-routing-companion]` — confirmed, documented (2026-09-06)
+## Sidecar provenance fold (option 3), routing companion — confirmed, documented (2026-09-06)
 
-Raised at close of `[mesh-sidecar-provenance-fold-option3]`: does a mesh-routed peer that hits this
+Raised at close of the sidecar provenance fold (option 3) work: does a mesh-routed peer that hits this
 node's advertised API port directly — bypassing the sidecar's own reverse-proxy listener entirely —
 still get sealed by this plugin? **Yes, confirmed by the test above.** The curl in the digest-collision
 section above (`model: "local-gguf/sha256-1993f98e085eaa51"`) is the node's own real-weights local

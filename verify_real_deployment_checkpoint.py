@@ -97,7 +97,7 @@ def main() -> None:
     log("")
 
     log("--- capsule verification ---")
-    # [mesh-ledger-store-migration] store-aware, with a labeled, read-only
+    # Store-aware, with a labeled, read-only
     # fallback for a still-flat ledger dir -- see ledger_store_backend.
     capsules, _archived_segments = read_all_capsules(ledger_dir)
     if not capsules:

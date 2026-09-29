@@ -271,7 +271,7 @@ def verify_exchange(
         findings.append(f"client_ack: {ack_reason}")
 
     rung = derive_cross_party_rung(cross_party, has_verified_ack=ack_ok)
-    # [mesh-rung12-adversarial-review] D1 — surface the identity-limitation
+    # Adversarial-review finding D1 — surface the identity-limitation
     # caveat automatically whenever this real entry point derives
     # full_bilateral, so a reader of `findings` never sees the rung without
     # the disclosure of what it does and doesn't prove (see
@@ -606,7 +606,7 @@ def main() -> None:
     out("the verifier has in hand, not what the producer claimed.")
     out("")
     all_ok = True
-    # [mesh-ledger-store-migration] BILATERAL_LEDGER_DIR is sealed through the
+    # BILATERAL_LEDGER_DIR is sealed through the
     # real sidecar (default_state/record_capsule above), so it may now be a
     # cll.ledger.store.LedgerStore rather than a flat capsules.jsonl --
     # read_all_capsules reads either, store-aware.

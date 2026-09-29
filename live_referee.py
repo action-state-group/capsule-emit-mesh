@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-referee-live-e17c] -- the live third-node referee call (E17c).
+"""The live third-node referee call (E17c).
 
 The piece `twin_adjudicator.py` and `twin_selection.py` were both built and
 tested for but never dialed themselves ("NOT a network call" -- see both
@@ -49,7 +49,7 @@ Wire shape (verify-don't-build -- see the 2026-09-08 ruling's item 3):
   logprobs_absent` is expected to be `True` in practice until a runtime
   actually supports the feature; this is the "inert" case the module
   docstring and 2026-09-08 ruling name explicitly.
-  [mesh-referee-capsule-citation] `capsule_sidecar.CLIENT_NONCE_HEADER`
+  `capsule_sidecar.CLIENT_NONCE_HEADER`
   (`X-Capsule-Client-Nonce`) carries `nonce` -- the referee node's own
   sidecar reads it exactly like any other served request's client nonce
   (`capsule_sidecar._resolve_client_nonce`) and seals it as `client_nonce`
@@ -66,7 +66,7 @@ What this is not
     never returns an `X-Capsule-Id` response header (only
     `x-mesh-served-by`) -- the capsule id is only ever visible in the
     SERVING node's own local ledger, which the requester has no direct
-    wire access to. [mesh-referee-capsule-citation] So this module instead
+    wire access to. So this module instead
     sends the referee call with its own request nonce
     (`capsule_sidecar.CLIENT_NONCE_HEADER`) and, after the call, resolves
     the referee's sealed half via that node's OWN evidence door --
@@ -428,7 +428,7 @@ def live_referee(
     with a token matching neither twin (that is `inconclusive`, a normal
     result).
 
-    [mesh-referee-capsule-citation] *nonce* rides `capsule_sidecar.
+    *nonce* rides `capsule_sidecar.
     CLIENT_NONCE_HEADER` on the outbound call, then, after the referee
     answers, is used to resolve and verify the referee's own sealed half
     via `resolve_referee_record` -- `evidence_door_base_url` (E15 HTTP) or
@@ -440,7 +440,7 @@ def live_referee(
     -- `RefereeResult.referee_record_nonce` is always set to *nonce* so the
     caller can still cite it even then.
 
-    [mesh-runtime-ext-payload-migration] *seed* is caller-supplied when
+    *seed* is caller-supplied when
     given (unchanged behavior). `None` falls back to
     `half_a.decoding["seed"]` -- half A's OWN sealed
     `model_attestation.compute_attestation.decoding.seed` (the runtime/model
@@ -489,7 +489,7 @@ def live_referee(
         capsule_id=record.capsule_id,
         referee_record_status=record.status,
         referee_record_nonce=nonce,
-        # [mesh-referee-attribution] The referee's stable identity is its
+        # The referee's stable identity is its
         # target_peer_id -- the same mesh peer id the caller used to reach
         # it.  `referee_capsule_id` is forwarded from the resolved record
         # (None when unresolved) so the adjudication capsule can cite it.

@@ -21,13 +21,13 @@ This module adds exactly two DISPLAY-ONLY labels per record -- `role`
 (requested|served) and `counterparty` -- neither of which was a capsule
 field when this module was written. This viewer never ADDS a `role` field
 to any capsule here; that promotion is the separate, gated registry-entry
-track ([mesh-exchange-role-field], scitt-payload-binding's
+track (the exchange role field, scitt-payload-binding's
 `mesh-inference-exchange` provisional, CPB #70). Per that track's LOCKED
 ruling, `role` is a genuine party-role axis and is NOT derivable from
 `observation_point` alone (`gateway_ingress` maps to neither requested nor
 served) -- so the label here also weighs which log produced the record.
 
-2026-09-03 update ([mesh-b1-requestor-capsule-ledger]): capsule_sidecar.py
+2026-09-03 update: capsule_sidecar.py
 now PROVISIONALLY emits its own `x-mesh-poc-v1.role` /
 `.observation_point` pair, hard-coded ahead of CPB #70's promotion (see
 its `# PROVISIONAL: pending CPB #70 promotion` definition site). This
@@ -61,7 +61,7 @@ SOURCE_SIDECAR = "sidecar"
 # served exchange's lifecycle on this machine: gateway admits it, the host
 # receives it, a backend is dispatched, the client is answered. None of the
 # four represents this machine acting as a requestor elsewhere -- confirmed
-# by the [mesh-exchange-role-field] LOCKED ruling. So an explicit
+# by the exchange-role-field LOCKED ruling. So an explicit
 # observation_point, when a future record carries one, always reads as
 # "served" here; it is still consulted (not just source log) so a genuine
 # requestor-side observation point added later fails closed instead of
@@ -120,7 +120,7 @@ _EXPLICIT_POC_ROLES = frozenset({"requested", "served", "conflict", "unknown"})
 def label_role(record: dict[str, Any], source_log: str) -> str:
     """Display-only role label -- never persisted here.
 
-    [mesh-b1-requestor-capsule-ledger] capsule_sidecar.py now provisionally
+    capsule_sidecar.py now provisionally
     seals its own `x-mesh-poc-v1.role` (see its `PROVISIONAL: pending CPB
     #70 promotion` definition site) -- when a record carries that field, it
     is the authoritative source-of-truth and is returned as-is. Records
@@ -262,7 +262,7 @@ def _detached_statement_verified(ledger_dir: Path, capsule_id: str, issuer_key: 
     (see `stranger_verify_bundle.py::_transparent_check`, which this
     mirrors); the producer signature for these ledgers lives here instead.
 
-    [mesh-verify-bind-statement-to-capsuleid] A valid signature alone is not
+    A valid signature alone is not
     enough: `verify_transparent()` only proves SOME statement signed by the
     issuer key exists, not that it was signed over *this* capsule_id's
     payload. Without the check below, a statement honestly signed over
@@ -489,7 +489,7 @@ def _cmd_view(args: argparse.Namespace) -> int:
             (SOURCE_PLUGIN, args.plugin_log, records, verify_results_for(records, ledger_dir=ledger_dir, issuer_key=issuer_key))
         )
     if args.sidecar_log:
-        # [mesh-ledger-store-migration] the sidecar's own ledger may now be a
+        # Ledger-store migration: the sidecar's own ledger may now be a
         # cll.ledger.store.LedgerStore (manifest.json present) rather than a
         # flat capsules.jsonl -- read_all_capsules detects which, with a
         # labeled, read-only fallback for a still-flat dir. The Rust
@@ -524,7 +524,7 @@ def _cmd_view(args: argparse.Namespace) -> int:
                 text = fh.read().strip()
             witness = json.loads(text.splitlines()[0] if "\n" in text else text)
         ledger_dir = Path(path).parent
-        # [disclosure-default-on] Auto-load whatever capsule_sidecar.py's
+        # Auto-load whatever capsule_sidecar.py's
         # DEFAULT-ON preimage capture wrote next to this log's ledger dir, so a
         # fresh sidecar-sealed capsule shows disclosed text without extra flags.
         payload = to_fragment_payload(

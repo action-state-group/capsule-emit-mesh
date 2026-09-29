@@ -15,7 +15,7 @@ mutant.
   - `peer_info_from_status` never reads `weights_digest` off the live
     status JSON's `models`/`hosted_models` fields (E5 gap)
 
-[mesh-referee-capsule-citation] `RefereeResult.capsule_id` is no longer
+`RefereeResult.capsule_id` is no longer
 read from an (unverifiable, and in practice absent) `X-Capsule-Id`
 response header -- it is resolved via `resolve_referee_record`:
 `correlation{by: "nonce", value: <the nonce this call sent>}` against the
@@ -299,7 +299,7 @@ def test_a_reanswer_that_does_not_reproduce_the_agreed_prefix_is_inconclusive():
 
 
 def test_live_referee_defaults_seed_from_half_a_declared_decoding_when_caller_omits_it():
-    """[mesh-runtime-ext-payload-migration] No `seed` given -> falls back to
+    """No `seed` given -> falls back to
     half A's own sealed `compute_attestation.decoding.seed`."""
     half_a = _half("the quick brown fox jumps", owner_id="owner-a", decoding={"temperature": "0.7", "seed": 99})
     half_b = _half("the quick brown wolf jumps", owner_id="owner-b")
@@ -497,7 +497,7 @@ def test_build_live_referee_wires_end_to_end_through_adjudicate():
             "nonce": "referee-nonce-h",
             "status": REFEREE_RECORD_UNRESOLVED,
             "capsule_id": None,
-            # [mesh-fabric-vocab-alignment] additive field -- see
+            # Additive field (fabric vocabulary alignment) -- see
             # twin_adjudicator.EPISTEMIC_TYPE_OBSERVED_EVENT.
             "epistemic_type": "observed_event",
         },
@@ -536,7 +536,7 @@ def test_live_referee_resolves_capsule_id_via_nonce_correlation(monkeypatch):
 
 
 def test_live_referee_mutant_door_returns_different_capsule_is_citation_unverified(monkeypatch):
-    """[mesh-referee-capsule-citation] mutant, at the `live_referee()`
+    """Referee capsule-citation mutant, at the `live_referee()`
     level: the evidence door answers the SAME nonce with a record for an
     unrelated response -- must never be cited as the referee's own
     capsule."""
@@ -605,7 +605,7 @@ def test_resolve_referee_record_resolves_and_verifies_matching_bundle(monkeypatc
 
 
 def test_resolve_referee_record_mutant_different_capsule_is_citation_unverified(monkeypatch):
-    """[mesh-referee-capsule-citation] mutant: the door hands back a
+    """Referee capsule-citation mutant: the door hands back a
     record for the right nonce, but it's someone else's capsule (a
     different declared response digest) -- never cited as verified."""
     _patch_bundle_verification(monkeypatch, verify_ok=True)

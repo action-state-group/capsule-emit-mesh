@@ -203,7 +203,7 @@ def test_covered_clamped_to_entries_on_disk(tmp_path, fake_witness):
 
 
 # --------------------------------------------------------------------------- #
-# [mesh-account-role-conflict-blindness] -- a role-conflicted or unknown-role  #
+# Role-conflict blindness -- a role-conflicted or unknown-role               #
 # exchange must never fold into a clean served/requested tally.               #
 # --------------------------------------------------------------------------- #
 def test_role_of_reads_explicit_poc_role_not_the_old_effect_heuristic():

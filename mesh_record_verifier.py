@@ -81,7 +81,7 @@ HOST_OBSERVATION_POINTS = frozenset({
 #: existing cross_party_rung vocabulary) — reused verbatim, not reforked.
 #: Ordering: UNILATERAL_FALLBACK < ACKNOWLEDGED_RECEIPT < FULL_BILATERAL.
 #:
-#: [mesh-rung12-adversarial-review] D1, closed for the zero-effort case
+#: Rung-1/2 adversarial review D1, closed for the zero-effort case
 #: (2026-09-01, TRUST-MODEL.md §4.1a) — this record family previously had no
 #: separate client-acknowledgment step, so ``acknowledged_receipt`` was not a
 #: value this deriver produced. It now IS: a valid requester_commitment whose
@@ -258,7 +258,7 @@ class MissingExchangeId(RecordVerificationError):
     """The record's x-mesh-lifecycle-v1 block has no exchange_id, or it is
     an empty string.
 
-    [mesh-rung12-adversarial-review] D2 — exchange_id is the correlator two
+    Rung-1/2 adversarial review D2 — exchange_id is the correlator two
     records of an exchange are joined on AND the value a rung-2
     requester_commitment is bound against. Defaulting an absent value to ""
     would let any two records that both omit exchange_id collapse onto the

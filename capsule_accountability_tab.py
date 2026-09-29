@@ -100,7 +100,7 @@ __all__ = [
 #: view / not yet asked -- never amber for "not shown here". A block that is
 #: honestly not wired yet uses this state, distinct from the four-state
 #: capsule_id/rung discipline above.
-#: [mesh-live-tab-pane-proxy] L2: references / absences-against-me / the
+#: References / absences-against-me / the
 #: refusals-issued and native-log fallbacks are each a mechanism that does
 #: not exist in this repo yet -- exactly ``assurance_map.STATE_NOT_CHECKED``'s
 #: definition, not the ad hoc ``"pending"`` string these blocks carried
@@ -132,7 +132,7 @@ def freshness_grade(client_nonce_source: str | None) -> dict[str, Any]:
     a weaker state -- the node saying "I saw a replay" is worse than the
     node saying nothing about freshness at all, and must render that way.
 
-    [mesh-live-tab-pane-proxy] L2 (§7 ruling, "pending/present-unverified in
+    Per the §7 ruling ("pending/present-unverified in
     the freshness-rung ... now in scope"): a node-generated nonce source
     (``sidecar_generated_fallback``/``local_ingress``, or the Rust plugin's
     ``plugin_generated_fallback``) carries no
@@ -421,7 +421,7 @@ def build_served_summary_block(
     checkpoint_lines: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Block 2 -- served summary (self-derived, sampled). Real now
-    ([mesh-served-summary-derivation]): ``served_summary.build_served_summary``
+    (the served-summary derivation): ``served_summary.build_served_summary``
     (never re-derived) folded over this node's own witnessed range. Honestly
     ``absent`` when there is no witnessed checkpoint yet -- never a
     fabricated zero -- and ``failed`` (never silently green) if the summary's
@@ -542,7 +542,7 @@ def build_card_face(
     ``adjudications_summary``/``shared_summary``) for the facts that module
     already computes correctly -- never re-derives them -- and adds the v2
     pieces: the promise line and the served-summary block
-    (``served_summary.build_served_summary``, [mesh-served-summary-derivation]).
+    (``served_summary.build_served_summary``, the served-summary derivation).
     Imported locally: ``self_accountability`` itself imports from this module
     (the rung graders), so a module-level import here would be circular.
     """

@@ -53,7 +53,7 @@ def _nested_capsule(*, model="Llama-3.2-3B", quant="Q4_K_M", gpu="Apple M4 Max",
             "usage": {"prompt_tokens": 41, "completion_tokens": 2, "total_tokens": total_tokens},
         },
     }
-    # [mesh-provider-no-body-persistence] Absent by default (pre-b6a-requester-
+    # Absent by default (pre-b6a-requester-
     # seal shape); set explicitly for role-dependent tests (disclosure_status).
     if role is not None:
         poc["serving_provenance"]["role"] = role
@@ -652,7 +652,7 @@ def test_tool_calls_note_is_carried_verbatim():
 
 
 # ---------------------------------------------------------------------------
-# [disclosure-default-on] recompute-and-match over the sidecar's own preimage.
+# recompute-and-match over the sidecar's own preimage.
 # The sidecar's response_digest is digest_json(response_json) -- the FULL raw
 # response body, not just the served facts -- so when the disclosed
 # response_body is the exact object, the viewer can prove a byte-exact match,
@@ -718,7 +718,7 @@ def test_conversation_falls_back_to_served_facts_when_no_response_body_held():
 
 
 # ---------------------------------------------------------------------------
-# [mesh-disclosure-recompute-jcs-float] response_body recompute against a
+# response_body recompute against a
 # HOST-FORWARDED response_digest (mesh-llm host's plain-JCS + ryu-float
 # construction, `openai_exchange::jcs_value`), distinct from the
 # capsule-sidecar strict-JCS + repr-stringified-float construction covered
@@ -908,7 +908,7 @@ def test_load_disclosures_skips_malformed_files_without_raising(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# [mesh-provider-no-body-persistence] load_disclosure_purges + disclosure_status
+# load_disclosure_purges + disclosure_status
 # -- the per-record persistence-honesty badge distinct from the per-field
 # disclosed/verify checks above.
 # ---------------------------------------------------------------------------

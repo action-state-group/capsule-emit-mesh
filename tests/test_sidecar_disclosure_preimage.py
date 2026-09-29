@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-provider-no-body-persistence] capsule_sidecar.py's request+response
+"""capsule_sidecar.py's request+response
 TEXT PREIMAGE capture: REQUESTER ROLE ONLY, opt-in, DEFAULT OFF.
 
 CORE INVARIANTS under test:

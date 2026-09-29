@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Adopts ``checkpointed-local-log``'s ``cll.ledger.store.LedgerStore`` as
-this repo's own capsule-ledger backend (``[mesh-ledger-store-migration]``).
+this repo's own capsule-ledger backend.
 
 **THE gate this module exists to satisfy**: every existing checkpoint
 commits to raw ledger lines in append order as MMR leaves, and an MMR leaf
@@ -129,7 +129,7 @@ def open_ledger_store(ledger_dir: Path, *, log_id: str = "") -> LedgerStore:
     """Open (creating if new) the :class:`~cll.ledger.store.LedgerStore` at
     ``ledger_dir``, with ``rotate_at_checkpoint=True`` and this repo's
     declared :data:`CORRELATION_FIELDS` -- the exact construction
-    ``[mesh-ledger-store-migration]`` specifies. Callers that only need to
+    the ledger-store migration specifies. Callers that only need to
     READ (a CLI tool, a one-off checkpoint script) never need to attach a
     :class:`~cll.ledger.segments.Checkpointer` -- that is only required
     before an ``append()`` that would cross the segment's byte threshold;
@@ -311,7 +311,7 @@ def _read_store_page(
                             "segment": seg.name,
                             "first_seq": manifest.first_seq,
                             "last_seq": manifest.last_seq,
-                            # [mesh-ui-ledger-finder] the segment's own closing
+                            # The segment's own closing
                             # date range -- read off its SegmentManifest (never
                             # moved on unmount, unlike the segment's .jsonl
                             # bytes), so the Finder can list "archived — mount

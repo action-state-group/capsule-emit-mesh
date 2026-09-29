@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for requester_identity_binding.py — the module that closes the
 zero-effort self-mint gap in mesh_record_verifier.derive_cross_party_rung()
-([mesh-rung12-adversarial-review] D1). See test_requester_commitment.py's
+(adversarial-review finding D1). See test_requester_commitment.py's
 TestIdentityBindingClosesTheSelfMintGap for the verifier-integration/
 adversarial coverage; this file is unit-level, round-trip and mutant testing
 of make_requester_identity_binding() / verify_requester_identity_binding()

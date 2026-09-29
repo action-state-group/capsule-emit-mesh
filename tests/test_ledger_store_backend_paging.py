@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-live-tab-pane-proxy] L0 -- cap/paging over ``read_capsules_page``,
+"""L0 -- cap/paging over ``read_capsules_page``,
 for both the flat-file fallback and the segmented ``LedgerStore``. The
 sidecar's future pane routes call this per HTTP request; a page must never
 exceed its cap, and the cursor must round-trip every record exactly once

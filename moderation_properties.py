@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[buzz-moderation-profile-spike] Moderation properties -- system rates,
+"""Moderation properties -- system rates,
 never a per-user anything.
 
 Design doc §4/§6: "counts by decision, automated rate, twin-disagreement
@@ -43,7 +43,7 @@ __all__ = [
     "moderation_properties_from_counts",
 ]
 
-#: [mesh-fabric-vocab-alignment] the SAME constant `history_card.py` /
+#: The SAME constant `history_card.py` /
 #: `twin_adjudicator.py` already carry -- a rate over sealed records is a
 #: derived aggregate, not an observation of one and not a claim about it.
 EPISTEMIC_TYPE_DERIVED_METRIC = "derived_metric"

@@ -81,7 +81,7 @@ def _seal_and_checkpoint(state, n: int) -> list[str]:
     """Mint N well-formed capsules via capsule_emit's own ``seal()``, land
     them in the sidecar's REAL cll.ledger.store.LedgerStore -- ``state.
     log_source`` -- and force a real checkpoint through the sidecar's OWN
-    (out-of-band) checkpointing -- see [mesh-ledger-store-migration]'s
+    (out-of-band) checkpointing -- see the ledger-store migration's
     test_evidence_responder.py for the same pattern."""
     caps = []
     for i in range(n):

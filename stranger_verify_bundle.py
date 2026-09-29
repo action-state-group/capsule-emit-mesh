@@ -117,7 +117,7 @@ def _transparent_check(ledger_dir: Path, capsule_id: str, issuer_key: Path | Non
     alone only prove content-hash + chain integrity, never who signed it;
     this is the separate check that does). Returns a one-line status string.
 
-    [mesh-verify-bind-statement-to-capsuleid] Two adversarial-review findings
+    Binding the statement to the capsule id: two adversarial-review findings
     (ADV-1/ADV-2, `_work/mesh-adversarial-review-2026-09-05.md`) against the
     prior version of this function, both re-verified by execution and both
     fixed here:
@@ -196,7 +196,7 @@ def verify_bundle(
     producer envelope inline)."""
     lines: list[str] = []
     any_unverified = False
-    # [mesh-ledger-store-migration] ledger_dir is a disclosed COPY of
+    # ledger_dir is a disclosed COPY of
     # whatever backend the provider actually uses -- store-aware, with a
     # labeled, read-only fallback for a still-flat bundle (older nodes).
     records, archived = read_all_capsules(ledger_dir)
@@ -359,7 +359,7 @@ def tamper_check(ledger_dir: Path, issuer_key: Path | None) -> bool:
         flipped = format(int(original_id[0], 16) ^ 0xF, "x") + original_id[1:]
 
         if is_store_ledger(scratch):
-            # [mesh-ledger-store-migration] the first record lives in the
+            # The first record lives in the
             # store's first segment file -- flip it in place there, then
             # reindex (SQLite index + lookup index) from the mutated bytes
             # so every byte_offset they cache is recomputed fresh rather

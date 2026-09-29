@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-ledger-store-migration] THE gate: the MMR must not notice.
+"""THE gate: the MMR must not notice.
 
 Recomputes EVERY historical checkpoint root from a `LedgerStore` imported
 from a real, git-tracked demo ledger (`ledger-checkpoint-demo/`,

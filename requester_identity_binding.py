@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Requester identity binding — closing the self-mint gap in rung-2.
 
-docs/TRUST-MODEL.md §4.1a / [mesh-rung12-adversarial-review] D1 disclosed a
+docs/TRUST-MODEL.md §4.1a (rung-1/2 adversarial review, D1) disclosed a
 gap in requester_commitment.py's rung-2: ``verify_requester_commitment()``
 confirms a commitment's signature is internally self-consistent and bound to
 a record's own ``request_digest``/``exchange_id`` — it does NOT confirm the
@@ -74,7 +74,7 @@ IDENTITY_BINDING_TYPE = "x-mesh-requester-identity-binding/1"
 #: re-checks as invalid — never fabricated, never "best effort" parsed.
 IDENTITY_BINDING_VERSION = 1
 
-#: [mesh-rung12-adversarial-review] D1, closed for the inline/zero-effort
+#: Rung-1/2 adversarial review D1, closed for the inline/zero-effort
 #: case only — see module docstring. Carried alongside a verified binding so
 #: a reader knows precisely what is and is not proven: a persistent,
 #: independently-checkable identity was cited and its own signature holds,
@@ -89,7 +89,7 @@ IDENTITY_LIMITATION_CAVEAT = (
     "the claim is unexpired, and (when a revocation set is supplied) the "
     "cert_id is not revoked — it does NOT and cannot prove owner_id "
     "corresponds to any real person or organisation. It closes the "
-    "zero-effort inline self-mint case ([mesh-rung12-adversarial-review]): "
+    "zero-effort inline self-mint case (found in an adversarial review): "
     "a commitment key with no persistent identity behind it can no longer "
     "reach full_bilateral. It does not close the case of an attacker who "
     "self-registers an identity too — that requires an external trust "

@@ -10,11 +10,11 @@ mutant. Each acceptance mutant from the inbox item gets its own test:
   - same-owner twin -> twin_owner_distinct: false, no verdict
   - thin margin, no referee -> inconclusive
   - identical -> corroborated, zero network calls
-  - [mesh-provider-no-body-persistence] provider-role half, no disclosed
+  - provider-role half, no disclosed
     transcript -> no verdict, labeled no_requester_transcript, never a crash
-  - [mesh-referee-live-e17c] referee shares an owner with a disputant ->
+  - referee shares an owner with a disputant ->
     refused, labeled referee_not_independent, referee never called
-  - [mesh-referee-live-e17c] any divergence + referee given -> referee is
+  - any divergence + referee given -> referee is
     ALWAYS called (disputants' own logprobs are never an escalation gate)
 """
 from __future__ import annotations
@@ -129,7 +129,7 @@ def _make_half(
 
 
 def _make_provider_half_without_transcript(text: str, *, owner_id: str | None = "owner-provider") -> AdjudicationHalf:
-    """[mesh-provider-no-body-persistence] A provider-role half with NO
+    """A provider-role half with NO
     disclosed response body -- the provider role has no disclosure write
     path at all, so there is, by construction, no requester-held transcript
     for a provider-role capsule. `disclosed={}`, same as a real caller would
@@ -253,7 +253,7 @@ def test_forged_half_fails_verify():
 
 
 # ---------------------------------------------------------------------------
-# [mesh-provider-no-body-persistence] Mutant: provider-role half with no
+# Mutant: provider-role half with no
 # disclosed transcript -> no verdict, labeled no_requester_transcript, never
 # a crash (PreimageDigestMismatchError would otherwise fire on the always-
 # empty disclosed dict a provider-role capsule can ever carry).
@@ -403,7 +403,7 @@ def test_seal_adjudication_capsule_for_corroborated_verdict():
     assert adj["half_a_capsule_id"] == half_a.capsule_id
     assert adj["half_b_capsule_id"] == half_b.capsule_id
     assert isinstance(adj["margin"], str)  # exact decimal string, never a float
-    # [mesh-fabric-vocab-alignment] additive record-header field + per-verdict status.
+    # Fabric-vocabulary alignment: additive record-header field + per-verdict status.
     assert ca["epistemic_type"] == "adjudication"
     assert adj["status"] == "SATISFIED"
 
@@ -471,7 +471,7 @@ def test_top2_logprob_margin_none_when_fewer_than_two_candidates():
 
 
 # ---------------------------------------------------------------------------
-# Opt-in logprob_tau/referee gate (inbox [mesh-twin-logprobs-passthrough])
+# Opt-in logprob_tau/referee gate (twin logprobs passthrough)
 # ---------------------------------------------------------------------------
 
 
@@ -626,7 +626,7 @@ def test_seal_adjudication_capsule_publishes_referee_capsule_id_and_tau():
     assert adj["tau"] == "0.5"
     assert adj["referee_capsule_id"] == "referee-capsule-123"
     assert adj["referee_logprobs_absent"] is False
-    # [mesh-fabric-vocab-alignment] a contradicted:<owner> verdict maps to CONTRADICTED.
+    # A contradicted:<owner> verdict maps to CONTRADICTED.
     assert adj["status"] == "CONTRADICTED"
 
 
@@ -645,19 +645,19 @@ def test_seal_adjudication_capsule_omits_referee_fields_when_no_referee_called()
 
 
 # ---------------------------------------------------------------------------
-# [mesh-adjudicator-margin-tau] Fix 1: adversarial tests
+# Fix 1 (adjudicator margin tau): adversarial tests
 # ---------------------------------------------------------------------------
 
 
 def test_default_margin_tau_is_0_9():
-    """[mesh-adjudicator-margin-tau] DEFAULT_MARGIN_TAU must be 0.9 --
+    """DEFAULT_MARGIN_TAU must be 0.9 --
     the adversarial-council lowering that prevents a single trailing token
     from forcing inconclusive."""
     assert DEFAULT_MARGIN_TAU == 0.9
 
 
 def test_trailing_token_does_not_force_inconclusive():
-    """[mesh-adjudicator-margin-tau] A single trailing token on one side
+    """A single trailing token on one side
     (out of 20 total in the longer sequence: margin = 19/20 = 0.95 >= 0.9)
     must NOT force inconclusive -- that would let an accused node trivially
     evade with one appended token."""
@@ -675,7 +675,7 @@ def test_trailing_token_does_not_force_inconclusive():
 
 
 def test_many_trailing_tokens_still_inconclusive():
-    """[mesh-adjudicator-margin-tau] Systematic injection of many trailing
+    """Systematic injection of many trailing
     tokens (> 10% of the longer sequence) must still produce inconclusive --
     the threshold is not a blank pass for large divergences.
     8 matching tokens out of 11 total (margin = 8/11 ≈ 0.727) < 0.9."""
@@ -692,19 +692,19 @@ def test_many_trailing_tokens_still_inconclusive():
 
 
 def test_margin_tau_denominator_and_rationale_exported():
-    """[mesh-adjudicator-margin-tau] MARGIN_TAU_DENOMINATOR and
+    """MARGIN_TAU_DENOMINATOR and
     MARGIN_TAU_RATIONALE must be non-empty strings exported from the module."""
     assert isinstance(MARGIN_TAU_DENOMINATOR, str) and MARGIN_TAU_DENOMINATOR
     assert isinstance(MARGIN_TAU_RATIONALE, str) and MARGIN_TAU_RATIONALE
 
 
 # ---------------------------------------------------------------------------
-# [mesh-referee-attribution] Fix 2: adversarial tests
+# Fix 2 (referee attribution): adversarial tests
 # ---------------------------------------------------------------------------
 
 
 def test_forged_referee_is_rejected_not_sealed():
-    """[mesh-referee-attribution] A referee callable that returns no identity
+    """A referee callable that returns no identity
     (identity=None) must raise UnattributableRefereeError -- an unattributed
     verdict must never seal.  A lambda supplying only verdict+margin is the
     paradigm forge."""
@@ -720,7 +720,7 @@ def test_forged_referee_is_rejected_not_sealed():
 
 
 def test_attributed_referee_seals_with_referee_id():
-    """[mesh-referee-attribution] A referee that supplies a RefereeIdentity
+    """A referee that supplies a RefereeIdentity
     produces a sealed capsule that names ``referee_id`` in the adjudication
     block -- a verifier can trace the verdict to its origin."""
     half_a = _make_half("text a", owner_id="owner-a")
@@ -741,7 +741,7 @@ def test_attributed_referee_seals_with_referee_id():
 
 
 def test_referee_unreachable_returns_no_verdict():
-    """[mesh-referee-attribution] A referee callable that raises any exception
+    """A referee callable that raises any exception
     must produce an AdjudicationOutcome with no_verdict_reason ==
     NO_VERDICT_REFEREE_UNREACHABLE -- never propagate the exception to the
     caller."""
@@ -759,7 +759,7 @@ def test_referee_unreachable_returns_no_verdict():
 
 
 def test_seal_none_for_referee_unreachable():
-    """[mesh-referee-attribution] An outcome with no_verdict_reason ==
+    """An outcome with no_verdict_reason ==
     referee_unreachable returns None from seal_adjudication_capsule -- same
     as other no-verdict cases; a crashed-referee outcome must never seal."""
 
@@ -774,12 +774,12 @@ def test_seal_none_for_referee_unreachable():
 
 
 # ---------------------------------------------------------------------------
-# [mesh-adjudicator-owner-and-weights] Fix 3: adversarial tests
+# Fix 3 (adjudicator owner and weights): adversarial tests
 # ---------------------------------------------------------------------------
 
 
 def test_absent_owner_id_does_not_grant_verdict():
-    """[mesh-adjudicator-owner-and-weights] half_a with owner_id=None and a
+    """half_a with owner_id=None and a
     distinct half_b must return no_verdict_reason == owner_absent, NOT a
     corroborated/inconclusive verdict -- absent identity must not grade
     better than declared-same-owner."""
@@ -793,7 +793,7 @@ def test_absent_owner_id_does_not_grant_verdict():
 
 
 def test_both_absent_owner_does_not_grant_verdict():
-    """[mesh-adjudicator-owner-and-weights] Both halves with owner_id=None
+    """Both halves with owner_id=None
     must also refuse -- even if the identity would be trivially 'equal',
     there is no identity to assert distinct-ness of."""
     half_a = _make_half("hello world", owner_id=None)
@@ -806,7 +806,7 @@ def test_both_absent_owner_does_not_grant_verdict():
 
 
 def test_one_side_weights_digest_unknown_no_shared_assertion():
-    """[mesh-adjudicator-owner-and-weights] When one side's weights_digest is
+    """When one side's weights_digest is
     None (unknown) and the other is known, the outcome's weights_digest must
     be None -- we cannot assert both sides shared the same weights when one
     never declared theirs."""
@@ -823,7 +823,7 @@ def test_one_side_weights_digest_unknown_no_shared_assertion():
 
 
 def test_seal_does_not_assert_shared_weights_when_one_side_unknown():
-    """[mesh-adjudicator-owner-and-weights] The sealed capsule's adjudication
+    """The sealed capsule's adjudication
     block must carry weights_digest=None when one side did not declare its
     weights -- the capsule must not assert shared weights it cannot verify."""
     half_a = _make_half("hello world", owner_id="owner-a", weights_digest=None)
@@ -838,7 +838,7 @@ def test_seal_does_not_assert_shared_weights_when_one_side_unknown():
 
 
 # ---------------------------------------------------------------------------
-# [mesh-fabric-vocab-alignment] status_for_verdict
+# Fabric-vocabulary alignment: status_for_verdict
 # ---------------------------------------------------------------------------
 
 

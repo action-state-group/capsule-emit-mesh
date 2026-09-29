@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""[buzz-moderation-profile-spike] The acceptance test-of-record.
+"""The acceptance test-of-record.
 
 Design doc §6 / task acceptance line: "ten decisions on a Buzz test room,
 two twinned, one human-refereed, one appealed via the door; every record
 verifies offline; the Art. 17 statement of reasons is generated from the
-records alone." Mirrors `[mesh-reconcile-and-close-v0]`'s own "append as a
+records alone." Mirrors the reconcile-and-close v0 work's own "append as a
 test-of-record" precedent -- one end-to-end scenario a reviewer can read
 top to bottom, plus the two mutants the task's own acceptance line names.
 """

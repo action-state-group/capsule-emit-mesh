@@ -178,8 +178,8 @@ def _served_facts(serving_provenance: dict[str, Any] | None) -> dict[str, Any]:
     flat form. A fact genuinely not carried stays ``None`` -> ``VERDICT_ABSENT``;
     the literal ``"unknown"`` sentinel the producer writes for a fact it chose
     not to expose returns ``_SELF_REPORTED_ABSENT`` -> ``VERDICT_SELF_REPORTED_ABSENT``
-    (distinguishable from honest absence -- the [mesh-promise-reconciliation-grading]
-    defect 2 fix).
+    (distinguishable from honest absence -- the promise-reconciliation
+    grading defect 2 fix).
     """
     sp = serving_provenance or {}
     model = sp.get("model") or {}

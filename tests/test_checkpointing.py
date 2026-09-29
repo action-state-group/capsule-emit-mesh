@@ -187,7 +187,7 @@ def test_checkpoint_state_cadence_triggers_after_declared_count(tmp_path, fake_w
 def test_checkpoint_state_registers_a_valid_cose_wire_checkpoint(tmp_path, fake_witness):
     """The witness's /checkpoints route is COSE-only (single-host ruling,
     2026-08-27): a checkpoint that only carries a JSON body is unregisterable.
-    This is the acceptance check for [mesh-plugin-cll-consume] A3: what
+    This is the acceptance check for the plugin log-consume change: what
     _checkpoint_now actually sends must decode and verify offline as a real
     kind="cll-checkpoint" COSE_Sign1 statement, not just satisfy the fake's
     call-count."""
@@ -278,7 +278,7 @@ def test_reconnect_self_heals_backlog_in_one_checkpoint(tmp_path, fake_witness):
 
 
 def test_checkpoint_state_never_writes_into_a_ledger_it_does_not_own(tmp_path, fake_witness):
-    """[mesh-plugin-cll-consume] A3's core constraint: checkpointing a log
+    """The core constraint: checkpointing a log
     written by someone else (the Rust plugin, here simulated by writing
     capsules.jsonl directly rather than through JsonlLogSource.append) must
     never append anything back into that file -- only into the sibling

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-native-log-join] The sidecar's own native_log.jsonl / lifecycle_
+"""The sidecar's own native_log.jsonl / lifecycle_
 events.jsonl instrumentation, driven end-to-end over real HTTP against the
 sidecar (run_sidecar) fronting a stub upstream mesh-llm server -- the same
 pattern test_replay_spot_check.py uses for its own live-server tests.
@@ -54,7 +54,7 @@ class _StubUpstream(BaseHTTPRequestHandler):
             payload = b"not json"
             status = 200
         elif self.__class__.mode == "peer_capsule_id":
-            # [mesh-requester-nonce-addendum] Stands in for mesh-llm having
+            # Stands in for mesh-llm having
             # routed this call to a mesh peer: the peer's own X-Capsule-Id
             # rides the response header, relayed byte-for-byte.
             payload = json.dumps(
@@ -218,7 +218,7 @@ def test_bad_client_json_never_sealed_and_native_log_shows_unsealed(sidecar):
     assert len(report["failed_unsealed"]) == 1
 
 
-# ── [mesh-requester-nonce-addendum] peer X-Capsule-Id read back live ──────
+# ── requester nonce: peer X-Capsule-Id read back live ──────
 
 
 @pytest.fixture

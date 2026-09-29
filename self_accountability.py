@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""[mesh-pane-a-self-accountability-tab] Pane A "This node" -- one card,
+"""Pane A "This node" -- one card,
 computed entirely from this node's own ledger + receipts, answering "what
 can I show others about myself".
 
@@ -15,19 +15,19 @@ Composes verbs that already exist; re-derives none of their evidence:
     ``freshness_grade`` / ``cross_party_grade`` / ``measurement_class_grade``
     (reused byte-for-byte, never re-implemented) applied to the most recent
     sealed record, plus the owner-provenance block that record's
-    ``x-mesh-poc-v1.owner`` already carries ([mesh-e6-identity-owner-cert]).
+    ``x-mesh-poc-v1.owner`` already carries.
     ``weights_digest`` is graded ``absent`` for every record: no capsule
     field named ``weights_digest`` exists in what this sidecar seals today
     (it is declared only at adjudication-fixture time in
     ``twin_adjudicator.AdjudicationHalf``) -- never fabricated here.
   - **shared**: cards/bundles served and refusals issued, via
-    [mesh-e14-evidence-responder]. **Honestly absent today**: the responder
+    the evidence responder. **Honestly absent today**: the responder
     depends on ``capsule_emit.evidence_request``, an upstream ``capsule-emit``
     module that has not merged (capsule-emit-mesh PR #83 is CI-red pending
     capsule-emit PR #148) -- this card must not fabricate a zero for a count
     it cannot yet take.
   - **adjudications**: a tally of sealed adjudication capsules
-    (``chain.relation == "adjudicates"``, [mesh-e17a-offline-adjudicator])
+    (``chain.relation == "adjudicates"``, the offline adjudicator)
     that name one of this node's own sealed capsule_ids as either half.
 
 Every field carries its own ``source``/``capture_method`` (or is graded
@@ -72,10 +72,10 @@ __all__ = [
 HONESTY_LINE = "coverage is checked by counterparties, not by this node; hardware is OS-reported."
 
 #: STALE REASON, SUPERSEDED (kept in this comment only so the history is
-#: legible): "[mesh-e14-evidence-responder] depends on capsule_emit
+#: legible): "the evidence responder depends on capsule_emit
 #: .evidence_request, an upstream capsule-emit module not yet merged
 #: (capsule-emit-mesh #83 CI red pending capsule-emit #148)". Both #83 and
-#: [mesh-e15-evidence-http-route] are MERGED on `main` today -- the
+#: the evidence HTTP route are MERGED on `main` today -- the
 #: responder that ANSWERS a request exists. The current, real gap: nothing
 #: persists a served/refused count for this card to tally (same gap
 #: `peer_accountability_tab.ASKED_ABSENT_REASON` documents for the
@@ -163,14 +163,14 @@ def history_summary(
     """History row: continuous since / N checkpoints / unforked / witnessed
     -- ``history_card.build_history_card()``'s own properties, folded into
     the card shape -- plus, when ``ledger_records`` is supplied, a SEPARATE
-    ``pair_sequencing`` block: [mesh-sequence-per-counterparty]'s per-
+    ``pair_sequencing`` block: the per-counterparty sequencing's per-
     (self, counterparty) ``gaps_detected`` count. This is a DIFFERENT axis
     from ``continuity`` above (that is the checkpoint-CHAIN's own
     consistency; this is whether any counterparty pair's ``seq`` stream is
     missing records) -- the two are never blended into one field.
     ``ledger_records`` omitted (the default) means this row simply cannot
     compute it yet -- honestly absent, never a fabricated zero.
-    [adv-stream-membership-authenticated] ``pair_sequencing`` also carries
+    ``pair_sequencing`` also carries
     ``unauthenticated_pairs``/``unauthenticated_records``: every pair (and
     its record count) sealed with no authenticated counterparty binding
     (the ``UNKNOWN_COUNTERPARTY`` bucket), reported as its own labeled total
@@ -189,7 +189,7 @@ def history_summary(
     }
     if ledger_records is not None:
         pair_results = verify_pair_continuity(ledger_records)
-        # [adv-stream-membership-authenticated] Records filed under the
+        # Records filed under the
         # UNKNOWN_COUNTERPARTY bucket (no authenticated -- or, on the
         # requester side, no available -- counterparty id) must be VISIBLE
         # here, counted and labeled, never folded silently into the other

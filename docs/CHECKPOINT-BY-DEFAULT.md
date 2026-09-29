@@ -136,7 +136,7 @@ no `--witness`/`--ts-url` means self-checkpointed, no network.
 at — including the Rust plugin's own `<data-dir>/ledger`, via
 `capsule_sidecar.py --plugin-checkpoint-config --plugin-ledger-dir`, or a
 standalone `checkpoint_daemon.py --ledger-dir <plugin-data-dir>/ledger`
-invocation. `[mesh-plugin-checkpoint-cadence]` adds a second, in-process
+invocation. The plugin checkpoint cadence adds a second, in-process
 option for a Path 1 node: `plugins/admission-policy`'s own tokio background
 task (`checkpoint_cadence.rs`, over `plugins/capsule-producer`'s
 `checkpoint.rs` — the same MMR/COSE/cadence logic re-expressed in Rust

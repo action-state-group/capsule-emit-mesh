@@ -145,7 +145,7 @@ def test_select_referee_requires_matching_weights_digest_on_both_twins():
 
 
 def test_select_referee_hard_excludes_candidate_sharing_owner_with_either_twin():
-    """[mesh-referee-live-e17c] Owner independence is a HARD gate for
+    """Owner independence is a HARD gate for
     select_referee, not just a scoring penalty: a same-owner candidate is
     excluded from the pool entirely -- it must not even appear in
     `breakdown`, and the pick must be the independent candidate with
@@ -163,7 +163,7 @@ def test_select_referee_hard_excludes_candidate_sharing_owner_with_either_twin()
 
 
 def test_select_referee_falls_back_to_distinct_node_key_when_no_owner_independent_candidate():
-    """[mesh-referee-live-e17c] When the hard owner-exclusion would leave
+    """When the hard owner-exclusion would leave
     zero candidates -- every same-model peer shares an owner with a twin --
     select_referee falls back to the full comparable pool ("distinct node
     key" instead of distinct owner) rather than refusing outright, and

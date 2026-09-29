@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # One-command "seal a real capsule and pretty-print EVERY input field" run,
 # for a SINGLE real `mesh-llm serve` host + the real `admission-policy`
-# plugin. [mesh-capsule-data-inspector-onemac]
+# plugin.
 #
 # Answers, on ONE Mac, with real bytes: "on whose hardware, which model, over
 # which bytes." Does five things, in order:

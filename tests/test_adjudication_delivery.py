@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for [mesh-adjudication-delivery-ack] -- ``adjudication_delivery.py``
+"""Tests for adjudication delivery + ack -- ``adjudication_delivery.py``
 and its ``POST /evidence/deliver`` door on ``evidence_server.py``.
 
 Acceptance / mutants that must flip (inbox item):
