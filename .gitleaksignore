@@ -26,3 +26,17 @@ ade1789f73ba5e617eaa2d6b18fbc691b63ca4f9:plugins/admission-policy/web-ui/src/fea
 af9815c74a3a2aa03cfac605ec6dc1642afa2630:moderation_twin.py:generic-api-key:115
 # the Ed25519PrivateKey type annotation
 f5d875b95fe775226c985d32148dd8fc3e2985c4:moderation_twin.py:generic-api-key:115
+
+# Branch history (demo-plugin line), reviewed 2026-09-29: public signing-key ids used as
+# test fixtures in evidence_panes.rs, and a pinned cross-language HMAC test vector.
+2bc5223f42925a41dc0e8d210e4368f3b3f7e80e:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:3271
+2bc5223f42925a41dc0e8d210e4368f3b3f7e80e:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:3272
+6ac92aee8fa801e8f6e6cd923febcea4fa1475d2:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:3089
+e61873f7f91798bc434dec40638d902a1e88fdc7:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:2880
+3a2e3c48a48f5495983f208b96a41393bf507048:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:2589
+3a2e3c48a48f5495983f208b96a41393bf507048:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:2676
+3a2e3c48a48f5495983f208b96a41393bf507048:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:2722
+3a2e3c48a48f5495983f208b96a41393bf507048:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:2766
+3a2e3c48a48f5495983f208b96a41393bf507048:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:2795
+3a2e3c48a48f5495983f208b96a41393bf507048:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:2906
+8b5f831a22a76e3d842d839168032c7d8a91160e:tests/test_door_auth.py:generic-api-key:34
