@@ -32,6 +32,26 @@ the coordinator's main record and the stage records it carried (on a requester, 
 runs the hand-off check itself (`verifySplit`) and draws the stage strip under the row. Rows
 without `split` render as before. No pane emits it yet.
 
+**Payments.** This node's sealed payment-lifecycle records (`x-mesh-settlement-v1`, one per
+`payment.lifecycle.v1` event the plugin observed) are this node's own log entries: Pane A lists
+them as `kind: "settlement_observation"`, and they are never exchanges. Panes B and C read them
+only through their `exchange_id` join (`src/evidence_panes/settlement.rs`):
+
+- each `panes/pane-c` row carries `settlement`, the payer-book summary of the settlement records
+  its own exchange ids join (`api/sidecarTypes.ts` `PayerBook`), or `null` when none does. A
+  free exchange, payments off, and a request that failed before it was priced all read `null`:
+  never "unpaid";
+- the list carries `settlement_unjoined` (exchange ids with settlement records that no row
+  carries) and `settlement_missing_exchange_id` (records naming no exchange id), so no record is
+  dropped;
+- when this node holds any settlement record, each `panes/pane-b` row carries `settlement`,
+  per-peer counts (`PeerSettlementCounts`). The provider's side (`lapsed`, `debt`,
+  `settled_both_books`) is `null`, because this node's records cannot see it.
+
+Amounts are copied from each record and never added up. The panes carry no `payments` field:
+whether the host has a payments provider is the host's to say, and the page reads a missing field
+as "not known".
+
 Status codes the page tells apart (`LedgerPage.tsx` `describePaneError`):
 **404** means this plugin build serves no panes yet, and **503** means the
 plugin's pane service isn't running. Any other failure gets the generic

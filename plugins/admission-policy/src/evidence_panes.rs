@@ -64,8 +64,11 @@
 //!    diverges the day a tampered record lands.
 
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
+
+mod settlement;
+use settlement::{is_settlement_record, peer_counts, SettlementIndex};
 
 /// Sentinel for "this mechanism exists but isn't wired for a plugin-ledger
 /// read yet" -- never fabricated, never the sidecar's own computed value.
@@ -542,6 +545,10 @@ struct EffectiveLedger {
     our_records: Vec<Value>,
     /// `foreign capsule_id -> ReceivedProvenance`, built from our citing records.
     received_provenance: HashMap<String, ReceivedProvenance>,
+    /// Our settlement records, keyed by the `exchange_id` each records. They
+    /// are our log entries (Pane A) but not exchanges, so Pane B/C read them
+    /// only through this index.
+    settlements: SettlementIndex,
 }
 
 fn effective_ledger(ledger_dir: &Path) -> EffectiveLedger {
@@ -554,9 +561,16 @@ fn effective_ledger(ledger_dir: &Path) -> EffectiveLedger {
     let mut received_provenance: HashMap<String, ReceivedProvenance> = HashMap::new();
     let mut resolved_foreign: HashMap<String, Value> = HashMap::new();
     let mut their_log: HashMap<String, Value> = HashMap::new();
+    let mut settlement_records: Vec<Value> = Vec::new();
+    let mut settlements = SettlementIndex::default();
 
     for record in raw {
-        if is_citing_record(&record) {
+        if is_settlement_record(&record) {
+            // Ours (Pane A), never an exchange half (Pane B/C): Pane B/C read
+            // it only through the settlement index.
+            settlements.push(record.clone());
+            settlement_records.push(record);
+        } else if is_citing_record(&record) {
             // A citing record: resolve the foreign half it cites from the
             // held-artifact store, and record the door's verdict (off the
             // citing record) keyed by the FOREIGN body's own capsule_id -- so
@@ -590,6 +604,17 @@ fn effective_ledger(ledger_dir: &Path) -> EffectiveLedger {
         }
     }
 
+    // `capsule_id` digests the body without `key_id`/`signature`, so a peer
+    // can re-sign one of OUR bodies and push it back under our own id. Such a
+    // half is never "received": drop the provenance and the foreign copy, so
+    // our record stays ours (and keeps its settlement join).
+    let local_ids: HashSet<&str> = local_records
+        .iter()
+        .filter_map(|record| record.get("capsule_id").and_then(Value::as_str))
+        .collect();
+    received_provenance.retain(|id, _| !local_ids.contains(id.as_str()));
+    resolved_foreign.retain(|id, _| !local_ids.contains(id.as_str()));
+
     for (half, prov) in received_provenance.iter_mut() {
         prov.their_log = their_log.get(half).cloned();
     }
@@ -601,13 +626,25 @@ fn effective_ledger(ledger_dir: &Path) -> EffectiveLedger {
     // Pane A: our own halves + our citing records (all ours), never foreign.
     let mut our_records = local_records;
     our_records.extend(citing_records);
+    our_records.extend(settlement_records);
     our_records.extend(choice_records);
 
     EffectiveLedger {
         pane_bc_records,
         our_records,
         received_provenance,
+        settlements,
     }
+}
+
+/// The host-minted `exchange_id` a record carries, if any. Settlement records
+/// join rows on this id, never on the request digest: the payer's lifecycle
+/// events carry only the id.
+fn record_exchange_id(record: &Value) -> Option<&str> {
+    poc_block(record)
+        .and_then(|poc| poc.pointer("/serving_provenance/exchange_id"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && *id != "unknown")
 }
 
 /// `capsule_exchange_tab.digest_match_grade`, the STRUCTURAL half of it: the
@@ -763,11 +800,21 @@ fn is_received_record(
 /// (e.g. both halves of one exchange held on one node, or a peer's half that
 /// carries no provenance line) and folds into it, as before; only an own
 /// record whose answer differs is a separate exchange (the same request asked
-/// again, answered differently).
+/// again, answered differently). Two records of the same role that carry
+/// different host-minted exchange ids are two exchanges even with the same
+/// answer (the same prompt asked twice, answered the same): folding them
+/// would merge two payment books into one row.
 fn push_own<'a>(own: &mut Vec<&'a Value>, record: &'a Value) {
+    let distinct_exchange = |o: &Value| {
+        label_role(o) == label_role(record)
+            && matches!(
+                (record_exchange_id(o), record_exchange_id(record)),
+                (Some(a), Some(b)) if a != b
+            )
+    };
     if !own
         .iter()
-        .any(|o| response_digest(o) == response_digest(record))
+        .any(|o| response_digest(o) == response_digest(record) && !distinct_exchange(o))
     {
         own.push(record);
     }
@@ -1006,6 +1053,34 @@ pub(crate) fn build_pane_a(records: &[Value], card: Value) -> Value {
             // model this node served. Its `cross_party` cell is PRESENT (it
             // cites a counterparty by digest), never the "no counterparty
             // evidence" default a served-only record carries.
+            // A settlement record is this node's own sealed observation of a
+            // payment lifecycle event: one of our log entries, not a served
+            // model, and not evidence from the other side.
+            if is_settlement_record(record) {
+                return json!({
+                    "capsule_id": record.get("capsule_id").cloned().unwrap_or(Value::Null),
+                    "timestamp": record.get("timestamp").cloned().unwrap_or(Value::Null),
+                    "kind": "settlement_observation",
+                    "model_claimed": Value::Null,
+                    "hardware_claimed": Value::Null,
+                    "verify_ok": Value::Null,
+                    "rungs": {
+                        "freshness": { "state": STATE_ABSENT, "client_nonce_source": Value::Null },
+                        "cross_party": {
+                            "state": STATE_NOT_PRESENT,
+                            "text": NO_COUNTERPARTY_EVIDENCE_TEXT,
+                        },
+                        "runtime_binding": { "state": STATE_ABSENT },
+                        "tee_citation": { "state": STATE_ABSENT },
+                        "hardware_inventory": { "state": STATE_ABSENT },
+                        "log_integrity": {
+                            "state": STATE_PRESENT_UNVERIFIED,
+                            "witness_checkpoint_supplied": false,
+                        },
+                    },
+                    "record": record,
+                });
+            }
             if is_local_routing_choice(record) {
                 // The operator's own choice to stop (or resume) routing to a
                 // peer. Not a served model, no counterparty: an honest kind.
@@ -1414,15 +1489,51 @@ pub(crate) fn build_pane_b(
     records: &[Value],
     received_provenance: &HashMap<String, ReceivedProvenance>,
 ) -> Value {
-    build_pane_b_with_refusals(records, received_provenance, &[])
+    build_pane_b_with_refusals(
+        records,
+        received_provenance,
+        &[],
+        &SettlementIndex::default(),
+    )
+}
+
+/// The payer-book summaries of one group's exchanges, one per distinct
+/// `exchange_id` (each id is its own book, so two paid exchanges with the
+/// same request body count twice, and the two halves of one exchange once),
+/// skipping exchanges with no settlement record.
+///
+/// Only this node's own records supply join ids: settlement records are this
+/// node's observations of its own requests, so a counterparty's pushed record
+/// (a `received_provenance` sibling) never attaches a settlement to a row.
+fn settlement_summaries(
+    group: &[Value],
+    settlements: &SettlementIndex,
+    received_provenance: &HashMap<String, ReceivedProvenance>,
+) -> Vec<Value> {
+    let ids: BTreeSet<&str> = group
+        .iter()
+        .filter(|record| {
+            record
+                .get("capsule_id")
+                .and_then(Value::as_str)
+                .is_none_or(|id| !received_provenance.contains_key(id))
+        })
+        .filter_map(record_exchange_id)
+        .collect();
+    ids.into_iter()
+        .filter_map(|id| settlements.summary_for([id]))
+        .collect()
 }
 
 /// [`build_pane_b`] with the door's claim refusals, so a peer's row counts the
-/// exchanges whose other half contradicted our record as disagreements.
+/// exchanges whose other half contradicted our record as disagreements, and
+/// with each row carrying settlement counts for its exchanges when this node
+/// holds any settlement record. Rows keep their shape otherwise.
 fn build_pane_b_with_refusals(
     records: &[Value],
     received_provenance: &HashMap<String, ReceivedProvenance>,
     refusals: &[(String, String, String, Option<String>)],
+    settlements: &SettlementIndex,
 ) -> Value {
     if records.is_empty() {
         return json!({
@@ -1473,25 +1584,33 @@ fn build_pane_b_with_refusals(
             None => unattributed.push(record.clone()),
         }
     }
+    let with_settlement = |mut row: Value, group: &[Value]| {
+        if !settlements.is_empty() {
+            row["settlement"] = peer_counts(&settlement_summaries(
+                group,
+                settlements,
+                received_provenance,
+            ));
+        }
+        row
+    };
     let mut rows: Vec<Value> = by_peer
         .iter()
         .map(|(label, group)| {
-            dealt_with_row(
+            let row = dealt_with_row(
                 label,
                 group,
                 &siblings_by_key,
                 received_provenance,
                 attribution.identity_by_row_key.get(label),
                 refusals,
-            )
+            );
+            with_settlement(row, group)
         })
         .collect();
     if !unattributed.is_empty() {
-        rows.push(unattributed_row(
-            &unattributed,
-            &siblings_by_key,
-            received_provenance,
-        ));
+        let row = unattributed_row(&unattributed, &siblings_by_key, received_provenance);
+        rows.push(with_settlement(row, &unattributed));
     }
     json!({
         "peer_count": rows.len(),
@@ -1957,9 +2076,21 @@ fn mine_pair_cell(mine: &Value) -> Value {
 /// grouping. A sibling with no provenance line (self-sealed, or refused at the
 /// door) never fills `theirs`, so its row stays unilateral/OPEN: correlation
 /// feeds the gate, it never bypasses it.
+#[cfg(test)]
 pub(crate) fn build_pane_c_list(
     records: &[Value],
     received_provenance: &HashMap<String, ReceivedProvenance>,
+) -> Value {
+    build_pane_c_list_with_settlements(records, received_provenance, &SettlementIndex::default())
+}
+
+/// [`build_pane_c_list`], with each row carrying the payer-book summary of
+/// the settlement records its exchange ids join (`settlement`, `null` when
+/// none), and the list naming the settlement ids no row carries.
+fn build_pane_c_list_with_settlements(
+    records: &[Value],
+    received_provenance: &HashMap<String, ReceivedProvenance>,
+    settlements: &SettlementIndex,
 ) -> Value {
     // One pass, ledger order preserved: the first record of each exchange_key
     // seeds a row in encounter order; later halves of the same exchange fold
@@ -1994,6 +2125,9 @@ pub(crate) fn build_pane_c_list(
     let mut twin_facts: Vec<(Option<String>, Option<String>)> = Vec::new();
     // Per row: (this node's own half, the other side's held half), by id.
     let mut row_halves: Vec<(Option<String>, Option<String>)> = Vec::new();
+    // Every exchange id a row joined, so settlement records no row carries
+    // are named rather than dropped.
+    let mut joined_exchange_ids: BTreeSet<String> = BTreeSet::new();
     for (exchange_key, mine, theirs_sibling) in exchanges {
         // The row anchors on the local half when there is one; a received
         // sibling with no local half of its own still renders (its own column
@@ -2048,6 +2182,14 @@ pub(crate) fn build_pane_c_list(
         // routed to). `null` when no record names a peer -- never invented.
         let counterparty = attribution.row_key_for(anchor);
 
+        // The exchange ids this node's OWN records in the row carry. Settlement
+        // records are this node's observations of its own requests, so a
+        // counterparty's pushed record never supplies a join id: a peer's
+        // record naming one of our ids must not attach our settlement here.
+        let row_exchange_ids: Vec<&str> = mine.into_iter().filter_map(record_exchange_id).collect();
+        joined_exchange_ids.extend(row_exchange_ids.iter().map(|id| id.to_string()));
+        let settlement = settlements.summary_for(row_exchange_ids.iter().copied());
+
         rows.push(json!({
             "exchange_key": exchange_key,
             "role_tag": role_tag(anchor),
@@ -2076,6 +2218,10 @@ pub(crate) fn build_pane_c_list(
             // untwinned row; the UI's `twinBracketId` derivation already
             // treats a missing key the same as an explicit `null`.
             "twin_bracket_id": twin_bracket_id(anchor),
+            // The payer-book summary (`settlement`), or `null` when no
+            // settlement record joins this exchange -- which is never a claim
+            // that it went unpaid.
+            "settlement": settlement,
         }));
         if is_referee_call(anchor) {
             rows.last_mut().expect("just pushed")["referee_call"] = json!(true);
@@ -2097,6 +2243,8 @@ pub(crate) fn build_pane_c_list(
         "rows": rows,
         "next_after_seq": Value::Null,
         "archived_segments": [],
+        "settlement_unjoined": settlements.unjoined(joined_exchange_ids.iter().map(String::as_str)),
+        "settlement_missing_exchange_id": settlements.missing_exchange_id(),
     })
 }
 
@@ -2344,6 +2492,7 @@ pub(crate) fn build_pane_json(
         pane_bc_records,
         our_records,
         received_provenance,
+        settlements,
     } = effective_ledger(ledger_dir);
     match pane {
         // Pane A ("This node") shows our own records: our served/requester
@@ -2355,6 +2504,7 @@ pub(crate) fn build_pane_json(
                 &pane_bc_records,
                 &received_provenance,
                 &read_claim_refusals(ledger_dir),
+                &settlements,
             );
             crate::verdict_counts::attach(&mut pane, &our_records, ledger_dir);
             Some(pane)
@@ -2364,7 +2514,11 @@ pub(crate) fn build_pane_json(
                 Some(id) if !id.is_empty() => {
                     build_pane_c_drilldown(&pane_bc_records, &received_provenance, id)
                 }
-                _ => build_pane_c_list(&pane_bc_records, &received_provenance),
+                _ => build_pane_c_list_with_settlements(
+                    &pane_bc_records,
+                    &received_provenance,
+                    &settlements,
+                ),
             };
             mark_claims_refused(&mut pane, &our_records, &read_claim_refusals(ledger_dir));
             Some(pane)
@@ -2384,7 +2538,8 @@ mod tests {
     /// send for that ledger. Needed whenever the pane shape changes (e.g. the
     /// record bodies the ONE gate reads). Run:
     ///   EVIDENCE_LEDGER_DIR=<plugin data>/ledger EVIDENCE_FIXTURE_OUT=<dir> \
-    ///   cargo test -p mesh-llm-host-runtime regenerate_evidence_pane_fixtures -- --ignored
+    ///   cargo test regenerate_evidence_pane_fixtures -- --ignored
+    /// (from `plugins/admission-policy`).
     #[test]
     #[ignore = "dev tool: regenerates fixture JSON from a real ledger dir"]
     fn regenerate_evidence_pane_fixtures() {
@@ -5230,5 +5385,425 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["digest_match"]["state"], json!(STATE_FAILED));
         assert_eq!(distinct_exchange_count(&records, &provenance), 1);
+    }
+
+    /// A requester record for `exchange_id` (host-minted), keyed by digest.
+    fn asked_record(capsule_id: &str, request_digest: &str, exchange_id: &str) -> Value {
+        let mut record = fixture_record(capsule_id, "2026-09-27T00:00:00Z", request_digest, None);
+        record["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] = json!({
+            "role": "requester",
+            "serving_provenance": { "exchange_id": exchange_id, "served_by_node_id": "peer-node-1" }
+        });
+        record
+    }
+
+    fn settlement_record(
+        capsule_id: &str,
+        exchange_id: &str,
+        phase: &str,
+        segment: Option<u64>,
+        hash: Option<&str>,
+    ) -> Value {
+        let source = if phase.ends_with("_settlement_observed") {
+            "wallet_reported"
+        } else if phase.ends_with("_invoice_issued") {
+            "provider_asserted"
+        } else {
+            "payer_asserted"
+        };
+        let mut block = json!({
+            "v": 1, "observed_by": "payer", "channel": "payment.lifecycle.v1",
+            "exchange_id": exchange_id, "event_ref": format!("ref-{capsule_id}"),
+            "terms_digest": "t".repeat(64), "phase": phase, "source": source, "amount_msat": 123457,
+        });
+        if let Some(segment) = segment {
+            block["segment"] = json!(segment);
+        }
+        if let Some(hash) = hash {
+            block["payment_hash"] = json!(hash);
+        }
+        json!({
+            "capsule_id": capsule_id,
+            "timestamp": "2026-09-27T00:00:05Z",
+            "model_attestation": { "compute_attestation": { "x-mesh-settlement-v1": block } },
+        })
+    }
+
+    /// Two paid exchanges with ONE request digest. Exchange 1 is invoiced
+    /// seg0 `aa` and settled by a hash-less wallet report; exchange 2 is
+    /// invoiced seg0 `bb` and has no settlement. No row may read settled for
+    /// exchange 2, and the peer counts two paid exchanges.
+    #[test]
+    fn two_paid_exchanges_with_one_request_body_keep_separate_books() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = vec![
+            asked_record("cap-1", "req-same", "ex-1"),
+            asked_record("cap-2", "req-same", "ex-2"),
+            settlement_record("s1", "ex-1", "input_invoice_issued", Some(0), Some("aa")),
+            settlement_record("s2", "ex-1", "input_settlement_observed", Some(0), None),
+            settlement_record("s3", "ex-2", "input_invoice_issued", Some(0), Some("bb")),
+        ];
+        write_fixture_ledger(dir.path(), &records);
+
+        let pane_c = build_pane_json("pane-c", dir.path(), None).unwrap();
+        let rows = pane_c["rows"].as_array().unwrap();
+        let state_of = |exchange_id: &str| -> Vec<Value> {
+            rows.iter()
+                .filter(|r| {
+                    r["settlement"]["exchange_ids"]
+                        .as_array()
+                        .is_some_and(|ids| ids.contains(&json!(exchange_id)))
+                })
+                .map(|r| r["settlement"]["state"].clone())
+                .collect()
+        };
+        assert_eq!(state_of("ex-2"), vec![json!("no_settlement_seen")]);
+        assert_eq!(state_of("ex-1"), vec![json!("settled")]);
+        assert!(
+            rows.iter()
+                .filter(|r| r["settlement"]["state"] == json!("settled"))
+                .all(|r| r["settlement"]["exchange_ids"] == json!(["ex-1"])),
+            "only exchange 1's own book may read settled"
+        );
+
+        let pane_b = build_pane_json("pane-b", dir.path(), None).unwrap();
+        let counts = pane_b["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|r| r.get("settlement"))
+            .expect("a peer row carries settlement counts");
+        assert_eq!(counts["paid_exchanges"], json!(2));
+        assert_eq!(counts["settled_payer_observed"], json!(1));
+        assert_eq!(counts["no_settlement_seen"], json!(1));
+    }
+
+    /// `capsule_id` digests the body without `key_id` and `signature`, so a
+    /// peer can re-sign one of OUR bodies and push it back under our id. It
+    /// is never a received half: our record stays ours, and its settlement
+    /// still joins. MUTANT: drop the `local_ids` retain and the replay pairs
+    /// with our own record.
+    #[test]
+    fn a_pushed_half_reusing_our_capsule_id_is_not_received() {
+        let dir = tempfile::tempdir().unwrap();
+        let ours = asked_record("cap-ours", "req-c", "ex-c");
+        let records = vec![
+            ours.clone(),
+            citing_fixture("cap-ours", "peer-r", true),
+            settlement_record("s1", "ex-c", "input_invoice_issued", Some(0), Some("aa")),
+            settlement_record(
+                "s2",
+                "ex-c",
+                "input_settlement_observed",
+                Some(0),
+                Some("aa"),
+            ),
+        ];
+        write_fixture_ledger(dir.path(), &records);
+        let mut replay = ours;
+        replay["key_id"] = json!("f".repeat(64));
+        std::fs::write(
+            dir.path().join("received-capsules.jsonl"),
+            format!("{}\n", serde_json::to_string(&replay).unwrap()),
+        )
+        .unwrap();
+
+        let el = effective_ledger(dir.path());
+        assert!(!el.received_provenance.contains_key("cap-ours"));
+        let copies = el
+            .pane_bc_records
+            .iter()
+            .filter(|r| r["capsule_id"] == json!("cap-ours"))
+            .count();
+        assert_eq!(copies, 1, "our record once, never a foreign copy beside it");
+
+        let pane_c = build_pane_json("pane-c", dir.path(), None).unwrap();
+        let row = &pane_c["rows"][0];
+        assert_eq!(row["settlement"]["state"], json!("settled"));
+        assert_eq!(row["unilateral"], json!(true));
+    }
+
+    /// Settlement records are our log entries (Pane A) and join Pane B/C rows
+    /// by `exchange_id`; they never become exchange rows themselves. Before
+    /// this, a sealed settlement record fell through to "one of this node's
+    /// own served/requester capsules" and showed up as an exchange.
+    #[test]
+    fn settlement_records_join_rows_by_exchange_id_and_are_never_rows_themselves() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = vec![
+            asked_record("cap-paid", "req-paid", "ex-paid"),
+            asked_record("cap-free", "req-free", "ex-free"),
+            // Settlement records land after the exchange record: the payer's
+            // invoice can follow the first token, and nothing orders on it.
+            settlement_record("s1", "ex-paid", "terms_accepted", None, None),
+            settlement_record("s2", "ex-paid", "input_invoice_issued", Some(0), Some("aa")),
+            settlement_record(
+                "s3",
+                "ex-paid",
+                "input_settlement_observed",
+                Some(0),
+                Some("aa"),
+            ),
+            settlement_record("s4", "ex-orphan", "terms_accepted", None, None),
+        ];
+        write_fixture_ledger(dir.path(), &records);
+
+        let pane_c = build_pane_json("pane-c", dir.path(), None).unwrap();
+        // This plugin can't see whether the host has payments configured, so
+        // it never claims either way.
+        assert!(pane_c.get("payments").is_none());
+        let rows = pane_c["rows"].as_array().unwrap();
+        // Two exchanges, two rows: no settlement record became a row.
+        assert_eq!(rows.len(), 2);
+        let paid = rows
+            .iter()
+            .find(|r| r["exchange_key"] == json!("digest:req-paid"))
+            .unwrap();
+        assert_eq!(paid["settlement"]["state"], json!("settled"));
+        assert_eq!(paid["settlement"]["entries"].as_array().unwrap().len(), 3);
+        assert_eq!(paid["settlement"]["provider_book"], json!("not_available"));
+        // The free exchange carries no payment summary, never an unpaid one.
+        let free = rows
+            .iter()
+            .find(|r| r["exchange_key"] == json!("digest:req-free"))
+            .unwrap();
+        assert!(free["settlement"].is_null());
+        // A record whose exchange no row carries is reported, not dropped.
+        assert_eq!(pane_c["settlement_unjoined"], json!(["ex-orphan"]));
+        assert_eq!(pane_c["settlement_missing_exchange_id"], json!(0));
+
+        // Pane A: every settlement record is one of our log entries, labelled.
+        let pane_a = build_pane_json("pane-a", dir.path(), None).unwrap();
+        let kinds: Vec<&str> = pane_a["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["kind"].as_str())
+            .filter(|kind| *kind == "settlement_observation")
+            .collect();
+        assert_eq!(kinds.len(), 4);
+
+        // Pane B: the peer row counts the paid exchange; provider states unavailable.
+        let pane_b = build_pane_json("pane-b", dir.path(), None).unwrap();
+        let counts = pane_b["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|r| r.get("settlement"))
+            .expect("a peer row carries settlement counts");
+        assert_eq!(counts["paid_exchanges"], json!(1));
+        assert_eq!(counts["settled_payer_observed"], json!(1));
+        assert!(counts["lapsed"].is_null());
+        assert!(counts["debt"].is_null());
+    }
+
+    #[test]
+    fn a_ledger_with_no_settlement_records_adds_no_settlement_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        write_fixture_ledger(
+            dir.path(),
+            &[asked_record("cap-free", "req-free", "ex-free")],
+        );
+        let pane_c = build_pane_json("pane-c", dir.path(), None).unwrap();
+        assert!(pane_c["rows"][0]["settlement"].is_null());
+        assert_eq!(pane_c["settlement_unjoined"], json!([]));
+        let pane_b = build_pane_json("pane-b", dir.path(), None).unwrap();
+        for row in pane_b["rows"].as_array().unwrap() {
+            assert!(
+                row.get("settlement").is_none(),
+                "no payment records: no counts, not zeros"
+            );
+        }
+    }
+
+    #[test]
+    fn a_counterpartys_pushed_record_never_supplies_the_settlement_join_id() {
+        let mine = asked_record("cap-mine", "req-shared", "ex-ours");
+        // Their record of the same request names one of OUR other exchange ids.
+        let mut theirs = asked_record("cap-theirs", "req-shared", "ex-other");
+        theirs["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["role"] =
+            json!("provider");
+        let records = vec![mine, theirs];
+        let mut provenance = HashMap::new();
+        provenance.insert(
+            "cap-theirs".to_string(),
+            ReceivedProvenance {
+                received_from: "peer-node-1".into(),
+                via: "push".into(),
+                received_at: "2026-09-27T00:00:01Z".into(),
+                signature_ok: true,
+                received_from_node_id: None,
+                their_log: None,
+            },
+        );
+        let mut settlements = SettlementIndex::default();
+        settlements.push(settlement_record(
+            "s1",
+            "ex-other",
+            "terms_accepted",
+            None,
+            None,
+        ));
+        let pane_c = build_pane_c_list_with_settlements(&records, &provenance, &settlements);
+        let row = &pane_c["rows"][0];
+        assert!(
+            row["settlement"].is_null(),
+            "their record's id must not join our settlement"
+        );
+        assert_eq!(pane_c["settlement_unjoined"], json!(["ex-other"]));
+        let pane_b = build_pane_b_with_refusals(&records, &provenance, &[], &settlements);
+        for peer in pane_b["rows"].as_array().unwrap() {
+            assert_eq!(peer["settlement"]["paid_exchanges"], json!(0));
+            assert_eq!(peer["settlement"]["terms_only"], json!(0));
+        }
+    }
+
+    /// Records this plugin's own seal path writes (`emit_for_exchange` and
+    /// `emit_settlement_record`, sealed here at test time rather than copied
+    /// in), read back through the pane reader: a change to the sealed shape
+    /// on either side fails here.
+    #[test]
+    fn a_record_this_plugin_sealed_joins_through_the_pane_reader() {
+        use crate::capsule_emit::{CapsuleState, ExchangeRecord};
+        use crate::settlement_channel::{host_shaped_event, parse_and_check, Phase};
+        let data = tempfile::tempdir().unwrap();
+        let state = CapsuleState::open(data.path(), "fixture-node").unwrap();
+        let exchange = |exchange_id| ExchangeRecord {
+            model: "m",
+            client_nonce: Some("n"),
+            request_bytes: br#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#,
+            response_bytes:
+                br#"{"id":"x","choices":[{"message":{"role":"assistant","content":"y"}}]}"#,
+            latency_ms: 1.0,
+            exchange_id: Some(exchange_id),
+            requesting_party: Some("party-1"),
+            host_provenance: None,
+        };
+        state.emit_for_exchange(&exchange("ex-paid-1")).unwrap();
+        let (input_hash, output_hash) = ("aa".repeat(32), "bb".repeat(32));
+        for (phase, segment, hash, amount) in [
+            (Phase::TermsAccepted, None, None, 5000),
+            (Phase::InputInvoiceIssued, Some(0), Some(&input_hash), 1200),
+            (
+                Phase::InputSettlementObserved,
+                Some(0),
+                Some(&input_hash),
+                1200,
+            ),
+            (
+                Phase::OutputInvoiceIssued,
+                Some(1),
+                Some(&output_hash),
+                2300,
+            ),
+            (
+                Phase::OutputSettlementObserved,
+                Some(1),
+                Some(&output_hash),
+                2300,
+            ),
+            (Phase::FinalAccounted, None, None, 3502),
+        ] {
+            let body = host_shaped_event(
+                "ex-paid-1",
+                phase,
+                segment,
+                hash.map(String::as_str),
+                amount,
+            );
+            let event = parse_and_check(&serde_json::to_vec(&body).unwrap()).unwrap();
+            state
+                .emit_settlement_record(&event.observation())
+                .unwrap()
+                .expect("a fresh event seals");
+        }
+        let ledger = data.path().join("ledger");
+        let pane_c = build_pane_json("pane-c", &ledger, None).unwrap();
+        let rows = pane_c["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "the settlement records are not exchanges");
+        let settlement = &rows[0]["settlement"];
+        assert_eq!(settlement["state"], json!("settled"));
+        let entries = settlement["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 6);
+        assert_eq!(entries[0]["phase"], json!("terms_accepted"));
+        assert_eq!(entries[0]["amount_msat"], json!(5000));
+        assert!(entries[0]["payment_hash"].is_null());
+        assert_eq!(entries[2]["source"], json!("wallet_reported"));
+        assert_eq!(pane_c["settlement_unjoined"], json!([]));
+        assert_eq!(pane_c["settlement_missing_exchange_id"], json!(0));
+    }
+
+    /// Both rows of a twin pair once read provider A. Pane C must name each
+    /// row's own provider: A on the row
+    /// whose half came from A, B on the other. Twin answers differ (their own
+    /// ids), so the halves pair by response digest.
+    #[test]
+    fn a_twin_pair_names_each_exchange_row_its_own_provider() {
+        let key_a = format!("aa{}", "0".repeat(62));
+        let key_b = format!("bb{}", "0".repeat(62));
+        let node_a = format!("a0a0{}", "1".repeat(60));
+        let node_b = format!("b0b0{}", "2".repeat(60));
+        let d = "d".repeat(64);
+        let (resp_a, resp_b) = ("e".repeat(64), "f".repeat(64));
+        let records = vec![
+            mesh_half_served_by(
+                "1".repeat(64).as_str(),
+                "requested",
+                &d,
+                &resp_a,
+                "me-a",
+                &node_a,
+            ),
+            mesh_half_served_by(
+                "2".repeat(64).as_str(),
+                "requested",
+                &d,
+                &resp_b,
+                "me-b",
+                &node_b,
+            ),
+            with_key(
+                mesh_half_served_by(
+                    "3".repeat(64).as_str(),
+                    "served",
+                    &d,
+                    &resp_a,
+                    "them-a",
+                    &node_a,
+                ),
+                &key_a,
+            ),
+            with_key(
+                mesh_half_served_by(
+                    "4".repeat(64).as_str(),
+                    "served",
+                    &d,
+                    &resp_b,
+                    "them-b",
+                    &node_b,
+                ),
+                &key_b,
+            ),
+        ];
+        let provenance: HashMap<String, ReceivedProvenance> = [
+            provenance_for("3".repeat(64).as_str(), &node_a),
+            provenance_for("4".repeat(64).as_str(), &node_b),
+        ]
+        .into_iter()
+        .collect();
+        let pane = build_pane_c_list(&records, &provenance);
+        let rows = pane["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "{rows:#?}");
+        for (theirs, key) in [("3".repeat(64), &key_a), ("4".repeat(64), &key_b)] {
+            let row = rows
+                .iter()
+                .find(|r| r["theirs"]["capsule_id"] == json!(theirs))
+                .expect("the row holding this provider's half");
+            assert_eq!(
+                row["counterparty"],
+                json!(format!("key:{}", &key[..16])),
+                "{row:#?}"
+            );
+        }
     }
 }
