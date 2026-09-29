@@ -786,10 +786,13 @@ def test_build_peers_payload_shows_distinct_peer_rows_from_cross_node_records(tm
 # ---------------------------------------------------------------------------
 
 
+import os
 import pathlib
 
+# Local-only fixture, not committed: point MESH_3NODE_LEDGERS_DIR at a copy of
+# full-ledgers-3node-20260907. The tests below skip when it is unset.
 _FIXTURE_DIR = pathlib.Path(
-    "/Users/intangible/dev/asg/_work/mesh-live-run-2026-09-06/out/full-ledgers-3node-20260907"
+    os.environ.get("MESH_3NODE_LEDGERS_DIR", "full-ledgers-3node-20260907-not-configured")
 )
 _GCP_A_NODE_ID = "781419308be2123b1884a5dba24dec0ffc5a2d59148eb312ea82ef1c7e0ff4ae"
 _GCP_B_NODE_ID = "c814d483196404b7c6aea71f24edec0233c3442b7799338e90853f204307ed5a"

@@ -72,8 +72,7 @@ _SERVED_OBSERVATION_POINTS = frozenset(
 
 # Per-source-log default, used whenever a record carries no observation_point
 # at all -- true of every record capsule_sidecar.py / capsule-producer emit
-# today (mesh-accountability-build-plan-2026-08-28.md §3: the requestor-side
-# log is not built yet, A4). Both of today's real writers observe THIS
+# today (the requestor-side log is not built yet, A4). Both of today's real writers observe THIS
 # machine acting as the provider: the sidecar proxies its own node's /v1
 # ingress; the plugin gates admission on the same serving path (it
 # advertises itself as a mesh-llm inference PROVIDER). Neither writer speaks

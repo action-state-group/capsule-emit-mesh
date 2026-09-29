@@ -17,7 +17,7 @@ from two different vantages, and today neither alone seals both facts:
     exchange and seals real hardware (gpu/vram/architecture/model identity)
     -- but only host-forwarded DIGESTS of the I/O, never the full content.
 
-FDE RULING (2026-08-28, `_work/gcp-3rd-node-standup.md` #7b): hardware is
+RULE (2026-08-28): hardware is
 OBSERVED BY THE HOST, only relayed to whichever producer reads the mesh
 channel -- presenting it as if the SIDECAR observed it directly would be the
 `gate_executed`-vs-`runtime_claimed` overclaim applied to provenance.
@@ -153,7 +153,7 @@ HARDWARE_PROVENANCE_VANTAGE_CAVEAT = (
     "other producer's already-sealed, independently-verifiable record by digest. "
     "Presenting host-observed-and-relayed hardware as if the joiner observed it directly "
     "is exactly the gate_executed-vs-runtime_claimed overclaim this label exists to "
-    "prevent (2026-08-28 FDE ruling, gcp-3rd-node-standup.md #7b). Correlated by "
+    "prevent (the host-observed-hardware rule). Correlated by "
     "agent_input_digest, NOT exchange_id -- see module docstring for why."
 )
 

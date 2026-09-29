@@ -1,9 +1,8 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Paid-inference evidence — `paid-inference/v1` contract + `x-mesh-payments-v1` block, aligned to mesh-llm #1926 @ `166cc72c4`
 
-> **Design only.** Nothing in this document changes code. It supersedes the pre-alignment
-> draft written against `45dc8beb3` (kept in the ops workspace's research trail, not this
-> repo, as `mesh-paid-inference-evidence-2026-09-21.md`) and updates the contract rows and
+> **Design only.** Nothing in this document changes code. It supersedes an earlier,
+> unpublished draft written against `45dc8beb3` and updates the contract rows and
 > the block doc to the behaviour on `feat/lightning-payments` at `166cc72c4`, which is
 > CI-green and ready from the upstream side. Field names below are cited against that tree.
 > The fixture re-capture this design implies is tracked separately (§5) — it is not done
@@ -182,8 +181,7 @@ to change to add the fixtures, only to exercise it.
 
 ## 6. Issue-draft refresh — pointer, not duplicated here
 
-The held provider-side-emission issue draft
-(`mesh-1926-provider-lifecycle-issue-draft-2026-09-23.md`, Steven posts) is refreshed as
+The held provider-side-emission issue draft (not yet posted upstream) is refreshed as
 its own edit alongside this document to name the receivables states
 (`unpaid → paid | lapsed | forgiven`, `blocked`/`unblock`) as the provider-side emission
 points, joined on `exchange_id` — see that file's own history for the diff; this document

@@ -118,7 +118,7 @@ def _transparent_check(ledger_dir: Path, capsule_id: str, issuer_key: Path | Non
     this is the separate check that does). Returns a one-line status string.
 
     [mesh-verify-bind-statement-to-capsuleid] Two adversarial-review findings
-    (ADV-1/ADV-2, `_work/mesh-adversarial-review-2026-09-05.md`) against the
+    (ADV-1/ADV-2) against the
     prior version of this function, both re-verified by execution and both
     fixed here:
 

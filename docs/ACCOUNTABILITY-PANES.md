@@ -4,11 +4,9 @@
 `capsule_accountability_tab.py` (Pane A), `peer_accountability_tab.py` (Pane B),
 `capsule_exchange_tab.py` (Pane C), and `join_card.py`'s `promise_line()`, as of the
 `feat(accountability): wire panes v2` commit on `main`, updated for the
-`[mesh-panes-map-chips]` chip-map rewrite (the shared `assurance_map.py` module — see §3). Design
-rationale and the parts not yet built live in `mesh-accountability-panes-v2-2026-09-05.md` (not
-this repo — cited, not duplicated) and the vocabulary source is
-`_work/consistency-realignment-2026-09-06.md` §1 (cited by name only, private working doc); this
-document is the as-shipped reference, and every cell below is checked against running code, not
+`[mesh-panes-map-chips]` chip-map rewrite (the shared `assurance_map.py` module — see §3). The vocabulary
+is the nine-property assurance map in `assurance_map.py`; this document is the as-shipped
+reference, and every cell below is checked against running code, not
 the design intent. Where the two disagree, this document and `main` win.
 
 The three panes answer three different questions Logs and Chat (mesh-llm's own UI) cannot:

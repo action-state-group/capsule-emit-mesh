@@ -7,7 +7,7 @@ three Accountability panes (``capsule_accountability_tab.py`` Pane A,
 [mesh-panes-map-chips]. Replaces the ladder-shaped four-state discipline
 (``verified``/``present-unverified``/``absent``/``failed`` plus the ad hoc
 ``pending``) with the orthogonal nine-property map from the 2026-09-06
-vocabulary realignment (``_work/consistency-realignment-2026-09-06.md`` §1):
+vocabulary realignment:
 content binding, producer signature, local inclusion, checkpoint signature,
 external registration, continuity, identity/authority, capture coverage,
 outcome corroboration -- each independently ``PASS``/``FAIL``/``NOT_PRESENT``/
@@ -132,8 +132,7 @@ def tone_for(state: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# The nine orthogonal properties (consistency-realignment.md §1's map, named
-# for this repo's own verification chain -- docs/VERIFICATION-CHAIN.md links
+# The nine orthogonal properties (named for this repo's own verification chain -- docs/VERIFICATION-CHAIN.md links
 # 1/3/5/6/7/4 plus identity, capture, and outcome corroboration).
 # ---------------------------------------------------------------------------
 

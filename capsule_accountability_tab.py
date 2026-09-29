@@ -366,10 +366,10 @@ def log_integrity_grade(verify_ok: bool | None, has_witness_checkpoint: bool) ->
 
 
 # ---------------------------------------------------------------------------
-# Pane A card face -- mesh-accountability-panes-v2-2026-09-05.md §1: three
+# Pane A card face: three
 # stacked blocks (history / served summary / what others hold), each labeled
 # with its own source and never merged into one number, plus the promise
-# line (§-2) and the native-log footer.
+# line and the native-log footer.
 # ---------------------------------------------------------------------------
 
 

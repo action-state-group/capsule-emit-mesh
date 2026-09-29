@@ -15,8 +15,7 @@ of a would-be twin comparison — no network call is made or needed:
     top2_logprob_margin(response_body, index) -> float | None
         The top1-minus-top2 logprob margin at a token index, read from an
         OpenAI-compatible `choices[0].logprobs.content[index].top_logprobs`
-        (the twin-flag design's "return logprobs on any twinned response" —
-        `_work/mesh-issue-ladder-2026-09-05/tier3-09-twin-flag-v1.md`).
+        (the twin-flag rule: "return logprobs on any twinned response").
         `None` — logprobs absent — when that data isn't there.
 
     adjudicate(half_a, half_b, margin_tau=..., logprob_tau=None, referee=None,

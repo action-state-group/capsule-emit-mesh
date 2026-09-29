@@ -3,7 +3,7 @@
 """Hermetic, single-process rehearsal of the 2-role LIVE adversarial harness.
 
 The LIVE version of this flow (real mesh-llm host, real admission-policy
-plugin, two real Macs) is `_work/mesh-2role-live-adversarial-runbook.md` --
+plugin, two real Macs) is a manual live runbook --
 it needs a real mesh-llm binary and cannot run in CI (same posture as
 `host_runtime_e2e.rs`'s `--ignored` tests). This script exercises the SAME
 harness code (`send_bilateral_request.py`, `checkpoint_ledger.py`,

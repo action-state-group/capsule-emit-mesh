@@ -38,8 +38,7 @@ Two pieces are genuinely new here:
     timestamp, among every record sharing its ``exchange_id`` in the
     record set this view was built from. This is deliberately NOT the
     cross-signed monotonic per-(node,counterparty) sequence number the
-    omission-detection proposal (``mesh-history-proposal-2026-09-05.md``
-    §1, unbuilt -- E9) would provide: that mechanism needs a new sealed
+    omission-detection proposal (unbuilt -- E9) would provide: that mechanism needs a new sealed
     capsule field and counterparty-held copies neither side has today.
     Labelled ``local_derivation`` / ``position_within_exchange_id_group``
     throughout, and every payload carries the caveat text, so a reader
@@ -140,7 +139,7 @@ SEQUENCE_CAPTURE_METHOD = "position_within_exchange_id_group_by_timestamp"
 SEQUENCE_CAVEAT = (
     "position within this view's own copy of the exchange, sorted by timestamp -- NOT a "
     "cross-signed monotonic sequence number (that mechanism is the unbuilt omission-detection "
-    "proposal, mesh-history-proposal-2026-09-05.md §1). An omitted or reordered record would "
+    "proposal). An omitted or reordered record would "
     "not be caught by this number alone."
 )
 
@@ -525,7 +524,7 @@ def build_exchange_view(
 
 
 # ---------------------------------------------------------------------------
-# Regroup by exchange (mesh-accountability-panes-v2-2026-09-05.md §3/§4):
+# Regroup by exchange:
 # one row per exchange_id (fallback: request_digest), a role tag
 # (SERVED/ASKED), and the two halves as two COLUMNS inside the row --
 # double-entry as one line, never two rows. ``received()`` foreign capsules

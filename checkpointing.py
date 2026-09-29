@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Layer 1-2 checkpointing over a mesh node's capsule ledgers.
 
-Per the mesh architecture doc (`_work/mesh-llm-capsule-architecture-2026-08-21.md`
-§3), a mesh node's assurance is layered and each layer is a strictly larger
+A mesh node's assurance is layered and each layer is a strictly larger
 install and a strictly stronger claim:
 
     LAYER 0  a signed capsule per exchange           -- INSTALLED (capsule_sidecar.py /

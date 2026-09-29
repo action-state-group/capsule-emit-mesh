@@ -14,10 +14,9 @@ node's own ledger fresh on every call (same "never cache" discipline as
 ``evidence_server._merged_evidence_view``/``capsule_sidecar._handle_finder``)
 and hands the records to those existing builders.
 
-Local-only tranche (§7 Q1/Q2/Q3 rulings, ``_work/mesh-ledger-tab-design-
-2026-09-07.md``): own ledger, own join-card/history, verified peer
-artifacts already on disk -- no on-demand peer fetch here (peer tranche is
-E9/E10, deferred pending Steven's Q4 ruling).
+Local-only tranche: own ledger, own join-card/history, verified peer
+artifacts already on disk -- no on-demand peer fetch here (the peer tranche
+is E9/E10, deferred pending an owner decision).
 
 Pane A and Pane B are whole-node summaries (one card; a handful of peer
 rows) -- both read the WHOLE ledger every call, same as the CLI always has,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """[mesh-ui-ledger-finder] The Accountability page's Finder: a small query
-bar (never a pane -- mesh-accountability-panes-v2-2026-09-05.md §3) over
+bar (never a pane) over
 this node's own capsule ledger: time range · exchange id / capsule id /
 digest · peer. A hit opens the same Pane C ("This exchange") drawer
 ``capsule_exchange_tab.py`` already renders -- this module builds no second
@@ -143,7 +143,7 @@ def find_capsules(
 
     With every filter omitted (the bar's empty, just-loaded state), this
     deliberately returns no results rather than the whole ledger -- a bar
-    is not a pane (mesh-accountability-panes-v2-2026-09-05.md §3); Pane C's
+    is not a pane; Pane C's
     own list view is where "everything" already lives.
     """
     records, archived_segments = read_all_capsules(Path(ledger_dir))
@@ -168,8 +168,7 @@ def find_capsules(
 # philosophy as capsule_exchange_tab.render_exchange_subtab_html: this
 # view's fields are already Python-side resolved, so there is nothing to
 # check in-browser). The bar is a plain GET form -- submitting it is itself
-# "backed by the sidecar's local endpoint" (mesh-accountability-panes-v2-
-# 2026-09-05.md §3), no client-side JS required to issue the query.
+# "backed by the sidecar's local endpoint", no client-side JS required to issue the query.
 # ---------------------------------------------------------------------------
 
 _STYLE = """

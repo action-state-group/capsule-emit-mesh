@@ -43,7 +43,7 @@ $ pytest tests/ -q
 ```
 
 ### 4. Real-data render, offline
-Rendered from real workspace data to `_work/mesh-viewer-demo/`:
+Rendered from real workspace data to a local, untracked output directory:
 - `mesh-viewer-real-capture.html` — 2 capsules from
   `mesh-real-model-capture/capsules.jsonl` (plugin log) **with** the COSE
   checkpoint receipt. Third-party "record complete / not equivocated" reads
@@ -94,7 +94,7 @@ disclosure control stay **below** the conversation (secondary).
 The self-contained embed jammed the base64 into the JS boot **guard**
 (`if (embedded && embedded !== ""<base64>…`) instead of only the
 `window.__MESH_FRAGMENT_B64U__="…"` placeholder — a JS syntax error that blanked
-the page (see `_work/mesh-live-demo/mesh-live-demo-permalink.html.bak`). Fixed so
+the page (a corrupted permalink page was kept locally as evidence). Fixed so
 the fragment lands in **exactly one** place (the placeholder), the guard sentinel
 is assembled at runtime (`"@@"+"FRAGMENT"+"@@"`) so a substitution can never
 overwrite it, and `render_mesh_viewer_html` asserts exactly one placeholder and
@@ -121,7 +121,7 @@ $ pytest tests/ -q
   served-facts chip (skips cleanly without node).
 
 ### E. Real render — requester-only, inference-forward
-`_work/mesh-live-demo/mesh-demo-REQUESTER.html` — the 3 M3 `swim-googles`
+A locally rendered requester page (untracked) — the 3 M3 `swim-googles`
 host-served capsules, requester-only, all 3 conversations **disclosed** and
 digest-verified:
 - (a) *how great is mesh-llm* → the model's "I don't have information about
