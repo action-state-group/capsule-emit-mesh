@@ -72,6 +72,26 @@ serves nothing; `peers` serves any record; any other value (the default)
 serves a record only to the node it names as the other side of its exchange,
 as that node states its own peer id. A local block and an owner-maintenance
 record are never served. A declined fetch answers `not_authorized`.
+**This trusts the id the request states.** Under `prospective` and
+`counterparties` a peer that lies about its id receives the records the peer
+it names would receive: the switch scopes what this node discloses, it is not
+access control.
+
+**The plugin's in-process evidence responder** (`evidence-request/1`,
+`evidence_answer.rs`, draft-mih-agent-evidence-request-00) replaces the table
+above for the plugin: it applies the `ledger-fetch/1` rule to every record an
+answer would carry, for every subject that carries record bodies (`record`,
+`range`, `full_history`, `correlation`, `exchange`, ranges included). The
+asker's id is the request's own optional `requester_id` member, as it states
+it. An answer is served whole or refused `not_authorized` whole, never
+filtered per asker, because an artifact is the same for every requester. The
+checkpoint list, the `history_card/1` derivation and the `served_summary/1`
+derivation carry no record bodies and are answered under every tier. The
+tests are in `tests/parity/evidence_request/`.
+**This trusts the id the request states.** Under `prospective` and
+`counterparties` a peer that lies about its `requester_id` receives the
+records the peer it names would receive: the switch scopes what this node
+discloses, it is not access control.
 
 ## The record exchange at completion (`record_at_completion`)
 

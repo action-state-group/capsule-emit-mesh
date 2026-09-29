@@ -107,7 +107,15 @@ def request_verdict(
     if post is None:
 
         def post(peer: str, req: dict[str, Any]) -> dict[str, Any]:
-            return _tool(local_host_api, plugin_name, "mesh_evidence_request", {"peer_id": peer, "request": req}, timeout)
+            # ``verify: false`` by name: an adjudicate answer is a verdict the
+            # referee signed, checked by this node's door, not a -00 answer.
+            return _tool(
+                local_host_api,
+                plugin_name,
+                "mesh_evidence_request",
+                {"peer_id": peer, "request": req, "verify": False},
+                timeout,
+            )
 
     return post(referee_peer_id, request)
 

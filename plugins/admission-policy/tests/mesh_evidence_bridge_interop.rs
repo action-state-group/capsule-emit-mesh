@@ -37,6 +37,7 @@ struct Harness {
     child: tokio::process::Child,
     stream: LocalStream,
     next_request_id: u64,
+    data_dir: std::path::PathBuf,
 }
 
 impl Harness {
@@ -48,6 +49,8 @@ impl Harness {
 
         let data_dir = std::env::temp_dir().join(format!("mesh-evidence-interop-data-{}", nonce()));
         common::door::seed_token(&data_dir);
+        // The "asked of you" log is opt-in: its directory must exist.
+        std::fs::create_dir_all(data_dir.join("received-log")).expect("create the received-log dir");
         let mut cmd = Command::new(PLUGIN_BIN);
         cmd.env("MESH_LLM_PLUGIN_ENDPOINT", &socket_path)
             .env("MESH_LLM_PLUGIN_TRANSPORT", "unix")
@@ -81,6 +84,7 @@ impl Harness {
             child,
             stream,
             next_request_id: 1,
+            data_dir,
         }
     }
 
@@ -180,11 +184,16 @@ impl Harness {
         &mut self,
         peer_id: &str,
         request: serde_json::Value,
+        verify: Option<bool>,
         respond_open_mesh_stream: impl FnOnce(proto::OpenMeshStreamRequest) -> proto::OpenMeshStreamResponse,
     ) -> proto::Envelope {
+        let mut arguments = serde_json::json!({"peer_id": peer_id, "request": request});
+        if let Some(verify) = verify {
+            arguments["verify"] = serde_json::json!(verify);
+        }
         let params_json = serde_json::json!({
             "name": "mesh_evidence_request",
-            "arguments": {"peer_id": peer_id, "request": request},
+            "arguments": arguments,
         })
         .to_string();
         let call_request_id = self
@@ -290,36 +299,97 @@ async fn spawn_fake_evidence_server(
     (format!("http://127.0.0.1:{port}"), received)
 }
 
-/// (A) Responder role, happy path: a mesh-inbound evidence-request stream
-/// gets bridged, byte for byte, to a real local HTTP POST against the
-/// configured `evidence_server.py` door, and the door's response comes back
-/// unaltered over the same stream.
-#[tokio::test]
-async fn responder_bridges_inbound_stream_to_local_evidence_door() {
-    let refusal = br#"{"reason":"no_such_record","request_digest":"a","issued_at":"b","key_id":"c","sig":"d"}"#;
-    let (evidence_server_url, received) = spawn_fake_evidence_server(refusal).await;
-
-    let mut harness = Harness::spawn(&[(
-        "ADMISSION_POLICY_EVIDENCE_SERVER_URL",
-        &evidence_server_url,
-    )])
-    .await;
-    harness.initialize().await;
-
-    let stream = harness.open_evidence_stream().await;
+/// Write `request_bytes` as the remote peer, half-close, and read the whole
+/// answer.
+async fn ask_over_stream(stream: LocalStream, request_bytes: &[u8]) -> Vec<u8> {
     let (mut read_half, mut write_half) = stream.into_split();
-    let request_bytes = br#"{"subject":{"kind":"record","capsule_id":"ff"}}"#;
-    write_half.write_all(request_bytes).await.expect("write E14 request");
-    write_half.shutdown().await.expect("half-close request");
-
+    write_half.write_all(request_bytes).await.expect("write the request");
+    write_half.shutdown().await.expect("half-close the request");
     let mut response_bytes = Vec::new();
     timeout(TEST_TIMEOUT, read_half.read_to_end(&mut response_bytes))
         .await
         .expect("responder answered before timeout")
         .expect("read response bytes");
+    response_bytes
+}
+
+/// (A) Responder role: a mesh-inbound -00 evidence request is answered
+/// in-process -- here a signed `coverage_unsatisfiable` refusal (a fresh
+/// node has no checkpoint yet), bound to the digest of the bytes the peer
+/// sent -- without the local door ever being asked, and the request is
+/// logged to the "asked of you" log.
+#[tokio::test]
+async fn responder_answers_an_evidence_request_in_process() {
+    let (evidence_server_url, received) = spawn_fake_evidence_server(b"{}").await;
+    let mut harness = Harness::spawn(&[("ADMISSION_POLICY_EVIDENCE_SERVER_URL", &evidence_server_url)]).await;
+    harness.initialize().await;
+
+    let stream = harness.open_evidence_stream().await;
+    let request_bytes = br#"{"subject":{"checkpoints":null},"coverage":{"min_freshness":1},"requester_id":"m3"}"#;
+    let response: serde_json::Value =
+        serde_json::from_slice(&ask_over_stream(stream, request_bytes).await).expect("a JSON answer");
+
+    let check = capsule_emit_evidence_request::refusal::check(&response);
+    assert!(check.conformant, "a conforming, signed refusal: {response}");
+    assert_eq!(response["reason"], "coverage_unsatisfiable");
+    assert_eq!(
+        response["request_digest"],
+        capsule_emit_evidence_request::digest::request_digest(request_bytes)
+    );
+    assert!(received.lock().await.is_empty(), "the door is not asked");
+
+    let log = std::fs::read_to_string(harness.data_dir.join("received-log/received_log.jsonl"))
+        .expect("the request was logged");
+    let line: serde_json::Value = serde_json::from_str(log.trim()).expect("one JSON line");
+    assert_eq!(line["path"], "evidence-request");
+    assert_eq!(line["requester_id"], "m3");
+    assert_eq!(line["subject_kind"], "checkpoints");
+    assert_eq!(line["status"], "refused");
+    assert_eq!(line["reason"], "coverage_unsatisfiable");
+
+    harness.shutdown_process().await;
+}
+
+/// (A2) A referee's `adjudicate` request still goes to the local door (it
+/// moves with the referee): bridged byte for byte to a real HTTP POST, and
+/// the door's answer comes back unaltered.
+#[tokio::test]
+async fn responder_takes_an_adjudicate_request_to_the_door() {
+    let refusal = br#"{"reason":"policy_decline","request_digest":"a","issued_at":"b","key_id":"c","sig":"d"}"#;
+    let (evidence_server_url, received) = spawn_fake_evidence_server(refusal).await;
+    let mut harness = Harness::spawn(&[("ADMISSION_POLICY_EVIDENCE_SERVER_URL", &evidence_server_url)]).await;
+    harness.initialize().await;
+
+    let stream = harness.open_evidence_stream().await;
+    let request_bytes = br#"{"subject":{"kind":"adjudicate"},"halves":[]}"#;
+    let response_bytes = ask_over_stream(stream, request_bytes).await;
 
     assert_eq!(response_bytes, refusal);
     assert_eq!(received.lock().await.as_slice(), &[request_bytes.to_vec()]);
+
+    harness.shutdown_process().await;
+}
+
+/// (A3) A request over the side-stream cap is never answered (and never
+/// buffered past the cap): the responder drops the stream.
+#[tokio::test]
+async fn responder_drops_a_request_over_the_side_stream_cap() {
+    let mut harness = Harness::spawn(&[]).await;
+    harness.initialize().await;
+
+    let stream = harness.open_evidence_stream().await;
+    let (mut read_half, mut write_half) = stream.into_split();
+    let chunk = vec![b' '; 64 * 1024];
+    // Write past the 1 MiB cap; the responder may stop reading first.
+    for _ in 0..(1024 * 1024 / chunk.len() + 2) {
+        if write_half.write_all(&chunk).await.is_err() {
+            break;
+        }
+    }
+    let _ = write_half.shutdown().await;
+    let mut response_bytes = Vec::new();
+    let _ = timeout(TEST_TIMEOUT, read_half.read_to_end(&mut response_bytes)).await;
+    assert!(response_bytes.is_empty(), "nothing is answered to an over-cap request");
 
     harness.shutdown_process().await;
 }
@@ -350,7 +420,7 @@ async fn requester_tool_call_round_trips_a_real_dialed_stream() {
 
     let request = serde_json::json!({"subject": {"kind": "record", "capsule_id": "aa"}});
     let response_envelope = harness
-        .call_mesh_evidence_tool("aa".repeat(32).as_str(), request.clone(), |_request| {
+        .call_mesh_evidence_tool("aa".repeat(32).as_str(), request.clone(), Some(false), |_request| {
             proto::OpenMeshStreamResponse {
                 stream_id: "test".to_string(),
                 accepted: true,
@@ -387,6 +457,52 @@ async fn requester_tool_call_round_trips_a_real_dialed_stream() {
     harness.shutdown_process().await;
 }
 
+/// (B2) Verification is on unless the caller names the opt-out: with no
+/// `verify` argument, the peer's answer comes back beside a verification --
+/// here `no_announced_key`, because this node's registry names no key for
+/// the peer -- never alone and unchecked.
+#[tokio::test]
+async fn requester_verifies_by_default() {
+    let mut harness = Harness::spawn(&[]).await;
+    harness.initialize().await;
+
+    let (peer_listener, peer_path) = accept_one_remote_peer_connection().await;
+    tokio::spawn(async move {
+        let (mut socket, _) = peer_listener.accept().await.expect("accept from requester");
+        let mut discard = Vec::new();
+        let _ = socket.read_to_end(&mut discard).await;
+        let _ = socket.write_all(br#"{"reason":"no_such_subject"}"#).await;
+        let _ = socket.shutdown().await;
+    });
+
+    let request = serde_json::json!({"subject": {"checkpoints": null}, "coverage": {"min_freshness": 1}});
+    let response_envelope = harness
+        .call_mesh_evidence_tool("dd".repeat(32).as_str(), request, None, |_request| {
+            proto::OpenMeshStreamResponse {
+                stream_id: "test".to_string(),
+                accepted: true,
+                transport_kind: proto::StreamTransportKind::StreamUnixSocket as i32,
+                endpoint: Some(peer_path.to_str().unwrap().to_string()),
+                token: None,
+                expires_at_unix_ms: None,
+                message: None,
+            }
+        })
+        .await;
+    let result = match response_envelope.payload {
+        Some(Payload::RpcResponse(response)) => response,
+        other => panic!("expected a successful RpcResponse, got {other:?}"),
+    };
+    let call_result: rmcp::model::CallToolResult =
+        serde_json::from_str(&result.result_json).expect("decode CallToolResult");
+    let structured = call_result.structured_content.expect("structured JSON");
+    assert_eq!(structured["answer"]["reason"], "no_such_subject");
+    assert_eq!(structured["verification"]["state"], "no_announced_key");
+    assert!(structured["request_digest"].as_str().is_some_and(|d| d.len() == 64));
+
+    harness.shutdown_process().await;
+}
+
 /// (C) Clean failure, never a hang: a peer that never declares the channel
 /// has its stream dropped by the real host with no reply
 /// (`handle_plugin_mesh_stream` returns `Ok(())` without touching `send`/
@@ -407,7 +523,7 @@ async fn requester_reports_a_clean_failure_when_the_peer_never_answers() {
 
     let started = tokio::time::Instant::now();
     let response_envelope = harness
-        .call_mesh_evidence_tool("bb".repeat(32).as_str(), serde_json::json!({}), |_request| {
+        .call_mesh_evidence_tool("bb".repeat(32).as_str(), serde_json::json!({}), None, |_request| {
             proto::OpenMeshStreamResponse {
                 stream_id: "test".to_string(),
                 accepted: true,
@@ -458,7 +574,7 @@ async fn tampered_bytes_in_flight_pass_through_unvalidated_and_unrepaired() {
     });
 
     let response_envelope = harness
-        .call_mesh_evidence_tool("cc".repeat(32).as_str(), serde_json::json!({}), |_request| {
+        .call_mesh_evidence_tool("cc".repeat(32).as_str(), serde_json::json!({}), Some(false), |_request| {
             proto::OpenMeshStreamResponse {
                 stream_id: "test".to_string(),
                 accepted: true,

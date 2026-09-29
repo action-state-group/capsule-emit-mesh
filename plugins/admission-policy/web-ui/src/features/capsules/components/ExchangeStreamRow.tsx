@@ -26,6 +26,7 @@ import {
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import {
   askIsOffered,
+  askReplyNote,
   askTarget,
   stateAfterAsk,
   type AskOutcome,
@@ -227,6 +228,8 @@ export function ExchangeStreamRow({
   // its absence) is the state: a record goes through the same gate as a
   // pushed one (`ask-for-record.ts`), a signed refusal reads as one.
   const state = askOutcome ? stateAfterAsk(row.raw, askOutcome, localRecord) : gateState
+  // Whether the plugin verified their reply, and if not, why: said on the row.
+  const askNote = askOutcome ? askReplyNote(askOutcome) : null
   const alarm = isAlarmState(state)
   // Whom to ask, and how to name the exchange, from our own record of it.
   const askFor = askTarget(localRecord ?? (row.raw.mine.record as CapsuleRecord | undefined) ?? null)
@@ -444,6 +447,15 @@ export function ExchangeStreamRow({
             <p className="text-xs text-foreground" data-right-cell-text="true">
               {cellText}
             </p>
+            {askNote ? (
+              <p
+                className={cn('text-xs', askNote.verified ? 'text-foreground' : 'text-fg-dim')}
+                data-ask-reply-verified={askNote.verified ? 'true' : 'false'}
+                role="note"
+              >
+                {askNote.text}
+              </p>
+            ) : null}
             {closedFromFetch ? (
               <p className="text-xs text-fg-dim" data-closed-from-fetch="true" role="note">
                 {CLOSED_FROM_FETCH_NOT_SAVED}

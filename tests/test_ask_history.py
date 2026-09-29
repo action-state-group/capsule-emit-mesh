@@ -247,7 +247,8 @@ class TestMeshCarrier:
         )
         payload = ah.post_mesh_evidence_request(local_host_api, "admission-policy", "aa" * 32, req)
         assert "bundles" in payload
-        assert server.calls == [{"peer_id": "aa" * 32, "request": req}]
+        # The tool verifies by default; this caller verifies itself and says so.
+        assert server.calls == [{"peer_id": "aa" * 32, "request": req, "verify": False}]
 
     def test_main_cli_via_mesh_renders_artifact(self, mesh_host, capsys):
         local_host_api, _server, state = mesh_host

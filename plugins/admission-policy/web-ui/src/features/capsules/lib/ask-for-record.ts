@@ -1,26 +1,25 @@
 // "Ask them for their record" (UX §3): after the timeout, a row whose other
-// side's record hasn't arrived can ask that node for it. The host sends one
-// evidence request over the mesh (`api/evidenceRequestClient.ts`); this module
-// judges what came back, the same way the row judges a record that was
-// pushed: nothing here is trusted because it arrived.
+// side's record hasn't arrived can ask that node for it. The plugin sends one
+// evidence request over the mesh and verifies the reply before handing it
+// over (`api/evidenceRequestClient.ts`); this module judges what came back,
+// the same way the row judges a record that was pushed: nothing here is
+// trusted because it arrived.
 //
-//   - a refusal counts only if it is signed with the key this node was told
-//     the peer signs with (`announcedKeyId`, never the key the refusal names
-//     itself) and it names OUR request (`request_digest` = the digest of the
-//     bytes we sent): a throwaway key or a refusal replayed from another
-//     request proves nothing. `no_such_record` is their signed "I have no
-//     record of this", any other
-//     reason is a signed decline, except `coverage_unsatisfiable`: they hold
-//     the record but can't prove it yet (no checkpoint covers it), so the row
-//     stays asked and can ask again;
+//   - only a reply the plugin verified counts (`verification`): a refusal
+//     signed with the key this node was told the peer signs with, naming OUR
+//     request, or an artifact whose records are proven in the peer's log
+//     under a checkpoint that key signed. Anything else -- no announced key,
+//     a reply that proves nothing -- leaves the row "asked, no reply yet",
+//     and the row says why (`askReplyNote`);
+//   - a refusal is also checked here, in the browser, under the announced
+//     key and the request digest the plugin sent. `no_such_subject` is their
+//     signed "I have no record of this"; `coverage_unsatisfiable` means they
+//     hold it but no checkpoint covers it yet, so the row stays asked and can
+//     ask again; any other reason is a signed decline;
 //   - a record goes through THE row gate (`deriveRightCellState`) as a fetched
 //     half: it closes the row only if its id recomputes, its signature
 //     verifies under the announced key, it came from the node that served us
-//     and both digests equal ours;
-//   - with no announced key for the peer, nothing it sends can be checked:
-//     the row stays asked;
-//   - no answer, or an answer that proves nothing, leaves the row "asked, no
-//     reply yet".
+//     and both digests equal ours.
 import { ed25519 } from '@noble/curves/ed25519'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
@@ -49,7 +48,8 @@ export type AskOutcome =
 export type AskTarget = { peerId: string; nonce: string }
 
 const FULL_ID = /^[0-9a-f]{64}$/
-const NO_SUCH_RECORD = 'no_such_record'
+/** Their signed "I hold no such record" (the -00 registry token). */
+const NO_SUCH_SUBJECT = 'no_such_subject'
 /** They hold the record but no checkpoint covers it yet: a lag, never a
  *  decline. Asking again later can succeed. */
 const COVERAGE_LAG = 'coverage_unsatisfiable'
@@ -127,7 +127,7 @@ function refusalProblem(
   announcedKeyId: string | null,
   sentRequestDigest: string
 ): string | null {
-  if (!announcedKeyId) return 'this node has no announced key for them, so their reply cannot be checked'
+  if (!announcedKeyId) return NO_KEY_DETAIL
   const key = announcedKeyBytes(refusal.key_id, announcedKeyId)
   if (!key) return 'their reply is not signed with the key they announced'
   const requestDigest = str(refusal.request_digest)
@@ -165,6 +165,34 @@ export type AskJudges = {
 
 const REAL_JUDGES: AskJudges = { recomputeIdMatch, producerSignatureVerifies }
 
+/** The records an artifact answer carries, decoded: each served record's
+ *  body is its line in the peer's ledger, hex-encoded, inside the artifact's
+ *  exact JSON text. Only the leaf indices the verification proved are kept. */
+function artifactRecords(answer: Record<string, unknown>, proven: readonly number[]): Record<string, unknown>[] {
+  let artifact: unknown
+  try {
+    artifact = typeof answer.artifact === 'string' ? JSON.parse(answer.artifact) : null
+  } catch {
+    return []
+  }
+  const served = obj(artifact)?.records
+  if (!Array.isArray(served)) return []
+  const out: Record<string, unknown>[] = []
+  for (const item of served) {
+    const entry = obj(item)
+    if (!entry || typeof entry.leaf_index !== 'number' || !proven.includes(entry.leaf_index)) continue
+    const bytes = hexBytes(str(entry.body) ?? '')
+    if (!bytes) continue
+    try {
+      const parsed = obj(JSON.parse(new TextDecoder().decode(bytes)))
+      if (parsed) out.push(parsed)
+    } catch {
+      // not a record: skipped
+    }
+  }
+  return out
+}
+
 /** Judge the other side's reply for the exchange whose request digest is
  *  `requestDigest`. */
 export async function judgeAskReply(
@@ -175,32 +203,66 @@ export async function judgeAskReply(
 ): Promise<AskOutcome> {
   if (reply.kind === 'no_answer') return { kind: 'no_reply', at: askedAt, detail: reply.message }
   const answer = obj(reply.answer)
-  if (answer && typeof answer.reason === 'string') {
-    const problem = refusalProblem(answer, reply.announcedKeyId, reply.sentRequestDigest)
-    if (problem) return { kind: 'no_reply', at: askedAt, detail: problem }
-    const at = str(answer.issued_at) ?? askedAt
-    if (answer.reason === COVERAGE_LAG) {
-      return { kind: 'no_reply', at: askedAt, detail: 'they hold the record but cannot prove it yet; ask again later' }
+  const verification = reply.verification
+  switch (verification.state) {
+    case 'no_announced_key':
+      return { kind: 'no_reply', at: askedAt, detail: NO_KEY_DETAIL }
+    case 'not_evidence':
+      return { kind: 'no_reply', at: askedAt, detail: `their reply did not verify: ${verification.why}` }
+    case 'unknown':
+      return { kind: 'no_reply', at: askedAt, detail: 'their reply was not verified' }
+    case 'refusal': {
+      const problem = answer ? refusalProblem(answer, reply.announcedKeyId, reply.requestDigest) : 'no refusal'
+      if (problem || answer?.reason !== verification.reason) {
+        return { kind: 'no_reply', at: askedAt, detail: problem ?? 'their reply was not verified' }
+      }
+      const at = str(answer?.issued_at) ?? askedAt
+      if (verification.reason === COVERAGE_LAG) {
+        return { kind: 'no_reply', at: askedAt, detail: 'they hold the record but cannot prove it yet; ask again later' }
+      }
+      return verification.reason === NO_SUCH_SUBJECT
+        ? { kind: 'no_record', at }
+        : { kind: 'refused', at, reason: verification.reason }
     }
-    return answer.reason === NO_SUCH_RECORD ? { kind: 'no_record', at } : { kind: 'refused', at, reason: answer.reason }
+    case 'artifact': {
+      const receipts = answer ? artifactRecords(answer, verification.records) : []
+      const receipt =
+        receipts.find((candidate) => obj(candidate.effect)?.request_digest === requestDigest) ?? receipts[0] ?? null
+      if (!receipt) return { kind: 'no_reply', at: askedAt, detail: 'their reply carried no record' }
+      const idMatch = await judges.recomputeIdMatch(receipt, str(receipt.capsule_id))
+      return {
+        kind: 'record',
+        at: askedAt,
+        evidence: {
+          status: 'found',
+          idMatch,
+          signatureOk: judges.producerSignatureVerifies(receipt, reply.announcedKeyId),
+          peerRecord: receipt,
+          fetch: () => {}
+        }
+      }
+    }
   }
-  const receipts = (Array.isArray(answer?.bundles) ? answer.bundles : [])
-    .map((bundle) => obj(obj(bundle)?.receipt))
-    .filter((receipt): receipt is Record<string, unknown> => receipt !== null)
-  const receipt =
-    receipts.find((candidate) => obj(candidate.effect)?.request_digest === requestDigest) ?? receipts[0] ?? null
-  if (!receipt) return { kind: 'no_reply', at: askedAt, detail: 'their reply carried no record' }
-  const idMatch = await judges.recomputeIdMatch(receipt, str(receipt.capsule_id))
-  return {
-    kind: 'record',
-    at: askedAt,
-    evidence: {
-      status: 'found',
-      idMatch,
-      signatureOk: judges.producerSignatureVerifies(receipt, reply.announcedKeyId),
-      peerRecord: receipt,
-      fetch: () => {}
-    }
+}
+
+const NO_KEY_DETAIL = 'this node has no announced key for them, so their reply cannot be checked'
+
+/** The line a row shows once its ask is answered: whether the reply was
+ *  verified, and if not, why. `null` while the ask is in flight. */
+export function askReplyNote(outcome: AskOutcome): { verified: boolean; text: string } | null {
+  switch (outcome.kind) {
+    case 'asking':
+      return null
+    case 'no_reply':
+      return { verified: false, text: `Their reply is not verified: ${outcome.detail}` }
+    case 'refused':
+    case 'no_record':
+      return { verified: true, text: 'Their reply is verified: signed with their announced key, for this request' }
+    case 'record':
+      return {
+        verified: true,
+        text: 'Their reply is verified: the record is in their log, under a checkpoint signed with their announced key'
+      }
   }
 }
 

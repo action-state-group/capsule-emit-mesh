@@ -16,6 +16,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "capsule-emit",
+ "capsule-emit-evidence-request",
  "capsule-producer",
  "checkpointed-local-log",
  "chrono",
@@ -210,6 +211,20 @@ dependencies = [
  "spki",
  "thiserror 1.0.69",
  "ureq",
+]
+
+[[package]]
+name = "capsule-emit-evidence-request"
+version = "0.0.2"
+source = "git+https://github.com/action-state-group/capsule-emit?rev=69ba8166cf2f12badb38a5d98ebf80a66cb9c103#69ba8166cf2f12badb38a5d98ebf80a66cb9c103"
+dependencies = [
+ "checkpointed-local-log",
+ "ciborium",
+ "ed25519-dalek",
+ "hex",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

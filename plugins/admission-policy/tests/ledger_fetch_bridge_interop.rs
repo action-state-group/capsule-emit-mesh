@@ -436,10 +436,13 @@ async fn untagged_open_still_reaches_the_evidence_responder_not_ledger_fetch() {
         .await
         .expect("dial the plugin's local listener");
     let (mut read_half, mut write_half) = stream.into_split();
+    // A referee's `adjudicate` request: the one subject the evidence
+    // responder still takes to the local door, so the door's canned bytes
+    // coming back prove which responder the untagged open reached.
     write_half
-        .write_all(br#"{"subject":{"kind":"record","capsule_id":"ff"}}"#)
+        .write_all(br#"{"subject":{"kind":"adjudicate"},"halves":[]}"#)
         .await
-        .expect("write E14 request");
+        .expect("write the request");
     write_half.shutdown().await.expect("half-close request");
 
     let mut response_bytes = Vec::new();
@@ -447,9 +450,9 @@ async fn untagged_open_still_reaches_the_evidence_responder_not_ledger_fetch() {
         .await
         .expect("responder answered before timeout")
         .expect("read response bytes");
-    // The evidence responder proxies to `evidence_server.py` verbatim -- a
-    // ledger-fetch response would instead be `{"status": ...}` JSON, which
-    // this exact byte comparison also rules out.
+    // The evidence responder proxies an adjudicate request to
+    // `evidence_server.py` verbatim -- a ledger-fetch response would instead
+    // be `{"status": ...}` JSON, which this exact byte comparison rules out.
     assert_eq!(response_bytes, refusal);
 
     harness.shutdown_process().await;

@@ -7,8 +7,10 @@ import {
   fixtureHalfBody
 } from '@/features/capsules/lib/pushed-half-fixtures'
 import { ASK_FOR_RECORD_AFTER_MS } from '@/features/capsules/lib/exchange-row-state'
+import type { EvidenceVerification } from '@/features/capsules/api/evidenceRequestClient'
 import {
   askIsOffered,
+  askReplyNote,
   askTarget,
   judgeAskReply,
   producerSignatureVerifies,
@@ -44,7 +46,7 @@ const hex = (bytes: Uint8Array) => Array.from(bytes, (b) => b.toString(16).padSt
 /** The peer's own key, as this node was told it (`announced_key_id`). */
 const PEER_SECRET = ed25519.utils.randomSecretKey()
 const ANNOUNCED = hex(ed25519.getPublicKey(PEER_SECRET))
-/** The digest of the request bytes this node sent. */
+/** The digest of the request bytes the plugin sent. */
 const SENT = 'f'.repeat(64)
 
 function signedRefusal(reason: string, { secret = PEER_SECRET, requestDigest = SENT } = {}) {
@@ -53,8 +55,39 @@ function signedRefusal(reason: string, { secret = PEER_SECRET, requestDigest = S
   return { ...refusal, key_id: hex(ed25519.getPublicKey(secret)), sig: hex(sig) }
 }
 
-function answer(body: unknown, announcedKeyId: string | null = ANNOUNCED) {
-  return { kind: 'answer' as const, answer: body, announcedKeyId, sentRequestDigest: SENT }
+/** The tool's reply: the peer's answer, and what the plugin's verification
+ *  found (by default, what a verified answer of that shape reads as). */
+function answer(
+  body: Record<string, unknown>,
+  announcedKeyId: string | null = ANNOUNCED,
+  verification?: EvidenceVerification
+) {
+  const found: EvidenceVerification =
+    verification ??
+    (typeof body.reason === 'string'
+      ? { state: 'refusal', reason: body.reason }
+      : { state: 'artifact', records: artifactLeafIndices(body) })
+  return { kind: 'answer' as const, answer: body, verification: found, requestDigest: SENT, announcedKeyId }
+}
+
+/** An artifact answer carrying `records` (the -00 wire the plugin serves:
+ *  the artifact as exact JSON text, each record's body hex-encoded). */
+function artifact(records: Record<string, unknown>[]): Record<string, unknown> {
+  const served = records.map((record, i) => ({
+    leaf_index: i,
+    digest: 'd'.repeat(64),
+    body: hex(new TextEncoder().encode(JSON.stringify(record)))
+  }))
+  return {
+    artifact: JSON.stringify({ anchor: 'a'.repeat(64), evidence_stream: 'log', subject: { correlation: NONCE }, records: served }),
+    material: '{}',
+    envelope: {}
+  }
+}
+
+function artifactLeafIndices(body: Record<string, unknown>): number[] {
+  const parsed = JSON.parse(String(body.artifact)) as { records: { leaf_index: number }[] }
+  return parsed.records.map((r) => r.leaf_index)
 }
 
 /** A COSE_Sign1 (EdDSA, attached payload) over `payload`, as the producer
@@ -123,15 +156,15 @@ describe('askIsOffered', () => {
 })
 
 describe('judgeAskReply', () => {
-  it('reads a signed no_such_record as their signed statement that they have no record', async () => {
-    const outcome = await judgeAskReply(answer(signedRefusal('no_such_record')), null, ASKED_AT)
+  it('reads a signed no_such_subject as their signed statement that they have no record', async () => {
+    const outcome = await judgeAskReply(answer(signedRefusal('no_such_subject')), null, ASKED_AT)
     expect(outcome).toEqual({ kind: 'no_record', at: '2026-09-28T21:00:05Z' })
     expect(stateAfterAsk(waitingRow(), outcome, null)).toEqual({ kind: 'open_absent', date: '2026-09-28T21:00:05Z' })
   })
 
   it('reads any other signed reason as a signed decline', async () => {
-    const outcome = await judgeAskReply(answer(signedRefusal('policy_decline')), null, ASKED_AT)
-    expect(outcome).toEqual({ kind: 'refused', at: '2026-09-28T21:00:05Z', reason: 'policy_decline' })
+    const outcome = await judgeAskReply(answer(signedRefusal('policy_declined')), null, ASKED_AT)
+    expect(outcome).toEqual({ kind: 'refused', at: '2026-09-28T21:00:05Z', reason: 'policy_declined' })
     expect(stateAfterAsk(waitingRow(), outcome, null).kind).toBe('open_refused')
   })
 
@@ -142,7 +175,7 @@ describe('judgeAskReply', () => {
   })
 
   it('never takes a refusal whose signature does not verify', async () => {
-    const forged = { ...signedRefusal('no_such_record'), reason: 'policy_decline' }
+    const forged = { ...signedRefusal('no_such_subject'), reason: 'policy_declined' }
     const outcome = await judgeAskReply(answer(forged), null, ASKED_AT)
     expect(outcome.kind).toBe('no_reply')
     expect(stateAfterAsk(waitingRow(), outcome, null)).toEqual({ kind: 'open_asked', date: ASKED_AT })
@@ -150,20 +183,59 @@ describe('judgeAskReply', () => {
 
   // Adversarial read: a refusal must be theirs, and about this ask.
   it('never takes a refusal signed with a throwaway key instead of their announced one', async () => {
-    const throwaway = signedRefusal('no_such_record', { secret: ed25519.utils.randomSecretKey() })
+    const throwaway = signedRefusal('no_such_subject', { secret: ed25519.utils.randomSecretKey() })
     const outcome = await judgeAskReply(answer(throwaway), null, ASKED_AT)
     expect(outcome).toMatchObject({ kind: 'no_reply', detail: 'their reply is not signed with the key they announced' })
     expect(stateAfterAsk(waitingRow(), outcome, null).kind).toBe('open_asked')
   })
 
   it('never takes a refusal replayed from a different request', async () => {
-    const replayed = signedRefusal('no_such_record', { requestDigest: 'e'.repeat(64) })
+    const replayed = signedRefusal('no_such_subject', { requestDigest: 'e'.repeat(64) })
     const outcome = await judgeAskReply(answer(replayed), null, ASKED_AT)
     expect(outcome).toMatchObject({ kind: 'no_reply', detail: 'their reply answers a different request' })
   })
 
   it('takes nothing as their refusal when this node has no announced key for them', async () => {
-    const outcome = await judgeAskReply(answer(signedRefusal('no_such_record'), null), null, ASKED_AT)
+    const outcome = await judgeAskReply(answer(signedRefusal('no_such_subject'), null), null, ASKED_AT)
+    expect(outcome.kind).toBe('no_reply')
+  })
+
+  it('takes nothing the plugin could not verify, and says why', async () => {
+    const theirs = { ...fixtureHalfBody({ capsuleId: 'theirs-1' }), signature: 'aa', key_id: 'bb' }
+    const outcome = await judgeAskReply(
+      answer(artifact([theirs]), ANNOUNCED, { state: 'not_evidence', why: 'a proof does not verify against the anchor' }),
+      FIXTURE_REQUEST_DIGEST,
+      ASKED_AT,
+      trustingJudges
+    )
+    expect(outcome).toEqual({
+      kind: 'no_reply',
+      at: ASKED_AT,
+      detail: 'their reply did not verify: a proof does not verify against the anchor'
+    })
+    expect(stateAfterAsk(waitingRow(), outcome, ourRequestedRecord() as never).kind).toBe('open_asked')
+    expect(askReplyNote(outcome)).toEqual({
+      verified: false,
+      text: 'Their reply is not verified: their reply did not verify: a proof does not verify against the anchor'
+    })
+  })
+
+  it('takes nothing when the plugin had no announced key to check the reply under', async () => {
+    const outcome = await judgeAskReply(
+      answer(signedRefusal('no_such_subject'), null, { state: 'no_announced_key' }),
+      null,
+      ASKED_AT
+    )
+    expect(outcome).toMatchObject({ kind: 'no_reply' })
+    expect(askReplyNote(outcome)?.verified).toBe(false)
+  })
+
+  it('never takes a refusal whose reason differs from the one the plugin verified', async () => {
+    const outcome = await judgeAskReply(
+      answer(signedRefusal('no_such_subject'), ANNOUNCED, { state: 'refusal', reason: 'policy_declined' }),
+      null,
+      ASKED_AT
+    )
     expect(outcome.kind).toBe('no_reply')
   })
 
@@ -172,10 +244,30 @@ describe('judgeAskReply', () => {
     expect(stateAfterAsk(waitingRow(), outcome, null)).toEqual({ kind: 'open_asked', date: ASKED_AT })
   })
 
+  it('says a verified reply is verified', async () => {
+    const refusal = await judgeAskReply(answer(signedRefusal('no_such_subject')), null, ASKED_AT)
+    expect(askReplyNote(refusal)?.verified).toBe(true)
+    const theirs = { ...fixtureHalfBody({ capsuleId: 'theirs-1' }), signature: 'aa', key_id: 'bb' }
+    const record = await judgeAskReply(answer(artifact([theirs])), FIXTURE_REQUEST_DIGEST, ASKED_AT, trustingJudges)
+    expect(askReplyNote(record)).toMatchObject({ verified: true })
+    expect(askReplyNote({ kind: 'asking', at: ASKED_AT })).toBeNull()
+  })
+
+  it('reads only the records the plugin proved', async () => {
+    const theirs = { ...fixtureHalfBody({ capsuleId: 'theirs-1' }), signature: 'aa', key_id: 'bb' }
+    const outcome = await judgeAskReply(
+      answer(artifact([theirs]), ANNOUNCED, { state: 'artifact', records: [] }),
+      FIXTURE_REQUEST_DIGEST,
+      ASKED_AT,
+      trustingJudges
+    )
+    expect(outcome).toMatchObject({ kind: 'no_reply', detail: 'their reply carried no record' })
+  })
+
   it('closes the row through the gate when their record verifies and cites our half', async () => {
     const theirs = { ...fixtureHalfBody({ capsuleId: 'theirs-1' }), signature: 'aa', key_id: 'bb' }
     const outcome = await judgeAskReply(
-      answer({ v: 1, subject_kind: 'correlation', bundles: [{ receipt: theirs }] }),
+      answer(artifact([theirs])),
       FIXTURE_REQUEST_DIGEST,
       ASKED_AT,
       trustingJudges
@@ -188,7 +280,7 @@ describe('judgeAskReply', () => {
   it('never closes the row on a record whose signature does not verify', async () => {
     const theirs = { ...fixtureHalfBody({ capsuleId: 'theirs-1' }), signature: 'aa', key_id: 'bb' }
     const outcome = await judgeAskReply(
-      answer({ v: 1, subject_kind: 'correlation', bundles: [{ receipt: theirs }] }),
+      answer(artifact([theirs])),
       FIXTURE_REQUEST_DIGEST,
       ASKED_AT,
       { ...trustingJudges, producerSignatureVerifies: () => false }
@@ -203,7 +295,7 @@ describe('judgeAskReply', () => {
       key_id: 'bb'
     }
     const outcome = await judgeAskReply(
-      answer({ v: 1, subject_kind: 'correlation', bundles: [{ receipt: theirs }] }),
+      answer(artifact([theirs])),
       FIXTURE_REQUEST_DIGEST,
       ASKED_AT,
       trustingJudges
@@ -221,7 +313,7 @@ describe('judgeAskReply: their record under the announced key', () => {
       [ed25519.utils.randomSecretKey(), false]
     ] as const) {
       const outcome = await judgeAskReply(
-        answer({ v: 1, subject_kind: 'correlation', bundles: [{ receipt: signedRecord(secret) }] }),
+        answer(artifact([signedRecord(secret)])),
         null,
         ASKED_AT,
         realSignature
