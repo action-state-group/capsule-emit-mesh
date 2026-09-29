@@ -702,9 +702,10 @@ impl CapsuleState {
                 generation_parameters,
                 latency_ms: crate::producer::capsule::committed_latency_ms(latency_ms),
                 binary_attestation,
-                // rung 3c (tee_measured) producer leg is HW-gated (Intel TDX
-                // Confidential VM only) and not wired in on this path -- honest
-                // absence, never fabricated. See `crate::producer::tee_attest`.
+                // No TEE quote: the tee_attestation slot is always written empty
+                // (honest absence, never fabricated). This plugin never took a
+                // quote, so the TDX parser was not brought over from the old
+                // producer.
             },
             effect_status: "confirmed".to_string(),
             effect_type: "inference_completion".to_string(),
@@ -1247,9 +1248,10 @@ impl CapsuleState {
                 // time the host's own dispatch) -- honest zero-marker, not faked.
                 latency_ms: "0.000".to_string(),
                 binary_attestation,
-                // rung 3c (tee_measured) producer leg is HW-gated (Intel TDX
-                // Confidential VM only) and not wired in on this path -- honest
-                // absence, never fabricated. See `crate::producer::tee_attest`.
+                // No TEE quote: the tee_attestation slot is always written empty
+                // (honest absence, never fabricated). This plugin never took a
+                // quote, so the TDX parser was not brought over from the old
+                // producer.
             },
             // Confirmed only over the host's digest of the REAL response body;
             // without one the completion was dispatched but its output is

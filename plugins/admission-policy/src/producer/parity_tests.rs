@@ -27,9 +27,41 @@ fn bytes(record: &Value) -> Vec<u8> {
     serde_json::to_vec(record).unwrap()
 }
 
-/// A local record with its fresh store nonce and minute pinned, and its id
-/// and envelope recomputed over them.
-fn pinned(record: &Value) -> Vec<u8> {
+/// Which path's envelope function to sign with.
+#[derive(Clone, Copy)]
+enum Path {
+    Old,
+    New,
+}
+
+fn attach(path: Path, record: &mut Value) {
+    match path {
+        Path::Old => old::attach_producer_envelope(record, &key()).unwrap(),
+        Path::New => new::attach_producer_envelope(record, &key()).unwrap(),
+    }
+}
+
+/// The envelope a record actually carries must be exactly what the OTHER
+/// path's envelope function produces over the same `capsule_id` (Ed25519 is
+/// deterministic), and must verify.
+fn assert_envelope_matches(kind: &str, record: &Value, other: Path) {
+    let mut probe = json!({"capsule_id": record["capsule_id"]});
+    attach(other, &mut probe);
+    assert_eq!(
+        record["signature"], probe["signature"],
+        "{kind}: envelope bytes differ"
+    );
+    assert_eq!(
+        record["key_id"], probe["key_id"],
+        "{kind}: envelope key_id differs"
+    );
+    crate::producer::cose::verify_producer_envelope(record)
+        .unwrap_or_else(|e| panic!("{kind}: envelope does not verify: {e}"));
+}
+
+/// A local record with its fresh store nonce and minute pinned, its id
+/// recomputed over them, and its envelope re-signed by its OWN path.
+fn pinned(record: &Value, path: Path) -> Vec<u8> {
     let mut record = record.clone();
     record["model_attestation"]["compute_attestation"][new::STORE_NONCE_FIELD] =
         json!("0".repeat(64));
@@ -39,15 +71,34 @@ fn pinned(record: &Value) -> Vec<u8> {
         .replace(&minute, "2000-01-01T00:00Z");
     let mut record: Value = serde_json::from_str(&text).unwrap();
     record["capsule_id"] = json!(compute_capsule_id(&record).unwrap());
-    new::attach_producer_envelope(&mut record, &key()).unwrap();
+    attach(path, &mut record);
     bytes(&record)
 }
 
 fn assert_local_parity(kind: &str, old_record: &Value, new_record: &Value) {
+    assert_envelope_matches(kind, old_record, Path::New);
+    assert_envelope_matches(kind, new_record, Path::Old);
     assert_eq!(
-        pinned(old_record),
-        pinned(new_record),
+        pinned(old_record, Path::Old),
+        pinned(new_record, Path::New),
         "{kind}: old and new seal paths disagree\nold: {old_record}\nnew: {new_record}"
+    );
+}
+
+/// Exchange records carry no envelope from `seal`; each path attaches its
+/// own, and the enveloped bytes must match.
+fn assert_exchange_parity(kind: &str, mut old_record: Value, mut new_record: Value) {
+    assert_eq!(
+        bytes(&old_record),
+        bytes(&new_record),
+        "{kind}: sealed bytes"
+    );
+    attach(Path::Old, &mut old_record);
+    attach(Path::New, &mut new_record);
+    assert_eq!(
+        bytes(&old_record),
+        bytes(&new_record),
+        "{kind}: enveloped bytes"
     );
 }
 
@@ -157,10 +208,12 @@ fn exchange_records_are_byte_identical() {
                 .unwrap();
                 let new_record =
                     new::seal(&exchange_input!(new, new_chain, new_binding, role)).unwrap();
-                assert_eq!(
-                    bytes(&old_record),
-                    bytes(&new_record),
-                    "exchange record (role {role}, chained {chained}, host binding {bound})"
+                assert_exchange_parity(
+                    &format!(
+                        "exchange record (role {role}, chained {chained}, host binding {bound})"
+                    ),
+                    old_record,
+                    new_record,
                 );
             }
         }
@@ -191,10 +244,89 @@ fn exchange_records_without_optional_members_are_byte_identical() {
     new_input.effect_status = "dispatched".to_string();
     old_input.effect_response_digest = None;
     new_input.effect_response_digest = None;
-    assert_eq!(
-        bytes(&old::seal(&old_input).unwrap()),
-        bytes(&new::seal(&new_input).unwrap())
+    assert_exchange_parity(
+        "exchange record without optional members",
+        old::seal(&old_input).unwrap(),
+        new::seal(&new_input).unwrap(),
     );
+}
+
+/// An exchange record carrying a real runtime attestation: the same file
+/// measured by both paths under the same key and time, sealed into
+/// `x-mesh-poc-v1.evidence_refs.binary_attestation` and `runtime`.
+#[test]
+fn attested_exchange_records_are_byte_identical() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = dir.path().join("serving-binary");
+    std::fs::write(&binary, b"a serving binary, measured by both paths").unwrap();
+    let measured_at = "2026-09-29T10:11:12Z".to_string();
+    let old_keys = capsule_producer::keys::KeyPair { signing_key: key() };
+    let new_keys = crate::producer::keys::KeyPair { signing_key: key() };
+    let old_attestation =
+        capsule_producer::runtime_attest::measure_path(&old_keys, &binary, measured_at.clone())
+            .unwrap();
+    let new_attestation =
+        crate::producer::runtime_attest::measure_path(&new_keys, &binary, measured_at.clone())
+            .unwrap();
+    assert_eq!(
+        bytes(&old_attestation.to_value()),
+        bytes(&new_attestation.to_value()),
+        "binary attestation"
+    );
+    assert_eq!(
+        bytes(&old_attestation.runtime_value("mesh-llm")),
+        bytes(&new_attestation.runtime_value("mesh-llm")),
+        "runtime value"
+    );
+    assert!(new_attestation.verify_signature(&key().verifying_key()));
+
+    for role in ["served", "requested"] {
+        let mut old_input = exchange_input!(old, None, None, role, tee_attestation: None);
+        let mut new_input = exchange_input!(new, None, None, role);
+        old_input.runtime = old_attestation.runtime_value("mesh-llm");
+        new_input.runtime = new_attestation.runtime_value("mesh-llm");
+        old_input.mesh_poc.binary_attestation = Some(old_attestation.clone());
+        new_input.mesh_poc.binary_attestation = Some(new_attestation.clone());
+        let old_record = old::seal(&old_input).unwrap();
+        let new_record = new::seal(&new_input).unwrap();
+        assert!(new_record.pointer("/model_attestation/compute_attestation/x-mesh-poc-v1/evidence_refs/binary_attestation/digest").is_some_and(|d| !d.is_null()));
+        assert_exchange_parity(
+            &format!("attested exchange record ({role})"),
+            old_record,
+            new_record,
+        );
+    }
+}
+
+#[test]
+fn adjudication_ack_refused_records_are_byte_identical() {
+    macro_rules! refused {
+        ($m:ident, $key_id:expr) => {
+            $m::RefusedDelivery {
+                verdict_capsule_id: &"c".repeat(64),
+                refused_by: "node-b",
+                reason: "not_a_party",
+                refusal_digest: &"d".repeat(64),
+                refusal_key_id: $key_id,
+                refused_at: "2026-09-29T10:11:12Z",
+            }
+        };
+    }
+    for key_id in [None, Some("e".repeat(64))] {
+        let old_record = old::seal_adjudication_ack_refused_record(
+            &refused!(old, key_id.as_deref()),
+            Some(&"f".repeat(64)),
+            &key(),
+        )
+        .unwrap();
+        let new_record = new::seal_adjudication_ack_refused_record(
+            &refused!(new, key_id.as_deref()),
+            Some(&"f".repeat(64)),
+            &key(),
+        )
+        .unwrap();
+        assert_local_parity("adjudication ack-refused record", &old_record, &new_record);
+    }
 }
 
 #[test]
@@ -503,7 +635,7 @@ fn split_stage_records_are_byte_identical() {
             "{name}: main record refusal"
         );
         if let (Ok(old_main), Ok(new_main)) = (old_main, new_main) {
-            assert_eq!(bytes(&old_main), bytes(&new_main), "{name}: main record");
+            assert_exchange_parity(&format!("{name}: main record"), old_main, new_main);
             main_records += 1;
         }
     }
