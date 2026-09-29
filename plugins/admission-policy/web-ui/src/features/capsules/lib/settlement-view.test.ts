@@ -76,8 +76,9 @@ describe('settlementRowView', () => {
 })
 
 describe('settlementRowView refinements', () => {
-  it('terms accepted with no invoice is priced, not paid', () => {
-    expect(settlementRowView(book('terms_only'))?.chip).toBe('priced')
+  it('terms accepted with no invoice reads "terms accepted", not paid', () => {
+    expect(settlementRowView(book('terms_only'))?.chip).toBe('terms')
+    expect(settlementRowView(book('terms_only'))?.chipLabel).toBe('terms accepted')
     expect(settlementRowView(book('settled'))?.chip).toBe('paid')
   })
 
@@ -193,7 +194,7 @@ describe('Close card counts', () => {
     expect(settlementCloseLine(counts, undefined)).toBe('Payments: not known for this node.')
   })
 
-  it('a priced exchange with no invoice is not counted as paid', () => {
+  it('an exchange with terms accepted and no invoice is not counted as paid', () => {
     const counts = settlementCloseCounts([paneRow('a', book('terms_only'))], () => false)
     expect(counts.paid).toBe(0)
   })

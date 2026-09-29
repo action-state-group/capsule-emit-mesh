@@ -1,9 +1,9 @@
-// The settlement wording gate (the (k) line). Settlement on this page shows
+// The settlement wording gate. Settlement on this page shows
 // only this node's own payment-lifecycle records and the host's metering:
 // invoices issued and settled per leg, the final amount as the host recorded
 // it, per-peer counts. It never adds amounts up, never shows a balance, never
 // says "unpaid" for an exchange with no payment records, and carries no
-// pricing or relay wording. This test fails on any such
+// price, priced, pricing or relay wording. This test fails on any such
 // phrase in the settlement copy, in the settlement sources' shipped code
 // (comments left out), or in what the views render for every state.
 import { readFileSync } from 'node:fs'
@@ -21,7 +21,7 @@ import {
 import * as COPY from '@/features/capsules/lib/tooltip-copy'
 
 const BANNED_SETTLEMENT =
-  /\b(unpaid|balances?|owed?|owes|owing|pricing|prices?|price list|rates?|fees?|tariffs?|totals?|sum(s|med)?|relay(s|ed|ing)?|subscriptions?|markup|margin|invoice total)\b/i
+  /\b(unpaid|balances?|owed?|owes|owing|pric(e|es|ed|ing)|price list|rates?|fees?|tariffs?|totals?|sum(s|med)?|relay(s|ed|ing)?|subscriptions?|markup|margin|invoice total)\b/i
 
 function offenders(label: string, text: string): string[] {
   const match = text.match(BANNED_SETTLEMENT)
@@ -99,7 +99,11 @@ describe('settlement wording gate', () => {
         ...book(state),
         matched_by_segment_only: state === 'settled'
       })
-      if (view) rendered.push([`row:${state}`, [view.chip, view.label, view.tooltip, view.providerBook].join(' | ')])
+      if (view)
+        rendered.push([
+          `row:${state}`,
+          [view.chip, view.chipLabel, view.label, view.tooltip, view.providerBook].join(' | ')
+        ])
     }
     for (const entry of settlementEntryViews(ENTRIES)) {
       rendered.push([
@@ -144,10 +148,22 @@ describe('settlement wording gate', () => {
   })
 
   it('the gate catches the phrases it bans', () => {
-    for (const phrase of ['unpaid', 'your balance', 'amount owed', 'pricing', 'relayed', 'total', 'fee']) {
+    for (const phrase of [
+      'unpaid',
+      'your balance',
+      'amount owed',
+      'price',
+      'priced',
+      'pricing',
+      'relayed',
+      'total',
+      'fee'
+    ]) {
       expect(offenders('probe', `a ${phrase} here`).length, phrase).toBe(1)
     }
     // Lifecycle facts pass.
-    expect(offenders('probe', 'priced · paid · settled by your wallet · Final amount · recorded 3000 msat')).toEqual([])
+    expect(
+      offenders('probe', 'terms accepted · paid · settled by your wallet · Final amount · recorded 3000 msat')
+    ).toEqual([])
   })
 })

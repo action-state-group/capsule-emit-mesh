@@ -275,7 +275,7 @@ describe('LedgerPageContent', () => {
     expect(screen.queryByText('No peer exchanges recorded yet.')).not.toBeInTheDocument()
   })
 
-  it('[ledger-T2-counterparty-not-recorded] Peers: no card for an unattributed row — its exchanges roll into one headline count, never "unknown peer"', async () => {
+  it('Peers: no card for an unattributed row — its exchanges roll into one headline count, never "unknown peer"', async () => {
     const { fetchPaneB } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneB).mockResolvedValueOnce({
       rows: [
@@ -734,7 +734,7 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
   })
 
 
-  it('[ledger-T4-inline-inspector] renders a two-sided row per exchange (OPEN · not held for a peer-asserted id with no bytes held, OPEN for a unilateral one), the `▸ checks` toggle expands full detail inline', async () => {
+  it('renders a two-sided row per exchange (OPEN · not held for a peer-asserted id with no bytes held, OPEN for a unilateral one), the `▸ checks` toggle expands full detail inline', async () => {
     // Finding 1: a peer-
     // asserted id with no held bytes is OPEN · not held, never CLOSED
     // -- this fixture used to read `theirs: { state: 'present', ... }` and
@@ -790,7 +790,7 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     expect(screen.getByText('OPEN · not held')).toBeInTheDocument()
     expect(screen.queryByText('CLOSED')).not.toBeInTheDocument()
     expect(screen.getAllByText('OPEN').length).toBeGreaterThan(0)
-    // [ledger-T1-ask-half-action]: neither row carries a counterparty (the
+    // Neither row carries a counterparty (the
     // default fetchPaneB mock returns no rows), so the OPEN row's ask
     // action is gated -- a fact, never a fabricated "not yet asked" ask
     // button pointed at nobody. Both fixture rows are ASKED (a remote
@@ -810,7 +810,7 @@ describe('LedgerPageContent — Part 3: Exchanges two-sided stream + row inspect
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 
-  it('[ledger-T1-ask-half-action] a row with a recorded counterparty shows the ask action; clicking it never opens a dialog', async () => {
+  it('a row with a recorded counterparty shows the ask action; clicking it never opens a dialog', async () => {
     const { fetchPaneB, fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue({
       rows: [
@@ -1158,7 +1158,7 @@ const BOUND_OWNER_STATUS_PAYLOAD = {
   owner: { status: 'verified', verified: true }
 }
 
-describe('LedgerPageContent — Integrity Close card (the (k) line)', () => {
+describe('LedgerPageContent — Integrity Close card', () => {
   it('says no agreed period yet, then counts inference and payment apart -- counts only, never an amount', async () => {
     const { fetchPaneA, fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneA).mockResolvedValue({

@@ -172,7 +172,7 @@ describe('PeerTableRow — advertised-but-unused peers (no Pane B row)', () => {
   })
 })
 
-describe('PeerTableRow -- payments with this peer (the (k) line)', () => {
+describe('PeerTableRow -- payments with this peer', () => {
   const settlement = {
     paid_exchanges: 3,
     settled_payer_observed: 2,

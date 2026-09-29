@@ -39,8 +39,11 @@ function isStateKey(state: string): state is SettlementStateKey {
 }
 
 export type SettlementRowView = {
-  /** `paid` once an invoice exists; `priced` for terms with no invoice. */
-  chip: 'paid' | 'priced'
+  /** `paid` once an invoice exists; `terms` for terms accepted with no
+   *  invoice. */
+  chip: 'paid' | 'terms'
+  /** The chip's words. */
+  chipLabel: string
   stateKey: SettlementStateKey | 'unrecognised'
   label: string
   tooltip: string
@@ -52,11 +55,12 @@ export type SettlementRowView = {
 
 /** The row face for a paid exchange, or `null` when the row has no payment
  *  records -- a free exchange, payments off, or a request that failed before
- *  it was priced. `null` renders nothing: no chip, and never "unpaid". */
+ *  it was invoiced. `null` renders nothing: no chip, and never "unpaid". */
 export function settlementRowView(settlement: PayerBook | null | undefined): SettlementRowView | null {
   if (!settlement) return null
   const providerBook = PROVIDER_BOOK_NOT_AVAILABLE_TEXT
-  const chip = settlement.state === 'terms_only' ? 'priced' : 'paid'
+  const chip = settlement.state === 'terms_only' ? 'terms' : 'paid'
+  const chipLabel = chip === 'paid' ? 'paid' : 'terms accepted'
   const termsNote = settlement.terms_digests.length > 1 ? 'these payment records name different terms' : null
   // Only the host's own states are read; the page's refinement of `settled`
   // is never accepted from the wire.
@@ -65,6 +69,7 @@ export function settlementRowView(settlement: PayerBook | null | undefined): Set
     // a known one.
     return {
       chip,
+      chipLabel,
       stateKey: 'unrecognised',
       label: settlement.state,
       tooltip: 'A payment state this page does not recognise, shown as recorded.',
@@ -79,6 +84,7 @@ export function settlementRowView(settlement: PayerBook | null | undefined): Set
       : settlement.state
   return {
     chip,
+    chipLabel,
     stateKey: state,
     label: STATE_LABEL[state],
     tooltip: SETTLEMENT_STATE_TOOLTIPS[state],
@@ -175,7 +181,7 @@ export type SettlementCloseCounts = {
  *  passed in (Integrity passes the one its "Confirmed by the other side" tile
  *  uses), paid and settled from each row's payer-book state, read through the
  *  row's own face so the card and the rows can never disagree. A row whose
- *  terms were accepted with no invoice is priced, not paid. A book the host
+ *  terms were accepted with no invoice is not paid. A book the host
  *  attaches to two rows (one exchange id on both) is counted once. */
 export function settlementCloseCounts(
   rows: readonly PaneCRow[],

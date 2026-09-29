@@ -9,7 +9,7 @@ import { settlementEntryViews, settlementRowView } from '@/features/capsules/lib
 import { shortId } from '@/features/capsules/lib/short-id'
 import {
   SETTLEMENT_PAID_TOOLTIP,
-  SETTLEMENT_PRICED_TOOLTIP,
+  SETTLEMENT_TERMS_TOOLTIP,
   SETTLEMENT_PROVIDER_BOOK_TOOLTIP
 } from '@/features/capsules/lib/tooltip-copy'
 
@@ -25,11 +25,11 @@ export function SettlementStrip({ settlement }: { settlement: PayerBook | null |
     >
       <HoverChip
         census={`settlement:${view.chip}`}
-        label={view.chip === 'paid' ? SETTLEMENT_PAID_TOOLTIP : SETTLEMENT_PRICED_TOOLTIP}
+        label={view.chip === 'paid' ? SETTLEMENT_PAID_TOOLTIP : SETTLEMENT_TERMS_TOOLTIP}
       >
         <span>
           <StatusBadge size="caption" tone={view.chip === 'paid' ? 'accent' : 'muted'}>
-            {view.chip}
+            {view.chipLabel}
           </StatusBadge>
         </span>
       </HoverChip>

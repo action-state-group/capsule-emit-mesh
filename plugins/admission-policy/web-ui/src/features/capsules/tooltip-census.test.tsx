@@ -85,7 +85,7 @@ const REQUIRED = {
     'twin:no_verdict',
     'split:stage_cell',
     'split:handoffs',
-    // The (k) line: a paid exchange's payment chips.
+    // A paid exchange’s payment chips.
     'settlement:paid',
     'settlement_state:settled',
     'settlement:provider_book'

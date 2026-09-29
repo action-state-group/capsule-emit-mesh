@@ -375,10 +375,10 @@ export const ROUTING_NOT_ON_THIS_PAGE = {
 
 /** Payments on an exchange row: the `paid` chip and its settlement state.
  *  Only this node's records exist, so every sentence is about your side. */
-export const SETTLEMENT_PRICED_TOOLTIP = 'This exchange was priced, and no invoice was recorded for it.'
+export const SETTLEMENT_TERMS_TOOLTIP = 'You accepted the terms for this exchange, and no invoice was recorded for it.'
 
 export const SETTLEMENT_PAID_TOOLTIP =
-  'This exchange was priced, and this node recorded each payment step it saw. The wallet keeps the money; these are the records.'
+  'This exchange was invoiced, and this node recorded each payment step it saw. The wallet keeps the money; these are the records.'
 
 export const SETTLEMENT_STATE_TOOLTIPS = {
   settled:

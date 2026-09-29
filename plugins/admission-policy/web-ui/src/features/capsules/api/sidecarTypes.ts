@@ -327,7 +327,7 @@ export type PayerBook = {
 export type PeerSettlementCounts = {
   /** Exchanges with at least one invoice recorded. */
   paid_exchanges: number
-  /** Exchanges whose terms were accepted with no invoice: priced, not paid. */
+  /** Exchanges whose terms were accepted with no invoice: not paid. */
   terms_only?: number
   settled_payer_observed: number
   no_settlement_seen: number
