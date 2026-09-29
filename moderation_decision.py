@@ -172,8 +172,10 @@ class ModerationDecision:
     """One moderation call, ready to seal. Construction itself enforces the
     record's non-negotiable invariants (`policy_ref` presence, `decision`
     closed vocabulary, a non-empty `redress_ref`) -- see the module
-    docstring's mutant note. The remaining fields are carried as
-    given, with no further construction-time checks."""
+    docstring's mutant note. Construction also checks that `basis` is a
+    non-empty string, that `confidence` is a number in [0.0, 1.0], and that
+    `model_attestation` carries a non-empty `model_id` and `provider`;
+    `SubjectRef` and `PolicyRef` validate themselves when built."""
 
     subject_ref: SubjectRef
     policy_ref: PolicyRef
