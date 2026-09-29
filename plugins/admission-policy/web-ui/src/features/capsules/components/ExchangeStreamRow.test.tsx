@@ -1278,3 +1278,57 @@ describe('ExchangeStreamRow — a row closed from the record "Ask them for their
     expect(screen.getByText(CLOSED_FROM_FETCH_NOT_SAVED)).toBeInTheDocument()
   })
 })
+
+describe('ExchangeStreamRow — whether their reply to "Ask them for their record" was verified', () => {
+  it('says a reply the plugin could not verify is not verified, and why', () => {
+    render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        {...toggleProps()}
+        askOutcome={{
+          kind: 'no_reply',
+          at: '2026-09-28T23:00:00Z',
+          detail: 'their reply did not verify: a proof does not verify against the anchor'
+        }}
+        rail={NO_RAIL}
+        row={makeRow('open_not_given')}
+      />
+    )
+    const note = document.querySelector('[data-ask-reply-verified]') as HTMLElement
+    expect(note).toHaveAttribute('data-ask-reply-verified', 'false')
+    expect(note).toHaveTextContent('Their reply is not verified: their reply did not verify: a proof does not verify')
+  })
+
+  it('says a record the plugin proved in their log is verified', () => {
+    const theirs = { ...LOCAL_RECORD_WITH_DIGESTS, capsule_id: 'theirs-1' } as Record<string, unknown>
+    render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        {...toggleProps()}
+        askOutcome={{
+          kind: 'record',
+          at: '2026-09-28T23:00:00Z',
+          evidence: { status: 'found', idMatch: true, signatureOk: true, peerRecord: theirs, fetch: vi.fn() }
+        }}
+        rail={NO_RAIL}
+        row={makeRow('open_not_given')}
+      />
+    )
+    const note = document.querySelector('[data-ask-reply-verified]') as HTMLElement
+    expect(note).toHaveAttribute('data-ask-reply-verified', 'true')
+    expect(note).toHaveTextContent('Their reply is verified')
+  })
+
+  it('shows no note while the ask is in flight', () => {
+    render(
+      <ExchangeStreamRow
+        onAction={vi.fn()}
+        {...toggleProps()}
+        askOutcome={{ kind: 'asking', at: '2026-09-28T23:00:00Z' }}
+        rail={NO_RAIL}
+        row={makeRow('open_not_given')}
+      />
+    )
+    expect(document.querySelector('[data-ask-reply-verified]')).toBeNull()
+  })
+})
