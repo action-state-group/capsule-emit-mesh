@@ -39,14 +39,15 @@ only through their `exchange_id` join (`src/evidence_panes/settlement.rs`):
 
 - each `panes/pane-c` row carries `settlement`, the payer-book summary of the settlement records
   its own exchange ids join (`api/sidecarTypes.ts` `PayerBook`), or `null` when none does. A
-  free exchange, payments off, and a request that failed before it was priced all read `null`:
+  free exchange, payments off, and a request that failed before it was invoiced all read `null`:
   never "unpaid";
 - the list carries `settlement_unjoined` (exchange ids with settlement records that no row
   carries) and `settlement_missing_exchange_id` (records naming no exchange id), so no record is
   dropped;
 - when this node holds any settlement record, each `panes/pane-b` row carries `settlement`,
-  per-peer counts (`PeerSettlementCounts`). The provider's side (`lapsed`, `debt`,
-  `settled_both_books`) is `null`, because this node's records cannot see it.
+  per-peer counts (`PeerSettlementCounts`) of this node's own facts only, with
+  `provider_book: "not_available"`: this node's records cannot see the provider's side, so
+  nothing about it is sent.
 
 Amounts are copied from each record and never added up. The panes carry no `payments` field:
 whether the host has a payments provider is the host's to say, and the page reads a missing field
