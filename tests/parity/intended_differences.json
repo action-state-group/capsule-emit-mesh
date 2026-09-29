@@ -1,5 +1,70 @@
 {
  "cases": {
+  "bare_replayed": {
+   "answers": [
+    {
+     "appended": {
+      "received-capsules.jsonl": [
+       {
+        "action_id": "serve_exchange/6e13ffa1-67cb-4892-8c7b-ac60b80e8e6e",
+        "action_type": "decide",
+        "assurance": {
+         "attestation_mode": "self_attested",
+         "effect_mode": "confirmed",
+         "ledger_mode": "standalone"
+        },
+        "canonicalization_id": "jcs",
+        "capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "developer": "mesh-node@v1",
+        "disposition": {
+         "approver": "policy",
+         "decision": "accept",
+         "human_disposed": false,
+         "verdict_class": "confirmed"
+        },
+        "effect": {
+         "effect_attestation": "runtime_claimed",
+         "request_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+         "response_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+         "status": "confirmed",
+         "type": "inference_completion"
+        },
+        "format_version": "4",
+        "key_id": "33dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e250",
+        "model_attestation": {
+         "compute_attestation": {
+          "note": "half"
+         }
+        },
+        "operator": "op",
+        "signature": "d284584ca30378236170706c69636174696f6e2f6167656e742d616374696f6e2d63617073756c652d696404582033dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e2500127a058201077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db605840dc1f2056c891eab97cd9844379b812143b8f27129e3b66d31b1b6f766bc73cd480dae28b9a20fc7fe7dae08f4e4bfd0e588a801526ecba7448644be098ca9603",
+        "spec_version": "draft-mih-scitt-agent-action-capsule-05",
+        "timestamp": "2026-09-29T14:37:32.966308Z"
+       }
+      ],
+      "received-provenance.jsonl": [
+       {
+        "capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "received_at": "2026-09-29T00:00:00Z",
+        "received_from": "m3",
+        "signature_ok": true,
+        "via": "push"
+       }
+      ]
+     },
+     "reply": {
+      "status": "received"
+     }
+    },
+    {
+     "appended": {},
+     "reply": {
+      "status": "received"
+     }
+    }
+   ],
+   "why": "The same sender's record, already held, is not stored again: a resent push (a retry or a replay) is acknowledged as before, but appends nothing to received-capsules.jsonl or received-provenance.jsonl. The Python door appends both lines on every resend, so a peer resending one genuine record could grow the held stores without bound. A bundle's proof is still judged and held on its own terms."
+  },
   "bundle_version_bool": {
    "answers": [
     {
@@ -29,6 +94,271 @@
     }
    ],
    "why": "The Python door compares the bundle marker with `!= 1`, and in Python `1.0 == 1`, so a bundle marked `\"record_push_bundle\": 1.0` is read as version 1. Every other count in a bundle must be an exact integer (the door's own S2 rule); the port applies that rule to the marker too and refuses the bundle bundle_malformed."
+  },
+  "history_bare_then_bundle": {
+   "answers": [
+    {
+     "appended": {
+      "received-capsules.jsonl": [
+       {
+        "action_id": "serve_exchange/6e13ffa1-67cb-4892-8c7b-ac60b80e8e6e",
+        "action_type": "decide",
+        "assurance": {
+         "attestation_mode": "self_attested",
+         "effect_mode": "confirmed",
+         "ledger_mode": "standalone"
+        },
+        "canonicalization_id": "jcs",
+        "capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "developer": "mesh-node@v1",
+        "disposition": {
+         "approver": "policy",
+         "decision": "accept",
+         "human_disposed": false,
+         "verdict_class": "confirmed"
+        },
+        "effect": {
+         "effect_attestation": "runtime_claimed",
+         "request_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+         "response_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+         "status": "confirmed",
+         "type": "inference_completion"
+        },
+        "format_version": "4",
+        "key_id": "33dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e250",
+        "model_attestation": {
+         "compute_attestation": {
+          "note": "half"
+         }
+        },
+        "operator": "op",
+        "signature": "d284584ca30378236170706c69636174696f6e2f6167656e742d616374696f6e2d63617073756c652d696404582033dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e2500127a058201077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db605840dc1f2056c891eab97cd9844379b812143b8f27129e3b66d31b1b6f766bc73cd480dae28b9a20fc7fe7dae08f4e4bfd0e588a801526ecba7448644be098ca9603",
+        "spec_version": "draft-mih-scitt-agent-action-capsule-05",
+        "timestamp": "2026-09-29T14:37:32.966308Z"
+       }
+      ],
+      "received-provenance.jsonl": [
+       {
+        "capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "received_at": "2026-09-29T00:00:00Z",
+        "received_from": "m3",
+        "signature_ok": true,
+        "via": "push"
+       }
+      ]
+     },
+     "reply": {
+      "status": "received"
+     }
+    },
+    {
+     "appended": {
+      "received-inclusion.jsonl": [
+       {
+        "checkpoint": {
+         "key_id": "33dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e250",
+         "kind": "mmr_checkpoint",
+         "log_id": "sender-log",
+         "mmr_size": 10,
+         "prev_root": "",
+         "prev_size": 0,
+         "root": "c5d4a4a5da118141cbde783b16a1ec3358b3b1eb5f21f6fb4a4baa9155316058",
+         "signature": "39ea93f92624123bd1fed6049866c3c79b0a8ef3ecc526bb1aa23c3e612fddf6f798e01d18fdcd92ee9eeeb162bdabaa86e01bd4a64a002b99462e11ef8cda08",
+         "timestamp": "2026-09-27T00:00:10Z",
+         "v": 1
+        },
+        "checkpoint_digest": "333dbb831b97d0002118df4754290bbff531ebdad16f39c1e390fe7e831e148d",
+        "half_capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "inclusion_proof": {
+         "kind": "inclusion",
+         "leaf_index": 4,
+         "peaks_left": [
+          "d1b17708d8ce4bab928477715734afe2e841f174f51bbab7ce097287bc3480b1"
+         ],
+         "peaks_right": [],
+         "size": 10,
+         "v": 1,
+         "witness": [
+          "c93642d9c7be9e0de1344d8c4002b1233519e95033ff67d7d3e38d7444d39254"
+         ]
+        },
+        "inclusion_proof_digest": "d6756d96aa88e619e35ce4c2a7884e1a72a59dea23a66d39b21d91dd2b5d5ff2",
+        "leaf_index": 4,
+        "mmr_size": 10,
+        "received_at": "2026-09-29T00:00:00Z",
+        "received_from": "m3",
+        "via": "push"
+       }
+      ]
+     },
+     "reply": {
+      "inclusion": {
+       "checkpoint_digest": "333dbb831b97d0002118df4754290bbff531ebdad16f39c1e390fe7e831e148d",
+       "half_capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+       "inclusion_proof_digest": "d6756d96aa88e619e35ce4c2a7884e1a72a59dea23a66d39b21d91dd2b5d5ff2",
+       "leaf_index": 4,
+       "mmr_size": 10,
+       "received_at": "2026-09-29T00:00:00Z"
+      },
+      "status": "received"
+     }
+    }
+   ],
+   "why": "The same sender's record, already held, is not stored again: a resent push (a retry or a replay) is acknowledged as before, but appends nothing to received-capsules.jsonl or received-provenance.jsonl. The Python door appends both lines on every resend, so a peer resending one genuine record could grow the held stores without bound. A bundle's proof is still judged and held on its own terms."
+  },
+  "history_other_log": {
+   "answers": [
+    {
+     "appended": {
+      "received-capsules.jsonl": [
+       {
+        "action_id": "serve_exchange/6e13ffa1-67cb-4892-8c7b-ac60b80e8e6e",
+        "action_type": "decide",
+        "assurance": {
+         "attestation_mode": "self_attested",
+         "effect_mode": "confirmed",
+         "ledger_mode": "standalone"
+        },
+        "canonicalization_id": "jcs",
+        "capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "developer": "mesh-node@v1",
+        "disposition": {
+         "approver": "policy",
+         "decision": "accept",
+         "human_disposed": false,
+         "verdict_class": "confirmed"
+        },
+        "effect": {
+         "effect_attestation": "runtime_claimed",
+         "request_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+         "response_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+         "status": "confirmed",
+         "type": "inference_completion"
+        },
+        "format_version": "4",
+        "key_id": "33dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e250",
+        "model_attestation": {
+         "compute_attestation": {
+          "note": "half"
+         }
+        },
+        "operator": "op",
+        "signature": "d284584ca30378236170706c69636174696f6e2f6167656e742d616374696f6e2d63617073756c652d696404582033dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e2500127a058201077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db605840dc1f2056c891eab97cd9844379b812143b8f27129e3b66d31b1b6f766bc73cd480dae28b9a20fc7fe7dae08f4e4bfd0e588a801526ecba7448644be098ca9603",
+        "spec_version": "draft-mih-scitt-agent-action-capsule-05",
+        "timestamp": "2026-09-29T14:37:32.966308Z"
+       }
+      ],
+      "received-inclusion.jsonl": [
+       {
+        "checkpoint": {
+         "key_id": "33dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e250",
+         "kind": "mmr_checkpoint",
+         "log_id": "sender-log",
+         "mmr_size": 18,
+         "prev_root": "",
+         "prev_size": 0,
+         "root": "5bd5840adb889c6a3f1ca2270f6f9ada16686a58363ec5350eb1dd782a9e03b7",
+         "signature": "1b9a1193fe6d967565b91309d564c85b89eb2ec46fca1857a199a2ac5a0952cd22a9349af08840ce006dd2576e59b54dd814dae621f6c10d852372d9aaf68a0f",
+         "timestamp": "2026-09-27T00:00:18Z",
+         "v": 1
+        },
+        "checkpoint_digest": "70d036e112b1b90fc1fa1740748e659b657398db3fce528113bca16f7ce046f0",
+        "half_capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "inclusion_proof": {
+         "kind": "inclusion",
+         "leaf_index": 8,
+         "peaks_left": [
+          "94b3ce776ef7ce191770ab8a51874843890898da04e08d2eaf56474013334972"
+         ],
+         "peaks_right": [],
+         "size": 18,
+         "v": 1,
+         "witness": [
+          "7e230e776773a904b91132dd18d1380d03db1819ab26c1d79fb4b30fea0c2092"
+         ]
+        },
+        "inclusion_proof_digest": "a0dfc7444da50c0227a272f6ad560e1156479f3d703396cff075f48d96fdf0d5",
+        "leaf_index": 8,
+        "mmr_size": 18,
+        "received_at": "2026-09-29T00:00:00Z",
+        "received_from": "m3",
+        "via": "push"
+       }
+      ],
+      "received-provenance.jsonl": [
+       {
+        "capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "received_at": "2026-09-29T00:00:00Z",
+        "received_from": "m3",
+        "signature_ok": true,
+        "via": "push"
+       }
+      ]
+     },
+     "reply": {
+      "inclusion": {
+       "checkpoint_digest": "70d036e112b1b90fc1fa1740748e659b657398db3fce528113bca16f7ce046f0",
+       "half_capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+       "inclusion_proof_digest": "a0dfc7444da50c0227a272f6ad560e1156479f3d703396cff075f48d96fdf0d5",
+       "leaf_index": 8,
+       "mmr_size": 18,
+       "received_at": "2026-09-29T00:00:00Z"
+      },
+      "status": "received"
+     }
+    },
+    {
+     "appended": {
+      "received-inclusion.jsonl": [
+       {
+        "checkpoint": {
+         "key_id": "33dc5936387caa60de0990a37d818558dde7732752b31f75149b8ca47356e250",
+         "kind": "mmr_checkpoint",
+         "log_id": "log-2",
+         "mmr_size": 4,
+         "prev_root": "",
+         "prev_size": 0,
+         "root": "91760e172dc71ac4e3e57ed428dcff6121bba7bd3d46654275024de40bbbe721",
+         "signature": "0a40da0f9dd63e4cdf2fc2ff11ba00378bdfb5d78052ab3ef3237e3805edf8d370bf7781480a99cb7236923b7828e74153bc1e58482ecd558d8c6d97e082bc05",
+         "timestamp": "2026-09-27T00:00:04Z",
+         "v": 1
+        },
+        "checkpoint_digest": "0d09bdfc72011996f24451ce46af83d1a010aa65b51b2d6e672eb19b0d661188",
+        "half_capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+        "inclusion_proof": {
+         "kind": "inclusion",
+         "leaf_index": 2,
+         "peaks_left": [
+          "1693327c7d7e6bc1b9ee19074a62a42be9ff1c8d1d667bf6c7137dec86e9d426"
+         ],
+         "peaks_right": [],
+         "size": 4,
+         "v": 1,
+         "witness": []
+        },
+        "inclusion_proof_digest": "2a03e7843e62a2c64a77cf71d106ece44ca7a3e6f9eb9051ff354925f6ff5474",
+        "leaf_index": 2,
+        "mmr_size": 4,
+        "received_at": "2026-09-29T00:00:00Z",
+        "received_from": "m3",
+        "via": "push"
+       }
+      ]
+     },
+     "reply": {
+      "inclusion": {
+       "checkpoint_digest": "0d09bdfc72011996f24451ce46af83d1a010aa65b51b2d6e672eb19b0d661188",
+       "half_capsule_id": "1077d89d2bbc24b0e61eea7515d6f5d0b40dcfcfb3080375dd8e99654c51db60",
+       "inclusion_proof_digest": "2a03e7843e62a2c64a77cf71d106ece44ca7a3e6f9eb9051ff354925f6ff5474",
+       "leaf_index": 2,
+       "mmr_size": 4,
+       "received_at": "2026-09-29T00:00:00Z"
+      },
+      "status": "received"
+     }
+    }
+   ],
+   "why": "The same sender's record, already held, is not stored again: a resent push (a retry or a replay) is acknowledged as before, but appends nothing to received-capsules.jsonl or received-provenance.jsonl. The Python door appends both lines on every resend, so a peer resending one genuine record could grow the held stores without bound. A bundle's proof is still judged and held on its own terms."
   },
   "raw_utf16": {
    "answers": [

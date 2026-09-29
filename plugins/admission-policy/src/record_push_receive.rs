@@ -15,31 +15,39 @@
 //!    `bundle_malformed` and a bare push's are `request_malformed`: that
 //!    reason in reply to a bundle is how a sender recognises a door that
 //!    predates bundles.
-//! 3. The half passes the Class 1 checks on its own bytes, as the reference
+//! 3. `record_at_completion: off` refuses `policy_decline`.
+//! 4. A push with no sender id, or from a sender with no announced key
+//!    ([`crate::peer_keys`]), is refused `signature_unverified`. These cheap
+//!    refusals come before any work on the record's bytes: an unknown sender
+//!    is refused before its record is checked.
+//! 5. The half passes the Class 1 checks on its own bytes, as the reference
 //!    verifier runs them (capsule-emit's `structure`, including that its
 //!    `capsule_id` recomputes), else malformed.
-//! 4. `record_at_completion: off` refuses `policy_decline`.
-//! 5. The sender's announced key ([`crate::peer_keys`]) is the half's
-//!    `key_id` and the half's signature verifies under it, else
-//!    `signature_unverified`. An unidentified push is refused here too.
-//! 6. What a served half claims about the exchange agrees with this node's
+//! 6. The announced key is the half's `key_id` and the half's signature
+//!    verifies under it, else `signature_unverified`.
+//! 7. What a served half claims about the exchange agrees with this node's
 //!    own record of it, else `served_by_mismatch` / `model_mismatch`.
-//! 7. A split's carried stage records are each valid and named by the main
+//! 8. A split's carried stage records are each valid and named by the main
 //!    record's receipt, else `bundle_malformed`.
-//! 8. A bundle's checkpoint is signed by the same announced key and its proof
+//! 9. A bundle's checkpoint is signed by the same announced key and its proof
 //!    puts the half under that checkpoint's root, else `inclusion_unverified`;
 //!    and it does not contradict a checkpoint already held for the same key
 //!    and log (`checkpoint_equivocation`) or come from before the newest one
 //!    at a size never vouched for (`checkpoint_stale`).
 //!
-//! Every refusal from step 5 on is recorded in `rejected-record-pushes.jsonl`.
+//! Every refusal from step 4 on is recorded in `rejected-record-pushes.jsonl`,
+//! up to [`MAX_REJECTED_LOG_BYTES`]; past that, the refusals still go out,
+//! signed, and the ones not recorded are counted and logged.
 //!
 //! **What is kept.** A received half is evidence this node holds, not a
 //! record it made: it goes to the held-artifact store
 //! `received-capsules.jsonl`, as transmitted, with a provenance line; a
 //! bundle's proof and checkpoint go to `received-inclusion.jsonl`. None of it
 //! enters this node's own chain. The chained record of the receipt is the
-//! citing record the bridge seals after this returns.
+//! citing record the bridge seals after this returns. A record already held
+//! from the same sender is not stored again: a resent push is acknowledged
+//! and adds nothing to disk. A line of a held store that does not parse (a
+//! write torn by a crash) is skipped, counted and logged.
 //!
 //! **Bounded work.** The body is at most `MAX_SIDE_STREAM_BYTES` before it
 //! gets here. Every size a peer states is checked before anything is sized by
@@ -120,6 +128,33 @@ pub struct Receiver<'a> {
     pub peer_keys: Option<&'a str>,
     /// `record_at_completion: off`: receive nothing.
     pub record_at_completion_off: bool,
+    /// The most `rejected-record-pushes.jsonl` may grow to, in bytes
+    /// ([`MAX_REJECTED_LOG_BYTES`] in the plugin). Past it, rejections are
+    /// counted, and the count logged, not written.
+    pub rejected_log_limit: u64,
+}
+
+/// How large the rejected-push log may grow: 4 MiB, some tens of thousands
+/// of rejections. A peer that keeps pushing what this node refuses cannot
+/// fill the disk through it; past the cap the refusals still go out, signed,
+/// and only the local record of them stops.
+pub const MAX_REJECTED_LOG_BYTES: u64 = 4 * 1024 * 1024;
+
+static REJECTED_LOG_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TORN_LINES_SKIPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Rejections not written because the rejected-push log is at its cap,
+/// since this process started.
+#[cfg(test)]
+pub fn rejected_log_drops() -> u64 {
+    REJECTED_LOG_DROPS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Lines of a held store that did not parse (a torn write) and were skipped,
+/// since this process started.
+#[cfg(test)]
+pub fn torn_lines_skipped() -> u64 {
+    TORN_LINES_SKIPPED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Receive one push body from `sender` (its self-declared peer id, `None`
@@ -156,34 +191,47 @@ pub fn receive(
         _ => (&parsed, None, REASON_REQUEST_MALFORMED),
     };
 
-    let Some(capsule_id) = record_id(half) else {
-        return Ok(refuse(malformed));
-    };
-
+    // The cheap refusals come before any work on the record's bytes: this
+    // node's policy, then a sender with no announced key.
     if node.record_at_completion_off {
         return Ok(refuse(REASON_POLICY_DECLINE));
     }
 
-    let reject = |reason: &str, exchange: Option<&str>| -> std::io::Result<Value> {
-        let mut entry = json!({
-            "capsule_id": capsule_id,
-            "claimed_sender_peer_id": sender,
-            "reason": reason,
-            "rejected_at": now,
-        });
-        if let Some(digest) = exchange {
-            entry["request_digest"] = json!(digest);
-        }
-        append(node.ledger_dir, REJECTED_PUSHES_FILENAME, &entry)?;
-        Ok(refuse(reason))
-    };
+    // The id the half claims (not yet checked) until it is verified below.
+    let mut logged_id = half.get("capsule_id").and_then(Value::as_str);
+    let reject =
+        |logged_id: Option<&str>, reason: &str, exchange: Option<&str>| -> std::io::Result<Value> {
+            let mut entry = json!({
+                "capsule_id": logged_id,
+                "claimed_sender_peer_id": sender,
+                "reason": reason,
+                "rejected_at": now,
+            });
+            if let Some(digest) = exchange {
+                entry["request_digest"] = json!(digest);
+            }
+            append_capped(
+                node.ledger_dir,
+                REJECTED_PUSHES_FILENAME,
+                &entry,
+                node.rejected_log_limit,
+            )?;
+            Ok(refuse(reason))
+        };
 
     let Some(sender) = sender.filter(|s| !s.is_empty()) else {
-        return reject(REASON_SIGNATURE_UNVERIFIED, None);
+        return reject(logged_id, REASON_SIGNATURE_UNVERIFIED, None);
     };
     let Some(announced) = crate::peer_keys::announced_key_in(node.peer_keys, sender) else {
-        return reject(REASON_SIGNATURE_UNVERIFIED, None);
+        return reject(logged_id, REASON_SIGNATURE_UNVERIFIED, None);
     };
+
+    let Some(capsule_id) = record_id(half) else {
+        return Ok(refuse(malformed));
+    };
+    logged_id = Some(capsule_id);
+    let reject = |reason: &str, exchange: Option<&str>| reject(logged_id, reason, exchange);
+
     if half.get("key_id").and_then(Value::as_str) != Some(announced.as_str())
         || !signed_by(half, &announced)
     {
@@ -230,24 +278,29 @@ pub fn receive(
         inclusion = Some(verified);
     }
 
-    append(node.ledger_dir, RECEIVED_CAPSULES_FILENAME, half)?;
-    append(
-        node.ledger_dir,
-        RECEIVED_PROVENANCE_FILENAME,
-        &json!({
-            "capsule_id": capsule_id,
-            "received_from": sender,
-            "via": "push",
-            "received_at": now,
-            "signature_ok": true,
-        }),
-    )?;
-    for record in split_records {
+    // A record already held from this sender is not stored again: a resent
+    // push (a retry, or a replay) adds nothing to disk. A bundle's proof is
+    // still judged and held on its own terms below.
+    if !already_held(node.ledger_dir, capsule_id, sender)? {
+        append(node.ledger_dir, RECEIVED_CAPSULES_FILENAME, half)?;
         append(
             node.ledger_dir,
-            RECEIVED_SPLIT_STAGE_FILENAME,
-            &json!({"main_capsule_id": capsule_id, "received_at": now, "capsule": record}),
+            RECEIVED_PROVENANCE_FILENAME,
+            &json!({
+                "capsule_id": capsule_id,
+                "received_from": sender,
+                "via": "push",
+                "received_at": now,
+                "signature_ok": true,
+            }),
         )?;
+        for record in split_records {
+            append(
+                node.ledger_dir,
+                RECEIVED_SPLIT_STAGE_FILENAME,
+                &json!({"main_capsule_id": capsule_id, "received_at": now, "capsule": record}),
+            )?;
+        }
     }
     let Some(inclusion) = inclusion else {
         return Ok(json!({"status": "received"}));
@@ -317,6 +370,68 @@ fn sorted_compact(value: &Value) -> String {
         }
     }
     sorted(value).to_string()
+}
+
+/// [`append`], unless the file would pass `limit` bytes: then the line is
+/// counted as dropped instead, and the count logged (on the first drop and
+/// every thousandth).
+fn append_capped(
+    ledger_dir: &Path,
+    filename: &str,
+    entry: &Value,
+    limit: u64,
+) -> std::io::Result<()> {
+    let size = match std::fs::metadata(ledger_dir.join(filename)) {
+        Ok(meta) => meta.len(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(e) => return Err(e),
+    };
+    let line_len = u64::try_from(entry.to_string().len() + 1).unwrap_or(u64::MAX);
+    if size.saturating_add(line_len) > limit {
+        let dropped = REJECTED_LOG_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if dropped == 1 || dropped.is_multiple_of(1000) {
+            tracing::warn!(
+                dropped,
+                limit,
+                "{filename} is at its cap; rejected pushes are counted, not logged"
+            );
+        }
+        return Ok(());
+    }
+    append(ledger_dir, filename, entry)
+}
+
+/// Each line of a held store that parses as JSON. A line that does not (a
+/// write torn by a crash) is skipped, counted and logged, never allowed to
+/// fail every later push.
+fn json_lines(ledger_dir: &Path, filename: &str) -> std::io::Result<Vec<Value>> {
+    let file = match std::fs::File::open(ledger_dir.join(filename)) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut rows = Vec::new();
+    for line in std::io::BufReader::new(file).split(b'\n') {
+        let line = line?;
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        match serde_json::from_slice(&line) {
+            Ok(row) => rows.push(row),
+            Err(error) => {
+                TORN_LINES_SKIPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!(%error, "{filename}: skipped a line that does not parse");
+            }
+        }
+    }
+    Ok(rows)
+}
+
+/// Whether this sender's record `capsule_id` is held already.
+fn already_held(ledger_dir: &Path, capsule_id: &str, sender: &str) -> std::io::Result<bool> {
+    Ok(json_lines(ledger_dir, RECEIVED_PROVENANCE_FILENAME)?
+        .iter()
+        .any(|row| row["capsule_id"] == capsule_id && row["received_from"] == sender))
 }
 
 fn append(ledger_dir: &Path, filename: &str, entry: &Value) -> std::io::Result<()> {
@@ -523,22 +638,7 @@ fn verify_bundle_inclusion(
 
 /// The inclusion facts already held, one per line of `received-inclusion.jsonl`.
 fn held_inclusions(ledger_dir: &Path) -> std::io::Result<Vec<Value>> {
-    let file = match std::fs::File::open(ledger_dir.join(RECEIVED_INCLUSION_FILENAME)) {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e),
-    };
-    let mut rows = Vec::new();
-    for line in std::io::BufReader::new(file).lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let row = serde_json::from_str(&line)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        rows.push(row);
-    }
-    Ok(rows)
+    json_lines(ledger_dir, RECEIVED_INCLUSION_FILENAME)
 }
 
 enum History {
@@ -851,6 +951,7 @@ mod tests {
                 signing_key: &key,
                 peer_keys: case["node"]["peer_keys_env"].as_str(),
                 record_at_completion_off: false,
+                rejected_log_limit: MAX_REJECTED_LOG_BYTES,
             };
             for push in case["pushes"].as_array().unwrap() {
                 let body = body_bytes(push);
@@ -900,6 +1001,7 @@ mod tests {
             signing_key: &key,
             peer_keys: valid["node"]["peer_keys_env"].as_str(),
             record_at_completion_off: false,
+            rejected_log_limit: MAX_REJECTED_LOG_BYTES,
         };
         let push = &valid["pushes"][0];
         assert!(receive(&receiver, &body_bytes(push), push["sender"].as_str(), NOW).is_err());
@@ -918,6 +1020,7 @@ mod tests {
                 signing_key: &key,
                 peer_keys: case["node"]["peer_keys_env"].as_str(),
                 record_at_completion_off: case["node"]["record_at_completion"] == "off",
+                rejected_log_limit: MAX_REJECTED_LOG_BYTES,
             };
             for push in case["pushes"].as_array().unwrap() {
                 let held = |name: &str| {
@@ -950,5 +1053,119 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn receiver<'a>(
+        dir: &'a Path,
+        key: &'a SigningKey,
+        case: &'a Value,
+        limit: u64,
+    ) -> Receiver<'a> {
+        Receiver {
+            ledger_dir: dir,
+            signing_key: key,
+            peer_keys: case["node"]["peer_keys_env"].as_str(),
+            record_at_completion_off: false,
+            rejected_log_limit: limit,
+        }
+    }
+
+    fn lines(dir: &Path, name: &str) -> usize {
+        std::fs::read_to_string(dir.join(name))
+            .map(|t| t.lines().count())
+            .unwrap_or(0)
+    }
+
+    /// A resent genuine record (a retry, or a replay) is acknowledged every
+    /// time and stored once.
+    #[test]
+    fn a_hundred_resends_of_one_record_hold_it_once() {
+        let corpus = corpus();
+        let key = SigningKey::from_bytes(&[9; 32]);
+        for name in ["bare_valid", "bundle_valid"] {
+            let valid = case(&corpus, name);
+            let dir = tempfile::tempdir().unwrap();
+            let node = receiver(dir.path(), &key, valid, MAX_REJECTED_LOG_BYTES);
+            let push = &valid["pushes"][0];
+            for _ in 0..100 {
+                let reply =
+                    receive(&node, &body_bytes(push), push["sender"].as_str(), NOW).unwrap();
+                assert_eq!(reply["status"], "received", "{name}");
+            }
+            for store in [RECEIVED_CAPSULES_FILENAME, RECEIVED_PROVENANCE_FILENAME] {
+                assert_eq!(lines(dir.path(), store), 1, "{name}: {store}");
+            }
+            let inclusions = if name == "bundle_valid" { 1 } else { 0 };
+            assert_eq!(
+                lines(dir.path(), RECEIVED_INCLUSION_FILENAME),
+                inclusions,
+                "{name}"
+            );
+        }
+    }
+
+    /// The rejected-push log stops growing at its cap; the refusals still go
+    /// out, signed, and the drops are counted.
+    #[test]
+    fn the_rejected_log_stops_at_its_cap_and_counts_what_it_drops() {
+        let corpus = corpus();
+        let unknown = case(&corpus, "bare_unknown_sender");
+        let dir = tempfile::tempdir().unwrap();
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let limit = 2_000;
+        let node = receiver(dir.path(), &key, unknown, limit);
+        let push = &unknown["pushes"][0];
+        let before = rejected_log_drops();
+        for _ in 0..200 {
+            let reply = receive(&node, &body_bytes(push), push["sender"].as_str(), NOW).unwrap();
+            assert_eq!(reply["reason"], REASON_SIGNATURE_UNVERIFIED);
+            assert!(reply["sig"].as_str().is_some_and(|s| s.len() == 128));
+        }
+        let size = std::fs::metadata(dir.path().join(REJECTED_PUSHES_FILENAME))
+            .unwrap()
+            .len();
+        assert!(size <= limit, "{size} bytes");
+        let written = lines(dir.path(), REJECTED_PUSHES_FILENAME);
+        assert!(written > 0 && written < 200);
+        assert!(rejected_log_drops() - before >= u64::try_from(200 - written).unwrap());
+    }
+
+    /// One torn line in a held store (a crash mid-write) is skipped and
+    /// counted; it does not fail later pushes.
+    #[test]
+    fn a_torn_line_in_the_held_stores_is_skipped_not_fatal() {
+        let corpus = corpus();
+        let valid = case(&corpus, "bundle_valid");
+        let dir = tempfile::tempdir().unwrap();
+        for store in [RECEIVED_INCLUSION_FILENAME, RECEIVED_PROVENANCE_FILENAME] {
+            std::fs::write(dir.path().join(store), b"{\"half_capsule_id\": \"ab\n").unwrap();
+        }
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let node = receiver(dir.path(), &key, valid, MAX_REJECTED_LOG_BYTES);
+        let push = &valid["pushes"][0];
+        let before = torn_lines_skipped();
+        let reply = receive(&node, &body_bytes(push), push["sender"].as_str(), NOW).unwrap();
+        assert_eq!(reply["status"], "received");
+        assert!(reply["inclusion"].is_object());
+        assert!(torn_lines_skipped() - before >= 2);
+    }
+
+    /// An unknown sender is refused before its record's bytes are checked:
+    /// even a record that would fail every check gets the identity refusal.
+    #[test]
+    fn an_unknown_sender_is_refused_before_its_bytes_are_checked() {
+        let corpus = corpus();
+        let malformed = case(&corpus, "structure_approver");
+        let dir = tempfile::tempdir().unwrap();
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let node = receiver(dir.path(), &key, malformed, MAX_REJECTED_LOG_BYTES);
+        let push = &malformed["pushes"][0];
+        let known = receive(&node, &body_bytes(push), push["sender"].as_str(), NOW).unwrap();
+        assert_eq!(
+            known["reason"], REASON_REQUEST_MALFORMED,
+            "a known sender reaches the checks"
+        );
+        let unknown = receive(&node, &body_bytes(push), Some("nobody"), NOW).unwrap();
+        assert_eq!(unknown["reason"], REASON_SIGNATURE_UNVERIFIED);
     }
 }

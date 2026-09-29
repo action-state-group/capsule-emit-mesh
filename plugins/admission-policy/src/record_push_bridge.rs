@@ -369,6 +369,7 @@ async fn receive_pushed_record(
             signing_key: capsules.signing_key(),
             peer_keys: peer_keys.as_deref(),
             record_at_completion_off,
+            rejected_log_limit: crate::record_push_receive::MAX_REJECTED_LOG_BYTES,
         };
         crate::record_push_receive::receive(
             &receiver,
