@@ -2,7 +2,7 @@
 # demo.sh -- the 5-minute capsule-emit-mesh demo on two STOCK mesh-llm nodes.
 #
 #   MESH_LLM_BIN=... MESH_LLM_NATIVE_RUNTIME_BUNDLE_DIR=... PLUGIN_PKG=... \
-#   DOOR_REPO=... PYTHON=... GGUF=... ./demo.sh up|ask|status|down
+#   GGUF=... ./demo.sh up|ask|status|down
 #
 #   up      two nodes on this machine: A serves GGUF, B joins A's private mesh.
 #           The plugin is installed on each from the package (`mesh-llm plugins
@@ -18,8 +18,12 @@
 #   MESH_LLM_BIN                        a stock mesh-llm release build
 #   MESH_LLM_NATIVE_RUNTIME_BUNDLE_DIR  the native runtime bundle built with it
 #   PLUGIN_PKG                          capsule-emit-mesh.tar.gz (the plugin package)
-#   DOOR_REPO                           a capsule-emit-mesh checkout (evidence_server.py)
-#   PYTHON                              a python with the door's requirements installed
+#   DOOR_REPO                           optional: run the door from a capsule-emit-mesh
+#                                       checkout (evidence_server.py) with PYTHON; by
+#                                       default each node runs the door that ships in
+#                                       the package (door/run-door.sh)
+#   PYTHON                              python3 3.11+ (the packaged door's first start
+#                                       installs its pinned dependencies, ~60 MB)
 #   GGUF                                the model node A serves
 #   DEMO_DIR                            state dir (default: ./demo-run next to this script)
 #
@@ -88,6 +92,17 @@ wired() { [ -n "$(self_id a)" ] && [ -n "$(self_id b)" ] && [ -n "$(pub_key a)" 
 start_door() {   # start_door NAME PORT
   local d="$DEMO_DIR/$1"
   mkdir -p "$d/logs/received"
+  if [ -z "${DOOR_REPO:-}" ]; then
+    # The door that ships in the package: it reads the plugin's token and data
+    # directory, listens on the port in ADMISSION_POLICY_EVIDENCE_SERVER_URL.
+    ( . "$DEMO_DIR/peer-keys.env"
+      exec env ADMISSION_POLICY_DATA_DIR="$d/plugin-data" ADMISSION_POLICY_EVIDENCE_SERVER_URL="http://127.0.0.1:$2" \
+        "$d/plugins/installed/$PLUGIN/door/run-door.sh" ) >> "$d/logs/door.log" 2>&1 &
+    echo $! > "$d/door.pid"
+    # The first start installs the door's dependencies.
+    until_ok 600 "door $1 on :$2" busy "$2"
+    return
+  fi
   ( cd "$DOOR_REPO"; . "$DEMO_DIR/peer-keys.env"
     exec "$PYTHON" evidence_server.py --ledger-dir "$d/plugin-data/ledger" \
       --node-key "$d/plugin-data/keys/node-key.pem" --listen-host 127.0.0.1 --listen-port "$2" \
@@ -161,7 +176,7 @@ status() {
 }
 
 up() {
-  for v in MESH_LLM_BIN MESH_LLM_NATIVE_RUNTIME_BUNDLE_DIR PLUGIN_PKG DOOR_REPO GGUF; do need $v; done
+  for v in MESH_LLM_BIN MESH_LLM_NATIVE_RUNTIME_BUNDLE_DIR PLUGIN_PKG GGUF; do need $v; done
   for p in $A_CONSOLE $A_API $A_DOOR $B_CONSOLE $B_API $B_DOOR; do busy $p && { echo "demo: port $p is in use" >&2; exit 1; }; done
   mkdir -p "$DEMO_DIR/a" "$DEMO_DIR/b" "$DEMO_DIR/runtime-cache"; chmod 700 "$DEMO_DIR"
   say "1/5  Install the plugin on both nodes (mesh-llm plugins install --archive $(basename "$PLUGIN_PKG"))"
@@ -211,7 +226,7 @@ case "${1:-}" in
   status) status ;;
   down) down ;;
   restart)      # restart a stopped run on its own data: no install, no new exchange
-    for v in MESH_LLM_BIN MESH_LLM_NATIVE_RUNTIME_BUNDLE_DIR DOOR_REPO GGUF; do need $v; done
+    for v in MESH_LLM_BIN MESH_LLM_NATIVE_RUNTIME_BUNDLE_DIR GGUF; do need $v; done
     start_node a $A_CONSOLE $A_API $A_DOOR serve --gguf "$GGUF" --ctx-size 2048
     rm -f "$DEMO_DIR/join-token"
     (umask 077; curl -fs "http://127.0.0.1:$A_CONSOLE/api/status" | "$PYTHON" -c 'import json,sys; t=json.load(sys.stdin).get("token") or ""; sys.exit("no token") if not t else sys.stdout.write(t)' > "$DEMO_DIR/join-token")
@@ -223,6 +238,6 @@ case "${1:-}" in
     n=${2:?a|b}; alive "$DEMO_DIR/$n/door.pid" && kill -TERM "$(cat "$DEMO_DIR/$n/door.pid")"; rm -f "$DEMO_DIR/$n/door.pid"
     port=$([ "$n" = a ] && echo $A_DOOR || echo $B_DOOR); until_ok 30 "door $n to close" bash -c "! (exec 3<>/dev/tcp/127.0.0.1/$port) 2>/dev/null"; echo "door $n stopped" ;;
   door-start)   # door-start a|b
-    n=${2:?a|b}; need DOOR_REPO; start_door "$n" "$([ "$n" = a ] && echo $A_DOOR || echo $B_DOOR)"; echo "door $n started" ;;
+    n=${2:?a|b}; start_door "$n" "$([ "$n" = a ] && echo $A_DOOR || echo $B_DOOR)"; echo "door $n started" ;;
   *) sed -n '2,20p' "$0"; echo "  door-stop|door-start a|b  stop / start one node's evidence door"; exit 2 ;;
 esac

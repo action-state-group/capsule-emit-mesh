@@ -15,7 +15,8 @@ Nothing joins or publishes to a public mesh. Node B joins node A with an invite 
 |---|---|
 | `MESH_LLM_BIN` | a mesh-llm release build, plus `MESH_LLM_NATIVE_RUNTIME_BUNDLE_DIR` (the native runtime built with it) |
 | `PLUGIN_PKG` | the plugin package, `capsule-emit-mesh.tar.gz` for your platform |
-| `DOOR_REPO`, `PYTHON` | a checkout of capsule-emit-mesh (its `evidence_server.py`), and a Python with its `requirements.txt` installed |
+| `python3` | 3.11 or newer, for the evidence door that ships in the package (`door/`). Its first start installs the door's pinned, hash-checked dependencies (about 60 MB) into `door/.venv` |
+| `DOOR_REPO`, `PYTHON` | optional: run the door from a capsule-emit-mesh checkout instead (its `evidence_server.py`, and a Python with its `requirements.txt` installed) |
 | `GGUF` | any small chat model for node A |
 
 ## Run it
@@ -23,7 +24,7 @@ Nothing joins or publishes to a public mesh. Node B joins node A with an invite 
 `demo.sh` is in this plugin's directory in the capsule-emit-mesh repository (`plugins/admission-policy/demo.sh`); run it from a checkout.
 
 ```bash
-export MESH_LLM_BIN=... MESH_LLM_NATIVE_RUNTIME_BUNDLE_DIR=... PLUGIN_PKG=... DOOR_REPO=... PYTHON=... GGUF=...
+export MESH_LLM_BIN=... MESH_LLM_NATIVE_RUNTIME_BUNDLE_DIR=... PLUGIN_PKG=... GGUF=...
 ./demo.sh up        # about 2 minutes, most of it loading the model
 ./demo.sh ask       # optional: one more exchange
 ./demo.sh status
@@ -48,10 +49,11 @@ Use `plugins install`; don't unpack the archive into the plugin directory by han
 - Node B: `mesh-llm client --join-file …`. It joins A's private mesh and lists A's model.
 - Consoles: node A at `http://127.0.0.1:3811`, node B at `http://127.0.0.1:3812`.
 
-**3. Each node's evidence door learns the other node's public key.**
+**3. Each node's evidence door starts, knowing the other node's public key.**
 
-- When the plugin starts, it writes the node's id and public key.
-- Each node's evidence door (`evidence_server.py`) is started knowing the other node's key, before any traffic. The door checks the signature of every record it receives against that key.
+- When the plugin starts, it writes the node's id and public key, and a random token in its data directory (`evidence-door.token`).
+- Each node starts the evidence door that ships in the package: `door/run-door.sh` in the installed plugin directory, with the node's `ADMISSION_POLICY_DATA_DIR` and `ADMISSION_POLICY_EVIDENCE_SERVER_URL`. It is started knowing the other node's key (`ADMISSION_POLICY_PEER_KEYS`), before any traffic, and checks the signature of every record it receives against that key.
+- The door listens on loopback only and answers only its own plugin: every request and reply between them proves the token. If the door isn't running, the plugin's Evidence page says confirmation is unavailable.
 
 **4. One exchange: node B asks node A's model.**
 
