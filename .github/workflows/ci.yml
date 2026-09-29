@@ -178,6 +178,27 @@ jobs:
       - name: Unit tests (decision logic)
         run: cargo test --locked --bin admission-policy-plugin
 
+      # The record-push receiver against the parity corpus (tests/parity/):
+      # every answer must equal the Python door's golden answer, or the
+      # stricter one in intended_differences.json. Already part of the unit
+      # tests above; named here because it is the merge gate for the port.
+      - name: Record-push parity (Rust receiver vs the Python door's golden answers)
+        run: |
+          cargo test --locked --bin admission-policy-plugin -- record_push_parity::
+
+      # An implementation mutant: the receiver built without its claim checks
+      # must FAIL the parity run, on the claim cases. The build must succeed
+      # first, so a compile error can never pass as "the mutant was caught".
+      - name: Record-push parity catches a receiver that drops a check (mutant must fail)
+        run: |
+          cargo test --locked --bin admission-policy-plugin --features mutant-record-push-skips-claims --no-run
+          if out=$(cargo test --locked --bin admission-policy-plugin --features mutant-record-push-skips-claims -- record_push_parity:: 2>&1); then
+            echo "::error::the parity run passed a receiver that skips the claim checks"
+            exit 1
+          fi
+          echo "$out" | grep -q "claims_served_by_other" || { echo "$out"; echo "::error::the mutant failed, but not on the claim cases"; exit 1; }
+          echo "mutant caught: $(echo "$out" | grep -m1 'case(s) differ')"
+
       - name: Interop tests (real Envelope wire protocol + real HTTP dispatch)
         run: cargo test --locked --test interop -- --test-threads=1
 

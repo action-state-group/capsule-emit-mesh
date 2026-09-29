@@ -80,8 +80,13 @@ Each answer has two members:
   ledger directory, parsed as JSON and keyed by file name. A file the push
   did not touch is absent.
 
-Comparison is by value (canonical JSON), not by bytes, so the two
-implementations may lay out their files differently.
+`appended` is keyed by file name, so an implementation must store what it
+holds in the same files (`received-capsules.jsonl`,
+`received-provenance.jsonl`, `received-inclusion.jsonl`,
+`received-split-stage-records.jsonl`, `rejected-record-pushes.jsonl`,
+`checkpoint-equivocations.jsonl`), one JSON value per line, with the same
+members and values in each line. Lines are compared by value (canonical
+JSON), so only the byte layout may differ: member order and whitespace.
 
 ## Running it
 
@@ -101,8 +106,18 @@ python tests/parity/compare.py /tmp/python.json --golden-only --table
 - Every intended difference names a real case, says why, and really differs
   from the golden answer.
 
-The Rust port's own parity test reads the same corpus and the same expected
-answers.
+The Rust receiver is held to the same corpus by
+`plugins/admission-policy/src/record_push_parity.rs`. It runs every case
+through `record_push_receive::receive` and requires each answer to equal the
+golden answer, or the stricter one in `intended_differences.json`. Set
+`RECORD_PUSH_PARITY_OUT=<path>` to also write its answers, for
+`compare.py --table`.
+
+CI runs it in the plugin job, as its own step and the merge gate for the
+port. A second step builds the receiver with the
+`mutant-record-push-skips-claims` feature (the claim checks dropped) and
+requires the parity run to fail on the claim cases. That shows the run
+catches a receiver that drops a check, not only a changed answer file.
 
 ## Changing the corpus
 
