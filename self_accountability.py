@@ -66,8 +66,8 @@ __all__ = [
     "shared_summary",
 ]
 
-#: The fixed honesty line every Pane A card carries, verbatim (the ux/ui
-#: design docs' own wording -- not paraphrased card to card).
+#: The fixed honesty line every Pane A card carries, verbatim (one fixed
+#: wording -- never paraphrased card to card).
 HONESTY_LINE = "coverage is checked by counterparties, not by this node; hardware is OS-reported."
 
 #: STALE REASON, SUPERSEDED (kept in this comment only so the history is

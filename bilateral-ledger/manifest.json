@@ -1,0 +1,13 @@
+{
+  "log_id": "mesh-node-demo-1",
+  "active_segment": "seg-000001.jsonl",
+  "segments": [
+    {
+      "name": "seg-000001.jsonl",
+      "mounted": true,
+      "manifest": null,
+      "checkpoint_root": null,
+      "mmr_size": null
+    }
+  ]
+}

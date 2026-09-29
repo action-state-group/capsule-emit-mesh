@@ -2,9 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Coordinator-receipt artifact-type producer.
 
-Implements the record shape and producer invariants defined in
-`_work/mesh-coordinator-receipt-artifact-type-2026-08-28.md` §3.1/§3.2/§6
-(design draft, cleared 2026-08-28) — the record the coordinator (skippy)
+Implements the coordinator-receipt record shape and its two producer
+invariants (both documented below) — the record the coordinator (skippy)
 produces over a split-inference run's own stage order: which hops happened,
 in what order, and whether each stage's bundle was obtained.
 
@@ -19,7 +18,7 @@ SCOPE — [mesh-b3-coordinator-receipt-producer] (Phase B6-code)
     `present` stage's bundle bytes via capsule_emit.surface.received() and
     to pass in the resulting capsule_id as that stage's bundle_ref.
 
-CITATION, NOT COMPOSITION (design doc §5.4)
+CITATION, NOT COMPOSITION
     The coordinator does not compose the N stage bundles into seal()'s
     who/can/did/audit legs. Having carried each stage bundle into its own
     log, it *cites* them as an N-ary, ordered `stages[]` array of CPB typed
@@ -28,7 +27,7 @@ CITATION, NOT COMPOSITION (design doc §5.4)
     of cross-record citation. AAC's `emit()` does not yet carry a top-level
     `references` field in code, and this repo's own coordinator/per-hop
     records are bespoke-serialized (capsule_to_bytes: plain
-    `json.dumps(sort_keys=True)`, no JCS — design doc §5.2 Branch B), so the
+    `json.dumps(sort_keys=True)`, no JCS), so the
     citation lives in a private extension block
     (`x-mesh-coordinator-receipt-v1`) inside `compute_attestation`, mirroring
     how `mesh_record_emitter.py` carries `x-mesh-lifecycle-v1`. The typed
@@ -37,9 +36,8 @@ CITATION, NOT COMPOSITION (design doc §5.4)
 
 FIELD DESIGN  (x-mesh-coordinator-receipt-v1 inside compute_attestation)
     v                 int   Always 1.
-    kind              str   "mesh-coordinator-receipt" (working name, design
-                             doc §5.1 — naming is an owner call, not fixed
-                             here).
+    kind              str   "mesh-coordinator-receipt" (working name — naming
+                             is an owner call, not fixed here).
     run_id            str   Correlation spine for the whole split run — the
                              coordinator-level counterpart to the per-hop
                              exchange_id already provisional in
@@ -52,8 +50,8 @@ FIELD DESIGN  (x-mesh-coordinator-receipt-v1 inside compute_attestation)
                              entry is rejected): {hop_id, bundle,
                              bundle_ref?}.
 
-    `topology` and `stages` are kept as two separate arrays, never merged
-    (design doc §3.1): a verifier can compute how much of the claimed
+    `topology` and `stages` are kept as two separate arrays, never merged:
+    a verifier can compute how much of the claimed
     topology is backed by a returned bundle without the coordinator ever
     conflating "I routed this" with "I have proof of this."
 """
@@ -78,9 +76,10 @@ __all__ = [
     "emit_coordinator_receipt",
 ]
 
-# Three-state `bundle` field (design doc §3.2, §5.3 — flagged [OWNER/DE TO
-# CONFIRM] at registry-filing time; this is the producer's enforcement of the
-# draft shape, not a claim the enum is finalized).
+# Three-state `bundle` field: `present` (obtained and carried into the
+# coordinator's own log), `absent` (requested, not obtained), `not_requested`.
+# Flagged [OWNER/DE TO CONFIRM] at registry-filing time; this is the
+# producer's enforcement of the draft shape, not a claim the enum is finalized.
 BUNDLE_STATES = frozenset({"present", "absent", "not_requested"})
 
 _DIGEST_ALG = "SHA-256"
@@ -88,12 +87,12 @@ _HEX_DIGITS = frozenset("0123456789abcdef")
 
 
 def _validate_bundle_ref(bundle_ref: dict[str, Any]) -> None:
-    """CPB typed digest ref shape: {type, digest_alg, digest} (design doc §3.2).
+    """CPB typed digest ref shape: {type, digest_alg, digest}.
 
     This validates SHAPE only — that the ref looks like a well-formed CPB
     typed digest reference. It cannot validate that the digest resolves to a
     capsule the coordinator actually carried into its own log (the second
-    producer invariant, design doc §6) — that is a verifier-side check
+    producer invariant: every cited bundle was actually carried) — that is a verifier-side check
     against the coordinator's log, out of scope for a producer that has no
     log to check against at construction time.
     """
@@ -115,10 +114,10 @@ def _validate_bundle_ref(bundle_ref: dict[str, Any]) -> None:
 
 @dataclass(frozen=True)
 class TopologyEntry:
-    """One hop in the coordinator's own claim of what it routed (§3.1).
+    """One hop in the coordinator's own claim of what it routed.
 
     `role` reuses [mesh-exchange-role-field] A1's registry-defined enum once
-    it lands in this repo's code (design doc §3.1) — not validated against a
+    it lands in this repo's code — not validated against a
     closed set here because that enum does not exist in code yet; only
     non-empty-string is enforced. `observation_point`, when given, reuses
     the already-provisional four-value closed set verbatim
@@ -145,9 +144,9 @@ class TopologyEntry:
 
 @dataclass(frozen=True)
 class StageEntry:
-    """One hop's actually-obtained bundle state (§3.2) — the three-state field.
+    """One hop's actually-obtained bundle state — the three-state field.
 
-    Enforces the design doc §6 FIRST producer invariant at construction: a
+    Enforces the FIRST producer invariant at construction: a
     `present` entry MUST carry a `bundle_ref` (a stage the coordinator has
     not yet carried into its own log cannot honestly be labeled `present`);
     `absent`/`not_requested` MUST NOT carry one — there is nothing carried
@@ -171,13 +170,13 @@ class StageEntry:
                 raise ValueError(
                     "StageEntry.bundle='present' requires bundle_ref — a present "
                     "stage must already have been carried into the coordinator's "
-                    "own log (received()) and cite that carried copy (§3.2, §6)"
+                    "own log (received()) and cite that carried copy"
                 )
             _validate_bundle_ref(self.bundle_ref)
         elif self.bundle_ref is not None:
             raise ValueError(
                 f"StageEntry.bundle={self.bundle!r} MUST NOT carry bundle_ref — "
-                "there is nothing carried and nothing to cite (§3.2, §6 producer "
+                "there is nothing carried and nothing to cite (producer "
                 "invariant); a naive verifier that only checks bundle_ref presence "
                 "would wrongly accept this"
             )
@@ -191,16 +190,16 @@ def emit_coordinator_receipt(
     stages: list[StageEntry],
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Emit one signed capsule carrying the coordinator receipt (§3.1).
+    """Emit one signed capsule carrying the coordinator receipt.
 
     Requires exactly one `stages[]` entry per `topology[]` hop_id ("one
-    entry per topology hop", §3.1) — a missing or extra stage entry is
+    entry per topology hop") — a missing or extra stage entry is
     rejected rather than silently tolerated, and `topology[]` must already
     be ordered by `seq` (stage order IS the graph).
 
     Returns the capsule dict. As with mesh_record_emitter's per-hop
     records, the record bytes are `capsule_to_bytes(capsule)` — plain
-    `json.dumps(sort_keys=True)`, not JCS (design doc §5.2 Branch B).
+    `json.dumps(sort_keys=True)`, not JCS.
     """
     if not isinstance(run_id, str) or not run_id:
         raise ValueError("run_id must be a non-empty string")
@@ -212,7 +211,7 @@ def emit_coordinator_receipt(
         raise ValueError(f"topology[] hop_id values must be unique — got {topology_hop_ids}")
     seqs = [t.seq for t in topology]
     if seqs != sorted(seqs):
-        raise ValueError("topology[] must be ordered by seq — stage order is the graph (§3.1)")
+        raise ValueError("topology[] must be ordered by seq — stage order is the graph")
 
     stage_hop_ids = [s.hop_id for s in stages]
     if len(set(stage_hop_ids)) != len(stage_hop_ids):
@@ -221,7 +220,7 @@ def emit_coordinator_receipt(
     unexpected = set(stage_hop_ids) - set(topology_hop_ids)
     if missing or unexpected:
         raise ValueError(
-            "stages[] must have exactly one entry per topology[] hop (§3.1) — "
+            "stages[] must have exactly one entry per topology[] hop — "
             f"missing={sorted(missing)} unexpected={sorted(unexpected)}"
         )
 

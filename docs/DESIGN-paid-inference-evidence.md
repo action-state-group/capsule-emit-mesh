@@ -112,7 +112,7 @@ remained available through settlement.
 
 Naming and status-vocabulary constraints are unchanged from the previous draft:
 `paid-inference/v1` is a **named contract**, not an eighth profile value (the profile set
-stays the seven already closed by the internal spec); the two settlement rows carry only a
+stays the seven already-closed profile values); the two settlement rows carry only a
 `ref` per the settlement stub rule; per-requirement status is the existing eight-value
 vocabulary, contract result the existing four-value projection. Rows 1–7 are the original
 set, restated; rows 8–11 are new, for the head-behaviour states this contract was silent

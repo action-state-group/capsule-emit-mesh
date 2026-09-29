@@ -7,8 +7,6 @@ user, auditor, or regulator can check offline -- the same rail as mesh
 inference accountability (`join_card.py`, `twin_adjudicator.py`), a
 a different capsule profile on top (`buzz.moderation/v1`, spec lane).
 
-Design note: internal moderation-accountability profile note (spec lane).
-
 **epistemic_type: `semantic_judgment`.** Unlike mesh inference accountability
 (deterministic -- a referee recomputes a token), a moderation call is a
 judgment: reasonable reviewers can disagree, so the epistemic type differs
@@ -85,8 +83,8 @@ MODERATION_SUBJECT_KEY = "x-mesh-moderation-decision-v1"
 MODERATION_SCHEMA = "capsule-emit-mesh/moderation-decision/v1"
 
 #: [mesh-fabric-vocab-alignment] the fabric's shared record-header vocabulary
-#: convention, extended with the one value the spike's internal design
-#: note (sec.1) introduces: a moderation decision is a semantic JUDGMENT, never a
+#: convention, extended with one value for this profile: a moderation
+#: decision is a semantic JUDGMENT, never a
 #: deterministic recompute (`twin_adjudicator.EPISTEMIC_TYPE_ADJUDICATION`)
 #: and never a bare self-report (`EPISTEMIC_TYPE_PRODUCER_CLAIM` below, used
 #: only for the `confidence` sub-field).
@@ -174,8 +172,8 @@ class ModerationDecision:
     """One moderation call, ready to seal. Construction itself enforces the
     record's non-negotiable invariants (`policy_ref` presence, `decision`
     closed vocabulary, a non-empty `redress_ref`) -- see the module
-    docstring's mutant note. Everything else is exactly the design doc's
-    §2 field table."""
+    docstring's mutant note. The remaining fields are carried as
+    given, with no further construction-time checks."""
 
     subject_ref: SubjectRef
     policy_ref: PolicyRef

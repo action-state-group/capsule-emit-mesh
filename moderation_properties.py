@@ -2,9 +2,10 @@
 """[buzz-moderation-profile-spike] Moderation properties -- system rates,
 never a per-user anything.
 
-Design doc §4/§6: "counts by decision, automated rate, twin-disagreement
-rate, human-override rate, appeal-reversal rate -- properties of the
-moderation SYSTEM, `derived_metric`, recomputable from the bundle." Follows
+The published properties are counts by decision, automated rate,
+twin-disagreement rate, human-override rate, and appeal-reversal rate --
+properties of the moderation SYSTEM, `derived_metric`, recomputable from the
+bundle. Follows
 `history_card.py`'s own fold discipline
 (`reconciliation_counts_from_ledger_dir`/`with_peer_reconciliation`): a pure
 counting function over already-sealed records, tagged
@@ -15,7 +16,7 @@ dict, not a capsule, exactly like `history_card.HistoryProperties` sits
 OUTSIDE `HistoryCard.core_account()`'s own verified scope.
 
 **appeal_reversal_rate is the one rate this spike does not yet derive from
-a sealed record type.** The build list (design doc §6) does not include an
+a sealed record type.** This spike seals no
 "appeal outcome" capsule -- Buzz's redress workflow deciding to reverse a
 decision after appeal is a follow-up record type, not this spike's scope.
 Rather than silently omitting the rate or fabricating it from unrelated
@@ -155,7 +156,7 @@ def moderation_counts(
 @dataclass(frozen=True)
 class ModerationProperties:
     """The rates a moderation history publishes -- structural facts about
-    the SYSTEM's decisions, never a per-account score (design doc §5).
+    the SYSTEM's decisions, never a per-account score (no user scores).
     Rate values are exact decimal STRINGS (`float_to_str`), never JSON
     floats, same digest-safety discipline `history_card.HistoryProperties.
     cadence` already documents."""

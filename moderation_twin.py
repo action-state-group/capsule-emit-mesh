@@ -9,9 +9,9 @@ same rail, same vocabulary (`[mesh-fabric-vocab-alignment]`), NOT the same
 comparison engine. `twin_adjudicator.adjudicate()` compares two DETERMINISTIC
 token sequences (a referee recomputes a token); a moderation decision is a
 CATEGORICAL judgment (`allow`/`remove`/`restrict`/`escalate`) where
-disagreement is expected, not a divergence to explain away. See design doc
-§3: "the shape changes but the rule doesn't: the arbiter must be something
-the decider can't forge."
+disagreement is expected, not a divergence to explain away. The shape
+changes but the rule doesn't: the arbiter must be something the decider
+can't forge.
 
 **The referee can be a human.** `twin_adjudicator.RefereeIdentity` already
 carries an optional `signature` field for exactly this case
@@ -23,8 +23,8 @@ referee identically to how the inference rail cites a model referee.
 
 **Inconclusive is first-class**, never a default: a human who declines to
 rule produces `VERDICT_INCONCLUSIVE` explicitly, same as two models whose
-disagreement has no referee at all (design doc §3, "the decision stands or
-falls per policy, and the record says so").
+disagreement has no referee at all: the decision stands or falls per
+policy, and the record says so.
 """
 from __future__ import annotations
 
@@ -223,8 +223,8 @@ def seal_human_report_capsule(report: dict[str, Any], *, operator: str, develope
 def referee_from_human_report(report: dict[str, Any], *, report_capsule_id: str | None) -> RefereeResult:
     """Adapt a signed human report into the SAME `RefereeResult` shape a
     model referee returns (`twin_adjudicator.live_referee`) -- this is the
-    substitution point design doc §3.2 calls for: "Referee = a third
-    independent model OR a human reviewer.\""""
+    substitution point: the referee is a third independent model OR a
+    human reviewer."""
     return RefereeResult(
         verdict=report["verdict"],
         margin=0.0,

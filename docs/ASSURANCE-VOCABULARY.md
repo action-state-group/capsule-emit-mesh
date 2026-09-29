@@ -211,8 +211,7 @@ disagreement.*
 
 Not a new axis proposal — a record of a vocabulary already shipped in code
 (`capsule_accountability_tab.py`, `peer_accountability_tab.py`,
-`capsule_exchange_tab.py`, `join_card.py`), per
-`_work/mesh-accountability-panes-v2-2026-09-05.md`. Included here because it is exactly the kind
+`capsule_exchange_tab.py`, `join_card.py`). Included here because it is exactly the kind
 of small, easily-diverging vocabulary §0 warns about: three panes, three source labels, and a
 four-state "did it keep its promise" line that must read the same way on every card and every row.
 
@@ -226,7 +225,7 @@ let a stronger-sounding source stand in for a weaker one that was actually used.
 |---|---|---|
 | `self_derived` | A node's own deterministic fold over its own witnessed ledger (`history_card.py`'s history properties, `served_summary.py`'s `served_summary/1` — landed [mesh-served-summary-derivation] — `account_capsule.py`'s served/success fold). Carries a `definition_digest` so a reader recomputes and matches. | The node itself; a tampered count is a signed lie a witness-checkpoint cross-check can catch, never taken on say-so. |
 | `sampled` (a verification method, not a fourth source) | A relying party's own spot-check of a `self_derived` claim — pull `k` records by position with inclusion proofs and confirm they agree with the summary (`served_summary.verify_served_summary`). | Nobody; this is the reader checking, not a claim. Cited alongside `self_derived`, never standing alone. |
-| `counterparty_held` (rendered `self_held` when it is *this* node's own copy of what a counterparty gave it) | A fact asserted by someone OTHER than the node it is about — an adjudication a twin sealed, a verdict a peer reports when asked. `self_held` marks the special case where THIS view only has its own retained copy (`received()`) of that counterparty fact, not a fresh ask. `served_summary/1`'s `adjudications_received` is exactly this: never treated as the node's own judgment of itself. | The node the fact is about cannot edit it; this is the source that carries weight in an adversarial reading, per the design doc's Pane A block 3. |
+| `counterparty_held` (rendered `self_held` when it is *this* node's own copy of what a counterparty gave it) | A fact asserted by someone OTHER than the node it is about — an adjudication a twin sealed, a verdict a peer reports when asked. `self_held` marks the special case where THIS view only has its own retained copy (`received()`) of that counterparty fact, not a fresh ask. `served_summary/1`'s `adjudications_received` is exactly this: never treated as the node's own judgment of itself. | The node the fact is about cannot edit it; this is the source that carries weight in an adversarial reading. |
 
 `assert_no_rating_fields` / `sort_peer_rows`'s trust-sort refusal apply to values from all three
 sources equally — a source label is a provenance tag, never a trust signal itself. The one exact-key
