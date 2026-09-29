@@ -56,7 +56,7 @@ Composes verbs that already exist; re-derives none of their evidence:
     ids), via the same detection ``capsule_accountability_tab``'s
     counterparty-held block uses. The "held by others" half -- what my
     counterparties report when *I* ask them -- is pending
-    [mesh-ask-the-references].
+    (``ask_history.py references``).
   - **asked**: this node's own evidence-request carrier now exists
     ([mesh-e14-evidence-responder] / [mesh-e15-evidence-http-route], both
     merged) -- but that carrier only ANSWERS requests a peer sends to this
@@ -687,7 +687,7 @@ def verdicts_cell(records: list[dict[str, Any]], all_records: list[dict[str, Any
     """Verdicts column -- real for the half this node itself sealed
     (adjudication capsules in this node's own ledger naming one of this
     peer's capsule ids); ``VERDICTS_REFERENCES_PENDING_REASON`` for the
-    "held by others" half (pending [mesh-ask-the-references])."""
+    "held by others" half (pending: asking this peer's counterparties)."""
     peer_capsule_ids = {r.get("capsule_id") for r in records if r.get("capsule_id")}
     sealed, tally, contradicted_capsule_id = _adjudications_about(peer_capsule_ids, all_records)
     if sealed == 0:

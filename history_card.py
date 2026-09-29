@@ -518,7 +518,7 @@ class HistoryCard:
     #: (plugin never ran) from unreadable/tampered state.  "State unreadable"
     #: must never grade as "no forks observed" ([mesh-forks-observed-integrity]).
     forks_state: str = FORKS_STATE_ABSENT
-    #: [mesh-ask-the-references] discovery-mechanism-1 counts -- ALSO outside
+    #: The references counts (discovery mechanism 1) -- ALSO outside
     #: `properties`/`core_account()`: these come from `ask_history.py
     #: references <X>` live-asking a SAMPLE of this card's own counterparties
     #: about a DIFFERENT node's history, never from this log's own checkpoint
@@ -732,7 +732,7 @@ def with_references(
     adjudications_about_x: dict[str, int],
     ack_refusals_about_x: int,
 ) -> HistoryCard:
-    """Return a copy of `card` with the `[mesh-ask-the-references]` fields
+    """Return a copy of `card` with the references fields
     folded in -- never mutates `card`, same discipline as
     `with_peer_reconciliation`. These counts come from `ask_history.py
     references <X>` live-asking a sample of `card`'s own counterparties

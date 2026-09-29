@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for ``ask_history.py references <X>`` -- [mesh-ask-the-references],
+"""Tests for ``ask_history.py references <X>`` -- asking X's counterparties about X,
 discovery mechanism 1: how a stranger finds a verdict about node X that X
 itself won't hold, with no new trusted party.
 

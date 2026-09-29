@@ -140,11 +140,11 @@ re-derived) plus the two genuinely new v2 pieces:
    — never a fabricated count.
 4. **`counterparty_held`** — Block 3: `adjudications_received` (real, `source: self_held`, tallied
    from adjudication capsules naming one of this node's own sealed capsule ids) plus `references`
-   (**pending** `[mesh-ask-the-references]`).
+   (**pending**: asking my counterparties, `ask_history.py references`).
 5. **`footer`** — the native-log join (`self_accountability.sealing_summary()`, real when
    `--native-log` is supplied, otherwise honestly `pending`), `refusals_issued` (**absent** — the
    evidence-responder is merged but nothing yet persists a served/refused count to tally), and
-   `absences_recorded_against_me` (**pending** `[mesh-ask-the-references]`).
+   `absences_recorded_against_me` (**pending**: asking my counterparties, `ask_history.py references`).
 
 Real `card` output (a ledger with one sealed join card whose `models`/`hardware` match two later
 exchanges, no checkpoints, no native log supplied):
@@ -175,7 +175,7 @@ exchanges, no checkpoints, no native log supplied):
     },
     "references": {
       "state": "pending", "source": "counterparty_held",
-      "text": "what my counterparties report when asked about me is not available on this view yet: pending [mesh-ask-the-references]"
+      "text": "what my counterparties report when asked about me is not available on this view yet."
     }
   },
   "footer": {
@@ -186,7 +186,7 @@ exchanges, no checkpoints, no native log supplied):
     },
     "absences_recorded_against_me": {
       "state": "pending",
-      "text": "what my counterparties report when asked about me is not available on this view yet: pending [mesh-ask-the-references]"
+      "text": "what my counterparties report when asked about me is not available on this view yet."
     }
   }
 }
@@ -220,7 +220,7 @@ Seven columns per row, replacing the pre-v2 eight:
 | **History (theirs)** | **pending** | honestly pending a peer-fetch carrier that doesn't exist yet — the merged evidence responder answers `record`/`range` only, never `checkpoints`/`full_history`; this node's own chain rides along under `mine_for_reference` rather than being mislabeled as the peer's (a documented pre-v2 shortcut this cell explicitly stopped doing) |
 | **Served (theirs)** | **pending** `[mesh-served-summary-derivation]` | `served_summary.py` does not exist on `main` yet |
 | **Pair (me↔them)** | real | folds `capsule_exchange_tab.digest_match_grade` over every `exchange_id` this peer's records carry — the only cell that can say "missing" |
-| **Verdicts** | real for the self-sealed half | adjudication capsules in this node's own ledger naming one of this peer's capsule ids; the "held by others" half is **pending** `[mesh-ask-the-references]` |
+| **Verdicts** | real for the self-sealed half | adjudication capsules in this node's own ledger naming one of this peer's capsule ids; the "held by others" half is **pending** (asking counterparties, `ask_history.py references`) |
 | **Asked** | **absent** (current, non-stale reason) | this node's own evidence-request carrier is merged and can *answer* a peer's request, but nothing yet logs requests this node *sends* to a peer |
 
 Real output for one peer row (two `served` exchanges against `mesh-node-peer-alice`, no
@@ -239,7 +239,7 @@ checkpoints, no evidence-request log):
   },
   "served": {"state": "pending", "text": "pending [mesh-served-summary-derivation] -- served_summary.py does not exist on main yet", "source": "self_derived"},
   "pair": {"state": "present", "text": "0 reconciled, 2 missing a half on this view", "verified": 0, "failed": 0, "missing": 2},
-  "verdicts": {"state": "pending", "text": "...pending [mesh-ask-the-references]", "source": "self_sealed"},
+  "verdicts": {"state": "pending", "text": "...not available on this view yet.", "source": "self_sealed"},
   "asked": {"state": "absent", "text": "no log of evidence-requests this node has SENT to this peer exists yet: ...", "count": 0}
 }
 ```
@@ -327,13 +327,13 @@ checkpoint chain through, not `[mesh-e2-witness-checkpoints]` being unmerged (it
 | A · history | wired | — |
 | A · served summary | pending | `[mesh-served-summary-derivation]` |
 | A · adjudications received | wired | — |
-| A · references (counterparty-held) | pending | `[mesh-ask-the-references]` |
+| A · references (counterparty-held) | pending | asking counterparties (`ask_history.py references`) |
 | A · native-log footer | wired (when `--native-log` supplied) | — |
 | A · refusals issued | absent (real, current reason) | a served/refused-count persistence layer |
 | B · node / role / pair / verdicts (self-sealed half) | wired | — |
 | B · history (theirs) | pending | no task id filed yet — a peer-fetch carrier |
 | B · served (theirs) | pending | `[mesh-served-summary-derivation]` |
-| B · verdicts (held-by-others half) | pending | `[mesh-ask-the-references]` |
+| B · verdicts (held-by-others half) | pending | asking counterparties (`ask_history.py references`) |
 | B · asked | absent (real, current reason) | no task id filed yet — a per-peer send-log |
 | C · list grouping, role tag, two-column halves, header = worst line | wired | — |
 | C · twin/adjudication comparison | pending | this view threading served weights/logprobs through |

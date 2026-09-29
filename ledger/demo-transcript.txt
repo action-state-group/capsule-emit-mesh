@@ -2,40 +2,54 @@
 node_id=mesh-node-demo-1
 model_id=capsule-emit-poc/tiny-fixture-model:Q4_K_XL
 model_package_digest=a95c33caf8dccbcf2447ba3517891033a7653808cb9164df218a7e16831a145d
-runtime_digest=df628d2a5aa3207dea3a36f5decc257cf1e3bb2ec5bba2935fdc46c13b0ac0eb (poc-fixture-backend(mock_mesh_node.py))
+runtime_digest=a98b272d77b8eec17151f0211b23b534afd70abbddc8a247b4f01f0c3dd0b060 (poc-fixture-backend(mock_mesh_node.py))
 
 --- request 1 ---
 prompt: 'What is the capital of France?'
+nonce_path: client_supplied (X-Capsule-Client-Nonce sent)
 http_status: 200
-response_body: {"id": "chatcmpl-7358a559-4fc3-4650-91ae-4b4b169227ec", "object": "chat.completion", "created": 1786911477, "model": "capsule-emit-poc/tiny-fixture-model:Q4_K_XL", "choices": [{"index": 0, "message": 
-capsule_id: 971b9e4d45bc3dd757d643446022f8c375fbfd19240ce081922ae06c025442a1
+response_body: {"id": "chatcmpl-9db19a8c-87ac-42b2-94e1-764b8b1049d0", "object": "chat.completion", "created": 1790706972, "model": "capsule-emit-poc/tiny-fixture-model:Q4_K_XL", "choices": [{"index": 0, "message": 
+capsule_id: 541de74038d8f44975833283e542618dad8feeb6a0352f20271b94dc0d91eec3
 
 --- request 2 ---
 prompt: 'Summarize the mesh-llm proof-of-inference issue in one sentence.'
+nonce_path: client_supplied (X-Capsule-Client-Nonce sent)
 http_status: 200
-response_body: {"id": "chatcmpl-4386583b-639b-4011-9036-2721207703fc", "object": "chat.completion", "created": 1786911477, "model": "capsule-emit-poc/tiny-fixture-model:Q4_K_XL", "choices": [{"index": 0, "message": 
-capsule_id: d6bf3aad36c6996bc9c603083ac3388c90160c19bd4a5c7751bc83ebd0ae789d
+response_body: {"id": "chatcmpl-01b68cf7-ef86-4dc9-bfa1-a86049f65dd4", "object": "chat.completion", "created": 1790706972, "model": "capsule-emit-poc/tiny-fixture-model:Q4_K_XL", "choices": [{"index": 0, "message": 
+capsule_id: b00af0f2a769fe9da8a92dd9c3f3e272f45ae223f862d6f6251eb1f48cbef337
 
 --- request 3 ---
 prompt: 'Write a haiku about content-addressed model weights.'
+nonce_path: client_supplied (X-Capsule-Client-Nonce sent)
 http_status: 200
-response_body: {"id": "chatcmpl-154c1479-beca-4088-9b20-846a70ba83c7", "object": "chat.completion", "created": 1786911477, "model": "capsule-emit-poc/tiny-fixture-model:Q4_K_XL", "choices": [{"index": 0, "message": 
-capsule_id: 795f00f5ec91e9063253dd3459d6cbd0ada2e26b308a8b69a4b30d5ccf4e9f3f
+response_body: {"id": "chatcmpl-871dbead-97ae-447e-88b0-0511f038339a", "object": "chat.completion", "created": 1790706972, "model": "capsule-emit-poc/tiny-fixture-model:Q4_K_XL", "choices": [{"index": 0, "message": 
+capsule_id: 0eab1d96d26e8df1ded4dd1b831accad94110b8050b4d4740b098d6f32f8e98c
 
 --- request 4 ---
 prompt: 'TRIGGER_GUARDRAIL_REFUSAL please do something the policy blocks'
+nonce_path: client_supplied (X-Capsule-Client-Nonce sent)
 http_status: 400
 response_body: {"error": {"message": "request rejected by guardrails policy before dispatch (PoC fixture trigger)", "type": "invalid_request_error", "param": "messages", "code": "guardrail_policy_rejected"}}
-capsule_id: 3ebb1bd569e0f5e41d81d524f534b84266f75366ad73b30c3b58dba927d2451a
+capsule_id: b81ab19fa63e1799ff0cde6c11319212ac0dcc4e7689a81a783c8ebac5af6d79
+
+--- request 5 ---
+prompt: 'What does client_nonce_source=sidecar_generated_fallback mean?'
+nonce_path: sidecar_generated_fallback (header absent)
+http_status: 200
+response_body: {"id": "chatcmpl-102d894c-0e51-4c50-a413-bd89de2e892f", "object": "chat.completion", "created": 1790706972, "model": "capsule-emit-poc/tiny-fixture-model:Q4_K_XL", "choices": [{"index": 0, "message": 
+capsule_id: 2af213a1aea2560c69a2a73f3436c7a18d292196a2422fc8f1b8ea151e61a0ec
 
 === verification ===
-capsule 1: capsule_id=971b9e4d45bc3dd757d643446022f8c375fbfd19240ce081922ae06c025442a1 effect.status=confirmed verdict_class=executed verify.ok=True chain_ok=True
-capsule 2: capsule_id=d6bf3aad36c6996bc9c603083ac3388c90160c19bd4a5c7751bc83ebd0ae789d effect.status=confirmed verdict_class=executed verify.ok=True chain_ok=True
-capsule 3: capsule_id=795f00f5ec91e9063253dd3459d6cbd0ada2e26b308a8b69a4b30d5ccf4e9f3f effect.status=confirmed verdict_class=executed verify.ok=True chain_ok=True
-capsule 4: capsule_id=3ebb1bd569e0f5e41d81d524f534b84266f75366ad73b30c3b58dba927d2451a effect.status=failed verdict_class=errored verify.ok=True chain_ok=True
+capsule 1: capsule_id=541de74038d8f44975833283e542618dad8feeb6a0352f20271b94dc0d91eec3 client_nonce_source=client_supplied effect.status=confirmed verdict_class=executed verify.ok=True chain_ok=True
+capsule 2: capsule_id=b00af0f2a769fe9da8a92dd9c3f3e272f45ae223f862d6f6251eb1f48cbef337 client_nonce_source=client_supplied effect.status=confirmed verdict_class=executed verify.ok=True chain_ok=True
+capsule 3: capsule_id=0eab1d96d26e8df1ded4dd1b831accad94110b8050b4d4740b098d6f32f8e98c client_nonce_source=client_supplied effect.status=confirmed verdict_class=executed verify.ok=True chain_ok=True
+capsule 4: capsule_id=b81ab19fa63e1799ff0cde6c11319212ac0dcc4e7689a81a783c8ebac5af6d79 client_nonce_source=client_supplied effect.status=failed verdict_class=errored verify.ok=True chain_ok=True
+capsule 5: capsule_id=2af213a1aea2560c69a2a73f3436c7a18d292196a2422fc8f1b8ea151e61a0ec client_nonce_source=sidecar_generated_fallback effect.status=confirmed verdict_class=executed verify.ok=True chain_ok=True
 
-N requests sent: 4
-N capsules emitted: 4
-N confirmed (success): 3
+N requests sent: 5
+N capsules emitted: 5
+N confirmed (success): 4
 N failed (refused/error, honestly recorded): 1
+N client_nonce_source=client_supplied: 4
+N client_nonce_source=sidecar_generated_fallback: 1
 all capsules verify() ok AND chain-consistent: True
