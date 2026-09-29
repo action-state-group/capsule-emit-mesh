@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for the C2a replay spot-check harness (`tools/replay_spot_check.py`).
 
-Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its
+Negative-check mandate: every check must fail its
 mutant. The suite below shows BOTH directions of the comparison — a
 matched pair reported as `match: true` and a deliberately mismatched pair
 (one sampled token flipped) reported as `match: false` — not just the
@@ -78,7 +78,7 @@ def _load(case: str, name: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Offline compare() — both directions, per QUEUE_PROTOCOL §7
+# Offline compare() — both directions: the mismatch path must be shown to fire
 # ---------------------------------------------------------------------------
 
 def test_matched_pair_reports_match():

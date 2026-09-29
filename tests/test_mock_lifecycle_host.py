@@ -12,7 +12,7 @@ Coverage targets:
   - Three side streams: anchoring, delegation, evidence
   - Nine integration scenarios (eight terminal states + integrity violation)
 
-Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its mutant.
+Negative-check mandate: every check must fail its mutant.
 For every positive assertion, there is a corresponding test or in-test
 mutation that confirms the assertion can FAIL.
 """

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for independence-first twin/referee selection (`twin_selection.py`).
 
-Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its
+Negative-check mandate: every check must fail its
 mutant. Each acceptance mutant from the inbox item gets its own test:
 
   - mismatched weights_digest -> excluded from the candidate pool

@@ -45,7 +45,7 @@ from typing import Any
 import pytest
 
 # ── Rig import ──────────────────────────────────────────────────────────────
-# Build against the held rig worktree — QUEUE_PROTOCOL §5.
+# Build against the held rig worktree, not a stale or ad-hoc checkout.
 _RIG_DIR = (
     Path(__file__).resolve().parent.parent.parent
     / "mesh-1331-mock-lifecycle-host"
@@ -382,7 +382,7 @@ class TestTranscriptOverflow:
 # ===========================================================================
 
 class TestDeliberatelyBrokenTruncation:
-    """The two-phase demonstration required by QUEUE_PROTOCOL §7.
+    """The two-phase demonstration: the check passes the honest case and fails its mutant.
 
     A table with no failing case behind it does not meet acceptance.
     """

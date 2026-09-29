@@ -18,7 +18,7 @@
 # config's ts_urls stays empty for this run (local chain only, self-
 # checkpointed). verify_real_deployment_checkpoint.py prints the exact staged
 # command for live registration; it does not execute it. See that script's
-# docstring and this repo's outbox report for why.
+# docstring for why (live registration needs an explicit, separate go).
 #
 # Usage:
 #   ./run_real_deployment_checkpoint_demo.sh <mesh-llm-binary> <gguf-path> <model-id>
@@ -67,7 +67,7 @@ cat > "$LEDGER_DIR/checkpoint-config.toml" <<EOF
 log_id = "mesh-real-deployment-demo-1"
 cadence_entries = 2
 max_lag_entries = 10
-# ts_urls left empty deliberately -- see this script's header + outbox report
+# ts_urls left empty deliberately -- see this script's header
 EOF
 
 echo "--- [4/6] starting capsule_sidecar.py (port $SIDECAR_PORT -> $SERVE_PORT), checkpointing ON ---"

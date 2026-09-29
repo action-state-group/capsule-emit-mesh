@@ -9,7 +9,7 @@ which point the failing capsule was already permanently on disk with a
 valid-looking signed statement next to it, even though in-memory chain state
 (state.last_capsule_id, state.emitted) correctly skipped past it.
 
-Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its mutant.
+Negative-check mandate: every check must fail its mutant.
 
 MODULE-POLLUTION GUARD
     Some sibling test files (test_forwarded_copy_and_keys.py,

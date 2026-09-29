@@ -120,7 +120,7 @@ independence (`capsule.rs`, 3), ledger append/restart-recovery/receipt-lookup/
 torn-write/corruption-rejection (`ledger.rs`, 5), and key
 persist/permissions/rotation/archived-key-still-verifies (`keys.rs`, 6),
 alongside M1's 4 JCS tests. Every negative test asserts the specific error
-variant returned, not just "it errors" — per QUEUE_PROTOCOL §7, each of
+variant returned, not just "it errors" — each of
 these is a check that can and does fail its mutant (a tampered ledger entry,
 a chain-head mismatch, a torn write, a wrong key) rather than a
 skip/pass-through.

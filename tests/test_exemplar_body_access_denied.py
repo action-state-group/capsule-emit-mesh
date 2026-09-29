@@ -31,7 +31,7 @@ MUTANT CHECKS
   would NOT produce the above behavior — thereby proving our loud failure
   IS detectable and distinguishable from a quiet one.
 
-Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its mutant.
+Negative-check mandate: every check must fail its mutant.
 """
 from __future__ import annotations
 

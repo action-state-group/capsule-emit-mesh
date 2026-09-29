@@ -199,8 +199,8 @@ byte-identical requests to the same model (reproduced directly: two
 identical curl bodies to the real host produced the same digest both times).
 `find_host_provenance_capsule()` resolves this deterministically to the most
 recently sealed match; a high-traffic node with frequently repeated prompts
-would need a stronger disambiguator. Raised under `## Needs decision` in the
-`neutral` lane outbox rather than silently accepted.
+would need a stronger disambiguator. Raised as an open decision for the
+maintainers rather than silently accepted.
 
 ## `[mesh-sidecar-provenance-fold-option3-routing-companion]` — confirmed, documented (2026-09-06)
 

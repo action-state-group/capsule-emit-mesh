@@ -52,7 +52,7 @@ This harness is a comparator, nothing else:
 | `vectors/volatile-fields/` | Same content as `matched/`, but `response_b`'s top-level `id`/`created` are backend-minted-fresh (different from `response_a`'s) — the fields in `REPLAY_VOLATILE_FIELDS` are excluded before digesting, so the harness still reports `match: true`. This is the shape a genuine second live firing actually produces: `id`/`created` always differ between two calls even when the model output is byte-identical. |
 
 Both directions are exercised in `tests/test_replay_spot_check.py`, per the
-negative-check mandate (QUEUE_PROTOCOL §7): a check that only ever shows the
+negative-check rule (every check must fail its mutant): a check that only ever shows the
 matched case would never prove the mismatch path actually fires.
 
 `request.json` in each directory is included for context (what a live

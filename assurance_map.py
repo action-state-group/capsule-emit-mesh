@@ -194,7 +194,7 @@ PROMISE_ISSUE_STATES = ("broken", "changed_without_saying")
 def chip(state: str, text: str | None = None) -> dict[str, Any]:
     """Build one property's chip value. Raises on any state outside the five
     -- this is the mutant the grep-gate test flips to confirm the check can
-    fail (QUEUE_PROTOCOL §7)."""
+    fail (negative check: a mutant must fail)."""
     if state not in CHIP_STATES:
         raise ValueError(f"assurance_map.chip: {state!r} is not one of {CHIP_STATES}")
     return {"state": state, "text": text}

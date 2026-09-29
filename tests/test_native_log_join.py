@@ -3,7 +3,7 @@
 """[mesh-native-log-join] Join the node's operational native_log truth to
 sealed capsule truth + self-coverage count.
 
-Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its
+Negative-check mandate: every check must fail its
 mutant. The three tests marked MUTANT below each assert the specific
 behaviour the task's acceptance criteria name; removing the corresponding
 logic in native_log_join.py flips each one to failure.

@@ -18,7 +18,7 @@ BYTE-IDENTICAL COMPARISON
     return value is a decision string, not a body transformer.  The test
     documents that invariant by comparing, not just asserting equal.
 
-Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its mutant.
+Negative-check mandate: every check must fail its mutant.
 """
 from __future__ import annotations
 

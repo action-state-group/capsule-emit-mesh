@@ -13,7 +13,7 @@ connection-refused/DNS-down witness raises urllib.error.URLError, which
 record_capsule() and failed the exchange this sidecar was otherwise done
 recording.
 
-Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its mutant
+Negative-check mandate: every check must fail its mutant
 -- see the MODULE-POLLUTION GUARD note below for why capsule_sidecar/its
 dependents are reloaded fresh, mirroring test_record_capsule_write_before_verify.py.
 """

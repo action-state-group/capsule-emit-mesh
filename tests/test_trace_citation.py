@@ -57,8 +57,7 @@ def _record(*, measurement: str | None = SHARED_MRTD, platform="intel-tdx", weig
     NOTE: `runtime.evidence` is NOT a field agentrust-trace's v0.2 schema recognizes
     (`runtime` is `additionalProperties: false`); embedding it here means a record
     from this fixture fails `agentrust_trace.validate_json` regardless of every
-    other field being conformant. Tracked as a blocking finding in this lane's
-    outbox (mesh-trace-v02-schema-fixture-update) -- see the `xfail` markers on the
+    other field being conformant. Tracked as an open blocking finding -- see the `xfail` markers on the
     two tests below that exercise the trusted-issuer-key path.
     """
     runtime: dict = {"platform": platform, "evidence": {"format": "tdx-quote-v4", "collateral": "embedded"}}
@@ -288,7 +287,7 @@ _SCHEMA_BLOCKS_EVIDENCE_REASON = (
     "`runtime.evidence` at all, so `verify_record` raises a schema ValidationError "
     "on ANY record built by `_record()` before it ever reaches the signature check "
     "-- no combination of fields fixes this while evidence lives inside the signed "
-    "record. See the neutral lane outbox `## Needs decision` entry for this task."
+    "record. Open decision: where evidence should live relative to the signed record."
 )
 
 

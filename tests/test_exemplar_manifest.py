@@ -5,7 +5,7 @@
 Acceptance item #4: No Authorization or Cookie header in any fixture.
 Verified here by inspecting the sanitized_headers lists directly.
 
-Negative-check mandate (QUEUE_PROTOCOL §7): every check must fail its mutant.
+Negative-check mandate: every check must fail its mutant.
 """
 from __future__ import annotations
 
