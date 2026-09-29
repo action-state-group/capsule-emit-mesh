@@ -275,7 +275,8 @@ dependencies = [
 [[package]]
 name = "checkpointed-local-log"
 version = "0.2.0"
-source = "git+https://github.com/action-state-group/checkpointed-local-log?rev=6b1335228a6bc541407800e9e756a66f68f4a639#6b1335228a6bc541407800e9e756a66f68f4a639"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b46aa9265e83360d64307ed29322021a857a921be23d608dfc87ec29552128cb"
 dependencies = [
  "coset",
  "ed25519-dalek",
@@ -651,7 +652,8 @@ dependencies = [
 [[package]]
 name = "evidencebook"
 version = "0.0.1"
-source = "git+https://github.com/action-state-group/checkpointed-local-log?rev=6b1335228a6bc541407800e9e756a66f68f4a639#6b1335228a6bc541407800e9e756a66f68f4a639"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f89bd56a30ad415a62b6bfe3e12303a9e9fefa31fcb7d22ee5cf1ce5b0d104a8"
 dependencies = [
  "checkpointed-local-log",
  "ed25519-dalek",

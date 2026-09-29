@@ -55,9 +55,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # A pushed record is received in-process (`record_push_receive`): its Class 1
 # checks, `capsule_id` and producer signature are checked with the
-# capsule-emit crate, and a bundle's inclusion proof with `cll`. Git
-# dependencies pinned to merged commits until both crates are on crates.io;
-# renamed because this crate already has a `capsule_emit` module.
+# capsule-emit crate, and a bundle's inclusion proof with `cll`.
+# `capsule-emit` is a git dependency pinned to a merged commit until it is on
+# crates.io; `cll` is the published checkpointed-local-log. Renamed because
+# this crate already has a `capsule_emit` module.
 capsule-emit-lib = { package = "capsule-emit", git = "https://github.com/action-state-group/capsule-emit", rev = "6e8108ddb99b144f0076cf116d1fdbe73bf9f2b7" }
 cll = { package = "checkpointed-local-log", version = "0.2.0" }
 
@@ -73,11 +74,3 @@ tempfile = "3"
 # `tests/mesh_evidence_bridge_interop.rs` -- same version mesh-llm-plugin
 # itself pins, so the wire shape matches exactly.
 rmcp = "1.8"
-
-# TEMPORARY: capsule-emit needs checkpointed-local-log 0.2.0 and evidencebook
-# 0.0.1, which are not on crates.io yet. Resolve them from
-# checkpointed-local-log main at the commit that made them publishable (the
-# same pin capsule-emit's own workspace uses). Remove once both are published.
-[patch.crates-io]
-checkpointed-local-log = { git = "https://github.com/action-state-group/checkpointed-local-log", rev = "6b1335228a6bc541407800e9e756a66f68f4a639" }
-evidencebook = { git = "https://github.com/action-state-group/checkpointed-local-log", rev = "6b1335228a6bc541407800e9e756a66f68f4a639" }
