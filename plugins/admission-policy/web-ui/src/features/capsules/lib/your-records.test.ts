@@ -154,7 +154,7 @@ describe('Local only', () => {
   })
 })
 
-describe('witness URL on the page (u81(a) item 8b)', () => {
+describe('witness URL on the page', () => {
   it('shows scheme://host/path only: never credentials, a query or a fragment', () => {
     const s = status()
     const witness = { value: 'https://user:secret@witness.example:8443/log/v1?token=abc#frag', source: 'set' as const }

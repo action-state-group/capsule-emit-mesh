@@ -2902,13 +2902,13 @@ mod tests {
 
     const OPERATOR_HOSTNAME: &str = "operators-machine.local";
 
-    /// u9: the sealed body is pushed to every counterparty at completion, so
+    /// The sealed body is pushed to every counterparty at completion, so
     /// with no operator opt-in it must carry neither the host-reported
     /// hostname nor any absolute path -- on both seal paths. The binary
     /// attestation still names the measured file, by basename.
     #[test]
     fn sealed_records_carry_no_hostname_and_no_absolute_path() {
-        let dir = std::env::temp_dir().join(format!("cap-u9-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("cap-nohost-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
         let host = HostProvenance {

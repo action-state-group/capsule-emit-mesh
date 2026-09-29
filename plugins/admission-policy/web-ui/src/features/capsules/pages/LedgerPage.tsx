@@ -453,7 +453,7 @@ function ExchangesSection({
   // Same queryKey + queryFn SHAPE as PeersSection's own pane-b query (both
   // branch on harness mode identically) -- a symmetric pair shares one
   // cache entry safely; an asymmetric one is the race that bit the pane-c
-  // key during Part 1 (see the outbox/commit history for that fix).
+  // key once (see the commit history for that fix).
   const paneBQuery = useQuery({
     queryKey: ['ledger', 'pane-b', mode],
     queryFn: () => (harnessMode ? Promise.resolve(HARNESS_PANE_B_PAYLOAD) : fetchPaneB()),

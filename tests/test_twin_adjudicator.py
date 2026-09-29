@@ -858,7 +858,7 @@ def test_status_for_verdict_raises_on_unrecognized_verdict():
         status_for_verdict("not_a_real_verdict")
 
 
-# --- sampled halves are not comparable (u110) --------------------------------
+# --- sampled halves are not comparable --------------------------------------
 
 
 @pytest.mark.parametrize(

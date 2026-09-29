@@ -475,7 +475,7 @@ describe('buildChecksRows — THEIRS column reflects a real peer recompute once 
     expect(erroredRows.find((r) => r.key === 'content_binding')?.theirs?.detail).toMatch(/peer unroutable/)
   })
 
-  // Vocabulary check (QUEUE_PROTOCOL §8: state the check ran and the
+  // Vocabulary check (state the check ran and the
   // verdict, not the grepped terms): confirmed the recomputed-theirs wording
   // above never uses second-party-judgment language -- clean.
   it('never renders theirs as a second-party judgment ("verified by"/"confirmed by"/"countersigned")', () => {
