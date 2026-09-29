@@ -3006,7 +3006,6 @@ mod tests {
         assert_eq!(capsule["assurance"]["ledger_mode"], json!("standalone"));
     }
 
-    /// An amount the JCS cannot represent losslessly is refused, never sealed.
     /// A settlement record takes the same seal path as every other local
     /// record (Evidence Layer -00 §12.1): a fresh 256-bit store nonce beside
     /// the observation, and a minute-granular timestamp. Sealing the same
@@ -3046,6 +3045,7 @@ mod tests {
         );
     }
 
+    /// An amount the JCS cannot represent losslessly is refused, never sealed.
     #[test]
     fn seal_settlement_record_refuses_an_unsafe_amount() {
         let key = crate::keys::KeyPair::generate();
