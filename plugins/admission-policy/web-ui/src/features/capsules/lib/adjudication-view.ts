@@ -86,6 +86,9 @@ export function verdictRecordFacts(record: VerdictRecordJson): VerdictRecordFact
 /** Whether the plugin could check the verdict: the referee's signature, and
  *  this node's chain recording it. */
 export function verdictSignatureText(record: VerdictRecordJson): string {
+  if (record.legacy) {
+    return 'Legacy, unverified: an earlier run of this node recorded this verdict. This node has no referee now and doesn’t check who signed it. Treat it as unconfirmed.'
+  }
   if (record.verify_ok) {
     const held =
       record.recorded_as === 'issued'

@@ -86,6 +86,8 @@ describe('adjudication view -- a referee’s verdict in plain words', () => {
       'The referee’s signature doesn’t check on this node (bad signature). Treat this verdict as unconfirmed.'
     )
     expect(verdictSignatureText({ ...record, verify_ok: false })).toMatch(/couldn’t confirm this verdict.*unconfirmed/)
+    expect(verdictSignatureText({ ...record, verify_ok: false, legacy: true })).toMatch(/^Legacy, unverified: .*unconfirmed\.$/)
+    expect(verdictSignatureText({ ...record, verify_ok: true, legacy: true })).toMatch(/^Legacy, unverified/)
     expect(verdictRecordFacts({ capsule: {}, signed_by_key_id: null, verify_ok: false })).toEqual({
       verdict: null,
       halves: [],

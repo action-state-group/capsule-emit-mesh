@@ -54,8 +54,8 @@
 //! (~2.5 KB). The receiver verifies all three and its success
 //! reply names the verified inclusion; this bridge then seals the
 //! `counterparty_half` citing record AND a second, `counterparty_inclusion`
-//! citing record -- the row reaches "in their log" in one step. A door that
-//! predates bundles refuses one `request_malformed` (no top-level
+//! citing record -- the row reaches "in their log" in one step. A receiver
+//! that predates bundles refuses one `request_malformed` (no top-level
 //! `capsule_id`); the sender then re-pushes the bare capsule once.
 //!
 //! **Single `on_open_stream` slot.** The plugin SDK gives a plugin exactly
@@ -589,10 +589,10 @@ pub async fn push_capsule_to_peer(
             let bundle = split_bundle_body(capsule_json, coverage, split_stage_records);
             let response = send_push(context, peer_id, self_peer_id, &bundle).await?;
             if refused_as_bundle_malformed(&response) {
-                // A door that reads bundles but not split stage records
+                // A receiver that reads bundles but not split stage records
                 // refuses the unknown member. The main record still goes;
                 // the requester then reads those stages as not received.
-                tracing::info!(%peer_id, "peer door does not take split stage records -- re-pushing the plain bundle");
+                tracing::info!(%peer_id, "peer does not take split stage records -- re-pushing the plain bundle");
                 push_plain_bundle(context, peer_id, self_peer_id, capsule_json, coverage).await?
             } else {
                 response
@@ -615,7 +615,7 @@ fn refused_as_bundle_malformed(response: &serde_json::Value) -> bool {
     response.get("reason").and_then(|r| r.as_str()) == Some("bundle_malformed")
 }
 
-/// Push the half as a bundle; a door that predates bundles gets the bare
+/// Push the half as a bundle; a receiver that predates bundles gets the bare
 /// record once more.
 async fn push_plain_bundle(
     context: &mut PluginContext<'_>,
@@ -627,7 +627,7 @@ async fn push_plain_bundle(
     let bundle = bundle_body(capsule_json, coverage);
     let response = send_push(context, peer_id, self_peer_id, &bundle).await?;
     if refused_as_older_door(&response) {
-        tracing::info!(%peer_id, "peer door predates bundles -- re-pushing the bare record");
+        tracing::info!(%peer_id, "peer's receiver predates bundles -- re-pushing the bare record");
         return send_push(context, peer_id, self_peer_id, capsule_json).await;
     }
     Ok(response)
@@ -756,7 +756,7 @@ mod tests {
             serde_json::json!(coverage.checkpoint.mmr_size)
         );
         assert_eq!(body["checkpoint"]["root"], serde_json::json!(coverage.checkpoint.root));
-        assert!(body.get("capsule_id").is_none(), "an older door must see no top-level capsule_id");
+        assert!(body.get("capsule_id").is_none(), "an older receiver must see no top-level capsule_id");
         assert_eq!(pushed_half(&body), &half);
         assert_eq!(pushed_half(&half), &half);
     }
@@ -886,7 +886,7 @@ mod tests {
     }
 
     /// Writes `tests/fixtures/record_push_bundle_rust.json`, the bundle the
-    /// Python door's cross-language test verifies. Run to regenerate:
+    /// Python reference's cross-language test verifies. Run to regenerate:
     ///   cargo test writes_the_cross_language_bundle_fixture -- --ignored
     #[test]
     #[ignore = "regenerates a committed fixture"]

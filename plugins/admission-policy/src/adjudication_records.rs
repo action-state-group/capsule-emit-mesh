@@ -31,7 +31,7 @@ pub fn is_delivery_body(body: &Value) -> bool {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[allow(dead_code)]
 pub struct DeliverAdjudicationArgs {
-    /// The node to deliver to; this node's own id delivers to itself.
+    /// The node the verdict would go to. Never read: the call is refused.
     pub peer_id: String,
     /// The referee's signed verdict record, as it issued it.
     pub verdict_capsule: Value,
@@ -99,11 +99,13 @@ fn recorded_as(ledger_dir: &std::path::Path, verdict_capsule_id: &str) -> Option
     None
 }
 
-/// `http/ledger/verdict?capsule_id=`: one held verdict, with this plugin's
-/// own check of it. `verify_ok` is true only when the referee's signature
-/// verifies over the recomputed id AND this node's chain records the verdict
-/// -- a record sealed only after checking that signature is the named
-/// referee's announced key. `null` capsule when none is held.
+/// `http/ledger/verdict?capsule_id=`: one held verdict, as an earlier run of
+/// this node left it. Nothing in this plugin issues or holds verdicts now,
+/// and it does not check who signed one against the referee's announced
+/// key, so a held verdict is always `"legacy": true` and never `verify_ok`.
+/// The signature's own check (`signed_by_key_id` / `signature_error`) and
+/// how this node's chain records it (`recorded_as`) are reported as facts,
+/// not as a verdict on the verdict. `null` capsule when none is held.
 pub fn verdict_json(ledger_dir: &std::path::Path, verdict_capsule_id: &str) -> Value {
     let Some(capsule) = held_verdict(ledger_dir, verdict_capsule_id) else {
         return json!({ "capsule": null, "signed_by_key_id": null, "verify_ok": false });
@@ -115,9 +117,9 @@ pub fn verdict_json(ledger_dir: &std::path::Path, verdict_capsule_id: &str) -> V
         .cloned()
         .unwrap_or(Value::Null);
     json!({
+        "legacy": true,
         "signed_by_key_id": signature.as_ref().ok(),
-        "verify_ok": signature.is_ok() && recorded.is_some()
-            && capsule.get("capsule_id").and_then(Value::as_str) == Some(verdict_capsule_id),
+        "verify_ok": false,
         "signature_error": signature.as_ref().err(),
         "recorded_as": recorded,
         "referee_node_id": referee,
@@ -155,10 +157,11 @@ mod tests {
     }
 
     #[test]
-    fn the_verdict_route_checks_the_signature_and_the_chain_record() {
+    fn a_held_verdict_is_legacy_and_never_verified() {
         let (dir, id) = held_dir(true);
         let out = verdict_json(dir.path(), &id);
-        assert_eq!(out["verify_ok"], json!(true));
+        assert_eq!(out["legacy"], json!(true));
+        assert_eq!(out["verify_ok"], json!(false), "its signer is not checked against an announced key");
         assert_eq!(out["recorded_as"], json!("received"));
         assert_eq!(out["signed_by_key_id"], fixture()["referee_key_id"]);
 

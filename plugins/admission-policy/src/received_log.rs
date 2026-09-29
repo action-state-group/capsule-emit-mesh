@@ -2,8 +2,7 @@
 //! it, and what it answered. The provider's half of the double entry; the
 //! Evidence page's drill reads it (`evidence_panes::read_received_log`).
 //!
-//! The same file and line shape the Python door wrote
-//! (`evidence_server._append_received_log`): `received_log.jsonl`, one
+//! The same file and line shape the Python reference wrote: `received_log.jsonl`, one
 //! `{ts, path, requester_id, subject_kind, status, reason}` object per line,
 //! in the directory `evidence_routes::EvidenceSource::received_log_dir`
 //! resolves. **Opt-in, as before:** nothing is written unless that directory
