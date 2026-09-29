@@ -216,7 +216,7 @@ dependencies = [
 [[package]]
 name = "capsule-emit-evidence-request"
 version = "0.0.2"
-source = "git+https://github.com/action-state-group/capsule-emit?rev=6e8108ddb99b144f0076cf116d1fdbe73bf9f2b7#6e8108ddb99b144f0076cf116d1fdbe73bf9f2b7"
+source = "git+https://github.com/action-state-group/capsule-emit?rev=69ba8166cf2f12badb38a5d98ebf80a66cb9c103#69ba8166cf2f12badb38a5d98ebf80a66cb9c103"
 dependencies = [
  "checkpointed-local-log",
  "ciborium",

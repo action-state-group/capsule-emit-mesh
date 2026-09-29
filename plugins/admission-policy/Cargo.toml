@@ -70,7 +70,7 @@ cll = { package = "checkpointed-local-log", version = "0.2.0" }
 # crate (draft-mih-agent-evidence-request-00). Git-pinned to the same
 # capsule-emit commit as `capsule-emit-lib`, so the lock carries one checkout;
 # 0.0.1 on crates.io predates the answer path.
-capsule-emit-evidence-request = { git = "https://github.com/action-state-group/capsule-emit", rev = "6e8108ddb99b144f0076cf116d1fdbe73bf9f2b7" }
+capsule-emit-evidence-request = { git = "https://github.com/action-state-group/capsule-emit", rev = "69ba8166cf2f12badb38a5d98ebf80a66cb9c103" }
 
 [dev-dependencies]
 # The record-push parity run reads its own golden answers, which hold a record
