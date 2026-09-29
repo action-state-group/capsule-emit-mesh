@@ -656,8 +656,8 @@ fn with_evidence_operations(
             .description(
                 "Ask a mesh peer's admission-policy plugin for evidence (a \
                  draft-mih-agent-evidence-request-00 request map) over the plugin mesh stream. \
-                 Returns the peer's own artifact or signed refusal unchanged; with verify, beside \
-                 its verification against the peer's announced key.",
+                 Returns the peer's own artifact or signed refusal unchanged, beside its \
+                 verification against the peer's announced key (verify: false returns it alone).",
             )
             .input::<MeshEvidenceRequestArgs>()
             .handle({

@@ -5,9 +5,13 @@ The plugin answers evidence requests in-process
 door's `evidence_responder`. This directory holds that responder to fixed
 answers: one ledger, one set of requests, and the answer each one must get.
 
-**The golden answers are draft-mih-agent-evidence-request-00's, not the
-Python door's.** The door departs from -00 in six ways, and -00 is what
-counts. Each golden answer was reviewed against the draft, case by case. The
+**The golden answers are a snapshot this implementation wrote, reviewed
+against draft-mih-agent-evidence-request-00; they are not the draft's own
+conformance vectors.** Those vectors run in the protocol crate's repository
+(`capsule-emit-evidence-request`, `tests/vectors/`). Each golden answer here
+was reviewed against the draft, case by case, and the Python door's answers
+were not used: the door departs from -00 in six ways, and -00 is what
+counts. The
 protocol itself (parsing, resolution, the artifact and its proofs, signed
 refusals) comes from the `capsule-emit-evidence-request` crate, which runs
 the draft's conformance vectors in its own repository; this run checks the

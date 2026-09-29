@@ -298,17 +298,25 @@ pub struct MeshEvidenceRequestArgs {
     /// When it names no `requester_id`, this node's own mesh id is added
     /// (the responder's sharing policy reads it; it is this node's word).
     pub request: serde_json::Value,
-    /// Also check what comes back against the peer's announced key
-    /// (`ADMISSION_POLICY_PEER_KEYS`). The result is then
+    /// Check what comes back against the peer's announced key
+    /// (`ADMISSION_POLICY_PEER_KEYS`). **On unless the caller turns it off**
+    /// with an explicit `"verify": false`. The result is
     /// `{"answer": <the peer's JSON>, "request_digest", "verification"}`
-    /// (`evidence_answer::verify_response`, or `no_announced_key`).
-    #[serde(default)]
+    /// (`evidence_answer::verify_response`, or `no_announced_key` when the
+    /// registry names no key for the peer). With `"verify": false` it is the
+    /// peer's JSON alone, for a caller that verifies it itself.
+    #[serde(default = "verify_by_default")]
     pub verify: bool,
 }
 
+/// `verify` is on unless a caller names the opt-out.
+fn verify_by_default() -> bool {
+    true
+}
+
 /// Registered as the `mesh_evidence_request` tool/operation handler
-/// (`ToolRouter::add_json`). Returns the peer's raw Artifact-or-Refusal JSON
-/// unchanged on success (or, with `verify`, beside its verification); any
+/// (`ToolRouter::add_json`). Returns the peer's Artifact-or-Refusal JSON,
+/// unchanged, beside its verification (or alone with `"verify": false`); any
 /// failure (unroutable peer, channel undeclared on the peer, response never
 /// arrives) surfaces as a tool error -- `PluginError` -- which the host's
 /// `/tools/` HTTP route reports as a `502`, never a hang.

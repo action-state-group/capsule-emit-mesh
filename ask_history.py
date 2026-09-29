@@ -239,7 +239,10 @@ def post_mesh_evidence_request(
     never declared the channel surfaces as a non-2xx ``urllib.error.HTTPError``
     (the plugin's bounded wait timed out), never a hang.
     """
-    body = json.dumps({"peer_id": peer_id, "request": request_map}).encode("utf-8")
+    # ``verify: false`` by name: this caller checks the answer itself
+    # (``verify_bundle``/``verify_refusal_offline``), so it takes the peer's
+    # answer alone, not the tool's default ``{answer, verification}``.
+    body = json.dumps({"peer_id": peer_id, "request": request_map, "verify": False}).encode("utf-8")
     url = f"{local_host_api.rstrip('/')}/api/plugins/{plugin_name}/tools/mesh_evidence_request"
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=30) as resp:

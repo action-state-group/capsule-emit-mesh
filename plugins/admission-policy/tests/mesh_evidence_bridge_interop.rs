@@ -184,11 +184,16 @@ impl Harness {
         &mut self,
         peer_id: &str,
         request: serde_json::Value,
+        verify: Option<bool>,
         respond_open_mesh_stream: impl FnOnce(proto::OpenMeshStreamRequest) -> proto::OpenMeshStreamResponse,
     ) -> proto::Envelope {
+        let mut arguments = serde_json::json!({"peer_id": peer_id, "request": request});
+        if let Some(verify) = verify {
+            arguments["verify"] = serde_json::json!(verify);
+        }
         let params_json = serde_json::json!({
             "name": "mesh_evidence_request",
-            "arguments": {"peer_id": peer_id, "request": request},
+            "arguments": arguments,
         })
         .to_string();
         let call_request_id = self
@@ -415,7 +420,7 @@ async fn requester_tool_call_round_trips_a_real_dialed_stream() {
 
     let request = serde_json::json!({"subject": {"kind": "record", "capsule_id": "aa"}});
     let response_envelope = harness
-        .call_mesh_evidence_tool("aa".repeat(32).as_str(), request.clone(), |_request| {
+        .call_mesh_evidence_tool("aa".repeat(32).as_str(), request.clone(), Some(false), |_request| {
             proto::OpenMeshStreamResponse {
                 stream_id: "test".to_string(),
                 accepted: true,
@@ -452,6 +457,52 @@ async fn requester_tool_call_round_trips_a_real_dialed_stream() {
     harness.shutdown_process().await;
 }
 
+/// (B2) Verification is on unless the caller names the opt-out: with no
+/// `verify` argument, the peer's answer comes back beside a verification --
+/// here `no_announced_key`, because this node's registry names no key for
+/// the peer -- never alone and unchecked.
+#[tokio::test]
+async fn requester_verifies_by_default() {
+    let mut harness = Harness::spawn(&[]).await;
+    harness.initialize().await;
+
+    let (peer_listener, peer_path) = accept_one_remote_peer_connection().await;
+    tokio::spawn(async move {
+        let (mut socket, _) = peer_listener.accept().await.expect("accept from requester");
+        let mut discard = Vec::new();
+        let _ = socket.read_to_end(&mut discard).await;
+        let _ = socket.write_all(br#"{"reason":"no_such_subject"}"#).await;
+        let _ = socket.shutdown().await;
+    });
+
+    let request = serde_json::json!({"subject": {"checkpoints": null}, "coverage": {"min_freshness": 1}});
+    let response_envelope = harness
+        .call_mesh_evidence_tool("dd".repeat(32).as_str(), request, None, |_request| {
+            proto::OpenMeshStreamResponse {
+                stream_id: "test".to_string(),
+                accepted: true,
+                transport_kind: proto::StreamTransportKind::StreamUnixSocket as i32,
+                endpoint: Some(peer_path.to_str().unwrap().to_string()),
+                token: None,
+                expires_at_unix_ms: None,
+                message: None,
+            }
+        })
+        .await;
+    let result = match response_envelope.payload {
+        Some(Payload::RpcResponse(response)) => response,
+        other => panic!("expected a successful RpcResponse, got {other:?}"),
+    };
+    let call_result: rmcp::model::CallToolResult =
+        serde_json::from_str(&result.result_json).expect("decode CallToolResult");
+    let structured = call_result.structured_content.expect("structured JSON");
+    assert_eq!(structured["answer"]["reason"], "no_such_subject");
+    assert_eq!(structured["verification"]["state"], "no_announced_key");
+    assert!(structured["request_digest"].as_str().is_some_and(|d| d.len() == 64));
+
+    harness.shutdown_process().await;
+}
+
 /// (C) Clean failure, never a hang: a peer that never declares the channel
 /// has its stream dropped by the real host with no reply
 /// (`handle_plugin_mesh_stream` returns `Ok(())` without touching `send`/
@@ -472,7 +523,7 @@ async fn requester_reports_a_clean_failure_when_the_peer_never_answers() {
 
     let started = tokio::time::Instant::now();
     let response_envelope = harness
-        .call_mesh_evidence_tool("bb".repeat(32).as_str(), serde_json::json!({}), |_request| {
+        .call_mesh_evidence_tool("bb".repeat(32).as_str(), serde_json::json!({}), None, |_request| {
             proto::OpenMeshStreamResponse {
                 stream_id: "test".to_string(),
                 accepted: true,
@@ -523,7 +574,7 @@ async fn tampered_bytes_in_flight_pass_through_unvalidated_and_unrepaired() {
     });
 
     let response_envelope = harness
-        .call_mesh_evidence_tool("cc".repeat(32).as_str(), serde_json::json!({}), |_request| {
+        .call_mesh_evidence_tool("cc".repeat(32).as_str(), serde_json::json!({}), Some(false), |_request| {
             proto::OpenMeshStreamResponse {
                 stream_id: "test".to_string(),
                 accepted: true,

@@ -2,10 +2,11 @@
 //! (`evidence_answer::answer_and_log`) against the corpus and golden answers
 //! in `tests/parity/evidence_request/`.
 //!
-//! The golden answers are draft-mih-agent-evidence-request-00's, not the
-//! Python door's: the door departs from -00 in six ways (see that
-//! directory's README), and -00 is what counts. Each golden answer was
-//! reviewed case by case against the draft. The served summary is the one
+//! The golden answers are a snapshot this implementation wrote, reviewed
+//! case by case against draft-mih-agent-evidence-request-00. They are not the
+//! draft's own conformance vectors (those run in the protocol crate's
+//! repository), and not the Python door's answers: the door departs from -00
+//! in six ways (see that directory's README), and -00 is what counts. The served summary is the one
 //! part the Python door still judges: its value in the golden answers is
 //! checked against `served_summary.py` by `test_served_summary_parity.py`.
 //!

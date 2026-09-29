@@ -14,7 +14,11 @@
 //!
 //! **Bounded.** The requester's id is its own word, so it is cut to
 //! [`MAX_REQUESTER_ID_CHARS`] characters, and a line is never longer than
-//! the few fields it names.
+//! the few fields it names. The file stops growing at
+//! [`MAX_RECEIVED_LOG_BYTES`]: past it, a line is not written, and the
+//! dropped lines are counted ([`dropped`]) and reported in the node's own
+//! log (the first drop, then every 1000th). The Evidence page shows only the
+//! newest lines anyway; an operator who wants more moves the file aside.
 
 use std::io::Write;
 use std::path::Path;
@@ -22,6 +26,16 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 pub const RECEIVED_LOG_FILE: &str = "received_log.jsonl";
+
+/// The largest the log grows: 4 MiB, some 20,000 lines.
+pub const MAX_RECEIVED_LOG_BYTES: u64 = 4 * 1024 * 1024;
+
+static DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Lines not written since this process started, because the log was full.
+pub fn dropped() -> u64 {
+    DROPPED.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// The longest self-declared requester id kept, in characters.
 pub const MAX_REQUESTER_ID_CHARS: usize = 128;
@@ -53,16 +67,31 @@ impl Entry<'_> {
 }
 
 /// Append `entry` to `<dir>/received_log.jsonl` when `dir` is given and
-/// exists. Failures are logged and swallowed.
+/// exists and the log is under [`MAX_RECEIVED_LOG_BYTES`]. Failures are
+/// logged and swallowed.
 pub fn append(dir: Option<&Path>, entry: &Entry<'_>) {
+    append_capped(dir, entry, MAX_RECEIVED_LOG_BYTES);
+}
+
+fn append_capped(dir: Option<&Path>, entry: &Entry<'_>, max_bytes: u64) {
     let Some(dir) = dir.filter(|d| d.is_dir()) else {
         return;
     };
+    let line = format!("{}\n", entry.to_json());
     let result = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(dir.join(RECEIVED_LOG_FILE))
-        .and_then(|mut file| writeln!(file, "{}", entry.to_json()));
+        .and_then(|mut file| {
+            if file.metadata()?.len() + line.len() as u64 > max_bytes {
+                let dropped = DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if dropped == 1 || dropped % 1000 == 0 {
+                    tracing::warn!(dropped, max_bytes, "the received log is full; requests are no longer logged");
+                }
+                return Ok(());
+            }
+            file.write_all(line.as_bytes())
+        });
     if let Err(error) = result {
         tracing::warn!(%error, "could not append to the received log");
     }
@@ -98,6 +127,19 @@ mod tests {
         append(Some(&missing), &entry());
         append(None, &entry());
         assert!(!missing.exists());
+    }
+
+    #[test]
+    fn the_log_stops_growing_at_its_cap_and_counts_what_it_drops() {
+        let dir = tempfile::tempdir().unwrap();
+        let line_len = entry().to_json().to_string().len() as u64 + 1;
+        let before = dropped();
+        for _ in 0..10 {
+            append_capped(Some(dir.path()), &entry(), 3 * line_len);
+        }
+        let len = std::fs::metadata(dir.path().join(RECEIVED_LOG_FILE)).unwrap().len();
+        assert_eq!(len, 3 * line_len, "exactly the lines that fit");
+        assert!(dropped() - before >= 7, "the other seven are counted");
     }
 
     #[test]
