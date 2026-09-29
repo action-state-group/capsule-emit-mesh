@@ -3,7 +3,8 @@
 // invoices issued and settled per leg, the final amount as the host recorded
 // it, per-peer counts. It never adds amounts up, never shows a balance, never
 // says "unpaid" for an exchange with no payment records, and carries no
-// price, priced, pricing or relay wording. This test fails on any such
+// price, priced or pricing wording, nor any other word the gate below
+// bans. This test fails on any such
 // phrase in the settlement copy, in the settlement sources' shipped code
 // (comments left out), or in what the views render for every state.
 import { readFileSync } from 'node:fs'

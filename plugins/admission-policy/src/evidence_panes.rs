@@ -2954,7 +2954,7 @@ mod tests {
     /// The peer-row "N exchanges" figure counts DISTINCT exchanges, so a peer
     /// with 3 exchanges whose 3 served halves all arrived by push and closed
     /// reads confirmed "3 / 3" -- never "3 / 6" off a record count. This is
-    /// the [record-vs-exchange] double-count fix end to end.
+    /// the record-vs-exchange double-count fix end to end.
     #[test]
     fn pane_b_exchange_count_and_confirmed_denominator_count_exchanges_not_records() {
         let mut records = Vec::new();

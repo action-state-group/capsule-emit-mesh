@@ -6,7 +6,7 @@
 //! *same plugin* on a target peer, gated on both ends declaring the channel
 //! in their manifest (`plugin_event_channel_declared`). This module declares
 //! `evidence-request/1` and bridges bytes on both ends -- mesh never parses
-//! either side, exactly the `[mesh-e15-evidence-http-route]` door's contract,
+//! either side, exactly the HTTP evidence door's contract,
 //! carried over the mesh instead of a reachable HTTP door. Zero upstream
 //! (`mesh-llm`) code.
 //!

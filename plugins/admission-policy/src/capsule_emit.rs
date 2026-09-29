@@ -846,7 +846,7 @@ pub struct ObservedHostExchange<'a> {
     /// (2026-09-06 role ruling). See `lifecycle_channel::DispatchPath`.
     pub dispatch_path: DispatchPath,
     /// The client-forwarded nonce off the terminal event, when the host
-    /// reported one (`[mesh-requester-side-seal-on-proxy]`, 2026-09-07) --
+    /// reported one (requester-side sealing on a proxied exchange) --
     /// this is the JOIN KEY between a proxied exchange's two sealed halves
     /// (this node's requester-role capsule and the peer's served-role
     /// capsule): both sides forward the SAME client nonce, while
@@ -1169,7 +1169,7 @@ impl CapsuleState {
             runtime: observer_runtime_field(&binary_attestation),
             mesh_poc: MeshPocV1 {
                 // The host-forwarded terminal-event nonce, when present
-                // (`[mesh-requester-side-seal-on-proxy]`, 2026-09-07) -- THE JOIN
+                // (requester-side sealing on a proxied exchange) -- THE JOIN
                 // KEY between a proxied exchange's two sealed halves (see
                 // `ObservedHostExchange::nonce`). A host that did not forward one
                 // (predates the forwarding, or a locally-served exchange whose
@@ -1691,8 +1691,7 @@ mod tests {
     /// PARITY PIN: `output_sub_digests` over the REAL SETI@Home / web_search
     /// response computes a `tool_calls_digest` byte-for-byte identical to the
     /// Python reference `agent_action_capsule.json_digest(tool_calls)` — the
-    /// value recorded requester-side in the live demo
-    /// (`_work/mesh-live-demo/b-tool_calls.json`). A non-reasoning model yields
+    /// value recorded requester-side in a live run. A non-reasoning model yields
     /// an absent reasoning digest (honest null), never fabricated.
     #[test]
     fn output_sub_digests_over_real_seti_response_matches_python_reference() {
@@ -2271,8 +2270,8 @@ mod tests {
         let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
 
         // The REAL served SETI@Home response body carrying the model's real
-        // web_search tool call (the exact tool_calls from the live-demo capture
-        // _work/mesh-live-demo/b-tool_calls.json), plus real usage. The host
+        // web_search tool call (the exact tool_calls from a live-run capture),
+        // plus real usage. The host
         // computes response_digest / tool_calls_digest over exactly this body at
         // its JSON-relay delivery point; we reproduce those here to bind the
         // exported capsule to real values throughout (no placeholder digests).
@@ -2536,7 +2535,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir_b);
     }
 
-    /// [adv-run-2-fix-batch] B1 regression: two byte-different, semantically
+    /// Regression: two byte-different, semantically
     /// identical request bodies (key order + whitespace only) must digest to
     /// the SAME value. Before the fix, `emit_for_exchange` hashed the raw wire
     /// bytes (`hex_sha256`), so this pair produced two different digests --
@@ -2564,7 +2563,7 @@ mod tests {
         );
     }
 
-    /// [adv-run-2-fix-batch] B1: Rust<->Python digest-equality. The expected
+    /// Rust<->Python digest-equality. The expected
     /// digest was computed by running the actual Python reference,
     /// `capsule_sidecar.digest_json`, over the identical JSON value:
     ///
@@ -2979,7 +2978,7 @@ mod tests {
         }
     }
 
-    /// [mesh-sequence-per-counterparty] Two exchanges served for the SAME
+    /// Sequence per counterparty: two exchanges served for the SAME
     /// requesting party get a monotone `seq`/`prev_seq` for that pair
     /// (1 -> None, 2 -> Some(1)); a THIRD exchange for a DIFFERENT
     /// requesting party is an independent counter starting back at 1 -- the
@@ -3592,7 +3591,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `[mesh-requester-side-seal-on-proxy]` (2026-09-07): the host-forwarded
+    /// Requester-side sealing on a proxied exchange: the host-forwarded
     /// terminal-event nonce becomes `client_nonce`/`client_nonce_source` on a
     /// `RemoteMesh` (requester-side) observed capsule -- THE JOIN KEY a
     /// proxied exchange's two halves share. Absent nonce keeps the
@@ -3622,7 +3621,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// [mesh-e9e10-peer-fetch-two-sided-ledger] piece 1: the requester-side
+    /// The two-sided ledger's peer fetch: the requester-side
     /// capsule carries the PEER's self-asserted capsule id -- the lookup key
     /// an evidence-door fetch will dereference to populate the two-sided
     /// ledger's "theirs" column. Forwarded verbatim, labeled as self-attested
@@ -3696,7 +3695,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// THE ACCEPTANCE TEST for `[mesh-requester-side-seal-on-proxy]`: a
+    /// THE ACCEPTANCE TEST for requester-side sealing on a proxied exchange: a
     /// proxied exchange (peer serves it, router routes it) seals TWO
     /// independently offline-verifiable capsules -- `served` on the peer,
     /// `requested` on the router -- joined by the SHARED nonce, never by

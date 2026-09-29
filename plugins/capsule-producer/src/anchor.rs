@@ -19,7 +19,7 @@
 //! `cll.checkpoint.emit.register_checkpoint`'s wire contract byte-for-byte
 //! (same route, same `Content-Type: application/cll-checkpoint+cbor` body,
 //! same `{entry_hash, receipt_b64, leaf_index, tree_size}` response shape).
-//! As of `[mesh-plugin-checkpoint-cadence]` this is the route the plugin's
+//! This is the route the plugin's
 //! checkpoint cadence task (`capsule_producer::checkpoint`) anchors
 //! through; `post_digest`/`/v1/digest` has no call site anywhere in this
 //! workspace (grep `AnchorClient` under `plugins/*/src`) — kept for a
