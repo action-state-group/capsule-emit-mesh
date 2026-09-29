@@ -2,8 +2,8 @@
 // replacing the old card's inline `expanded` accordion. Opened today from
 // a `PeerTableRow` click (rebuilt the row as a
 // table cell, not a card). Mirrors the Logs Request Inspector shell
-// (SharedModal + TabPanel) verbatim -- Overview / Their history ([mesh-evidence-
-// history-surface]) / Timeline / Exchanges tabs. The per-exchange
+// (SharedModal + TabPanel) verbatim -- Overview / Their history / Timeline /
+// Exchanges tabs. The per-exchange
 // drill-down (`PeerExchangeInspector`) nests inside this modal, opened from
 // either the Timeline chart or the Exchanges list -- both drive the SAME
 // `selectedPoint` state, never a second, divergent detail view.

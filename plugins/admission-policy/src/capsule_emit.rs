@@ -1691,8 +1691,7 @@ mod tests {
     /// PARITY PIN: `output_sub_digests` over the REAL SETI@Home / web_search
     /// response computes a `tool_calls_digest` byte-for-byte identical to the
     /// Python reference `agent_action_capsule.json_digest(tool_calls)` — the
-    /// value recorded requester-side in the live demo
-    /// (`_work/mesh-live-demo/b-tool_calls.json`). A non-reasoning model yields
+    /// value recorded requester-side in a live run. A non-reasoning model yields
     /// an absent reasoning digest (honest null), never fabricated.
     #[test]
     fn output_sub_digests_over_real_seti_response_matches_python_reference() {
@@ -2271,8 +2270,8 @@ mod tests {
         let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
 
         // The REAL served SETI@Home response body carrying the model's real
-        // web_search tool call (the exact tool_calls from the live-demo capture
-        // _work/mesh-live-demo/b-tool_calls.json), plus real usage. The host
+        // web_search tool call (the exact tool_calls from a live-run capture),
+        // plus real usage. The host
         // computes response_digest / tool_calls_digest over exactly this body at
         // its JSON-relay delivery point; we reproduce those here to bind the
         // exported capsule to real values throughout (no placeholder digests).
@@ -2536,7 +2535,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir_b);
     }
 
-    /// [adv-run-2-fix-batch] B1 regression: two byte-different, semantically
+    /// Regression: two byte-different, semantically
     /// identical request bodies (key order + whitespace only) must digest to
     /// the SAME value. Before the fix, `emit_for_exchange` hashed the raw wire
     /// bytes (`hex_sha256`), so this pair produced two different digests --
@@ -2564,7 +2563,7 @@ mod tests {
         );
     }
 
-    /// [adv-run-2-fix-batch] B1: Rust<->Python digest-equality. The expected
+    /// Rust<->Python digest-equality. The expected
     /// digest was computed by running the actual Python reference,
     /// `capsule_sidecar.digest_json`, over the identical JSON value:
     ///

@@ -7,8 +7,7 @@
 //! early testing only proved the plugin observed exchanges it was itself the
 //! HTTP backend for.
 //!
-//! **Routing-companion finding (`[mesh-sidecar-provenance-fold-option3-
-//! routing-companion]`, 2026-09-06): this is broader than that.** The
+//! **Routing-companion finding (2026-09-06): this is broader than that.** The
 //! host-served (real-weights) local-routing branch in `ingress.rs` — the one
 //! that serves a node's own loaded GGUF model directly, used whether the
 //! caller is this node's sidecar or a mesh-routed peer hitting the node's
