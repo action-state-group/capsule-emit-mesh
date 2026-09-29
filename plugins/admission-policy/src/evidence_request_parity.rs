@@ -42,7 +42,7 @@ const NOW: &str = "2026-09-29T00:00:00Z";
 pub(crate) const NODE_KEY_SEED: [u8; 32] = [0x5e; 32];
 
 pub(crate) fn sealed(mut body: Value) -> Value {
-    let id = capsule_producer::jcs::compute_capsule_id(&body).expect("a corpus record has a capsule_id");
+    let id = crate::producer::jcs::compute_capsule_id(&body).expect("a corpus record has a capsule_id");
     body["capsule_id"] = json!(id);
     body
 }
@@ -65,8 +65,8 @@ fn served(counterparty: &str, model: &str, status: &str, latency: &str, extra: V
 
 fn padding(i: usize) -> Value {
     sealed(json!({
-        "record_type": capsule_producer::padding::RECORD_TYPE_PADDING,
-        "epistemic_type": capsule_producer::padding::PADDING_EPISTEMIC_TYPE,
+        "record_type": crate::producer::padding::RECORD_TYPE_PADDING,
+        "epistemic_type": crate::producer::padding::PADDING_EPISTEMIC_TYPE,
         "store_nonce": hex::encode(Sha256::digest(format!("padding-{i}"))),
     }))
 }

@@ -19,8 +19,8 @@
 //! `payment_hash`, because the emitter copies the wallet transaction's
 //! optional hash as-is.
 
-use capsule_producer::capsule::{SettlementObservation, SETTLEMENT_CHANNEL};
-use capsule_producer::jcs;
+use crate::producer::capsule::{SettlementObservation, SETTLEMENT_CHANNEL};
+use crate::producer::jcs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

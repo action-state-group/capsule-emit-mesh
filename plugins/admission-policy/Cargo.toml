@@ -37,42 +37,45 @@ serde_json = "1"
 schemars = "1"
 anyhow = "1"
 thiserror = "1"
-capsule-producer = { path = "../capsule-producer" }
 sha2 = "0.10"
 hex = "0.4"
-# The evidence door token and request nonces (`door_auth`); the same version
-# `capsule-producer` already pins.
+# Request nonces.
 rand_core = { version = "0.6", features = ["getrandom"] }
 ed25519-dalek = "2"
-# Same version `capsule-producer` pins -- the `ledger-fetch/1` responder
+# The `ledger-fetch/1` responder
 # (`ledger_fetch_bridge`) base64-encodes raw COSE_Sign1 bytes for its JSON
 # carrier.
 base64 = "0.22"
 tracing = "0.1"
-# The stop-routing rule's D-day window (`routing_rule`); the same version
-# `capsule-producer` pins.
+# The stop-routing rule's D-day window (`routing_rule`).
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Regular (not dev-only) dependency: the mesh evidence-request responder
 # bridge (`mesh_evidence_bridge::handle_open_stream`) proxies a mesh-inbound
 # evidence request to the local `evidence_server.py` E15 door over real HTTP.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-# A pushed record is received in-process (`record_push_receive`): its Class 1
-# checks, `capsule_id` and producer signature are checked with the
-# capsule-emit crate, and a bundle's inclusion proof with `cll`.
-# `capsule-emit` is a git dependency pinned to a merged commit until it is on
-# crates.io; `cll` is the published checkpointed-local-log. Renamed because
-# this crate already has a `capsule_emit` module.
-capsule-emit-lib = { package = "capsule-emit", git = "https://github.com/action-state-group/capsule-emit", rev = "69ba8166cf2f12badb38a5d98ebf80a66cb9c103" }
+# The capsule producer: every record this plugin seals, its ledger,
+# checkpoints and offline verification come from the capsule-emit crate; the
+# mesh record kinds are written against its extension points in `producer`.
+# A pushed record's Class 1 checks, `capsule_id` and producer signature are
+# checked with it too, and a bundle's inclusion proof with `cll`.
+# `capsule-emit` is a git dependency pinned to its 0.0.1 commit until that
+# is on crates.io; `cll` is the published checkpointed-local-log. Renamed
+# because this crate already has a `capsule_emit` module.
+capsule-emit-lib = { package = "capsule-emit", git = "https://github.com/action-state-group/capsule-emit", rev = "656298abd7ba5d5c288b426767f6c4c7ca974a55" }
 cll = { package = "checkpointed-local-log", version = "0.2.0" }
 # Evidence requests are answered in-process (`evidence_answer`): parsing,
 # resolution, signed refusals and the artifact answer come from the protocol
 # crate (draft-mih-agent-evidence-request-00). Git-pinned to the same
 # capsule-emit commit as `capsule-emit-lib`, so the lock carries one checkout;
 # 0.0.1 on crates.io predates the answer path.
-capsule-emit-evidence-request = { git = "https://github.com/action-state-group/capsule-emit", rev = "69ba8166cf2f12badb38a5d98ebf80a66cb9c103" }
+capsule-emit-evidence-request = { git = "https://github.com/action-state-group/capsule-emit", rev = "656298abd7ba5d5c288b426767f6c4c7ca974a55" }
 
 [dev-dependencies]
+# The byte-parity test (`producer::parity_tests`) seals the same inputs
+# through the old in-repo producer and through `producer`, and compares the
+# bytes. Test-only: nothing the plugin ships links it.
+capsule-producer = { path = "../capsule-producer" }
 # The record-push parity run reads its own golden answers, which hold a record
 # nested at the strict parser's limit inside the answer's own nesting. Only
 # the test's fixture reader lifts the limit (`disable_recursion_limit`); a

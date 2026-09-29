@@ -26,7 +26,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Mutex;
 
-use capsule_producer::stage::{
+use crate::producer::stage::{
     hop_id, stage_block_of, BundleRef, CoordinatorObserved, CoordinatorReceipt, DirectReturn,
     ReturnMode, Side, SplitKey, StageAssignment, StageBlock, StageEntry, StageError,
     TopologyEntry, COORDINATOR_RECEIPT_KIND,
@@ -552,8 +552,8 @@ fn exchange_block(own: &StageBlock, assignment: &StageAssignment, k: u32, term: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use capsule_producer::keys::KeyPair;
-    use capsule_producer::stage::seal_stage_record;
+    use crate::producer::keys::KeyPair;
+    use crate::producer::stage::seal_stage_record;
     use serde_json::json;
 
     fn case(name: &str) -> Value {

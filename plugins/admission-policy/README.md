@@ -35,7 +35,7 @@ this "gRPC-native" is imprecise; see `PROTOCOL-NOTE.md`.
    deny-reason body. Malformed/unparseable request bodies are also denied
    (fail-safe), never silently allowed.
 4. Every ALLOWED exchange is turned into a signed, hash-chained, ledgered
-   Agent Action Capsule via `capsule-producer` (see below) — the
+   Agent Action Capsule via the `capsule-emit` crate (see below) — the
    `capsule_id` is returned on the response's `admission_policy.capsule_id`.
 
 See `PROTOCOL-NOTE.md` for why "abstain" is realized structurally (by not
@@ -45,8 +45,14 @@ replaces, not just a renaming exercise.
 
 ## Capsule production (the #1332 integration)
 
-This plugin wires `../capsule-producer` (COSE-sign -> chain -> ledger, a
-previously separate, unmerged crate) into two places, closing the gap the
+This plugin seals with the `capsule-emit` crate (COSE-sign -> chain ->
+ledger). The mesh record kinds, split-stage records and the runtime
+attestation live in `src/producer/`, written against capsule-emit's public
+extension points (`seal_body`/`finish_seal` with compute-attestation
+extensions, `seal_local_record`, `capsule_reference`, and a caller-defined
+ledger index); `src/producer/parity_tests.rs` seals every record kind through
+the older in-repo `../capsule-producer` too and requires the same bytes. The
+producer is wired into two places, closing the gap the
 `adv-mesh-1332-e2e-scorecard` review found — three real, independently-tested
 pieces with zero lines combining any two of them:
 
@@ -73,7 +79,7 @@ pieces with zero lines combining any two of them:
 `allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_lifecycle_event`
 drives a real chat-completion exchange through the real host and asserts
 both wiring points, offline-verifies the resulting capsule
-(`capsule_producer::verify::verify_offline`), and adversarially mutates the
+(`capsule_emit::verify::verify_offline`), and adversarially mutates the
 signature and the observed response digest to confirm both are caught.
 `real_host_ledger_cross_language_verifies_against_python_scitt_cose_reference`
 re-verifies the same real-host-produced ledger against the Python

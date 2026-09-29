@@ -838,12 +838,12 @@ async fn allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_
     let keys_dir = host.capsule_data_dir().join("keys");
     let pubkey_pem = std::fs::read_to_string(keys_dir.join("node-key.pub.pem"))
         .expect("plugin persisted its public key");
-    let verifying_key = capsule_producer::keys::load_verifying_key_pem(&pubkey_pem)
+    let verifying_key = capsule_emit_lib::keys::load_verifying_key_pem(&pubkey_pem)
         .expect("parse persisted public key");
 
     let ledger_dir = host.capsule_data_dir().join("ledger");
     let (ledger, report) =
-        capsule_producer::ledger::Ledger::open(&ledger_dir).expect("reopen plugin's ledger");
+        capsule_emit_lib::ledger::Ledger::open(&ledger_dir).expect("reopen plugin's ledger");
     assert!(
         report.valid_entries >= 1,
         "ledger must contain the emitted capsule"
@@ -853,7 +853,7 @@ async fn allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_
         .expect("ledger lookup")
         .expect("capsule_id from the HTTP response must be in the ledger");
 
-    let verify_report = capsule_producer::verify::verify_offline(
+    let verify_report = capsule_emit_lib::verify::verify_offline(
         &entry.capsule,
         &entry.signed_statement,
         &verifying_key,
@@ -894,7 +894,7 @@ async fn allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_
     let mut tampered_statement = entry.signed_statement.clone();
     let last = tampered_statement.len() - 1;
     tampered_statement[last] ^= 0xFF;
-    let tampered_report = capsule_producer::verify::verify_offline(
+    let tampered_report = capsule_emit_lib::verify::verify_offline(
         &entry.capsule,
         &tampered_statement,
         &verifying_key,
@@ -910,7 +910,7 @@ async fn allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_
     let mut mutated_capsule = entry.capsule.clone();
     mutated_capsule["model_attestation"]["compute_attestation"]["agent_output_digest"] =
         serde_json::json!("f".repeat(64));
-    let mutated_id = capsule_producer::jcs::compute_capsule_id(&mutated_capsule)
+    let mutated_id = capsule_emit_lib::jcs::compute_capsule_id(&mutated_capsule)
         .expect("recompute digest over mutated capsule");
     assert_ne!(
         mutated_id, capsule_id,
@@ -919,7 +919,7 @@ async fn allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_
 }
 
 /// Cross-language proof for the same real-host-produced ledger as above:
-/// independent of `capsule_producer::verify::verify_offline` (Rust
+/// independent of `capsule_emit_lib::verify::verify_offline` (Rust
 /// re-verifying its own output), run the actual Python `scitt-cose` +
 /// `agent_action_capsule.verify` reference AND (when `AAC_GO_VERIFY_DIR` is
 /// also set) `scitt-cose-go-verify` -- two different implementations in two

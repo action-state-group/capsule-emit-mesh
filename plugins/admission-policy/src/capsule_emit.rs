@@ -12,16 +12,16 @@
 //! implementations. Mutating the actual content still changes `capsule_id`.
 
 use crate::lifecycle_channel::{dispatch_path_wire_value, role_for_dispatch_path, DispatchPath};
-use capsule_producer::capsule::{
+use crate::producer::capsule::{
     seal, seal_owner_maintenance_record, CapsuleInput, ChainLink, HostBinding, MeshPocV1, OwnerMaintenance,
     ServingProvenance, TokenUsage,
 };
-use capsule_producer::cose::{build_signed_statement, SignedStatementInput};
-use capsule_producer::jcs;
-use capsule_producer::keys::{self, KeyPair};
-use capsule_producer::ledger::{Ledger, LedgerEntry};
-use capsule_producer::sequence::SequenceCounterStore;
-use capsule_producer::timestamp::utc_now_minute;
+use crate::producer::cose::{build_signed_statement, SignedStatementInput};
+use crate::producer::jcs;
+use crate::producer::keys::{self, KeyPair};
+use crate::producer::ledger::{Ledger, LedgerEntry};
+use crate::producer::sequence::SequenceCounterStore;
+use crate::producer::timestamp::utc_now_minute;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -376,7 +376,7 @@ pub struct CapsuleState {
     node_id: String,
     /// Per-`(self, counterparty)` monotone `seq`/`prev_seq` cache, persisted
     /// beside the ledger at `<data_dir>/sequence_counters.json` (see
-    /// `capsule_producer::sequence` for why this cache is never the source
+    /// `crate::producer::sequence` for why this cache is never the source
     /// of truth for continuity).
     sequence_counters: Mutex<SequenceCounterStore>,
     /// This node's own mesh identity, LEARNED from observed traffic -- see
@@ -451,7 +451,7 @@ impl CapsuleState {
     pub fn open(data_dir: &Path, node_id: impl Into<String>) -> anyhow::Result<Self> {
         let keys = keys::load_or_create(&data_dir.join("keys"))?;
         let ledger_dir = data_dir.join("ledger");
-        let (ledger, report) = Ledger::open(&ledger_dir)?;
+        let (ledger, report) = crate::producer::index::open_ledger(&ledger_dir)?;
         tracing::info!(
             recovered_entries = report.valid_entries,
             "capsule-producer ledger opened"
@@ -506,7 +506,7 @@ impl CapsuleState {
     /// Pad the ledger to a multiple of `bucket` lines under the SAME writer
     /// lock every seal takes, so a real record never lands between two
     /// padding records (Evidence Layer -00 §12.1; see
-    /// `capsule_producer::padding`). Returns the padded line count.
+    /// `crate::producer::padding`). Returns the padded line count.
     pub fn pad_ledger_to_bucket(&self, bucket: u64) -> anyhow::Result<u64> {
         let mut ledger = self
             .ledger
@@ -582,10 +582,10 @@ impl CapsuleState {
         // `self_measured`. `None` when the binary path is unresolvable/unreadable
         // -- the rung then degrades gracefully (empty evidence slot + placeholder
         // runtime field), never a fabricated hash. See
-        // `capsule_producer::runtime_attest` for the honesty grades and their
+        // `crate::producer::runtime_attest` for the honesty grades and their
         // trust ceilings.
         let binary_attestation =
-            capsule_producer::runtime_attest::measure_self(&self.keys, utc_now_minute());
+            crate::producer::runtime_attest::measure_self(&self.keys, utc_now_minute());
 
         // Provider-side pair key (history proposal §1): self = this node
         // (`served_by_node_id` below); counterparty = the requesting party,
@@ -700,12 +700,11 @@ impl CapsuleState {
                 role: "served".to_string(),
                 observation_point: None,
                 generation_parameters,
-                latency_ms: capsule_producer::capsule::committed_latency_ms(latency_ms),
+                latency_ms: crate::producer::capsule::committed_latency_ms(latency_ms),
                 binary_attestation,
                 // rung 3c (tee_measured) producer leg is HW-gated (Intel TDX
                 // Confidential VM only) and not wired in on this path -- honest
-                // absence, never fabricated. See `capsule_producer::tee_attest`.
-                tee_attestation: None,
+                // absence, never fabricated. See `crate::producer::tee_attest`.
             },
             effect_status: "confirmed".to_string(),
             effect_type: "inference_completion".to_string(),
@@ -720,7 +719,7 @@ impl CapsuleState {
             disposition_human_disposed: false,
             disposition_verdict_class: "executed".to_string(),
             chain,
-            store_nonce: capsule_producer::capsule::fresh_store_nonce(),
+            store_nonce: crate::producer::capsule::fresh_store_nonce(),
         };
 
         let mut capsule = seal(&input)?;
@@ -734,9 +733,9 @@ impl CapsuleState {
         // present) -- a peer that receives just the pushed half verifies it in
         // isolation, exactly as a `capsule_emit.seal()` capsule does. Excluded
         // from the `capsule_id` preimage, so `capsule_id` is unchanged.
-        capsule_producer::capsule::attach_producer_envelope(&mut capsule, &self.keys.signing_key)
+        crate::producer::capsule::attach_producer_envelope(&mut capsule, &self.keys.signing_key)
             .expect("seal() always sets a hex capsule_id");
-        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let payload = crate::producer::capsule::payload_bytes(&capsule);
         let statement = build_signed_statement(
             &SignedStatementInput {
                 payload: &payload,
@@ -776,7 +775,7 @@ fn hex_sha256(bytes: &[u8]) -> String {
 /// fabricated digest/class). Runtime name identifies the serving runtime
 /// this plugin fronts.
 fn runtime_field(
-    att: &Option<capsule_producer::runtime_attest::BinaryAttestation>,
+    att: &Option<crate::producer::runtime_attest::BinaryAttestation>,
 ) -> Value {
     const NAME: &str = "admission-policy-plugin/mesh-llm-host-runtime";
     match att {
@@ -790,7 +789,7 @@ fn runtime_field(
 /// so the runtime name says `observer/...` to keep that distinction legible in
 /// the sealed capsule. Same graceful-degradation shape on `None`.
 fn observer_runtime_field(
-    att: &Option<capsule_producer::runtime_attest::BinaryAttestation>,
+    att: &Option<crate::producer::runtime_attest::BinaryAttestation>,
 ) -> Value {
     const NAME: &str = "observer/admission-policy-plugin";
     match att {
@@ -936,7 +935,7 @@ impl CapsuleState {
     /// single-writer path every local record uses.
     pub fn emit_stage_record(
         &self,
-        block: &capsule_producer::stage::StageBlock,
+        block: &crate::producer::stage::StageBlock,
     ) -> anyhow::Result<EmittedCapsule> {
         let mut ledger = self
             .ledger
@@ -948,10 +947,10 @@ impl CapsuleState {
     fn append_stage_record(
         &self,
         ledger: &mut Ledger,
-        block: &capsule_producer::stage::StageBlock,
+        block: &crate::producer::stage::StageBlock,
         stage_record_id: Option<&str>,
     ) -> anyhow::Result<EmittedCapsule> {
-        let capsule = capsule_producer::stage::seal_stage_record(
+        let capsule = crate::producer::stage::seal_stage_record(
             block,
             stage_record_id,
             ledger.chain_head(),
@@ -966,7 +965,7 @@ impl CapsuleState {
     }
 
     fn append_local(&self, ledger: &mut Ledger, capsule: &Value, capsule_id: &str) -> anyhow::Result<()> {
-        let payload = capsule_producer::capsule::payload_bytes(capsule);
+        let payload = crate::producer::capsule::payload_bytes(capsule);
         let statement = build_signed_statement(
             &SignedStatementInput {
                 payload: &payload,
@@ -1066,7 +1065,7 @@ impl CapsuleState {
         // independent reverse-direction composition binding under mesh-llm's
         // OWN construction -- not a re-derivation of `agent_input_digest`
         // above, and never presumed byte-equal to it (see
-        // `capsule_producer::capsule::HostBinding`'s INDEPENDENCE RULE). This
+        // `crate::producer::capsule::HostBinding`'s INDEPENDENCE RULE). This
         // is what lets the record join mesh-llm's own ops log even if a
         // future mesh-llm canonicalization change makes the two values
         // diverge: the record already carries mesh-llm's digest labeled AS
@@ -1074,8 +1073,8 @@ impl CapsuleState {
         // null -- when the host forwarded none.
         let host_binding = request_digest.map(|rd| HostBinding {
             digest: rd.to_string(),
-            construction: capsule_producer::capsule::MESH_LLM_REQUEST_BODY_SHA256_V1.to_string(),
-            purpose: capsule_producer::capsule::HOST_LOG_JOIN.to_string(),
+            construction: crate::producer::capsule::MESH_LLM_REQUEST_BODY_SHA256_V1.to_string(),
+            purpose: crate::producer::capsule::HOST_LOG_JOIN.to_string(),
         });
 
         // agent_output_digest: the host-forwarded canonical digest of the REAL
@@ -1097,7 +1096,7 @@ impl CapsuleState {
                     let emitted = self.append_stage_record(&mut ledger, block, stage_record_id.as_deref())?;
                     stage_exchange_records.push((block.stage_index, emitted.capsule_id));
                 }
-                Some(capsule_producer::stage::SplitMainExtension {
+                Some(crate::producer::stage::SplitMainExtension {
                     own_slice: plan.own_slice.clone(),
                     receipt: plan.receipt.clone(),
                     stage_exchange_records,
@@ -1131,7 +1130,7 @@ impl CapsuleState {
         // of the host serving runtime.
         // Degrades to `None` (empty slot) when unmeasurable, never fabricated.
         let binary_attestation =
-            capsule_producer::runtime_attest::measure_self(&self.keys, utc_now_minute());
+            crate::producer::runtime_attest::measure_self(&self.keys, utc_now_minute());
 
         // Observe path carries no requester identity (see the honest
         // "unknown" requesting_party below) -- the pair is keyed on that same
@@ -1250,8 +1249,7 @@ impl CapsuleState {
                 binary_attestation,
                 // rung 3c (tee_measured) producer leg is HW-gated (Intel TDX
                 // Confidential VM only) and not wired in on this path -- honest
-                // absence, never fabricated. See `capsule_producer::tee_attest`.
-                tee_attestation: None,
+                // absence, never fabricated. See `crate::producer::tee_attest`.
             },
             // Confirmed only over the host's digest of the REAL response body;
             // without one the completion was dispatched but its output is
@@ -1267,11 +1265,11 @@ impl CapsuleState {
             disposition_human_disposed: false,
             disposition_verdict_class: "executed".to_string(),
             chain,
-            store_nonce: capsule_producer::capsule::fresh_store_nonce(),
+            store_nonce: crate::producer::capsule::fresh_store_nonce(),
         };
 
         let mut capsule = match &split {
-            Some(split) => capsule_producer::stage::seal_split_main_record(&input, split)?,
+            Some(split) => crate::producer::stage::seal_split_main_record(&input, split)?,
             None => seal(&input)?,
         };
         let capsule_id = capsule["capsule_id"]
@@ -1284,9 +1282,9 @@ impl CapsuleState {
         // present) -- a peer that receives just the pushed half verifies it in
         // isolation, exactly as a `capsule_emit.seal()` capsule does. Excluded
         // from the `capsule_id` preimage, so `capsule_id` is unchanged.
-        capsule_producer::capsule::attach_producer_envelope(&mut capsule, &self.keys.signing_key)
+        crate::producer::capsule::attach_producer_envelope(&mut capsule, &self.keys.signing_key)
             .expect("seal() always sets a hex capsule_id");
-        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let payload = crate::producer::capsule::payload_bytes(&capsule);
         let statement = build_signed_statement(
             &SignedStatementInput {
                 payload: &payload,
@@ -1325,7 +1323,7 @@ impl CapsuleState {
             .as_str()
             .expect("seal_owner_maintenance_record always sets capsule_id")
             .to_string();
-        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let payload = crate::producer::capsule::payload_bytes(&capsule);
         let statement = build_signed_statement(
             &SignedStatementInput {
                 payload: &payload,
@@ -1361,7 +1359,7 @@ impl CapsuleState {
             .ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (rebuilt, report) = Ledger::open(&self.ledger_dir)?;
+        let (rebuilt, report) = crate::producer::index::open_ledger(&self.ledger_dir)?;
         if rebuilt.chain_head() != ledger.chain_head() {
             anyhow::bail!(
                 "the records on disk end at {:?} but this node holds {:?}; not replacing the index",
@@ -1376,9 +1374,9 @@ impl CapsuleState {
 }
 
 /// The provenance a received counterparty half carries into its citing record
-/// -- re-exported from `capsule_producer` so `main.rs`/`record_push_bridge.rs`
-/// name ONE type. See `capsule_producer::capsule::ReceivedHalfProvenance`.
-pub use capsule_producer::capsule::ReceivedHalfProvenance;
+/// -- re-exported from `crate::producer` so `main.rs`/`record_push_bridge.rs`
+/// name ONE type. See `crate::producer::capsule::ReceivedHalfProvenance`.
+pub use crate::producer::capsule::ReceivedHalfProvenance;
 
 impl CapsuleState {
     /// Seal, chain, and ledger the
@@ -1417,7 +1415,7 @@ impl CapsuleState {
         if ledger.cites_counterparty_half(prov.foreign_capsule_id) {
             return Ok(None);
         }
-        let capsule = capsule_producer::capsule::seal_citing_record(
+        let capsule = crate::producer::capsule::seal_citing_record(
             prov,
             ledger.chain_head(),
             &self.keys.signing_key,
@@ -1426,7 +1424,7 @@ impl CapsuleState {
             .as_str()
             .expect("seal_citing_record always sets capsule_id")
             .to_string();
-        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let payload = crate::producer::capsule::payload_bytes(&capsule);
         let statement = build_signed_statement(
             &SignedStatementInput {
                 payload: &payload,
@@ -1456,7 +1454,7 @@ impl CapsuleState {
         if ledger.cites_counterparty_inclusion(citation.half_capsule_id) {
             return Ok(None);
         }
-        let capsule = capsule_producer::capsule::seal_inclusion_citing_record(
+        let capsule = crate::producer::capsule::seal_inclusion_citing_record(
             citation,
             ledger.chain_head(),
             &self.keys.signing_key,
@@ -1465,7 +1463,7 @@ impl CapsuleState {
             .as_str()
             .expect("seal_inclusion_citing_record always sets capsule_id")
             .to_string();
-        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let payload = crate::producer::capsule::payload_bytes(&capsule);
         let statement = build_signed_statement(
             &SignedStatementInput {
                 payload: &payload,
@@ -1480,7 +1478,7 @@ impl CapsuleState {
     }
 
     /// Seal the REFEREE's own record of a verdict it issued (see
-    /// `capsule_producer::capsule::seal_adjudication_issued_record`), on the
+    /// `crate::producer::capsule::seal_adjudication_issued_record`), on the
     /// same single-writer path as [`Self::emit_citing_record`]. A verdict
     /// already recorded seals nothing (`Ok(None)`).
     #[cfg_attr(not(test), allow(dead_code))]
@@ -1490,13 +1488,13 @@ impl CapsuleState {
         referee_capsule_id: Option<&str>,
         issued_at: &str,
     ) -> anyhow::Result<Option<EmittedCapsule>> {
-        self.emit_adjudication_record(capsule_producer::capsule::ADJUDICATION_ISSUED_BLOCK, facts, |head, key| {
-            capsule_producer::capsule::seal_adjudication_issued_record(facts, referee_capsule_id, issued_at, head, key)
+        self.emit_adjudication_record(crate::producer::capsule::ADJUDICATION_ISSUED_BLOCK, facts, |head, key| {
+            crate::producer::capsule::seal_adjudication_issued_record(facts, referee_capsule_id, issued_at, head, key)
         })
     }
 
     /// Seal this node's own record of a verdict delivered to it (see
-    /// `capsule_producer::capsule::seal_adjudication_received_record`). A
+    /// `crate::producer::capsule::seal_adjudication_received_record`). A
     /// verdict already recorded seals nothing (`Ok(None)`).
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn emit_adjudication_received(
@@ -1506,8 +1504,8 @@ impl CapsuleState {
         received_from: &str,
         received_at: &str,
     ) -> anyhow::Result<Option<EmittedCapsule>> {
-        self.emit_adjudication_record(capsule_producer::capsule::ADJUDICATION_RECEIVED_BLOCK, facts, |head, key| {
-            capsule_producer::capsule::seal_adjudication_received_record(
+        self.emit_adjudication_record(crate::producer::capsule::ADJUDICATION_RECEIVED_BLOCK, facts, |head, key| {
+            crate::producer::capsule::seal_adjudication_received_record(
                 facts,
                 held_half_capsule_id,
                 received_from,
@@ -1523,7 +1521,7 @@ impl CapsuleState {
         &self,
         block: &str,
         facts: &VerdictFacts,
-        seal: impl FnOnce(Option<&str>, &ed25519_dalek::SigningKey) -> Result<Value, capsule_producer::jcs::JcsError>,
+        seal: impl FnOnce(Option<&str>, &ed25519_dalek::SigningKey) -> Result<Value, crate::producer::capsule::SealError>,
     ) -> anyhow::Result<Option<EmittedCapsule>> {
         self.emit_keyed_record(block, facts.verdict_capsule_id, seal)
     }
@@ -1533,13 +1531,13 @@ impl CapsuleState {
         &self,
         block: &str,
         key: &str,
-        seal: impl FnOnce(Option<&str>, &ed25519_dalek::SigningKey) -> Result<Value, capsule_producer::jcs::JcsError>,
+        seal: impl FnOnce(Option<&str>, &ed25519_dalek::SigningKey) -> Result<Value, crate::producer::capsule::SealError>,
     ) -> anyhow::Result<Option<EmittedCapsule>> {
         let mut ledger = self
             .ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if ledger.has_adjudication_record(block, key) {
+        if ledger.has_index_key(&crate::producer::index::adjudication_key(block, key)) {
             return Ok(None);
         }
         let capsule = seal(ledger.chain_head(), &self.keys.signing_key)?;
@@ -1547,7 +1545,7 @@ impl CapsuleState {
             .as_str()
             .expect("an adjudication record always sets capsule_id")
             .to_string();
-        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let payload = crate::producer::capsule::payload_bytes(&capsule);
         let statement = build_signed_statement(
             &SignedStatementInput {
                 payload: &payload,
@@ -1567,13 +1565,13 @@ impl CapsuleState {
     /// record's commitment names.
     pub fn emit_local_routing_choice(
         &self,
-        change: capsule_producer::capsule::RoutingChoiceChange,
+        change: crate::producer::capsule::RoutingChoiceChange,
         peer_id: &str,
         until: Option<&str>,
         salt: &[u8; 32],
-        rule: Option<&capsule_producer::capsule::RoutingRuleCitation<'_>>,
+        rule: Option<&crate::producer::capsule::RoutingRuleCitation<'_>>,
     ) -> anyhow::Result<EmittedRoutingChoice> {
-        let choice = capsule_producer::capsule::LocalRoutingChoice {
+        let choice = crate::producer::capsule::LocalRoutingChoice {
             change,
             peer_id,
             salt,
@@ -1584,7 +1582,7 @@ impl CapsuleState {
             .ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let capsule = capsule_producer::capsule::seal_local_routing_choice(
+        let capsule = crate::producer::capsule::seal_local_routing_choice(
             &choice,
             ledger.chain_head(),
             &self.keys.signing_key,
@@ -1593,7 +1591,7 @@ impl CapsuleState {
             .as_str()
             .expect("seal_local_routing_choice always sets capsule_id")
             .to_string();
-        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let payload = crate::producer::capsule::payload_bytes(&capsule);
         let statement = build_signed_statement(
             &SignedStatementInput {
                 payload: &payload,
@@ -1606,7 +1604,7 @@ impl CapsuleState {
         ledger.append(&capsule, &statement)?;
         Ok(EmittedRoutingChoice {
             capsule_id,
-            peer_commitment: capsule_producer::capsule::peer_commitment(peer_id, salt),
+            peer_commitment: crate::producer::capsule::peer_commitment(peer_id, salt),
         })
     }
 }
@@ -1618,15 +1616,15 @@ pub struct EmittedRoutingChoice {
     pub peer_commitment: String,
 }
 
-/// See `capsule_producer::capsule::InclusionCitation`.
-pub use capsule_producer::capsule::InclusionCitation;
-/// See `capsule_producer::capsule::VerdictFacts`.
-pub use capsule_producer::capsule::VerdictFacts;
+/// See `crate::producer::capsule::InclusionCitation`.
+pub use crate::producer::capsule::InclusionCitation;
+/// See `crate::producer::capsule::VerdictFacts`.
+pub use crate::producer::capsule::VerdictFacts;
 
 impl CapsuleState {
     /// Seal, chain, and ledger one SETTLEMENT record -- this payer node's
     /// sealed observation of one checked `payment.lifecycle.v1` event (see
-    /// `capsule_producer::capsule::seal_settlement_record` for what the record
+    /// `crate::producer::capsule::seal_settlement_record` for what the record
     /// does and does not claim). Same single-writer path as
     /// [`CapsuleState::emit_citing_record`]: the one ledger mutex, the current
     /// head, the detached `.cose` statement, `Ledger::append`.
@@ -1638,16 +1636,16 @@ impl CapsuleState {
     /// `Ok(None)`.
     pub fn emit_settlement_record(
         &self,
-        ev: &capsule_producer::capsule::SettlementObservation,
+        ev: &crate::producer::capsule::SettlementObservation,
     ) -> anyhow::Result<Option<EmittedCapsule>> {
         let mut ledger = self
             .ledger
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if ledger.has_settlement_event(ev.event_ref) {
+        if ledger.has_index_key(&crate::producer::index::settlement_event_key(ev.event_ref)) {
             return Ok(None);
         }
-        let capsule = capsule_producer::capsule::seal_settlement_record(
+        let capsule = crate::producer::capsule::seal_settlement_record(
             ev,
             ledger.chain_head(),
             &self.keys.signing_key,
@@ -1656,7 +1654,7 @@ impl CapsuleState {
             .as_str()
             .expect("seal_settlement_record always sets capsule_id")
             .to_string();
-        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let payload = crate::producer::capsule::payload_bytes(&capsule);
         let statement = build_signed_statement(
             &SignedStatementInput {
                 payload: &payload,
@@ -1703,7 +1701,7 @@ mod tests {
     /// gives.
     #[test]
     fn routing_choices_chain_in_order_with_the_callers_salt() {
-        use capsule_producer::capsule::{peer_commitment, RoutingChoiceChange};
+        use crate::producer::capsule::{peer_commitment, RoutingChoiceChange};
         let dir = std::env::temp_dir().join(format!("cap-route-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
@@ -2023,7 +2021,7 @@ mod tests {
             // byte-compare the capsule.json against the COSE payload.
             std::fs::write(
                 export.join("SEALED-with-generation-params.json"),
-                capsule_producer::capsule::payload_bytes(&emitted.capsule),
+                crate::producer::capsule::payload_bytes(&emitted.capsule),
             )
             .expect("write capsule");
             let cose_src = dir
@@ -2116,18 +2114,18 @@ mod tests {
         );
         assert_eq!(
             ca["host_binding"]["construction"],
-            capsule_producer::capsule::MESH_LLM_REQUEST_BODY_SHA256_V1
+            crate::producer::capsule::MESH_LLM_REQUEST_BODY_SHA256_V1
         );
         assert_eq!(
             ca["host_binding"]["purpose"],
-            capsule_producer::capsule::HOST_LOG_JOIN
+            crate::producer::capsule::HOST_LOG_JOIN
         );
         // Both are the SAME value here (this rig forwards one digest for
         // both), but structurally they are two independent claims: the
         // capsule carries them under two different keys, and the sealed
         // capsule validates structurally without comparing the two.
         assert_eq!(ca["agent_input_digest"], ca["host_binding"]["digest"]);
-        assert!(capsule_producer::capsule::validate_host_binding(&emitted.capsule).is_ok());
+        assert!(crate::producer::capsule::validate_host_binding(&emitted.capsule).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2163,7 +2161,7 @@ mod tests {
             ca.get("host_binding").is_none(),
             "no host-forwarded digest -> host_binding must be absent, not null"
         );
-        assert!(capsule_producer::capsule::validate_host_binding(&emitted.capsule).is_ok());
+        assert!(crate::producer::capsule::validate_host_binding(&emitted.capsule).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2223,11 +2221,11 @@ mod tests {
         assert_ne!(nonce(&first.capsule), nonce(&second.capsule));
         for c in [&first.capsule, &second.capsule] {
             let ts = c["timestamp"].as_str().unwrap();
-            assert!(capsule_producer::timestamp::is_minute_granular(ts), "{ts}");
+            assert!(crate::producer::timestamp::is_minute_granular(ts), "{ts}");
             let measured = &c["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]
                 ["evidence_refs"]["binary_attestation"]["measured_at"];
             if let Some(m) = measured.as_str() {
-                assert!(capsule_producer::timestamp::is_minute_granular(m), "{m}");
+                assert!(crate::producer::timestamp::is_minute_granular(m), "{m}");
             }
         }
 
@@ -2242,7 +2240,7 @@ mod tests {
         );
         drop(state);
 
-        let (ledger, report) = Ledger::open(&dir.join("ledger")).expect("reopen");
+        let (ledger, report) = crate::producer::index::open_ledger(&dir.join("ledger")).expect("reopen");
         assert_eq!(report.valid_entries, 33);
         assert_eq!(ledger.chain_head(), Some(third.capsule_id.as_str()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2704,7 +2702,7 @@ mod tests {
         // the capsule is signed with (code-signing gesture, end to end).
         // Re-measure this binary with the SAME node key and confirm the sealed
         // attestation's signature verifies via the crate's own verify helper.
-        let remeasured = capsule_producer::runtime_attest::measure_self(
+        let remeasured = crate::producer::runtime_attest::measure_self(
             &state.keys,
             "2026-08-30T00:00:00Z".to_string(),
         )
@@ -3113,7 +3111,7 @@ mod tests {
     /// own key and handed to the collector.
     fn released_split(name: &str) -> (crate::split_stage::SplitPlan, Vec<Value>) {
         use crate::split_stage::{plan_split, SplitCollector, StageEvent};
-        use capsule_producer::stage::{seal_stage_record, CoordinatorReceipt, StageBlock};
+        use crate::producer::stage::{seal_stage_record, CoordinatorReceipt, StageBlock};
         let case = split_case(name);
         let receipt = CoordinatorReceipt::from_value(&case["receipt"]).unwrap();
         let collector = SplitCollector::<()>::default();
@@ -3173,10 +3171,10 @@ mod tests {
         assert_eq!(ex1["references"][0]["citation_purpose"], Value::from("counterparty_half"));
         // The ledger reopens clean over the new record kinds.
         drop(state);
-        let (_, report) = Ledger::open(&dir.join("ledger")).expect("reopen");
+        let (_, report) = crate::producer::index::open_ledger(&dir.join("ledger")).expect("reopen");
         assert_eq!(report.valid_entries, 3);
         // And the requester's check over exactly what was sealed agrees.
-        let verdict = capsule_producer::stage_verify::verify_split_records(&main.capsule, &plan.carried).unwrap();
+        let verdict = crate::producer::stage_verify::verify_split_records(&main.capsule, &plan.carried).unwrap();
         assert!(verdict.handoffs_agree, "{verdict:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3184,8 +3182,8 @@ mod tests {
     /// The coordinator's push body for a split: the main record, covered by
     /// a real checkpoint, with the stage records it cites.
     fn real_split_bundle(dir: &Path) -> Value {
-        use capsule_producer::anchor::AnchorClient;
-        use capsule_producer::checkpoint::{CheckpointCadenceConfig, CheckpointState};
+        use crate::producer::anchor::AnchorClient;
+        use crate::producer::checkpoint::{CheckpointCadenceConfig, CheckpointState};
         let state = CapsuleState::open(dir, "rust-node").expect("open state");
         let (plan, _) = released_split("relayed_all_agree");
         let main = state
@@ -3252,7 +3250,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let state = CapsuleState::open(&dir, "node-under-test").expect("open state");
         let case = split_case("relayed_all_agree");
-        let block = capsule_producer::stage::StageBlock::from_value(&case["carried"][0]["block"]).unwrap();
+        let block = crate::producer::stage::StageBlock::from_value(&case["carried"][0]["block"]).unwrap();
         let emitted = state.emit_stage_record(&block).expect("seal stage record");
         assert_eq!(state.chain_head().as_deref(), Some(emitted.capsule_id.as_str()));
         assert_eq!(
@@ -3768,12 +3766,12 @@ mod tests {
         // BOTH halves independently verify offline -- `verify().ok()`.
         let peer_vk = peer_state.keys.verifying_key();
         let (peer_ledger, _) =
-            Ledger::open(&peer_dir.join("ledger")).expect("reopen peer ledger");
+            crate::producer::index::open_ledger(&peer_dir.join("ledger")).expect("reopen peer ledger");
         let peer_entry = peer_ledger
             .lookup(&peer_emitted.capsule_id)
             .expect("lookup ok")
             .expect("peer capsule in ledger");
-        let peer_report = capsule_producer::verify::verify_offline(
+        let peer_report = crate::producer::verify::verify_offline(
             &peer_entry.capsule,
             &peer_entry.signed_statement,
             &peer_vk,
@@ -3787,12 +3785,12 @@ mod tests {
 
         let router_vk = router_state.keys.verifying_key();
         let (router_ledger, _) =
-            Ledger::open(&router_dir.join("ledger")).expect("reopen router ledger");
+            crate::producer::index::open_ledger(&router_dir.join("ledger")).expect("reopen router ledger");
         let router_entry = router_ledger
             .lookup(&router_emitted.capsule_id)
             .expect("lookup ok")
             .expect("router capsule in ledger");
-        let router_report = capsule_producer::verify::verify_offline(
+        let router_report = crate::producer::verify::verify_offline(
             &router_entry.capsule,
             &router_entry.signed_statement,
             &router_vk,
@@ -3846,7 +3844,7 @@ mod tests {
             );
         }
 
-        let (_ledger, report) = Ledger::open(&dir.join("ledger")).expect("reopen ledger");
+        let (_ledger, report) = crate::producer::index::open_ledger(&dir.join("ledger")).expect("reopen ledger");
         assert_eq!(
             report.valid_entries, 1,
             "a local-served exchange must seal exactly one capsule, never two"

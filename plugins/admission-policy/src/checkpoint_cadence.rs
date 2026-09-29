@@ -1,5 +1,5 @@
 //! The plugin's own checkpoint cadence: a tokio background task that runs
-//! `capsule_producer::checkpoint::CheckpointState` over this node's ledger.
+//! `crate::producer::checkpoint::CheckpointState` over this node's ledger.
 //!
 //! **On by default, local-only (superseding the cadence task's
 //! off-by-default launch; `docs/DESIGN-fold-sidecar-into-plugin.md`).** The cadence task now runs
@@ -28,9 +28,9 @@
 //! Push cuts are local only -- the interval tick offers the latest one to the
 //! witnesses, once per window (`CheckpointState::tick`).
 
-use capsule_producer::anchor::AnchorClient;
+use crate::producer::anchor::AnchorClient;
 use crate::capsule_emit::CapsuleState;
-use capsule_producer::checkpoint::{
+use crate::producer::checkpoint::{
     CheckpointCadenceConfig, CheckpointRecord, CheckpointState, Coverage, PaddingSink,
 };
 use ed25519_dalek::SigningKey;
@@ -283,7 +283,7 @@ pub fn spawn(
             &AnchorClient,
         ) -> Result<
             Option<CheckpointRecord>,
-            capsule_producer::checkpoint::CheckpointStateError,
+            crate::producer::checkpoint::CheckpointStateError,
         >| {
             let result = {
                 let mut state = task.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -320,7 +320,7 @@ pub fn spawn(
 }
 
 fn report_checkpoint(
-    result: Result<Option<CheckpointRecord>, capsule_producer::checkpoint::CheckpointStateError>,
+    result: Result<Option<CheckpointRecord>, crate::producer::checkpoint::CheckpointStateError>,
     phase: &str,
 ) -> Option<CheckpointRecord> {
     match result {

@@ -908,7 +908,7 @@ fn claims_verdict(
 /// record carried twice. The stage's key is not linked to a node here: the
 /// requester never learned the stages' announced keys.
 fn split_stage_records_ok(main: &Value, records: &Value) -> bool {
-    use capsule_producer::stage::{
+    use crate::producer::stage::{
         stage_block_of, CoordinatorReceipt, Side, COORDINATOR_RECEIPT_BLOCK,
     };
 

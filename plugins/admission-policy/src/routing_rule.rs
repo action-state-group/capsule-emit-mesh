@@ -8,7 +8,7 @@
 //! seal the record (`mesh_local_routing_choice`). The rule leaves a pending
 //! citation for that peer first, so the sealed record names the rule and cites
 //! the verdicts that met it (by commitment; see
-//! `capsule_producer::capsule::RoutingRuleCitation`). Undo is the host's
+//! `crate::producer::capsule::RoutingRuleCitation`). Undo is the host's
 //! unblock, exactly as for a manual block.
 //!
 //! Inputs: only [`crate::verdict_counts::fold`] over this node's own chain:
