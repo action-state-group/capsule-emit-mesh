@@ -80,7 +80,7 @@ function buildVerdict(sp: ServingProvenance, inputs: VerdictInputs): VerdictLine
       ? { mark: 'ok', text: `Who asked is attested (${inputs.counterparty}).` }
       : {
           mark: 'warn',
-          text: "Open gap: who asked is self-attested (not independently verified) — and this node’s track record isn’t carried in a single record."
+          text: 'Open gap: who asked is self-attested (not independently verified) — and this node’s track record isn’t carried in a single record.'
         }
 
   return [line1, line2, line3]
@@ -450,8 +450,8 @@ function AdvertisedVsServed({ reconciliation }: { reconciliation: ReturnType<typ
       : 'no served facts to reconcile'
   return (
     <p className="text-xs text-muted-foreground">
-      Advertised vs. served: not checked — {why}, so this is recorded but there is no
-      kept-or-broken promise to check (not a pass).
+      Advertised vs. served: not checked — {why}, so this is recorded but there is no kept-or-broken promise to check
+      (not a pass).
     </p>
   )
 }

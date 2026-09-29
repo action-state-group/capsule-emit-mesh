@@ -203,11 +203,11 @@ describe('LedgerPeersTable — toolbar', () => {
     )
   })
 
-  it('Reset view is disabled when the view is already at its default', () => {
+  it('Reset view is not shown while the view is at its default, never greyed', () => {
     const props = buildFixtureProps()
     render(<LedgerPeersTable {...props} />)
 
-    expect(screen.getByRole('button', { name: /reset view/i })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /reset view/i })).not.toBeInTheDocument()
   })
 
   it('Export view (CSV) and Save evidence file trigger a file save with peer-scoped content', async () => {

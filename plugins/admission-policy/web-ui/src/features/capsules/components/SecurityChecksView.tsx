@@ -2,6 +2,7 @@
 // renders INLINE under the row, keeping the two-sided columns, never a
 // modal (v3 §4 "Where"). Exact block order: IDENTITY -> HEADER -> WHAT IT
 // COMMITS TO -> CHECKS -> raw (raw bytes last).
+import { CHECK_SOURCE_LEGEND, CHECK_SOURCE_WORDS } from '@/features/capsules/lib/tooltip-copy'
 import { useState, type ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { StatusBadge, type StatusBadgeTone } from '@/components/ui/StatusBadge'
@@ -64,12 +65,9 @@ function ChecksCell({
   // assert the two classes differ, not just eyeball it.
   return (
     <p
-      className={cn(
-        'flex items-baseline text-xs',
-        cell.recomputed
-          ? 'border-l-2 border-accent/60 pl-1.5 text-foreground'
-          : 'border-l-2 border-transparent pl-1.5 text-fg-dim'
-      )}
+      // u108: no coloured bar (it read as a selection cursor); the source
+      // is said in words beside any result.
+      className={cn('flex items-baseline gap-1.5 text-xs', cell.recomputed ? 'text-foreground' : 'text-fg-dim')}
       data-detail={cell.detail}
       data-recomputed={cell.recomputed ? 'true' : 'false'}
       data-source={cell.recomputed ? 'recomputed-in-browser' : 'from-sidecar'}
@@ -87,6 +85,11 @@ function ChecksCell({
           {cell.label}
         </StatusBadge>
       </ChipExplanationPopover>
+      {cell.state === 'PASS' || cell.state === 'FAIL' ? (
+        <span className="type-caption text-fg-faint" data-check-source-words="true">
+          · {cell.recomputed ? CHECK_SOURCE_WORDS.here : CHECK_SOURCE_WORDS.node}
+        </span>
+      ) : null}
     </p>
   )
 }
@@ -106,6 +109,9 @@ function ChecksColumnHeader({ theirsNote }: { theirsNote: string | null }) {
           </p>
         ) : null}
       </div>
+      <p className="col-span-3 type-caption text-fg-faint" data-check-source-legend="true">
+        {CHECK_SOURCE_LEGEND}
+      </p>
     </div>
   )
 }

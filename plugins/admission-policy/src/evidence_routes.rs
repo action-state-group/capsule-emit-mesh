@@ -12,6 +12,7 @@
 //! | `ledger/disclosure?capsule_id=` | `{disclosure}`, the kept request/response text, or null |
 //! | `panes/pane-a`, `panes/pane-b` | the pane JSON ([`crate::evidence_panes`]) |
 //! | `panes/pane-c[?exchange_id=]` | the Exchanges list, or one exchange's drilldown |
+//! | `peer-key?peer=` | `{announced_key_id}`: the key the operator says that peer signs with, or null |
 //!
 //! The host turns query parameters into typed JSON (numbers stay numbers),
 //! so a capsule id that is not a string is refused rather than guessed back.
@@ -45,6 +46,40 @@ pub struct NoArgs {}
 pub struct CapsuleIdArgs {
     /// The record's id: 64 lowercase hex.
     pub capsule_id: Value,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PeerKeyArgs {
+    /// The peer's endpoint id: 64 hex.
+    pub peer: Value,
+}
+
+/// Peer id -> the key that peer signs with, as a JSON object, set by the
+/// operator. The evidence door checks pushed records against the same map.
+pub const ENV_PEER_KEYS: &str = "ADMISSION_POLICY_PEER_KEYS";
+
+/// The key `peer` is announced with in `registry` (the JSON object in
+/// [`ENV_PEER_KEYS`]), lower-case. `None` when the map is unset, is not a
+/// JSON object, or has no non-empty string for `peer`: never a guess.
+pub fn announced_key_for(registry: Option<&str>, peer: &str) -> Option<String> {
+    let registry: Value = serde_json::from_str(registry?).ok()?;
+    let key = registry.as_object()?.get(peer)?.as_str()?.trim();
+    (!key.is_empty()).then(|| key.to_ascii_lowercase())
+}
+
+/// `peer-key`: what "Ask them for their record" judges a reply under. The
+/// page never takes the key a reply names for itself.
+pub fn peer_key_json(registry: Option<&str>, peer: &Value) -> Result<Value, PluginError> {
+    let Some(peer) = peer
+        .as_str()
+        .map(str::trim)
+        .filter(|p| p.len() == 64 && p.bytes().all(|b| b.is_ascii_hexdigit()))
+    else {
+        return Err(PluginError::invalid_params(
+            "peer must be a 64-hex endpoint id",
+        ));
+    };
+    Ok(json!({ "announced_key_id": announced_key_for(registry, &peer.to_ascii_lowercase()) }))
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -167,7 +202,7 @@ async fn blocking<T: Send + 'static>(
     })?
 }
 
-/// `builder` with the six routes declared.
+/// `builder` with the page's routes declared.
 pub fn with_routes(
     builder: DeclarativePluginBuilder,
     source: EvidenceSource,
@@ -265,6 +300,21 @@ pub fn with_routes(
                 Box::pin(async move {
                     serde_json::to_value(crate::door_auth::status().await)
                         .map_err(|e| PluginError::internal(e.to_string()))
+                })
+            }),
+    );
+
+    builder = builder.http_item(
+        http::get("/peer-key")
+            .binding_id("evidence_peer_key")
+            .description(
+                "The key the operator announced for one peer (ADMISSION_POLICY_PEER_KEYS), or null.",
+            )
+            .input::<PeerKeyArgs>()
+            .handle(move |args, _context| {
+                Box::pin(async move {
+                    let registry = std::env::var(ENV_PEER_KEYS).ok();
+                    peer_key_json(registry.as_deref(), &args.peer)
                 })
             }),
     );
@@ -447,6 +497,7 @@ mod tests {
                 "/panes/pane-a",
                 "/panes/pane-b",
                 "/panes/pane-c",
+                "/peer-key",
             ]
             .iter()
             .map(|p| (get, p.to_string()))
@@ -458,6 +509,34 @@ mod tests {
                 "{} is served by an operation",
                 binding.path
             );
+        }
+    }
+
+    #[test]
+    fn a_peer_key_is_the_announced_one_or_null_never_a_guess() {
+        let peer = "ab".repeat(32);
+        let registry = format!("{{\"{peer}\": \" CDEF \"}}");
+        assert_eq!(
+            peer_key_json(Some(&registry), &json!(peer.to_uppercase())).unwrap(),
+            json!({"announced_key_id": "cdef"})
+        );
+        for registry in [
+            None,
+            Some("not json"),
+            Some("[]"),
+            Some("{\"other\": \"k\"}"),
+        ] {
+            assert_eq!(
+                peer_key_json(registry, &json!(peer)).unwrap(),
+                json!({"announced_key_id": null})
+            );
+        }
+        assert_eq!(
+            announced_key_for(Some(&format!("{{\"{peer}\": \"  \"}}")), &peer),
+            None
+        );
+        for bad in [json!("ab"), json!(7), json!(null)] {
+            assert!(peer_key_json(Some(&registry), &bad).is_err());
         }
     }
 

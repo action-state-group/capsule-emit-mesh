@@ -13,8 +13,10 @@ import { Button } from '@/components/ui/button'
 import { StatusBadge, type StatusBadgeTone } from '@/components/ui/StatusBadge'
 import { cn } from '@/lib/cn'
 import type { CapsuleRecord } from '@/features/capsules/api/types'
+import { SeeInLogsLink } from '@/features/capsules/components/ExchangeIdCell'
 import { ExchangeRowChips } from '@/features/capsules/components/ExchangeRowChips'
 import { SecurityChecksView } from '@/features/capsules/components/SecurityChecksView'
+import { SettlementEntries, SettlementStrip } from '@/features/capsules/components/SettlementRow'
 import { buildChecksRows } from '@/features/capsules/lib/security-checks-view'
 import {
   theirContentAction,
@@ -22,6 +24,14 @@ import {
   yourContentFixedText
 } from '@/features/capsules/lib/exchange-content-state'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
+import {
+  askIsOffered,
+  askTarget,
+  stateAfterAsk,
+  type AskOutcome,
+  type AskTarget
+} from '@/features/capsules/lib/ask-for-record'
+import { entryRowChipMark, entryRowChipPropertyKey } from '@/features/capsules/lib/entry-row-chips'
 import { checkRowDomId, exchangeRowDomId } from '@/features/capsules/lib/exchange-pages'
 import {
   askForRecordIsDue,
@@ -36,15 +46,16 @@ import {
   rightCellDetail,
   type RightCellStateKind,
   rightCellStatusLabel,
-  rightCellText
+  rightCellText,
+  rowStatusLabel
 } from '@/features/capsules/lib/exchange-row-state'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
 import type { RailSegment } from '@/features/capsules/lib/exchange-stream'
 import { usePeerLedgerRecompute, useRecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 import {
   durationText,
-  formatModelIdentity,
   pocBlock,
+  rowModelName,
   servingProvenance,
   tokenFlowText
 } from '@/features/capsules/lib/serving-provenance'
@@ -54,7 +65,6 @@ import { copyStateLabel } from '@/lib/copyStateLabel'
 import { useClipboardCopy } from '@/lib/useClipboardCopy'
 import { formatExchangeTimestamp } from '@/features/capsules/lib/local-time'
 import { RowVerdictLine } from '@/features/capsules/components/RowVerdictLine'
-import { entryRowChipMark } from '@/features/capsules/lib/entry-row-chips'
 import { rowCombinationText } from '@/features/capsules/lib/row-combination'
 import { CLOSED_FROM_FETCH_NOT_SAVED, OWN_RECORD_FAILS_WARNING } from '@/features/capsules/lib/tooltip-copy'
 
@@ -175,6 +185,10 @@ export type ExchangeStreamRowProps = {
   /** Toggle ② -- flips `checksExpanded` for this row (the `▸/▾ checks` control). */
   onToggleChecks: (row: ExchangeLedgerRow) => void
   onAction: (row: ExchangeLedgerRow) => void
+  /** What "Ask them for their record" produced for this row, if it asked. */
+  askOutcome?: AskOutcome | null
+  /** Sends the ask. Absent where the page can't ask (the row offers none). */
+  onAskForRecord?: (row: ExchangeLedgerRow, target: AskTarget) => void
 }
 
 export function ExchangeStreamRow({
@@ -190,7 +204,9 @@ export function ExchangeStreamRow({
   ownerLinked = null,
   onToggleContent,
   onToggleChecks,
-  onAction
+  onAction,
+  askOutcome = null,
+  onAskForRecord
 }: ExchangeStreamRowProps) {
   // Lifted here (not `SecurityChecksView`, which only mounts once `▸
   // checks` is expanded) so a fetch this hook's `.fetch()` triggers can
@@ -206,21 +222,40 @@ export function ExchangeStreamRow({
   // shows the same evidence.
   const peerFetch = usePeerLedgerRecompute(row.raw)
   const theirsRecompute = peerFetch.status === 'found' ? peerFetch : (pushedHalfRecompute(row.raw) ?? peerFetch)
-  const state = deriveRightCellState(row.raw, theirsRecompute, localRecord)
+  const gateState = deriveRightCellState(row.raw, theirsRecompute, localRecord)
+  // Once this row has asked the other side for its record, their reply (or
+  // its absence) is the state: a record goes through the same gate as a
+  // pushed one (`ask-for-record.ts`), a signed refusal reads as one.
+  const state = askOutcome ? stateAfterAsk(row.raw, askOutcome, localRecord) : gateState
   const alarm = isAlarmState(state)
+  // Whom to ask, and how to name the exchange, from our own record of it.
+  const askFor = askTarget(localRecord ?? (row.raw.mine.record as CapsuleRecord | undefined) ?? null)
   // Do (2): an ask action with no recorded
   // counterparty renders no button at all, with the text branching on WHICH
   // truth holds -- a SERVED row has no remote other side to ask; an ASKED row
   // has one, but it's unknown/unrecorded. Never a single "nothing to ask yet"
   // that hides the difference.
-  const gatedByCounterparty = isAskAction(state.kind) && !row.counterparty
+  const gatedByCounterparty = isAskAction(state.kind) && !row.counterparty && !askFor
   const gatedText = row.roleTag === 'SERVED' ? NO_OTHER_SIDE_TEXT : OTHER_SIDE_NOT_KNOWN_TEXT
   const cellText = gatedByCounterparty ? gatedText : rightCellText(state)
   // UX §3: with push on, their record normally arrives when the exchange
   // finishes -- the ask is offered only once that has had time to happen.
   const nowMs = useNowMs()
   const askWaiting = isAskAction(state.kind) && !askForRecordIsDue(row.timestamp, nowMs)
-  const action = gatedByCounterparty || askWaiting ? null : rightCellAction(state)
+  // The ask is offered past the timeout on a row still waiting for their
+  // record, when we know whom to ask; never while an ask is in flight. An ask
+  // kind that can't be offered renders no button rather than a dead one.
+  const askOffered =
+    onAskForRecord !== undefined &&
+    askOutcome?.kind !== 'asking' &&
+    askIsOffered(state.kind, askFor, row.timestamp, nowMs)
+  const action = askOffered
+    ? state.kind === 'open_asked'
+      ? 'Ask again'
+      : 'Ask them for their record'
+    : gatedByCounterparty || askWaiting || isAskAction(state.kind)
+      ? null
+      : rightCellAction(state)
   // Look finding 1: the chip strip on the collapsed row must show the same
   // results as the panel, so this node's own record is recomputed for every
   // rendered row, not only an expanded one. It is a local hash + signature
@@ -235,12 +270,12 @@ export function ExchangeStreamRow({
   })
   // Confirmed from a record this page fetched, not one the node holds: say
   // it isn't saved, so a reload reopening the row is never a surprise.
-  const closedFromFetch = state.kind === 'closed' && peerFetch.status === 'found' && !pushedHalfRecompute(row.raw)
-  // A15: a Confirmed badge never sits beside a failed check on your own copy
-  // without saying so.
-  const ownRecordFails =
+  const closedFromFetch =
     state.kind === 'closed' &&
-    (entryRowChipMark(checksRows, 'content') === '✗' || entryRowChipMark(checksRows, 'sig') === '✗')
+    (askOutcome?.kind === 'record' || (peerFetch.status === 'found' && !pushedHalfRecompute(row.raw)))
+  // A15, u105 (4): your own copy failed "words match" or "signed". Whatever
+  // the badge says (Confirmed included), the row says so.
+  const ownRecordFails = entryRowChipMark(checksRows, 'content') === '✗' || entryRowChipMark(checksRows, 'sig') === '✗'
   // The bracket strip, drawn in words (UX §3): `Yours ● sealed —— Theirs ●
   // same`. Same state the badge renders.
   const strip = bracketStripText(bracketStrip(row.raw, state))
@@ -264,10 +299,21 @@ export function ExchangeStreamRow({
   // left out, never a placeholder. The ids move into the expansion.
   const ownRecord = localRecord ?? (row.raw.mine.record as CapsuleRecord | undefined) ?? null
   const provenance = ownRecord ? servingProvenance(ownRecord) : null
-  const modelRef = provenance?.model ?? null
-  const modelIdentity = formatModelIdentity(modelRef)
-  const tokens = provenance ? tokenFlowText(provenance.promptTokens, provenance.completionTokens) : null
-  const duration = ownRecord ? durationText(pocBlock(ownRecord).latency_ms) : null
+  // A requester's own record often carries no model details, usage or
+  // latency; the other side's sealed record does. Ours first, theirs
+  // labelled as theirs -- never a count presented as our own.
+  const theirRecord = (row.raw.theirs.record as CapsuleRecord | undefined) ?? null
+  const theirProvenance = theirRecord ? servingProvenance(theirRecord) : null
+  const modelRef = provenance?.model ?? theirProvenance?.model ?? null
+  const modelIdentity = rowModelName(provenance, theirProvenance)
+  const ownTokens = provenance ? tokenFlowText(provenance.promptTokens, provenance.completionTokens) : null
+  const theirTokens = theirProvenance
+    ? tokenFlowText(theirProvenance.promptTokens, theirProvenance.completionTokens)
+    : null
+  const tokens = ownTokens ?? (theirTokens ? `${theirTokens} (their count)` : null)
+  const ownDuration = ownRecord ? durationText(pocBlock(ownRecord).latency_ms) : null
+  const theirDuration = theirRecord ? durationText(pocBlock(theirRecord).latency_ms) : null
+  const duration = ownDuration ?? (theirDuration ? `${theirDuration} (their measure)` : null)
   const tone = rowStateTone(state.kind)
 
   // Chip-strip -> checks-panel jump (§3A "each chip a link into the expansion's matching check"). A chip
@@ -328,7 +374,10 @@ export function ExchangeStreamRow({
           <div className="flex flex-col gap-1 border-r border-border-soft px-3 py-2">
             <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-fg-dim">
               {row.raw.referee_call ? (
-                <span className="rounded border border-border-soft px-1 text-[10px] uppercase tracking-wide text-fg-dim" data-referee-call="true">
+                <span
+                  className="rounded border border-border-soft px-1 text-[10px] uppercase tracking-wide text-fg-dim"
+                  data-referee-call="true"
+                >
                   referee answer
                 </span>
               ) : null}
@@ -381,7 +430,7 @@ export function ExchangeStreamRow({
                    (§3A "one colour per state") still varies with CLOSED/
                    refused/absent, never just alarm-vs-muted. */}
                 <StatusBadge dot={alarm} size="caption" tone={tone}>
-                  {rightCellStatusLabel(state)}
+                  {rowStatusLabel(state, row.raw.theirs.in_their_log)}
                 </StatusBadge>
                 {/* Terse state on the face; the fuller story behind the (i). */}
                 <InfoHover
@@ -408,7 +457,16 @@ export function ExchangeStreamRow({
             {action ? (
               <Button
                 className="ui-control h-7 w-fit gap-1 rounded-[var(--radius)] px-2 text-[length:var(--density-type-caption)]"
-                onClick={() => onAction(row)}
+                onClick={() =>
+                  // u99 (6): Compare opens this row's checks at "their record",
+                  // where yours and theirs sit side by side. Other actions ask
+                  // the page (a counterparty request, a statement to view).
+                  state.kind === 'contradicted'
+                    ? handleChipActivate(entryRowChipPropertyKey('theirs'))
+                    : askOffered && askFor && onAskForRecord
+                      ? onAskForRecord(row, askFor)
+                      : onAction(row)
+                }
                 size="sm"
                 type="button"
                 variant="outline"
@@ -420,6 +478,10 @@ export function ExchangeStreamRow({
         </div>
         <ExchangeRowChips checks={checksRows} onChipActivate={handleChipActivate} />
         {row.raw.split ? <StageStrip split={row.raw.split} /> : null}
+        {/* Payments sit beside the inference state, never inside it: CLOSED
+           is about the two records of the exchange; settlement is this
+           node's own payment records for it. */}
+        <SettlementStrip settlement={row.raw.settlement} />
         {/* v3 §2's row footer: two independent
            disclosure toggles, never a modal. Always present, regardless of
            the right-cell state. */}
@@ -430,7 +492,7 @@ export function ExchangeStreamRow({
             onClick={() => onToggleContent(row)}
             type="button"
           >
-            {contentExpanded ? '▾ content' : '▸ content'}
+            {contentExpanded ? 'What was said ▾' : 'What was said ▸'}
           </button>
           <button
             aria-expanded={checksExpanded}
@@ -438,7 +500,7 @@ export function ExchangeStreamRow({
             onClick={() => onToggleChecks(row)}
             type="button"
           >
-            {checksExpanded ? '▾ checks' : '▸ checks'}
+            {checksExpanded ? 'How we checked ▾' : 'How we checked ▸'}
           </button>
         </div>
         {contentExpanded ? (
@@ -502,6 +564,7 @@ export function ExchangeStreamRow({
                 ))
               : null}
             <CopyableId label="exch" value={row.exchangeKey} />
+            <SeeInLogsLink exchangeKey={row.exchangeKey} />
             <span className="text-fg-faint">·</span>
             {(row.raw.mine.capsule_id ?? row.raw.mine.text) ? (
               <CopyableId label="rec" value={(row.raw.mine.capsule_id ?? row.raw.mine.text) as string} />
@@ -513,6 +576,7 @@ export function ExchangeStreamRow({
             )}
           </div>
         ) : null}
+        {checksExpanded ? <SettlementEntries settlement={row.raw.settlement} /> : null}
         {checksExpanded ? (
           <SecurityChecksView
             checksRows={checksRows}

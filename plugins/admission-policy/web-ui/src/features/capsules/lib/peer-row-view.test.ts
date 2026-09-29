@@ -61,7 +61,9 @@ function baseRow(overrides: Partial<PaneBRow> = {}): PaneBRow {
  *  agree (closes); `failed` -> a digest differs (contradicts); `absent` -> the
  *  pushed body carries no digests to compare (not confirmed). Same builders as
  *  the Pane C fixtures so the two panes are pinned against the SAME gate. */
-function confirmedSibling(overrides: Partial<PaneBConfirmedSibling['theirs']> & { matchState?: 'verified' | 'failed' | 'absent' } = {}): PaneBConfirmedSibling {
+function confirmedSibling(
+  overrides: Partial<PaneBConfirmedSibling['theirs']> & { matchState?: 'verified' | 'failed' | 'absent' } = {}
+): PaneBConfirmedSibling {
   const { matchState = 'verified', ...theirs } = overrides
   const base = fixtureTheirsCell(matchState === 'failed' ? 'disagrees' : 'agrees', { receivedFrom: 'node:m3' })
   if (matchState === 'absent' && base.record) {
@@ -100,7 +102,10 @@ describe('withYouCounts — fold-in finding 1: confirmed comes from the ONE gate
     const rows = [
       baseRow({ exchange_count: 6, confirmed_siblings: [confirmedSibling(), confirmedSibling(), confirmedSibling()] }),
       baseRow({ exchange_count: 2, confirmed_siblings: [] }),
-      baseRow({ exchange_count: 4, confirmed_siblings: [confirmedSibling(), confirmedSibling({ matchState: 'failed' })] })
+      baseRow({
+        exchange_count: 4,
+        confirmed_siblings: [confirmedSibling(), confirmedSibling({ matchState: 'failed' })]
+      })
     ]
     for (const row of rows) {
       expect(withYouCounts(row).confirmed).toBe(confirmedByOtherSide(row).confirmed)
@@ -146,7 +151,9 @@ describe('adjudicationSummary honesty invariants', () => {
       verdicts: { state: 'contradicted', text: '', tally: { corroborated: 6, contradicted: 1, inconclusive: 2 } }
     })
     const summary = adjudicationSummary(row)
-    expect(adjudicationSummaryText(summary)).toBe('9 of 14 adjudicated · 6 corroborated · 1 contradicted · 2 inconclusive')
+    expect(adjudicationSummaryText(summary)).toBe(
+      '9 of 14 adjudicated · 6 corroborated · 1 contradicted · 2 inconclusive'
+    )
     expect(adjudicationCompactText(summary)).toBe('9 of 14 · 6 corroborated · 1 contradicted · 2 inconclusive')
   })
 
@@ -262,10 +269,21 @@ describe('matchTally — clean/mismatch of the halves the other side sent, via t
 
   it('counts a gate-contradicted sibling as a mismatch, and appends the adjudication contradicted count when nonzero', () => {
     const row = baseRow({
-      confirmed_siblings: [...Array.from({ length: 9 }, () => confirmedSibling()), confirmedSibling({ matchState: 'failed' })],
+      confirmed_siblings: [
+        ...Array.from({ length: 9 }, () => confirmedSibling()),
+        confirmedSibling({ matchState: 'failed' })
+      ],
       verdicts: { state: 'contradicted', text: '', tally: { corroborated: 6, contradicted: 1, inconclusive: 0 } }
     })
     expect(matchTallyText(matchTally(row))).toBe('9 · 1 differ')
+  })
+
+  it('u102 (4): counts halves the door refused on their claims as differing, so Peers matches the hero', () => {
+    const row = baseRow({
+      confirmed_siblings: Array.from({ length: 3 }, () => confirmedSibling()),
+      claims_refused: 2
+    })
+    expect(matchTallyText(matchTally(row))).toBe('3 · 2 differ')
   })
 })
 
@@ -433,12 +451,16 @@ describe('peerAliasLine — D3: aliases on ONE row, never extra peers', () => {
 
 describe('unattributedExchangesLine', () => {
   it('states the count as a fact, never implying pending work', () => {
-    expect(unattributedExchangesLine(3)).toBe('3 exchanges have no counterparty recorded yet. They appear under Exchanges.')
+    expect(unattributedExchangesLine(3)).toBe(
+      '3 exchanges have no counterparty recorded yet. They appear under Exchanges.'
+    )
     expect(unattributedExchangesLine(3)).not.toMatch(/not resolved yet/i)
   })
 
   it('uses singular grammar for a count of one', () => {
-    expect(unattributedExchangesLine(1)).toBe('1 exchange has no counterparty recorded yet. They appear under Exchanges.')
+    expect(unattributedExchangesLine(1)).toBe(
+      '1 exchange has no counterparty recorded yet. They appear under Exchanges.'
+    )
   })
 })
 
@@ -493,7 +515,13 @@ describe('dealtWithRowView / advertisedOnlyRowView — one shape, honest degrada
     expect(view.row).toBeNull()
     expect(view.identityNote).toBe('no exchanges yet')
     expect(view.exchangeCount).toBe(0)
-    for (const field of [view.confirmedByOtherSide, view.match, view.adjudicationCompact, view.witnessCompact, view.period]) {
+    for (const field of [
+      view.confirmedByOtherSide,
+      view.match,
+      view.adjudicationCompact,
+      view.witnessCompact,
+      view.period
+    ]) {
       expect(field).toBe('—')
     }
   })
@@ -506,7 +534,13 @@ describe('dealtWithRowView / advertisedOnlyRowView — one shape, honest degrada
     const dealtWith = dealtWithRowView(row)
     const advertised = advertisedOnlyRowView('node:unused')
     for (const view of [dealtWith, advertised]) {
-      for (const text of [view.confirmedByOtherSide, view.match, view.adjudicationCompact, view.witnessCompact, view.period]) {
+      for (const text of [
+        view.confirmedByOtherSide,
+        view.match,
+        view.adjudicationCompact,
+        view.witnessCompact,
+        view.period
+      ]) {
         expect(text).not.toContain('%')
       }
     }

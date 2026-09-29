@@ -6,6 +6,24 @@ here from the mesh-llm console fork at commit e1319bdb99feb6b48ae02f217f5703915c
 layout is kept (`@/` → `src/`), so each file diffs line-for-line against its
 fork original. mesh-llm is Apache-2.0, as is this repository.
 
+**Re-synced to the fork's final console, commit 4c6463c3a (`demo-fork-next`).**
+Each file that drifted was merged three ways (the fork file it was copied
+from, the fork's final file, this page's file), keeping this page's changes
+below where the two differ. Files the fork has and this page does not, and why:
+
+| Fork file | Here |
+| --- | --- |
+| `lib/settlement-view.ts` (+ test), `components/SettlementRow.tsx` | **ported**, unchanged: the row's payment chips and entries, the Peers payments line and Integrity's Close card. Wording gate: `lib/settlement-copy.test.ts` |
+| `lib/their-history-view.ts` (+ test), `components/PeerHistoryTab.tsx` (+ test) | **ported**, unchanged: the peer drill's "Their log, as shown to you" tab |
+| `lib/ask-for-record.ts` (+ test) | **ported**, unchanged |
+| `api/evidenceRequestClient.ts` (+ test) | **ported**: the ask goes to this plugin's `tools/mesh_evidence_request` (the fork's host route forwarded to the same tool), and the announced key comes from this plugin's `http/peer-key` route instead of the host's reply |
+| `components/PeerInspector.test.tsx`, `components/SeeInLogsLink.test.tsx` | **ported**; the see-in-Logs test pins the plain-text fallback below |
+| `components/StopRoutingDialog.tsx`, `components/PeerRoutingSection.tsx` (+ test), `api/peerBlocksClient.ts`, `api/usePeerBlocks.ts` | **not ported**: stopping routing needs the host's local block list (upstream ask b7). The drill says in plain text that this page can't stop routing (`ROUTING_NOT_ON_THIS_PAGE`), and the Peers row shows no "routing stopped" badge |
+| `components/ChatWithNodeButton.tsx` (+ test), `api/routeTargetClient.ts` (+ test), `api/useRouteTarget.ts` | **not ported**: pointing Chat at one node needs the host's `/api/route-target`. No button and no "Your chats go here" badge |
+| `lib/chat-evidence-link.ts` (+ test) | **not ported**: it serves the console's own Chat and Logs pages, not this page |
+| `pages/AccountabilityPage.tsx`, `pages/CapsulesExchangeRedirectPage.tsx` (+ test), `__fixtures__/.gitignore` | **not ported**: console router glue |
+
+
 ## The page (was the fork tab), `src/features/capsules/**`
 
 Copied as-is except for these files:
@@ -31,7 +49,11 @@ Copied as-is except for these files:
 | `api/recordsClient.ts` | **ported later**: same types and calls; the tool route is plugin-relative through the host's `fetchPlugin` |
 | `lib/use-your-records.ts` | **ported later**: the records-status query only (`useRecordsStatus`); the console's stored-text probe feeds a pill this page does not show |
 | `lib/local-time.ts` | **ported later**, unchanged; row and drill times (`ExchangeStreamRow`, `PeerInspector`, `PeerExchangeInspector`) and the Integrity "no later than" line use it |
-| `lib/entry-row-chips.ts`, `components/ExchangeRowChips.tsx` | the chips show the console's plain labels (`ENTRY_ROW_CHIP_LABEL`); the console's newer "covered" (◐) mark is not ported |
+| `lib/entry-row-chips.ts`, `components/ExchangeRowChips.tsx` | the chips show the console's plain labels (`ENTRY_ROW_CHIP_LABEL`); the console's "covered" (◐) mark is not ported: this page keeps ✓ / ✗ / – and says per result, in `ENTRY_CHIP_RESULT_TOOLTIPS`, that the checkpoint chip is the node's count, not a checked proof |
+| `components/ExchangeIdCell.tsx` `SeeInLogsLink` | the row's "see in Logs" is plain text (`SEE_IN_LOGS_NOT_ON_THIS_PAGE`): opening Logs at one exchange needs the host's Logs to carry the exchange id (upstream asks b2/b4) |
+| `components/ExchangeStreamRow.tsx` | the ask goes through the page (`onAskForRecord`), never on sample data; no Chat-with-this-node button; the fork's `FETCHED_CLOSE_TEXT` is this page's `CLOSED_FROM_FETCH_NOT_SAVED` (same words), shown for an asked-for record and a fetched one; "your own copy fails its checks" shows beside any badge (u105) |
+| `lib/integrity-view.ts` (setup steps) | the witness step has no "Turn on a witness ↗" link: the console's `/configuration/plugins` is a host route this page can't count on |
+| `pages/LedgerPage.tsx` (ask, Close card) | "Ask them for their record" and the Close card as in the console; no routing or chat-target controls; the Peers section's unattributed count is read from the Exchanges rows, as in the console |
 | `lib/peer-row-view.ts` | the Peers row's endpoint alias is cut to 16 characters, as in the console |
 | `lib/integrity-view.ts` | plain words ahead of the console: "witnessed" (only when a witness holds a checkpoint) for "registered", local time, and the console's reworded owner-identity sentence |
 | `pages/LedgerPage.tsx` | the hero line and the `Clean up records` button + dialog, as in the console |

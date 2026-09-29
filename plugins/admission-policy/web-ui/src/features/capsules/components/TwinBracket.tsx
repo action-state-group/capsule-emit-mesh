@@ -88,7 +88,15 @@ export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, childr
   const { verdict, capsuleId } = twinVerdict(rows)
 
   const handleSave = () => {
-    saveTextFile(`twin-bracket-${bracketId}.json`, JSON.stringify(rows.map((row) => row.raw), null, 2), 'application/json')
+    saveTextFile(
+      `twin-bracket-${bracketId}.json`,
+      JSON.stringify(
+        rows.map((row) => row.raw),
+        null,
+        2
+      ),
+      'application/json'
+    )
   }
 
   return (

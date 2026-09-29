@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { twinComparisonParametersLine, twinDisclosureSentence, twinResponseTexts } from '@/features/capsules/lib/twin-bracket'
+import {
+  twinComparisonParametersLine,
+  twinDisclosureSentence,
+  twinResponseTexts
+} from '@/features/capsules/lib/twin-bracket'
 import type { ExchangeLedgerRow } from '@/features/capsules/lib/exchange-ledger'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
 
@@ -72,7 +76,7 @@ describe('twinComparisonParametersLine', () => {
 })
 
 describe('twinResponseTexts', () => {
-  it('returns each side\'s real response text for the Compare diff', () => {
+  it("returns each side's real response text for the Compare diff", () => {
     const rows = [
       twinRow({ exchange_key: 'a', mine: { state: 'present', capsule_id: null, text: 'hello from peer A' } }),
       twinRow({ exchange_key: 'b', mine: { state: 'present', capsule_id: null, text: 'hello from peer B' } })

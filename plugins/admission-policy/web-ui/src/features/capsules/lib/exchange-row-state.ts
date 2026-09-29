@@ -101,7 +101,10 @@ function digestFieldCitesOurs(
 }
 
 /** Both halves of §6.2/L-G's digest citation -- request AND response. */
-function digestsCiteOurHalf(localRecord: CapsuleRecord | null | undefined, peerRecord: Record<string, unknown> | null): boolean {
+function digestsCiteOurHalf(
+  localRecord: CapsuleRecord | null | undefined,
+  peerRecord: Record<string, unknown> | null
+): boolean {
   return (
     digestFieldCitesOurs(localRecord, peerRecord, ['effect', 'request_digest']) &&
     digestFieldCitesOurs(localRecord, peerRecord, ['effect', 'response_digest'])
@@ -116,7 +119,10 @@ const DIGEST_FIELDS = [
 /** Both halves carry a real digest for the same field and they differ: the
  *  two sides are on record disagreeing about this exchange. A field missing
  *  on either side is never read as disagreement. */
-function digestsDisagree(localRecord: CapsuleRecord | null | undefined, peerRecord: Record<string, unknown> | null): boolean {
+function digestsDisagree(
+  localRecord: CapsuleRecord | null | undefined,
+  peerRecord: Record<string, unknown> | null
+): boolean {
   return DIGEST_FIELDS.some((path) => {
     const ours = recordString(localRecord, path)
     const theirs = recordString(peerRecord, path)
@@ -164,7 +170,10 @@ const SERVED_BY_PATH = ['model_attestation', 'compute_attestation', 'x-mesh-poc-
  *  record says served us. When the announcement join lands, replace this with
  *  check (ii): the announced node id for the signing key must equal our
  *  `served_by_node_id`. */
-function providerMatches(localRecord: CapsuleRecord | null | undefined, peerRecord: Record<string, unknown> | null): boolean {
+function providerMatches(
+  localRecord: CapsuleRecord | null | undefined,
+  peerRecord: Record<string, unknown> | null
+): boolean {
   const ours = recordString(localRecord, SERVED_BY_PATH)
   const theirs = recordString(peerRecord, SERVED_BY_PATH)
   return !!ours && ours !== 'unknown' && ours === theirs
@@ -319,7 +328,8 @@ function theirSide(kind: RightCellStateKind): BracketSide {
 export function bracketStrip(row: PaneCRow, state: RightCellState): BracketStrip {
   // Ours is sealed whenever our half is held; `mine.state === 'absent'` is the
   // received-without-a-commitment row shape.
-  const yours: BracketSide = row.mine.state === 'absent' ? { glyph: '○', word: 'not held' } : { glyph: '●', word: 'sealed' }
+  const yours: BracketSide =
+    row.mine.state === 'absent' ? { glyph: '○', word: 'not held' } : { glyph: '●', word: 'sealed' }
   const theirs = theirSide(state.kind)
   return { yours, joined: yours.glyph === '●' && theirs.glyph === '●', theirs }
 }
@@ -358,7 +368,11 @@ export type ClosedPropertyCell = { key: keyof typeof CLOSED_CELL_TOOLTIPS; label
 export function closedPropertyCellItems(row: PaneCRow): ClosedPropertyCell[] {
   const theirId = row.theirs.capsule_id
   return [
-    { key: 'their_id', label: theirId ? `their id ${theirId.slice(0, 12)}…` : 'their id —', tooltip: CLOSED_CELL_TOOLTIPS.their_id },
+    {
+      key: 'their_id',
+      label: theirId ? `their id ${theirId.slice(0, 12)}…` : 'their id —',
+      tooltip: CLOSED_CELL_TOOLTIPS.their_id
+    },
     { key: 'signature', label: 'signature ✓', tooltip: CLOSED_CELL_TOOLTIPS.signature },
     { key: 'request', label: 'request =', tooltip: CLOSED_CELL_TOOLTIPS.request },
     { key: 'response', label: 'response =', tooltip: CLOSED_CELL_TOOLTIPS.response }
@@ -404,6 +418,15 @@ export function rightCellText(state: RightCellState): string {
  *  discipline so every state's (i) has an honest sentence. */
 export function rightCellDetail(state: RightCellState): string {
   return ROW_STATE_TOOLTIPS[state.kind]
+}
+
+/** The row's state label, with "in their log" on a CLOSED row once our
+ *  records cite their inclusion proof for it (§7.6b). No number: their
+ *  checkpoint's leaf count includes their padding, so it is never a count of
+ *  their records. */
+export function rowStatusLabel(state: RightCellState, inTheirLog: object | null | undefined): string {
+  const label = rightCellStatusLabel(state)
+  return state.kind === 'closed' && inTheirLog ? `${label} · in their log` : label
 }
 
 export function rightCellStatusLabel(state: RightCellState): string {

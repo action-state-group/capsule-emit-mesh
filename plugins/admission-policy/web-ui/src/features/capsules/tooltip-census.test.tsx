@@ -84,7 +84,11 @@ const REQUIRED = {
     'entry_chip:theirs',
     'twin:no_verdict',
     'split:stage_cell',
-    'split:handoffs'
+    'split:handoffs',
+    // The (k) line: a paid exchange's payment chips.
+    'settlement:paid',
+    'settlement_state:settled',
+    'settlement:provider_book'
   ],
   // The checks panel always shows at least these two (they are always
   // checked in the browser); every other chip it shows must carry one too.
@@ -102,7 +106,9 @@ const REQUIRED = {
     'integrity_tile:Shared with a witness',
     'integrity_tile:Confirmed by the other side',
     'integrity_tile:Disagreements',
-    'integrity:chain_strip'
+    'integrity:chain_strip',
+    'integrity:close_card',
+    'integrity:close_card_counts'
   ]
 } as const
 
@@ -137,7 +143,18 @@ const PANE_C: PaneCListJson = {
   next_after_seq: null,
   archived_segments: [],
   rows: [
-    row('exch-closed', { mine: fixtureMineCell(), theirs: fixtureTheirsCell('agrees'), unilateral: false }),
+    row('exch-closed', {
+      mine: fixtureMineCell(),
+      theirs: fixtureTheirsCell('agrees'),
+      unilateral: false,
+      settlement: {
+        observed_by: 'payer',
+        state: 'settled',
+        terms_digests: ['f'.repeat(64)],
+        entries: [],
+        provider_book: 'not_available'
+      }
+    }),
     row('exch-contradicted', { mine: fixtureMineCell(), theirs: fixtureTheirsCell('disagrees'), unilateral: false }),
     row('exch-refused', {
       theirs: { state: 'absent', capsule_id: null, evidence_outcome: 'signed_refusal', evidence_outcome_date: '4 Sep' }
@@ -238,7 +255,7 @@ describe('tooltip census -- every chip type the Evidence tab ships has a plain o
     render(<LedgerPageContent />, { wrapper })
     await user.click(await screen.findByRole('tab', { name: /exchanges/i }))
     const closedRow = await screen.findByRole('group', { name: 'Exchange exch-closed' })
-    await user.click(within(closedRow).getByRole('button', { name: /checks/ }))
+    await user.click(within(closedRow).getByRole('button', { name: /How we checked/ }))
     const panel = await screen.findByLabelText('Security checks for exch-closed')
 
     const seen = censusOnScreen()
@@ -260,7 +277,7 @@ describe('tooltip census -- every chip type the Evidence tab ships has a plain o
     const user = userEvent.setup()
     render(<LedgerPageContent />, { wrapper })
     await user.click(await screen.findByRole('tab', { name: /integrity/i }))
-    await screen.findByText(/Register your checkpoints/)
+    await screen.findByText(/Have a witness hold your checkpoints/)
     expectCovered(REQUIRED.integrity, censusOnScreen(), 'face')
   })
 })

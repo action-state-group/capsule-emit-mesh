@@ -105,6 +105,8 @@ export type SetupStep = {
    *  explanatory sentence is written for someone deciding whether to do
    *  the step, not for someone who already has. */
   body: string | null
+  /** One thing to do next, when there is one: a link, never a fake button. */
+  action?: { label: string; href: string }
 }
 
 export function buildSetupSteps(
@@ -131,7 +133,7 @@ export function buildSetupSteps(
   return [
     {
       key: 'checkpoints',
-      title: 'Register your checkpoints',
+      title: 'Have a witness hold your checkpoints',
       done: registration.registered,
       status: registration.registered
         ? 'witnessed'
@@ -143,7 +145,7 @@ export function buildSetupSteps(
       body: registration.registered
         ? null
         : registration.reported
-          ? 'Right now your records are checkable only against themselves. Registering a checkpoint with a service you don’t run is what makes a later rewrite detectable by someone else. It does not make your records true.'
+          ? 'Right now your records are checkable only against themselves. A witness you don’t run holding a checkpoint is what makes a later rewrite detectable by someone else. It does not make your records true.'
           : 'This node did not report its checkpoint status. That is not the same as having none — the status was not reported, so nothing can be concluded either way.'
     },
     {
@@ -165,11 +167,7 @@ export function buildSetupSteps(
       // Finding 7: the count is the "Confirmed by the other side" tile's to
       // say; the step says only that it's done.
       status:
-        closedByOtherSideCount > 0
-          ? 'received'
-          : askedPeerAt !== null
-            ? `asked ${askedPeerAt}`
-            : 'none received yet',
+        closedByOtherSideCount > 0 ? 'received' : askedPeerAt !== null ? `asked ${askedPeerAt}` : 'none received yet',
       body:
         closedByOtherSideCount > 0 || askedPeerAt !== null
           ? null
@@ -232,6 +230,16 @@ export function buildRegistrationCopy(card: JsonRecord | null | undefined): Regi
 // Chain strip caption -- pulled out of `LedgerPage.tsx`'s ChainStrip so the
 // three-state absence handling and the leaf pluralization are unit-testable.
 // ---------------------------------------------------------------------------
+
+/** How many RECORDS the latest checkpoint covers: the card's
+ *  `covered_record_count`. Its `covered_leaf_count` also counts padding
+ *  leaves (covered, but never records), so comparing that with a record
+ *  count would read unsealed records as sealed. Null when the host reported
+ *  no coverage. */
+export function coveredRecordCount(card: JsonRecord | null | undefined): number | null {
+  const covered = card?.covered_record_count
+  return typeof covered === 'number' ? covered : null
+}
 
 export function chainStripCaption(
   sealedCount: number,
@@ -321,8 +329,20 @@ export function checkpointCoverageByRecord(
 
 /** Finding 3: the Sealed tile's sub-line, so Integrity's record count and
  *  Exchanges' exchange count reconcile on screen. */
-export function sealedBreakdownText(own: number, receivedNotes: number): string {
-  return `${own} yours · ${receivedNotes} received from the other side`
+/** `routingChoices`: records of your own choice to stop or resume routing to
+ *  a peer (§7.5). `paymentRecords`: this node's sealed payment lifecycle
+ *  records. Both are sealed like the rest, but not exchanges, so said apart,
+ *  and only when there are any. */
+export function sealedBreakdownText(
+  own: number,
+  receivedNotes: number,
+  routingChoices = 0,
+  paymentRecords = 0
+): string {
+  let text = `${own} yours · ${receivedNotes} received from the other side`
+  if (routingChoices > 0) text += ` · ${routingChoices} ${routingChoices === 1 ? 'routing choice' : 'routing choices'}`
+  if (paymentRecords > 0) text += ` · ${paymentRecords} payment records`
+  return text
 }
 
 export function identityFact(owner: StatusOwner | null | undefined): string {
@@ -336,7 +356,8 @@ export function identityFact(owner: StatusOwner | null | undefined): string {
  *  continuity is a chain of checkpoints, each binding to the one before it,
  *  so it needs a PRIOR checkpoint; registration is what lets someone else
  *  detect a later rewrite. */
-export const CONTINUITY_NOT_ESTABLISHED = 'Continuity: not established. It needs a prior checkpoint for the next one to bind to.'
+export const CONTINUITY_NOT_ESTABLISHED =
+  'Continuity: not established. It needs a prior checkpoint for the next one to bind to.'
 
 /** UX §4: continuity stated from the checkpoint count, separately from
  *  registration (step 1 already explains that, so it is not repeated). With
@@ -349,14 +370,4 @@ export function continuityFact(checkpointCount: number | null): string {
     return 'Continuity: 1 checkpoint so far. The next one builds on it. A witness is what lets someone else check it too.'
   }
   return `Continuity: ${checkpointCount} checkpoints so far. A witness is what lets someone else check them too.`
-}
-
-/** How many RECORDS the latest checkpoint covers: the card's
- *  `covered_record_count`. Its `covered_leaf_count` also counts padding
- *  leaves (covered, but never records), so comparing that with a record
- *  count would read unsealed records as sealed. Null when the host reported
- *  no coverage. (Console copy.) */
-export function coveredRecordCount(card: JsonRecord | null | undefined): number | null {
-  const covered = card?.covered_record_count
-  return typeof covered === 'number' ? covered : null
 }

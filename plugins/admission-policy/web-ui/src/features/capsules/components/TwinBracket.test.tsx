@@ -79,7 +79,9 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
         <p>row b</p>
       </TwinBracket>
     )
-    expect(screen.getByText('This comparison ran automatically — 1 in 2 exchanges is sent to a second peer.')).toBeInTheDocument()
+    expect(
+      screen.getByText('This comparison ran automatically — 1 in 2 exchanges is sent to a second peer.')
+    ).toBeInTheDocument()
   })
 
   it('Compare is disabled when neither side has response text, and never renders as clickable-but-empty', () => {
@@ -93,7 +95,7 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
     expect(screen.getByRole('button', { name: /Compare/ })).toBeDisabled()
   })
 
-  it('Compare opens a real side-by-side diff of both peers\' response text when both sides have it', async () => {
+  it("Compare opens a real side-by-side diff of both peers' response text when both sides have it", async () => {
     const user = userEvent.setup()
     const rows = [
       twinRow('a', { mine: { state: 'present', capsule_id: null, text: 'hello from A' } }),

@@ -2,8 +2,8 @@
 // replacing the old card's inline `expanded` accordion. Opened today from
 // a `PeerTableRow` click (rebuilt the row as a
 // table cell, not a card). Mirrors the Logs Request Inspector shell
-// (SharedModal + TabPanel) verbatim -- Overview /
-// Timeline / Exchanges tabs, same as `LogRequestDetails`. The per-exchange
+// (SharedModal + TabPanel) verbatim -- Overview / Their history ([mesh-evidence-
+// history-surface]) / Timeline / Exchanges tabs. The per-exchange
 // drill-down (`PeerExchangeInspector`) nests inside this modal, opened from
 // either the Timeline chart or the Exchanges list -- both drive the SAME
 // `selectedPoint` state, never a second, divergent detail view.
@@ -25,15 +25,10 @@ import type { PaneBRow } from '@/features/capsules/api/sidecarTypes'
 import { toneForState } from '@/features/capsules/lib/assurance-tone'
 import type { PeerTimelinePoint } from '@/features/capsules/lib/peer-exchange-timeline'
 import type { PeerMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
-import {
-  meshMetaLine,
-  peerDisplayId,
-  theirChainSummary,
-  withYouCounts,
-  withYouCountsText
-} from '@/features/capsules/lib/peer-row-view'
+import { peerDisplayId, theirChainSummary } from '@/features/capsules/lib/peer-row-view'
 import { dealingsLines } from '@/features/capsules/lib/peer-routing-view'
 import { PeerExchangeInspector } from '@/features/capsules/components/PeerExchangeInspector'
+import { PeerHistoryTab } from '@/features/capsules/components/PeerHistoryTab'
 import { RefereeVerdictCounts } from '@/features/capsules/components/RefereeVerdictCounts'
 import {
   PEER_INSPECTOR_HEADER,
@@ -51,27 +46,16 @@ export type PeerInspectorProps = {
   points: readonly PeerTimelinePoint[]
 }
 
-type PeerInspectorTab = 'overview' | 'timeline' | 'exchanges'
+type PeerInspectorTab = 'overview' | 'history' | 'timeline' | 'exchanges'
 
-function PeerOverviewTab({ row, meshStatus }: { row: PaneBRow; meshStatus: PeerMeshStatus | null }) {
-  const counts = withYouCounts(row)
+function PeerOverviewTab({ row }: { row: PaneBRow }) {
   const chain = theirChainSummary(row)
-  const metaLine = meshMetaLine(meshStatus)
-  const latencyLabel = meshStatus?.latencyMs != null ? `${meshStatus.latencyMs} ms` : 'latency unknown'
-  const online = meshStatus?.online ?? false
 
+  // Accountability only: no liveness line (mesh status, latency, online) --
+  // that is the Network tab's -- and no per-drill "self-reported" line, which
+  // the Peers legend says once.
   return (
     <div className="flex flex-col gap-3 text-sm text-fg-dim">
-      <div>
-        <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-fg-faint">
-          {metaLine ? <span className="font-mono">{metaLine}</span> : <span>mesh status not available</span>}
-          <span aria-hidden="true">·</span>
-          <span className="font-mono">{latencyLabel}</span>
-          <span aria-hidden="true">·</span>
-          <span>{meshStatus ? (online ? 'online' : 'offline') : 'status unknown'}</span>
-        </p>
-        <p className="mt-1 text-xs text-fg-faint">self-reported — not independently attested</p>
-      </div>
       {/* §7.5: the drill answers "should I stop dealing with anyone?" --
          your dealings with them, then routing at the bottom. */}
       <section aria-label={YOUR_DEALINGS_TITLE} className="flex flex-col gap-2">
@@ -79,7 +63,6 @@ function PeerOverviewTab({ row, meshStatus }: { row: PaneBRow; meshStatus: PeerM
         {dealingsLines(row).map((line) => (
           <p key={line}>{line}</p>
         ))}
-        <p>{withYouCountsText(counts)}</p>
       </section>
       <RefereeVerdictCounts row={row} />
       <p className="text-fg-faint">{chain.text}</p>
@@ -135,7 +118,7 @@ function PeerExchangesTab({
   )
 }
 
-export function PeerInspector({ open, onClose, row, meshStatus, points }: PeerInspectorProps) {
+export function PeerInspector({ open, onClose, row, points }: PeerInspectorProps) {
   const [selectedPoint, setSelectedPoint] = useState<PeerTimelinePoint | null>(null)
 
   return (
@@ -164,15 +147,25 @@ export function PeerInspector({ open, onClose, row, meshStatus, points }: PeerIn
               </DialogPrimitive.Close>
             </SharedModalHeader>
             <SharedModalBody className="min-h-0 flex-1 overflow-y-auto p-0">
+              {/* u100 (12): four tabs share the drill's width and a long label
+                 wraps, so the strip never clips "Exchanges" off its end. */}
               <TabPanel<PeerInspectorTab>
                 ariaLabel="Peer inspector sections"
                 contentClassName="px-5 pb-5 pt-4"
                 defaultValue="overview"
+                listClassName="h-auto min-h-[56px] w-full"
+                stretchTabs
+                triggerClassName="h-auto min-h-[44px] whitespace-normal px-2 py-2 text-center leading-tight"
                 tabs={[
                   {
                     value: 'overview',
                     label: 'Overview',
-                    content: <PeerOverviewTab meshStatus={meshStatus} row={row} />
+                    content: <PeerOverviewTab row={row} />
+                  },
+                  {
+                    value: 'history',
+                    label: 'Their log, as shown to you',
+                    content: <PeerHistoryTab row={row} />
                   },
                   {
                     value: 'timeline',

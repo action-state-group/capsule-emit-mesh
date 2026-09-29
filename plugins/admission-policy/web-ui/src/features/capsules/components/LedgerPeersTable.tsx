@@ -276,17 +276,19 @@ export function LedgerPeersTable({
           >
             Save evidence file
           </Button>
-          <Button
-            className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
-            disabled={viewIsDefault}
-            onClick={resetView}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            <RotateCcw aria-hidden="true" className="size-3.5" />
-            Reset view
-          </Button>
+          {/* Only once there is a view to reset: never a greyed control. */}
+          {viewIsDefault ? null : (
+            <Button
+              className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
+              onClick={resetView}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              <RotateCcw aria-hidden="true" className="size-3.5" />
+              Reset view
+            </Button>
+          )}
         </div>
       </div>
 

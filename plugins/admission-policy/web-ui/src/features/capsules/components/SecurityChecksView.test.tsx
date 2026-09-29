@@ -190,6 +190,14 @@ describe('SecurityChecksView — L-M: recomputed-here vs from-sidecar are visual
     expect(sidecarCell?.getAttribute('data-source')).toBe('from-sidecar')
     expect(recomputedCell?.className).not.toBe(sidecarCell?.className)
   })
+
+  it('u108: says the source in words (no coloured bar), with the legend once under the header', () => {
+    render(<SecurityChecksView identity={RECOMPUTED_MATCH} localRecord={null} row={ledgerRow(paneCRow())} />)
+    const recomputedCell = cellWithDetail('recomputed here')
+    expect(recomputedCell?.className).not.toMatch(/border-l-2/)
+    expect(recomputedCell?.textContent).toContain('checked here')
+    expect(screen.getAllByText(/checked here = your browser redid this check just now/)).toHaveLength(1)
+  })
 })
 
 describe('SecurityChecksView — capture_coverage: sentence or not present, never a bare pass chip', () => {

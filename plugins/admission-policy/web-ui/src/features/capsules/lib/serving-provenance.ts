@@ -186,6 +186,13 @@ export function formatModelIdentity(modelRef: string | null): string | null {
   return `${family}/${shortDigest}`
 }
 
+/** The model a row names: the friendliest name either side's record gives,
+ *  ours first. `null` when neither record names one. */
+export function rowModelName(own: ServingProvenance | null, theirs: ServingProvenance | null): string | null {
+  const names = [own, theirs].filter((sp): sp is ServingProvenance => sp !== null).map(friendlyModelName)
+  return names.find((name) => !name.startsWith('local model')) ?? names[0] ?? null
+}
+
 /** A human model name derived from architecture + parameter_size (+ quant) --
  * NEVER the raw local-gguf/sha256 id or model_identity_hash. */
 export function friendlyModelName(sp: ServingProvenance): string {

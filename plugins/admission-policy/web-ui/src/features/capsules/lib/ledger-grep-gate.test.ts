@@ -31,18 +31,12 @@ const FORBIDDEN_EXACT = [
   'trust_level',
   'not yet witnessed',
   'unknown peer',
-  'peer identity not resolved yet',
+  'peer identity not resolved yet'
 ] as const
 
 // Words forbidden as standalone tokens in rendered prose. Using
 // `\b` boundaries to avoid matching inside compound identifiers.
-const FORBIDDEN_WORDS = [
-  'pending',
-  'proven',
-  'rung',
-  'score',
-  'rating',
-] as const
+const FORBIDDEN_WORDS = ['pending', 'proven', 'rung', 'score', 'rating'] as const
 
 // ---------------------------------------------------------------------------
 // Permitted phrases — exact substrings that are EXEMPT from the word check.
@@ -54,7 +48,7 @@ const FORBIDDEN_WORDS = [
 
 const PERMITTED_PHRASES = [
   // §0 design thesis — uses "score" to negate scoring; must stay verbatim.
-  'Nothing is a score.',
+  'Nothing is a score.'
 ] as const
 
 // ---------------------------------------------------------------------------
@@ -127,9 +121,7 @@ function extractProseStrings(src: string): string[] {
 const CAPSULES_SRC = join(import.meta.dirname ?? __dirname, '..')
 
 describe('ledger grep gate — retired vocabulary must not reach rendered UI', () => {
-  const tsxFiles = walkDir(CAPSULES_SRC, '.tsx').filter(
-    (f) => !f.endsWith('.test.tsx') && !f.endsWith('.spec.tsx')
-  )
+  const tsxFiles = walkDir(CAPSULES_SRC, '.tsx').filter((f) => !f.endsWith('.test.tsx') && !f.endsWith('.spec.tsx'))
 
   it('has .tsx source files to scan', () => {
     expect(tsxFiles.length).toBeGreaterThan(0)
@@ -155,8 +147,7 @@ describe('ledger grep gate — retired vocabulary must not reach rendered UI', (
         for (const term of FORBIDDEN_EXACT) {
           if (scanStr.includes(term)) {
             violations.push(
-              `${filePath.replace(CAPSULES_SRC, '').replace(/^\//, '')}: ` +
-              `"${term}" found in "${str.slice(0, 100)}"`
+              `${filePath.replace(CAPSULES_SRC, '').replace(/^\//, '')}: ` + `"${term}" found in "${str.slice(0, 100)}"`
             )
           }
         }
@@ -165,7 +156,7 @@ describe('ledger grep gate — retired vocabulary must not reach rendered UI', (
           if (wordBoundary.test(scanStr)) {
             violations.push(
               `${filePath.replace(CAPSULES_SRC, '').replace(/^\//, '')}: ` +
-              `word "${term}" found in "${str.slice(0, 100)}"`
+                `word "${term}" found in "${str.slice(0, 100)}"`
             )
           }
         }
@@ -173,9 +164,7 @@ describe('ledger grep gate — retired vocabulary must not reach rendered UI', (
     }
 
     if (violations.length > 0) {
-      throw new Error(
-        `Forbidden vocabulary found in user-visible prose strings:\n${violations.join('\n')}`
-      )
+      throw new Error(`Forbidden vocabulary found in user-visible prose strings:\n${violations.join('\n')}`)
     }
   })
 
