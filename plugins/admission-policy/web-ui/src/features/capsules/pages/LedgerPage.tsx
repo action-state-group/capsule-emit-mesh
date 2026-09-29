@@ -48,7 +48,7 @@ import {
   dayTallyLine
 } from '@/features/capsules/lib/exchange-day-groups'
 import { EVIDENCE_SOURCE_LABEL, evidenceSource } from '@/features/capsules/lib/evidence-source'
-import { heroStatusLine } from '@/features/capsules/lib/your-records'
+import { exchangeTextNotice, heroStatusLine } from '@/features/capsules/lib/your-records'
 import { useRecordsStatus } from '@/features/capsules/lib/use-your-records'
 import { CleanUpRecordsDialog } from '@/features/capsules/components/CleanUpRecordsDialog'
 import { YourRecordsDialog } from '@/features/capsules/components/YourRecordsDialog'
@@ -1455,6 +1455,8 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
         })
       : null
   const recordsStatus = useRecordsStatus({ sample: source === 'sample' })
+  // Said plainly, and for as long as it is true: this node keeps exchange text.
+  const exchangeText = exchangeTextNotice(recordsStatus)
   const [cleanUpOpen, setCleanUpOpen] = useState(false)
   const [recordsOpen, setRecordsOpen] = useState(false)
   const paneACard = paneAStatusQuery.data?.card ?? null
@@ -1501,10 +1503,19 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
           titleId="evidence-title"
           titleLevel="h1"
           annotation={
-            heroLine ? (
-              <p className="type-caption mt-1 text-fg-dim" data-testid="hero-status-line">
-                {heroLine}
-              </p>
+            heroLine || exchangeText ? (
+              <>
+                {heroLine ? (
+                  <p className="type-caption mt-1 text-fg-dim" data-testid="hero-status-line">
+                    {heroLine}
+                  </p>
+                ) : null}
+                {exchangeText ? (
+                  <p className="type-caption mt-1 text-foreground" data-testid="hero-exchange-text-notice" role="note">
+                    {exchangeText}
+                  </p>
+                ) : null}
+              </>
             ) : null
           }
           action={

@@ -8,7 +8,7 @@ import type {
   RecordsStatus,
   SharingSwitchKey
 } from '@/features/capsules/api/recordsClient'
-import { SAMPLE_DATA_UNAVAILABLE, WITNESS_OFF } from '@/features/capsules/lib/tooltip-copy'
+import { SAMPLE_DATA_UNAVAILABLE, WITNESS_OFF, exchangeTextKeptNotice } from '@/features/capsules/lib/tooltip-copy'
 
 function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`
@@ -241,3 +241,9 @@ export function lastCheckpointFact(coveredRecords: number | null, noLaterThan: s
   return noLaterThan ? `${covers}, made no later than ${noLaterThan}.` : `${covers}.`
 }
 
+/** The page's notice while this node keeps exchange text, or `null` when it
+ *  doesn't (or the plugin can't say). */
+export function exchangeTextNotice(status: RecordsStatus | null | undefined): string | null {
+  const text = status?.exchange_text
+  return text?.kept ? exchangeTextKeptNotice(text.retention_days) : null
+}

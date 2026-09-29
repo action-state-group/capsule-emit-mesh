@@ -5,6 +5,7 @@ import {
   NEW_LOG_PENDING,
   cleanupBlockedReason,
   cleanupResultMessage,
+  exchangeTextNotice,
   heroStatusLine,
   lastCheckpointFact,
   nothingIsShared,
@@ -161,5 +162,30 @@ describe('witness URL on the page', () => {
     const row = sharingRows({ ...s, sharing: { ...s.sharing, witness } }).find((r) => r.key === 'witness')
     expect(row?.whatLeaves).toBe('Your checkpoints, never records or text, go to https://witness.example:8443/log/v1.')
     expect(row?.whatLeaves).not.toMatch(/user|secret|token|frag/)
+  })
+})
+
+describe('exchangeTextNotice', () => {
+  const base = {
+    records_path: '/d',
+    record_count: 1,
+    head: null,
+    log_id: 'l',
+    stored_text_count: 0,
+    new_history_pending: null,
+    sharing: {} as never
+  }
+
+  it('says plainly that this node keeps exchange text, where, for how long, and that nothing is shared', () => {
+    expect(exchangeTextNotice({ ...base, exchange_text: { kept: true, retention_days: 30 } })).toBe(
+      'This node keeps the text of exchanges on its own disk (deleted after 30 days). Nothing is shared.'
+    )
+    expect(exchangeTextNotice({ ...base, exchange_text: { kept: true, retention_days: 1 } })).toContain('after 1 day)')
+  })
+
+  it('says nothing when text is not kept, or the plugin cannot say', () => {
+    expect(exchangeTextNotice({ ...base, exchange_text: { kept: false, retention_days: 30 } })).toBeNull()
+    expect(exchangeTextNotice(base)).toBeNull()
+    expect(exchangeTextNotice(null)).toBeNull()
   })
 })

@@ -14,7 +14,7 @@
 //      NOTHING on a null card rather than a "no data" line
 //   6. The exceptions-first line above the table, and the Ledger badge's
 //      "This node's copy" rename
-import { render, screen, within } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -709,6 +709,24 @@ describe('LedgerPageContent', () => {
     expect(await screen.findByTestId('exchanges-headline')).toHaveTextContent(/^1 exchange/)
     expect(screen.queryByText(/sealed by you/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Nothing needs your attention/)).not.toBeInTheDocument()
+  })
+
+  it('says plainly, under the hero, when this node keeps exchange text; says nothing when it does not', async () => {
+    const { fetchRecordsStatus } = await import('@/features/capsules/api/recordsClient')
+    const status = await vi.mocked(fetchRecordsStatus)()
+    vi.mocked(fetchRecordsStatus).mockResolvedValue({ ...status, exchange_text: { kept: true, retention_days: 30 } })
+    try {
+      render(<LedgerPageContent />, { wrapper: makeWrapper() })
+      expect(await screen.findByTestId('hero-exchange-text-notice')).toHaveTextContent(
+        'This node keeps the text of exchanges on its own disk (deleted after 30 days). Nothing is shared.'
+      )
+    } finally {
+      vi.mocked(fetchRecordsStatus).mockResolvedValue(status)
+    }
+    cleanup()
+    render(<LedgerPageContent />, { wrapper: makeWrapper() })
+    await screen.findByTestId('hero-your-records')
+    expect(screen.queryByTestId('hero-exchange-text-notice')).not.toBeInTheDocument()
   })
 
   it('the hero never shows the retired "This node\'s copy" or "Local only" labels', () => {

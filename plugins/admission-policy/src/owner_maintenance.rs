@@ -272,6 +272,33 @@ fn stored_exchange_text_ids(ledger_dir: &Path) -> Vec<String> {
     ids
 }
 
+/// Remove half-written per-exchange text (`.<exchange_id>.json.tmp`, left by
+/// an interrupted write). Returns how many were removed.
+fn remove_leftover_exchange_texts(ledger_dir: &Path) -> std::io::Result<usize> {
+    let dir = ledger_dir.join("disclosures").join(BY_EXCHANGE_DIR);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Ok(0);
+    };
+    let mut removed = 0;
+    for entry in entries.filter_map(Result::ok) {
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let leftover = name
+            .strip_prefix('.')
+            .and_then(|rest| rest.strip_suffix(".json.tmp"))
+            .is_some_and(is_exchange_id);
+        if leftover {
+            fs::remove_file(entry.path())?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 fn stored_text_count(ledger_dir: &Path) -> usize {
     stored_text_ids(ledger_dir).len() + stored_exchange_text_ids(ledger_dir).len()
 }
@@ -317,6 +344,12 @@ impl Maintenance {
                 "closing_record_id": p.closing_record_id,
             })),
             "sharing": sharing_status(),
+            // Whether this plugin keeps exchange text it is handed
+            // (`exchange_text`), and for how long: the page says so.
+            "exchange_text": {
+                "kept": crate::exchange_text::enabled(),
+                "retention_days": crate::exchange_text::configured_retention_days(),
+            },
         })
     }
 
@@ -325,6 +358,12 @@ impl Maintenance {
     /// of the exact id list). Nothing to delete seals nothing.
     pub fn delete_stored_text(&self) -> PluginResult<Value> {
         let _one = self.one_at_a_time();
+        // Half-written copies go too, whatever else there is: they hold text.
+        let leftovers = remove_leftover_exchange_texts(self.ledger_dir())
+            .map_err(|e| internal(format!("could not delete leftover stored text: {e}")))?;
+        if leftovers > 0 {
+            tracing::info!(leftovers, "removed half-written stored text");
+        }
         let ids = stored_text_ids(self.ledger_dir());
         let exchange_ids = stored_exchange_text_ids(self.ledger_dir());
         if ids.is_empty() && exchange_ids.is_empty() {
@@ -603,6 +642,47 @@ mod tests {
         assert_eq!(block(&sealed)["exchange_texts_deleted"], json!(2));
         assert_eq!(block(&sealed)["not_in_this_history"], json!(0));
         assert!(!sealed.to_string().contains("ex-1"), "exchange ids are counted, never listed");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A half-written copy (`.<id>.json.tmp`) holds text too: delete takes it,
+    /// even when there is nothing else to delete, and leaves other files be.
+    #[test]
+    fn delete_stored_text_also_removes_half_written_copies() {
+        let dir = temp_dir("delete-leftovers");
+        let (m, _ids) = maintenance(&dir, 1);
+        let d = dir.join("ledger/disclosures/by-exchange");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join(".ex-1.json.tmp"), br#"{"response_text":"secret"}"#).unwrap();
+        fs::write(d.join(".not an id.json.tmp"), b"not ours").unwrap();
+        fs::write(d.join("README"), b"not a stored text").unwrap();
+
+        let out = m.delete_stored_text().unwrap();
+        assert_eq!(out, json!({ "deleted_count": 0, "sealed": null }));
+        assert!(!d.join(".ex-1.json.tmp").exists());
+        assert!(d.join(".not an id.json.tmp").exists() && d.join("README").exists());
+
+        // Beside a real stored text too.
+        fs::write(d.join(".ex-2.json.tmp"), b"{}").unwrap();
+        fs::write(d.join("ex-3.json"), br#"{"response_text":"secret"}"#).unwrap();
+        assert_eq!(m.delete_stored_text().unwrap()["deleted_count"], json!(1));
+        assert!(!d.join(".ex-2.json.tmp").exists() && !d.join("ex-3.json").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn status_says_whether_exchange_text_is_kept_and_for_how_long() {
+        let dir = temp_dir("status-exchange-text");
+        let (m, _ids) = maintenance(&dir, 1);
+        let status = m.status();
+        assert_eq!(
+            status["exchange_text"]["kept"],
+            json!(crate::exchange_text::enabled())
+        );
+        assert_eq!(
+            status["exchange_text"]["retention_days"],
+            json!(crate::exchange_text::configured_retention_days())
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

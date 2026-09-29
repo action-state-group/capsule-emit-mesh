@@ -22,6 +22,9 @@ export type RecordsStatus = {
   stored_text_count: number
   new_history_pending: { requested_at: string; closing_record_id: string } | null
   sharing: Record<SharingSwitchKey, SharingSwitchState>
+  /** Whether this plugin keeps the exchange text it is handed, and for how
+   *  long. Absent from a plugin that predates it. */
+  exchange_text?: { kept: boolean; retention_days: number }
 }
 
 export type SealedCleanup = { capsule_id: string; record_number: number; kind: string }

@@ -415,3 +415,10 @@ export const CLOSE_CARD_COUNTS_TOOLTIP =
 export const CHECK_SOURCE_WORDS = { here: 'checked here', node: 'node says' } as const
 export const CHECK_SOURCE_LEGEND =
   'checked here = your browser redid this check just now; node says = taken from this node without re-checking.'
+
+/** Said on the page, always, while this node keeps exchange text: where it
+ *  is, how long, and that it is not shared. */
+export function exchangeTextKeptNotice(days: number): string {
+  const unit = days === 1 ? 'day' : 'days'
+  return `This node keeps the text of exchanges on its own disk (deleted after ${days} ${unit}). Nothing is shared.`
+}
