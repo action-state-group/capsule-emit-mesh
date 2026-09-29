@@ -19,7 +19,6 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LedgerPageContent } from '@/features/capsules/pages/LedgerPage'
-import { fetchDoorStatus } from '@/features/capsules/api/sidecarClient'
 import { setPluginHost } from '@/plugin-host/host'
 import { createStandaloneHost } from '@/plugin-host/standalone-host'
 import { CHAIN_BAR_INFO, INTEGRITY_TILE_INFO } from '@/features/capsules/lib/integrity-view'
@@ -31,7 +30,6 @@ import { HERO_DESCRIPTION, TRUST_MAP_URL } from '@/features/capsules/lib/tooltip
 // ---------------------------------------------------------------------------
 
 vi.mock('@/features/capsules/api/sidecarClient', () => ({
-  fetchDoorStatus: vi.fn().mockResolvedValue({ state: 'ready', url: 'http://127.0.0.1:8091' }),
   fetchPaneA: vi.fn().mockResolvedValue({
     rows: [],
     operator: null,
@@ -143,14 +141,6 @@ describe('LedgerPageContent', () => {
     expect(peersTab).toHaveAttribute('data-state', 'active')
     expect(screen.getByRole('tab', { name: /exchanges/i })).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /integrity/i })).toBeInTheDocument()
-  })
-
-  it('says above everything when the evidence door is not running, and nothing when it is ready', async () => {
-    vi.mocked(fetchDoorStatus).mockResolvedValueOnce({ state: 'not_running', url: 'http://127.0.0.1:8091' })
-    render(<LedgerPageContent />, { wrapper: makeWrapper() })
-    expect(
-      await screen.findByText(/Confirmation unavailable: the evidence door isn't running at http:\/\/127\.0\.0\.1:8091/)
-    ).toBeInTheDocument()
   })
 
   it('the hero says in one line how many records, how many the other side confirmed, and disagreements', async () => {
@@ -1723,7 +1713,7 @@ describe('LedgerPageContent — real twin bracket + Twins-only filter', () => {
       screen.getByText('This comparison ran automatically — 1 in 50 exchanges is sent to a second peer.')
     ).toBeInTheDocument()
     // Never a computed verdict.
-    expect(screen.getByText('no verdict')).toBeInTheDocument()
+    expect(screen.getByText('not adjudicated')).toBeInTheDocument()
   })
 
   it('a lone row carrying a bracket id whose twin is absent from the payload renders as an ordinary row, never a half-bracket', async () => {

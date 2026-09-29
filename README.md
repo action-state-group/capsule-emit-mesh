@@ -88,8 +88,7 @@ On an unmodified mesh-llm the plugin installs, each node seals its own record
 of an exchange, and the Evidence page works. An exchange confirmed by the other
 side does not work there yet: it needs two fields mesh-llm does not emit yet
 (`requested_by_node_id`, and `served_by_node_id` with the request/response
-digests), plus, on every node, the evidence door (shipped in the package under
-`door/`, started with `door/run-door.sh`) and each peer's public key.
+digests), plus, on every node, each peer's public key.
 INSTALL.md spells out both. The Python sidecar path below (**Path 2**) has no native binary and
 stays a `pip install` regardless of platform.
 

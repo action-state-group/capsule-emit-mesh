@@ -1,7 +1,6 @@
 //! Pure admission-policy decision logic, independent of the wire protocol.
 //!
-//! Mirrors the private spike's `exemplar/admission_policy.py`-derived behavior:
-//! deny a chat-completions request whose `model` field starts with the blocked
+//! Deny a chat-completions request whose `model` field starts with the blocked
 //! prefix; allow everything else; fail safe (deny) on any body that cannot be
 //! parsed, rather than silently passing it through.
 

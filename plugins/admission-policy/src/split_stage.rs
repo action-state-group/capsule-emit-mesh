@@ -8,7 +8,7 @@
 //! **Coordinator side.** The stage-0 event names the split key, the
 //! assignments and the `openai.exchange.v1` `exchange_id` of the same
 //! request. [`SplitCollector`] holds that exchange's terminal envelope instead
-//! of sealing it at once, gathers the stage records the door accepts, and
+//! of sealing it at once, gathers the stage records the receiver accepts, and
 //! releases the split when every remote stage has arrived or the deadline
 //! passes. [`plan_split`] then turns what arrived into the stage-exchange
 //! records, the receipt and the stage records to carry to the requester. A
@@ -299,7 +299,7 @@ impl<E> SplitCollector<E> {
         }
     }
 
-    /// A stage record the door accepted, pushed by mesh peer `sender`. Once
+    /// A stage record the receiver accepted, pushed by mesh peer `sender`. Once
     /// stage 0 has named the topology, only the node assigned that stage may
     /// supply its record.
     pub fn on_stage_record(&self, record: &Value, sender: &str, now_ms: u64) -> Arrival {

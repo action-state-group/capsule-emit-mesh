@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Plugin release — builds the admission-policy-plugin binary (statically
 # linking capsule-producer) for each target mesh-llm's plugin installer
-# resolves, packages it with its web UI bundle and its evidence door, and
+# resolves, packages it with its web UI bundle, and
 # uploads a per-target archive, one SHA256SUMS file, and build provenance
 # attestations to the GitHub Release.
 #
@@ -16,10 +16,9 @@
 #   - inside the root: plugin.toml, the executable renamed to <plugin-name>,
 #     plugin-manifest.json (printed by the built binary itself and required to
 #     equal the reviewed plugin.package.json), bundle/ (the Evidence page, built
-#     from web-ui/), door/ (evidence_server.py, the repository modules it
-#     imports, a hash-pinned requirements.lock and run-door.sh), README.md
-#     (INSTALL.md), DEMO.md, LICENSE, NOTICE. Anything else fails the build
-#     (never keys, ledgers, or demo data).
+#     from web-ui/), README.md (INSTALL.md), DEMO.md, LICENSE, NOTICE.
+#     Anything else fails the build (never keys, ledgers, demo data, or any
+#     Python: the plugin is one executable).
 # `<plugin-name>` is `capsule-emit-mesh` throughout (this repo's name, the
 # GitHub owner/repo installers key off, and PLUGIN_ID in src/main.rs).
 #

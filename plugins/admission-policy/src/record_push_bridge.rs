@@ -8,8 +8,8 @@
 //! [`crate::record_push_receive`], which verifies it (the sender's announced
 //! key, the signature, the claims, a bundle's proof and checkpoint) and holds
 //! it. This module carries the bytes, then seals the citing records for what
-//! was received. A referee's verdict delivered over the same channel still
-//! goes to the evidence door until the referee moves into the plugin.
+//! was received. A referee's verdict delivered over the same channel is
+//! refused, signed: this node has no referee yet.
 //!
 //! **Wire shape.** The body is the pushed capsule's own JSON bytes, opaque at
 //! the transport level. On the stream, never inside the body, one line comes
@@ -131,10 +131,6 @@ pub const RECORD_PUSH_CHANNEL: &str = "record-push/1";
 /// signal `main.rs`'s single `on_open_stream` handler dispatches on, since
 /// `OpenStreamRequest` carries no channel name (see module doc).
 pub const RECORD_PUSH_CONTENT_TYPE: &str = "application/x-admission-policy-record-push+json";
-
-fn responder_http_timeout() -> Duration {
-    env_millis("ADMISSION_POLICY_EVIDENCE_HTTP_TIMEOUT_MS", 10_000)
-}
 
 fn requester_idle_timeout_ms() -> u64 {
     env_millis("ADMISSION_POLICY_MESH_REQUEST_TIMEOUT_MS", 8_000).as_millis() as u64
@@ -283,28 +279,23 @@ async fn bridge_inbound_record_push(
     let capsule_bytes = capsule_bytes.to_vec();
 
     // A pushed record is received here, in-process (`record_push_receive`).
-    // A referee's verdict delivered over the same stream still goes to the
-    // evidence door until the referee moves into the plugin.
-    let (response_bytes, reply) = if is_verdict_delivery(&capsule_bytes) {
-        let client = reqwest::Client::builder()
-            .timeout(responder_http_timeout())
-            .build()?;
-        // Authenticated both ways (`door_auth`): a reply without the door's
-        // proof is never acked or cited.
-        let reply = crate::door_auth::call(
-            &client,
-            reqwest::Method::POST,
-            "/evidence/record-push",
-            &[("Content-Type", "application/json"), ("X-Mesh-Requester-Id", &sender_peer_id)],
-            Some(capsule_bytes.clone()),
-        )
-        .await?;
-        let parsed = serde_json::from_slice::<serde_json::Value>(&reply.body).ok();
-        (reply.body.to_vec(), parsed)
-    } else {
-        let reply = receive_pushed_record(&capsules, &sender_peer_id, &capsule_bytes).await?;
-        (serde_json::to_vec(&reply)?, Some(reply))
-    };
+    // A referee's verdict delivered over the same stream is refused, signed:
+    // this node has no referee yet, so it neither checks nor holds verdicts.
+    // Never acknowledged, never cited.
+    if is_verdict_delivery(&capsule_bytes) {
+        let refusal = crate::record_push_receive::refuse(
+            capsules.signing_key(),
+            &capsule_bytes,
+            crate::record_push_receive::REASON_ADJUDICATION_UNAVAILABLE,
+            &capsule_producer::timestamp::utc_now_iso8601(),
+        );
+        tracing::info!(received_from = %sender_peer_id, "refused a delivered verdict: this node has no referee yet");
+        write_half.write_all(&serde_json::to_vec(&refusal)?).await?;
+        write_half.shutdown().await?;
+        return Ok(());
+    }
+    let reply = receive_pushed_record(&capsules, &sender_peer_id, &capsule_bytes).await?;
+    let response_bytes = serde_json::to_vec(&reply)?;
 
     // SEAL BEFORE ACK (the ack-before-seal window fix): the receiver is the
     // ONE authority on whether the half verified + stored, and its refusal
@@ -315,33 +306,20 @@ async fn bridge_inbound_record_push(
     // success bytes: the peer sees a refusal and retries, instead of
     // trusting an ack for a half our chain never cited. Awaited inline (no
     // detached task), so a failure is handled before any reply exists.
-    let reply_bytes = match reply {
-        Some(reply) if accepted(&reply) && is_verdict_delivery(&capsule_bytes) => {
-            // A referee's verdict delivered here: this node's own
-            // `adjudication_received` record, sealed before the ack.
-            match crate::adjudication_records::seal_received(&capsules, &reply).await {
-                Ok(()) => response_bytes.to_vec(),
-                Err(error) => {
-                    tracing::warn!(%error, received_from = %sender_peer_id, "door held a delivered verdict but its record seal failed -- refusing instead of acking");
-                    seal_failed_refusal()
-                }
+    let reply_bytes = if accepted(&reply) {
+        match seal_citing_records_for_push(&capsules, &sender_peer_id, &capsule_bytes, &reply).await {
+            Ok(()) => {
+                collect_stage_record(&splits, &sender_peer_id, &capsule_bytes);
+                response_bytes
+            }
+            Err(error) => {
+                tracing::warn!(%error, received_from = %sender_peer_id, "the pushed half was stored but a citing-record seal failed -- refusing instead of acking");
+                seal_failed_refusal()
             }
         }
-        Some(reply) if accepted(&reply) => {
-            match seal_citing_records_for_push(&capsules, &sender_peer_id, &capsule_bytes, &reply).await {
-                Ok(()) => {
-                    collect_stage_record(&splits, &sender_peer_id, &capsule_bytes);
-                    response_bytes.to_vec()
-                }
-                Err(error) => {
-                    tracing::warn!(%error, received_from = %sender_peer_id, "the pushed half was stored but a citing-record seal failed -- refusing instead of acking");
-                    seal_failed_refusal()
-                }
-            }
-        }
-        // A refusal (or an unparseable door reply): sent as it is;
-        // a refusal never chains anything.
-        _ => response_bytes.to_vec(),
+    } else {
+        // A signed refusal: sent as it is; a refusal never chains anything.
+        response_bytes
     };
     write_half.write_all(&reply_bytes).await?;
     write_half.shutdown().await?;

@@ -1,27 +1,22 @@
 //! The plugin's own checkpoint cadence: a tokio background task that runs
-//! `capsule_producer::checkpoint::CheckpointState` over this node's ledger,
-//! replacing `checkpoint_daemon.py` once a node cuts over.
+//! `capsule_producer::checkpoint::CheckpointState` over this node's ledger.
 //!
 //! **On by default, local-only (superseding the cadence task's
 //! off-by-default launch; `docs/DESIGN-fold-sidecar-into-plugin.md`).** The cadence task now runs
 //! unless the operator opts OUT by setting [`ENV_ENABLE`] to `"off"` --
 //! "on by default" is local checkpointing only: [`ENV_WITNESS_URLS`] stays
 //! empty/unset by default, so no network call ever happens unless the
-//! operator also sets a witness URL. `checkpoint_daemon.py` keeps
-//! checkpointing a node's ledger on the same files until the operator opts
-//! OUT of the in-process cadence. The two must NEVER run against the same
-//! `ledger_dir` at once -- both would append lines to the same
-//! `checkpoints.jsonl` and race each other's chain. This is an operator
-//! choice, not something this task can detect and refuse safely (a lock
-//! file would only catch a same-host double-run, not a daemon started on a
-//! different box pointed at a shared mount) -- see the Path 1 README note
-//! this task adds.
+//! operator also sets a witness URL. A standalone checkpointing process
+//! must NEVER run against the same `ledger_dir` as this cadence: both would
+//! append lines to the same `checkpoints.jsonl` and race each other's chain.
+//! That is an operator choice this module cannot detect and refuse safely (a
+//! lock file would catch a same-host double run, not a process on another
+//! box pointed at a shared mount), so it is documented rather than enforced.
 //!
 //! Age clock, only-if-new-activity, shutdown flush, and best-effort witness
 //! retry are `CheckpointState`'s policy, not this module's -- this module
 //! is purely the tokio scheduling shell: an interval loop plus a shutdown
-//! signal, exactly the shape `checkpoint_daemon.py`'s own `run_daemon`
-//! background loop has.
+//! signal.
 //!
 //! **Checkpoint at push.** The same
 //! `CheckpointState` is shared (one lock, one writer of `checkpoints.jsonl`)
@@ -47,23 +42,21 @@ use std::time::{Duration, Instant};
 /// it share the next cut.
 pub const PUSH_COALESCE_WINDOW: Duration = Duration::from_millis(100);
 
-/// On by default: the plugin runs its OWN checkpoint cadence in place of
-/// `checkpoint_daemon.py` unless the operator sets
-/// `ADMISSION_POLICY_CHECKPOINT_CADENCE=off` to opt out (e.g. because
-/// `checkpoint_daemon.py` is already checkpointing this `ledger_dir` --
-/// see the module doc's daemon-race note). Any other value, including
+/// On by default: the plugin runs its OWN checkpoint cadence unless the
+/// operator sets `ADMISSION_POLICY_CHECKPOINT_CADENCE=off` to opt out (e.g.
+/// because a standalone process is already checkpointing this `ledger_dir`
+/// -- see the module doc's race note). Any other value, including
 /// unset, leaves it on.
 const ENV_ENABLE: &str = "ADMISSION_POLICY_CHECKPOINT_CADENCE";
 /// Age-clock override, seconds. Defaults to `CheckpointCadenceConfig`'s own
-/// 300s mesh default (`checkpoint_daemon.py`'s `DEFAULT_INTERVAL_SECONDS`).
+/// 300s mesh default.
 const ENV_INTERVAL_SECONDS: &str = "ADMISSION_POLICY_CHECKPOINT_CADENCE_SECONDS";
 /// Entry-count cadence override. Defaults to 100 (upstream `capsule_emit`'s
 /// own default).
 const ENV_CADENCE_ENTRIES: &str = "ADMISSION_POLICY_CHECKPOINT_CADENCE_ENTRIES";
 /// Comma-separated witness URLs to register checkpoints with. Anchoring is
 /// OPT-IN, always (this repo's posture) -- empty/unset means
-/// self-checkpointed only, no network, matching `checkpoint_daemon.py`'s
-/// `--ts-url`/`--witness` flags.
+/// self-checkpointed only, no network.
 const ENV_WITNESS_URLS: &str = "ADMISSION_POLICY_CHECKPOINT_WITNESS_URLS";
 /// `checkpoint_pad_bucket`: pad every checkpoint's leaf count up to a
 /// multiple of this (Evidence Layer -00 §12.1). Defaults to
@@ -243,8 +236,7 @@ impl PaddingSink for LedgerPadder {
 ///
 /// Startup catch-up (`reconnect`) runs before the interval loop starts, one
 /// interval tick runs `tick()`, and a shutdown signal triggers
-/// `checkpoint_on_shutdown()` -- the same three-phase shape
-/// `checkpoint_daemon.py`'s `run_daemon` has.
+/// `checkpoint_on_shutdown()`.
 ///
 /// `capsules` is the ledger's one writer: every checkpoint is padded through
 /// it to `checkpoint_pad_bucket` before it is cut (see [`LedgerPadder`]).
@@ -345,9 +337,8 @@ fn report_checkpoint(
         Ok(None) => None,
         Err(err) => {
             // Never let a checkpoint-layer failure disturb the serving
-            // path or crash the plugin -- best-effort observability, same
-            // discipline `capsule_emit.witness`/`checkpoint_daemon.py`
-            // hold for the witness leg (see checkpoint.rs's module doc).
+            // path or crash the plugin -- best-effort observability, as
+            // for the witness leg (see checkpoint.rs's module doc).
             tracing::warn!(%err, %phase, "checkpoint cadence step failed");
             None
         }

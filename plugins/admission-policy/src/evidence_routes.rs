@@ -30,11 +30,12 @@ use crate::evidence_panes::{
     attach_asked_of_you, build_pane_json, read_capsule_records, read_received_log,
 };
 
-/// The directory the evidence door writes `received_log.jsonl` into (its
-/// `--received-log-dir`): the drill's "Asked of you".
+/// The directory this node's log of requests made of it
+/// (`received_log.jsonl`, written by `received_log`) lives in: the drill's
+/// "Asked of you".
 pub const ENV_RECEIVED_LOG_DIR: &str = "ADMISSION_POLICY_RECEIVED_LOG_DIR";
 /// Where that log is read from when [`ENV_RECEIVED_LOG_DIR`] is unset:
-/// `<data dir>/received-log`. Point the door's `--received-log-dir` here.
+/// `<data dir>/received-log`.
 pub const DEFAULT_RECEIVED_LOG_SUBDIR: &str = "received-log";
 
 /// A route that takes no arguments. Unknown members (the host may add query
@@ -55,14 +56,15 @@ pub struct PeerKeyArgs {
 }
 
 /// Peer id -> the key that peer signs with, as a JSON object, set by the
-/// operator. The evidence door checks pushed records against the same map.
+/// operator. The record-push receiver checks pushed records against the same
+/// map.
 pub const ENV_PEER_KEYS: &str = "ADMISSION_POLICY_PEER_KEYS";
 
 /// The key `peer` is announced with in `registry` (the JSON object in
 /// [`ENV_PEER_KEYS`]), exactly as the operator wrote it. `None` when the map
 /// is unset, empty, not JSON, not a JSON object, or has no non-empty string
-/// for `peer`: never a guess. The same rule as the door's
-/// `peer_keys.announced_key_for`; replace with the plugin's shared
+/// for `peer`: never a guess. The same rule as the record-push receiver's;
+/// replace with the plugin's shared
 /// `peer_keys::announced_key_in` once that lands, so the rule has one copy.
 pub fn announced_key_for(registry: Option<&str>, peer: &str) -> Option<String> {
     let registry: Value = serde_json::from_str(registry.filter(|r| !r.is_empty())?).ok()?;
@@ -97,7 +99,7 @@ pub struct PaneCArgs {
 pub struct EvidenceSource {
     pub ledger_dir: PathBuf,
     pub node_pub_key_pem: Option<String>,
-    /// Where the evidence door logs requests made of this node, if anywhere.
+    /// Where this node logs requests made of it, if anywhere.
     pub received_log_dir: Option<PathBuf>,
 }
 
@@ -174,8 +176,8 @@ pub fn pane_json(
         .ok_or_else(|| PluginError::invalid_params(format!("no pane {pane:?}")))
 }
 
-/// [`pane_json`] from `source`: Pane B also carries the door's log of
-/// requests made of this node, when it keeps one.
+/// [`pane_json`] from `source`: Pane B also carries this node's log of
+/// requests made of it, when it keeps one.
 pub fn source_pane_json(
     source: &EvidenceSource,
     pane: &str,
@@ -290,22 +292,6 @@ pub fn with_routes(
                 }),
         );
     }
-
-    builder = builder.http_item(
-        http::get("/door")
-            .binding_id("evidence_door_status")
-            .description(
-                "Whether this node's evidence door is running and holds this install's token: \
-                 ready, not_running, auth_failed or unknown, with its address.",
-            )
-            .input::<NoArgs>()
-            .handle(move |_args, _context| {
-                Box::pin(async move {
-                    serde_json::to_value(crate::door_auth::status().await)
-                        .map_err(|e| PluginError::internal(e.to_string()))
-                })
-            }),
-    );
 
     builder = builder.http_item(
         http::get("/peer-key")
@@ -492,7 +478,6 @@ mod tests {
         assert_eq!(
             routes,
             [
-                "/door",
                 "/ledger",
                 "/ledger/disclosure",
                 "/ledger/signed-statement",
@@ -519,7 +504,7 @@ mod tests {
     fn a_peer_key_is_the_announced_one_or_null_never_a_guess() {
         let peer = "ab".repeat(32);
         let registry = format!("{{\"{peer}\": \"CDef\"}}");
-        // As written, for exactly that id (the door's rule).
+        // As written, for exactly that id (the receiver's rule).
         assert_eq!(
             peer_key_json(Some(&registry), &json!(peer)).unwrap(),
             json!({"announced_key_id": "CDef"})

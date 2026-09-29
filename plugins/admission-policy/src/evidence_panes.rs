@@ -3,7 +3,7 @@
 //! `web-ui/DATA-ROUTES.md`).
 //!
 //! Reads `<ledger_dir>/capsules.jsonl` (this node's records, padding left
-//! out), `checkpoints.jsonl` (the Integrity card) and the record-push door's
+//! out), `checkpoints.jsonl` (the Integrity card) and the record-push receiver's
 //! held-artifact store `received-capsules.jsonl` (the other side's records),
 //! the same on-disk shapes the Python reference panes read. No network call.
 //!
@@ -14,9 +14,8 @@
 //! `accountability_pane_routes.build_pane_{a,b,c}_json` byte-for-byte on a
 //! plugin-shaped fixture (no checkpoint, no peer-fetch, no serving-
 //! provenance block): capsule id/timestamp, `model_claimed`'s honest
-//! last-resort default (`friendly_model_name`'s final fallback,
-//! `capsule_mesh_viewer.py:365`, always `"local model"` when no serving-
-//! provenance data has landed yet), the Pane-A rungs' structural
+//! last-resort default (always `"local model"` when no serving-provenance
+//! data has landed yet), the Pane-A rungs' structural
 //! defaults (`freshness`/`runtime_binding`/`tee_citation`/
 //! `hardware_inventory` = `"absent"`, `log_integrity` =
 //! `"present-unverified"` -- `verify_ok is None` reads as "present, not
@@ -24,14 +23,11 @@
 //! grouping (`exchange_key_for`), and role labelling (`label_role`,
 //! `source_log = "plugin"`, whose own default-by-source table already
 //! says a plugin-written record is always this node acting as the
-//! serving PROVIDER -- `capsule_mesh_view.py:81-83`).
+//! serving PROVIDER).
 //!
 //! ** retirement, native reader only:**
 //! Pane A's `cross_party` cell and Pane B's per-row cross-party cell used
-//! to carry the `rung`/`unilateral_fallback` ladder word (still live in
-//! `capsule_accountability_tab.py`/`peer_accountability_tab.py` upstream,
-//! matching `f0e3af6`'s note that Pane A/B were explicitly out of that
-//! task's scope). This demo runs native/sidecar-DOWN, so THIS reader is
+//! to carry the `rung`/`unilateral_fallback` ladder word. This demo runs native/sidecar-DOWN, so THIS reader is
 //! where a stranger reading the raw pane JSON would actually see the
 //! retired word -- both cells now emit the same five-state property-map
 //! shape (`state`/`text`, `state` one of `PASS`/`FAIL`/`NOT_PRESENT`/
@@ -42,13 +38,10 @@
 //! documented non-parity divergence from the Python reference (which
 //! hasn't migrated Pane A/B yet) -- not a byte-for-byte port gap.
 //!
-//! Two tranches stay `NOT_CHECKED`/absent/null on purpose, matching gaps
-//! `accountability_pane_routes.py`'s own docstring already names, not new
-//! ones this cut invented:
+//! Two tranches stay `NOT_CHECKED`/absent/null on purpose:
 //!
 //! 1. **Peer-fetch cells** (Pane B's `history`/`served`/`verdicts`) --
-//!    deferred with the peer-fetch work
-//!    (`accountability_pane_routes.py:17-20`). Their real payloads carry
+//!    deferred with the peer-fetch work. Their real payloads carry
 //!    long operator-facing prose and `mine_for_reference` sub-structures
 //!    that exist only to explain an already-deferred gap; duplicating that
 //!    prose here would be two copies of the same UI copy to keep in sync,
@@ -101,8 +94,7 @@ const STATE_NOT_PRESENT: &str = "NOT_PRESENT";
 /// plugin-written record yet" -- the same fact the old `unilateral_fallback`
 /// rung value encoded, worded in the current vocabulary.
 const NO_COUNTERPARTY_EVIDENCE_TEXT: &str = "no counterparty evidence for this record";
-/// `capsule_mesh_viewer.friendly_model_name`'s unconditional last-resort
-/// fallback (`capsule_mesh_viewer.py:365`) when no serving-provenance
+/// The unconditional last-resort model name when no serving-provenance
 /// architecture/parameter_size/ref data is on the record -- true of every
 /// plugin-written record until the serving-provenance protocol PR lands.
 const MODEL_CLAIMED_FALLBACK: &str = "local model";
@@ -175,10 +167,9 @@ fn records_among_first_leaves(ledger_dir: &Path, leaves: u64) -> u64 {
 /// At most this many of the newest inbound-request log lines reach a pane.
 const MAX_ASKED_OF_YOU_ENTRIES: usize = 500;
 
-/// The evidence door's own log of requests made of this node
-/// (`<dir>/received_log.jsonl`, written by `evidence_server.py` when it runs
-/// with `--received-log-dir`): one line per request it answered, refused or
-/// received. Newest [`MAX_ASKED_OF_YOU_ENTRIES`] lines, oldest first; a line
+/// This node's log of requests made of it (`<dir>/received_log.jsonl`,
+/// written by the plugin's `received_log`): one line per request it
+/// answered, refused or received. Newest [`MAX_ASKED_OF_YOU_ENTRIES`] lines, oldest first; a line
 /// that is not an object with string `ts`, `path` and `status` is dropped.
 pub(crate) fn read_received_log(dir: &Path) -> Vec<Value> {
     let Ok(text) = std::fs::read_to_string(dir.join("received_log.jsonl")) else {
@@ -249,8 +240,7 @@ fn mmr_leaf_count(mmr_size: u64) -> Option<u64> {
 
 /// Reads `<ledger_dir>/checkpoints.jsonl` (co-located with `capsules.jsonl`,
 /// written by the plugin's checkpoint cadence via `cll::store` -- one JSON
-/// object per line, the same on-disk shape `accountability_pane_routes.py`
-/// reads for its own card face) and builds Pane A's `card`.
+/// object per line) and builds Pane A's `card`.
 ///
 /// The count is the number of real checkpoint lines on disk: 0 when the file
 /// is absent or empty -- which `integrity-view.ts` renders as "no checkpoint
@@ -335,7 +325,7 @@ fn response_digest(record: &Value) -> Option<&str> {
 }
 
 // NOTE ON `received-provenance.jsonl`:
-// the record-push door still writes it (one line per verified received push:
+// the record-push receiver still writes it (one line per verified received push:
 // `{capsule_id, received_from, via, received_at, signature_ok}`), but this
 // reader no longer reads it. The SAME facts now ride on OUR chained CITING
 // record (`compute_attestation.received_half`), whose integrity the chain +
@@ -344,7 +334,7 @@ fn response_digest(record: &Value) -> Option<&str> {
 // provenance sibling. See `received_half_provenance`.
 
 /// `record_push.RECEIVED_CAPSULES_FILENAME`
-/// -- the HELD-ARTIFACT store the record-push door now writes received foreign
+/// -- the HELD-ARTIFACT store the record-push receiver now writes received foreign
 /// capsule BODIES to, by `capsule_id`. A peer's pushed capsule is evidence we
 /// HOLD, not a record we MADE: it lives HERE, never in `capsules.jsonl` (our
 /// chain). The chained record for a received half is a LOCAL CITING record in
@@ -355,12 +345,12 @@ fn response_digest(record: &Value) -> Option<&str> {
 /// CLOSED gate reads. This store is NOT a ledger -- nothing chains it.
 const RECEIVED_CAPSULES_FILENAME: &str = "received-capsules.jsonl";
 
-/// The provenance triple (+ `signature_ok`) the door recorded for one
-/// received foreign sibling. The door already verified the signature against
-/// the announced peer key BEFORE writing this line (`record_push`'s door:
+/// The provenance triple (+ `signature_ok`) the receiver recorded for one
+/// received foreign sibling. The receiver already verified the signature against
+/// the announced peer key BEFORE writing this line (`record_push_receive`:
 /// `key_id` matches `announced_key_for(sender_peer_id)` AND
 /// `verify_capsule_signature` passes, else the push is refused and NO line is
-/// written) -- so `signature_ok` here is the door's recorded verdict, read,
+/// written) -- so `signature_ok` here is the receiver's recorded verdict, read,
 /// never a second signature check in this route (which the module docstring's
 /// gap 2 deliberately does not port).
 pub(super) struct ReceivedProvenance {
@@ -370,7 +360,7 @@ pub(super) struct ReceivedProvenance {
     signature_ok: bool,
     /// The pushing peer's mesh NODE id,
     /// when the citing record carries it (`received_half.received_from_node_id`
-    /// -- sender-node-id capture at the receive door is landing in
+    /// -- sender-node-id capture at the receiver is landing in
     /// capsule-emit-mesh; ledgers written before that have no such field).
     /// This is the ONLY evidence-backed bridge between the endpoint-id and
     /// node-id spaces for a peer that ASKED us: when present, the peer's
@@ -481,7 +471,7 @@ fn cited_counterparty_capsule_id(record: &Value) -> Option<&str> {
 /// `received_from` is non-empty AND `signature_ok` is literally `true`: the
 /// provenance rule, now read off OUR OWN citing record instead of a co-located
 /// provenance sibling. (`received-provenance.jsonl` is still written by the
-/// door, but the citing record is the chained, checkpoint-covered carrier of
+/// receiver, but the citing record is the chained, checkpoint-covered carrier of
 /// the same facts, so this reader trusts the citing record -- the record whose
 /// integrity the chain + checkpoint actually protect.)
 fn received_half_provenance(citing: &Value) -> Option<ReceivedProvenance> {
@@ -526,7 +516,7 @@ fn received_half_provenance(citing: &Value) -> Option<ReceivedProvenance> {
 ///     attribution already expect -- but sourced from the artifact store, never
 ///     from `capsules.jsonl`.
 ///   - `received_provenance`: `foreign capsule_id -> ReceivedProvenance`, built
-///     from OUR citing records (the chained carrier of the door's verdict), so
+///     from OUR citing records (the chained carrier of the receiver's verdict), so
 ///     `received_siblings_by_key` / `is_received_sibling` treat exactly the
 ///     cited foreign bodies as counterparty halves -- the provenance rule,
 ///     unchanged, now keyed off the citing record.
@@ -572,7 +562,7 @@ fn effective_ledger(ledger_dir: &Path) -> EffectiveLedger {
             settlement_records.push(record);
         } else if is_citing_record(&record) {
             // A citing record: resolve the foreign half it cites from the
-            // held-artifact store, and record the door's verdict (off the
+            // held-artifact store, and record the receiver's verdict (off the
             // citing record) keyed by the FOREIGN body's own capsule_id -- so
             // the resolved foreign body becomes a counterparty "theirs" half
             // exactly as an inline foreign body used to.
@@ -656,7 +646,7 @@ fn record_exchange_id(record: &Value) -> Option<&str> {
 /// missing but none disagree. This is pure byte-equality of fields both
 /// halves already carry -- the `digestsCiteOurHalf` INPUT the ONE gate reads,
 /// not a second copy of the CLOSED predicate. A `failed` here is exactly what
-/// the gate renders CONTRADICTED; a `verified` here (with the door's
+/// the gate renders CONTRADICTED; a `verified` here (with the receiver's
 /// `signature_ok`) is what it renders CLOSED.
 fn digest_match_state(mine: &Value, theirs: &Value) -> &'static str {
     let mut any_failed = model_swapped(mine, theirs);
@@ -868,10 +858,9 @@ fn lifecycle_block(record: &Value) -> Option<&Value> {
     record.pointer("/model_attestation/compute_attestation/x-mesh-lifecycle-v1")
 }
 
-/// The exchange grouping key -- the join order matches
-/// `served_request_join.py`'s own CORRELATION FALLBACK
-/// (`exchange_id` -> `request_digest` -> `twin_bracket_id`), but reduced to
-/// the ONE key that survives a cross-node exchange.
+/// The exchange grouping key -- of the correlators (`exchange_id` ->
+/// `request_digest` -> `twin_bracket_id`), reduced to the ONE key that
+/// survives a cross-node exchange.
 ///
 /// `exchange_id` is **host-minted**: each host mints its OWN id for the same
 /// real exchange, so two cross-node halves that attest the identical exchange
@@ -883,7 +872,7 @@ fn lifecycle_block(record: &Value) -> Option<&Value> {
 /// digest is preferred whenever a record carries one: `digest:<request_digest>`
 /// groups both halves as one exchange. This subsumes the same-node case (two
 /// records of one exchange share a `request_digest` too) and correctly SPLITS
-/// the CONFLICTING case `served_request_join.py` refuses to join (an equal
+/// the CONFLICTING case that must never be joined (an equal
 /// host-minted `exchange_id` but a different `request_digest` -- two different
 /// requests the wire bytes contradict, which distinct digest keys keep apart).
 /// Falls back to the host-minted `exchange_id` only when a record carries no
@@ -994,7 +983,7 @@ fn theirs_cell(record: &Value) -> Value {
 /// ones. `_EXPLICIT_POC_ROLES` = `{requested, served, conflict, unknown}`,
 /// trusted as-is per the 2026-09-06 role ruling; `_SERVED_OBSERVATION_
 /// POINTS` widens an explicit-but-unset case; `_DEFAULT_ROLE_BY_SOURCE`
-/// for `"plugin"` is `"served"` (`capsule_mesh_view.py:81-83`) -- both of
+/// for `"plugin"` is `"served"` -- both of
 /// today's real writers (sidecar, plugin) observe this machine acting as
 /// the serving provider, never a requestor elsewhere.
 pub(crate) fn label_role(record: &Value) -> &'static str {
@@ -1277,7 +1266,7 @@ fn own_role_counts(
 }
 
 /// One `claims_refused` gate input per own record of this peer whose other
-/// half the door refused for contradicting it (`claim_refusal_for`).
+/// half the receiver refused for contradicting it (`claim_refusal_for`).
 fn refused_siblings(
     records: &[Value],
     received_provenance: &HashMap<String, ReceivedProvenance>,
@@ -1325,7 +1314,7 @@ fn dealt_with_row(
     let total = distinct_exchange_count(records, received_provenance);
     let confirmed_siblings = confirmed_siblings_for(records, siblings_by_key, received_provenance);
     let (requested_count, served_count) = own_role_counts(records, received_provenance);
-    // A half this peer pushed and the door verified IS held now. The node/
+    // A half this peer pushed and the receiver verified IS held now. The node/
     // cross_party text stops asserting the flat "their half not held" the
     // moment a provenance-carrying sibling correlates -- the gate decides
     // CLOSED, but the presence of a held half is a structural fact stated here.
@@ -1335,7 +1324,7 @@ fn dealt_with_row(
     } else {
         "their half not held".to_string()
     };
-    // An exchange whose other half the door refused for contradicting our
+    // An exchange whose other half the receiver refused for contradicting our
     // record is a disagreement with this peer: supplied to the ONE gate as a
     // sibling whose outcome is `claims_refused` (CONTRADICTED), the same
     // outcome Pane C's row carries, so the Peers row and the drill never read
@@ -1477,7 +1466,7 @@ fn unattributed_row(
 /// This now SUPPLIES each dealt-with row the SAME two gate inputs Pane C
 /// supplies: for every one of this node's own records that a provenance-carrying
 /// foreign sibling correlates with (by `exchange_key_for`, the ONE correlator,
-/// digest-first), a `confirmed_siblings` entry carrying the door's recorded
+/// digest-first), a `confirmed_siblings` entry carrying the receiver's recorded
 /// `signature_ok` + the structural `digest_match` state. The TS view
 /// (`peer-row-view.ts`) runs each entry through `deriveRightCellState` -- the
 /// ONE gate -- and counts CLOSED, never a fetch-gated predicate. No second
@@ -1525,7 +1514,7 @@ fn settlement_summaries(
         .collect()
 }
 
-/// [`build_pane_b`] with the door's claim refusals, so a peer's row counts the
+/// [`build_pane_b`] with the receiver's claim refusals, so a peer's row counts the
 /// exchanges whose other half contradicted our record as disagreements, and
 /// with each row carrying settlement counts for its exchanges when this node
 /// holds any settlement record. Rows keep their shape otherwise.
@@ -1622,7 +1611,7 @@ fn build_pane_b_with_refusals(
 
 /// One correlated foreign half held locally: its `exchange_key_for` correlator,
 /// its own record (for the structural `digest_match` against `mine`), and the
-/// door's provenance. This is the native-ledger equivalent of the `theirs`
+/// receiver's provenance. This is the native-ledger equivalent of the `theirs`
 /// half Pane C splits out -- the ONLY records treated as a counterparty half
 /// are those carrying a `received-provenance.jsonl` line (the provenance rule,
 /// enforced by `received_provenance.contains_key`).
@@ -1634,20 +1623,20 @@ struct CorrelatedSibling<'a> {
 /// The evidence-backed identity of ONE
 /// peer, joined on the SIGNING KEY (the announcing key is the
 /// sealing key -- the pushed body's `key_id` is what actually signed the
-/// halves), with the endpoint id (the door's `received_from`) and the mesh
+/// halves), with the endpoint id (the receiver's `received_from`) and the mesh
 /// node id carried as ALIASES on the same row. Every field is read off
 /// evidence this reader actually holds:
-///   - `signing_key_id`: the resolved foreign body's own `key_id`. The door
+///   - `signing_key_id`: the resolved foreign body's own `key_id`. The receiver
 ///     verified it against the announced peer key (`peer_keys.
 ///     announced_key_for(received_from)`) BEFORE the provenance line/citing
 ///     record was ever written, so `received_from <-> key_id` is
-///     door-verified, not a guess.
-///   - `endpoint_id`: the door's `received_from` (the plugin's stable peer
+///     receiver-verified, not a guess.
+///   - `endpoint_id`: the receiver's `received_from` (the plugin's stable peer
 ///     id -- NOT a node id; the prior reader's `node:<received_from>` label
 ///     mislabeled the id space, which is exactly how one live peer rendered
 ///     as two rows).
 ///   - `node_id`: only when a record actually names one -- the citing
-///     record's `received_from_node_id` (once the receive door captures it),
+///     record's `received_from_node_id` (once the receiver captures it),
 ///     or a pushed SERVED half's own `served_by_node_id` (the provider names
 ///     itself). Never bridged by assumption.
 #[derive(Clone, Default)]
@@ -1802,7 +1791,7 @@ fn own_routed_nodes_by_key(
     by_key
 }
 
-/// The half names `node` as its server, or the door received it from `node`.
+/// The half names `node` as its server, or the receiver received it from `node`.
 fn half_points_at(half: &Value, provenance: &ReceivedProvenance, node: &str) -> bool {
     let served_by = poc_block(half)
         .and_then(|poc| poc.pointer("/serving_provenance/served_by_node_id"))
@@ -1839,7 +1828,7 @@ fn peer_attribution(
             // routed it to: those ids are ours, so one replaces the peer's
             // own claim about itself (a requester that has only asked can
             // then stop routing to it). Only a node this half itself points
-            // at -- the node it names as its server, or the node the door
+            // at -- the node it names as its server, or the node the receiver
             // received it from -- ever counts: any other peer can push a half
             // with our request digest, and a block must never land on
             // another node because of it. A self-asserted id alone stays
@@ -1885,7 +1874,7 @@ fn peer_attribution(
 
 impl PeerAttribution {
     /// The peer row a record belongs to: its exchange's pushed-sibling
-    /// identity first (the door-verified join); else its own counterparty
+    /// identity first (the receiver-verified join); else its own counterparty
     /// label, BRIDGED onto a signing-key row if -- and only if -- that row's
     /// evidence carries the same node id. No evidence, no bridge: an
     /// unlinked `node:` label stays its own (honestly labeled) row.
@@ -1962,7 +1951,7 @@ fn received_siblings_by_key<'a>(
 /// The `confirmed_siblings` array a peer row supplies to the ONE gate: for each
 /// of this node's OWN records (never a received sibling itself) whose
 /// `exchange_key_for` a provenance-carrying foreign half shares, one entry of
-/// exactly the two inputs `deriveRightCellState` reads -- the door's recorded
+/// exactly the two inputs `deriveRightCellState` reads -- the receiver's recorded
 /// `signature_ok` (via a `theirs`-shaped cell) and the structural
 /// `digest_match` state. The gate, not this route, turns `verified` +
 /// `signature_ok` into CLOSED and `failed` into CONTRADICTED. A record that is
@@ -2016,7 +2005,7 @@ fn confirmed_siblings_for(
 
 /// The `theirs` cell when a real, provenance-carrying foreign SIBLING is held
 /// locally -- `build_exchange_row._side`'s present branch
-/// (`{state: present-unverified, capsule_id, role}`), plus the door's
+/// (`{state: present-unverified, capsule_id, role}`), plus the receiver's
 /// provenance triple (`received_from`/`via`/`received_at`/`signature_ok`) so
 /// the ONE gate (`exchange-row-state.ts::deriveRightCellState`) has the
 /// `signatureOk` input it reads to close a locally-held counterparty half.
@@ -2024,7 +2013,7 @@ fn confirmed_siblings_for(
 /// THIS route -- gap 2), exactly `mine`'s own state; the CLOSED/CONTRADICTED
 /// DECISION is the gate's, never a second predicate here.
 ///
-/// `record` is the held foreign body itself (the provider-signed bytes the door
+/// `record` is the held foreign body itself (the provider-signed bytes the receiver
 /// verified), so the browser can recompute its `capsule_id` and compare its
 /// digests and provider against our half -- the same inputs a live peer fetch
 /// hands the gate.
@@ -2055,10 +2044,8 @@ fn mine_pair_cell(mine: &Value) -> Value {
     })
 }
 
-/// Pane C ("This exchange") list mode -- `capsule_exchange_tab.
-/// build_exchange_list_payload` + `group_exchanges` + `build_exchange_row`.
-/// `default_sort`/`filters` are the exact literal constants from
-/// capsule-emit-mesh main (`capsule_exchange_tab.py:549-552,764`), not guessed.
+/// Pane C ("This exchange") list mode: the exchange list, its groups and
+/// its rows. `default_sort`/`filters` are fixed constants the page reads.
 ///
 /// ** Route through the ONE gate; drop the
 /// `unilateral: true` hardcode.** This used to emit one row PER record with a
@@ -2073,8 +2060,8 @@ fn mine_pair_cell(mine: &Value) -> Value {
 /// `digest_match` are SUPPLIED to the ONE gate (`deriveRightCellState`), which
 /// alone decides CLOSED (`signatureOk && digestsCiteOurHalf`) vs CONTRADICTED
 /// (digests differ) -- this route adds no second predicate and no exchange_id
-/// grouping. A sibling with no provenance line (self-sealed, or refused at the
-/// door) never fills `theirs`, so its row stays unilateral/OPEN: correlation
+/// grouping. A sibling with no provenance line (self-sealed, or refused by the
+/// receiver) never fills `theirs`, so its row stays unilateral/OPEN: correlation
 /// feeds the gate, it never bypasses it.
 #[cfg(test)]
 pub(crate) fn build_pane_c_list(
@@ -2404,13 +2391,12 @@ pub(crate) fn build_pane_c_drilldown(
 
 /// Dispatches on the pane name (`is_route`/`ALLOWED_PANES` in
 /// `capsule_panes.rs` already validated it), reading the ledger fresh on
-/// every call -- same "never cache" discipline as
-/// `accountability_pane_routes.py`'s own module docstring.
-/// The door's refusal reasons for a half whose signed claims contradict this
-/// node's own record of the exchange (record_push.py `CLAIM_MISMATCH_REASONS`).
+/// every call: never cached.
+/// The receiver's refusal reasons for a half whose signed claims contradict
+/// this node's own record of the exchange (`record_push_receive`).
 const CLAIM_REFUSAL_REASONS: [&str; 2] = ["served_by_mismatch", "model_mismatch"];
 
-/// `rejected-record-pushes.jsonl` lines the door wrote for a claim check:
+/// `rejected-record-pushes.jsonl` lines the receiver wrote for a claim check:
 /// `(request_digest, sender, reason, rejected_at)`.
 fn read_claim_refusals(ledger_dir: &Path) -> Vec<(String, String, String, Option<String>)> {
     let Ok(text) = std::fs::read_to_string(ledger_dir.join("rejected-record-pushes.jsonl")) else {
@@ -2433,7 +2419,7 @@ fn read_claim_refusals(ledger_dir: &Path) -> Vec<(String, String, String, Option
         .collect()
 }
 
-/// The door's claim refusal for our own record's other half, if any: only for
+/// The receiver's claim refusal for our own record's other half, if any: only for
 /// a record where this node asked, and only a refusal of a push from the node
 /// OUR record says served the exchange (a push from anyone else says nothing
 /// about it). Pane B and Pane C both read disagreements through this.
@@ -2447,7 +2433,7 @@ fn claim_refusal_for<'r>(mine: &Value, refusals: &'r [(String, String, String, O
     refusals.iter().rev().find(|(d, sender, _, _)| d == digest && *sender == server)
 }
 
-/// A row whose other half the door refused because the node that served it
+/// A row whose other half the receiver refused because the node that served it
 /// signed claims contradicting our record (another server named, other model
 /// weights) is never left looking merely open: `theirs.evidence_outcome` is
 /// `claims_refused`, which the page renders CONTRADICTED. Only a refusal
@@ -2590,7 +2576,7 @@ mod tests {
     }
 
     /// One `received-provenance.jsonl` line's worth of state, `signature_ok`
-    /// true (the door only ever writes a line after signature verification --
+    /// true (the receiver only ever writes a line after signature verification --
     /// `record_push._append_provenance`).
     fn provenance_for(capsule_id: &str, received_from: &str) -> (String, ReceivedProvenance) {
         (
@@ -2607,8 +2593,8 @@ mod tests {
     }
 
     /// a provenance line whose citing
-    /// record carried the sender's mesh node id (`received_from_node_id`, the
-    /// receive-door capture landing in capsule-emit-mesh) -- the
+    /// record carried the sender's mesh node id (`received_from_node_id`,
+    /// once the receiver can capture it) -- the
     /// evidence-backed endpoint-id <-> node-id bridge.
     fn provenance_with_node(
         capsule_id: &str,
@@ -2659,7 +2645,7 @@ mod tests {
     /// `served_by_node_id`, and the peer's pushed requester half is
     /// `role: requested` naming this node (the server) in `served_by_node_id`
     /// too, `requesting_party: unknown`. NEITHER half names the peer's mesh
-    /// node-id -- the peer's only identity is the door's `received_from`.
+    /// node-id -- the peer's only identity is the receiver's `received_from`.
     fn mesh_half_served_by(
         capsule_id: &str,
         role: &str,
@@ -2687,10 +2673,8 @@ mod tests {
         assert!(read_capsule_records(&dir).is_empty());
     }
 
-    /// Every field here is pinned against a REAL `build_pane_a_json` run on
-    /// capsule-emit-mesh main against the identical fixture record (see
-    /// capsule-emit-mesh's `tests/test_mesh_llm_pane_parity.py`, which pins
-    /// the same values from the Python side) -- not a guess. Exception:
+    /// Every field here is pinned against a real Pane A run on the identical
+    /// fixture record -- not a guess. Exception:
     /// `cross_party` -- retired the rung
     /// ladder from THIS reader only, so it now diverges from the (still
     /// unmigrated) Python reference by design; see module docs.
@@ -2845,7 +2829,7 @@ mod tests {
     // -----------------------------------------------------------------
     // Pane B routes "confirmed by the other
     // side" through the SAME ONE gate Pane C uses: a dealt-with peer row
-    // SUPPLIES `confirmed_siblings`, each carrying the door's `signature_ok`
+    // SUPPLIES `confirmed_siblings`, each carrying the receiver's `signature_ok`
     // (via a `theirs`-shaped cell) + the structural `digest_match` -- the two
     // inputs `exchange-row-state.ts::deriveRightCellState` reads to render
     // CLOSED. These mirror the Pane C sibling tests above; the CLOSED/
@@ -3123,7 +3107,7 @@ mod tests {
     // run-5 orientation this node SERVED the peer, so its own half is
     // `role: served` naming ITSELF in `served_by_node_id` (no counterparty
     // label -> the null group), and the peer's pushed REQUESTER half names this
-    // node in `served_by_node_id` too. The peer's only identity is the door's
+    // node in `served_by_node_id` too. The peer's only identity is the receiver's
     // `received_from`. The prior reader attributed the confirmed sibling by the
     // served local half's own (absent) label, dropping it into `peer_id: null`
     // while the real peer row showed `confirmed_siblings: 0`. The fix attributes
@@ -3135,7 +3119,7 @@ mod tests {
     /// `served_by_node_id` = SELF, so no counterparty label of its own) and the
     /// peer pushed its requester half (`role: requested`, `served_by_node_id` =
     /// SELF, provenance `received_from` = the peer's stable id). The confirmed
-    /// sibling MUST land in the pushing peer's row -- keyed by the door's
+    /// sibling MUST land in the pushing peer's row -- keyed by the receiver's
     /// endpoint id and LABELED as one (`endpoint:<received_from>`, never the
     /// old `node:<received_from>` id-space mislabeling
     /// D3) -- which shows
@@ -3146,7 +3130,7 @@ mod tests {
     #[test]
     fn pane_b_attributes_a_served_sides_pushed_sibling_to_the_pushing_peer_not_the_null_group() {
         // `me-node` is THIS node's id (the server the peer named); `node-b` is the
-        // peer's door `received_from`. Neither half carries the peer's node-id
+        // peer's receiver `received_from`. Neither half carries the peer's node-id
         // or its signing key, so the endpoint id is the only honest row key.
         let local_served = mesh_half_served_by(
             "a".repeat(64).as_str(),
@@ -3173,7 +3157,7 @@ mod tests {
         let rows = pane["rows"].as_array().unwrap();
 
         // The confirmed sibling attributes to the pushing peer, keyed by the
-        // door's `received_from` in its OWN id space -- not a self row, not
+        // receiver's `received_from` in its OWN id space -- not a self row, not
         // the null group, and never labeled `node:`.
         let peer = rows
             .iter()
@@ -3205,7 +3189,7 @@ mod tests {
 
     /// A pushed sibling with NO resolvable peer identity -- the peer served us
     /// (so its `served_by_node_id` WOULD name it) but recorded `"unknown"`, AND
-    /// the door recorded an empty `received_from` -- is genuinely unattributable
+    /// the receiver recorded an empty `received_from` -- is genuinely unattributable
     /// and stays in the null group honestly (never a fabricated peer). The
     /// exchange still folds into ONE unattributed row; the sibling is not lost.
     #[test]
@@ -3226,7 +3210,7 @@ mod tests {
             "node-b-82777e20",
             "unknown",
         );
-        // Empty `received_from` -> no peer-id either. (The door never writes a
+        // Empty `received_from` -> no peer-id either. (The receiver never writes a
         // blank line in practice; `sibling_peer_label` still refuses to invent.)
         let provenance: HashMap<String, ReceivedProvenance> =
             [provenance_for("b".repeat(64).as_str(), "")]
@@ -3252,11 +3236,11 @@ mod tests {
     // -----------------------------------------------------------------
     // Defect 3 -- one peer rendered
     // as two. Peer identity joins on the SIGNING KEY (the pushed body's
-    // `key_id`, door-verified against the announced peer key), with the
+    // `key_id`, receiver-verified against the announced peer key), with the
     // endpoint id and node id as aliases on ONE row. No evidence-backed
     // bridge -> no merge: the node-id row stays separate, honestly, and the
     // `received_from_node_id` provenance field completes the merge with no
-    // further code change the day the receive door captures it.
+    // further code change the day the receiver captures it.
     // -----------------------------------------------------------------
 
     /// A live requester ledger shape, exactly: 3 served halves + 3 pushed foreign
@@ -3521,7 +3505,7 @@ mod tests {
         assert_ne!(row["identity"]["node_id"], json!(node_h), "never H's id on M's row");
         assert_ne!(row["identity"]["node_id_source"], json!("your_records"));
 
-        // M's half claiming H as its server, but the door recorded M as its
+        // M's half claiming H as its server, but the receiver recorded M as its
         // sender: the sender our records name wins; never H.
         let lying_m = with_key(
             mesh_half_served_by(
@@ -3851,7 +3835,7 @@ mod tests {
             "me-77aa",
             &their_node,
         );
-        // The door captured the sender's node id on the citing record.
+        // The receiver captured the sender's node id on the citing record.
         let provenance: HashMap<String, ReceivedProvenance> = [provenance_with_node(
             "b".repeat(64).as_str(),
             "e5ba9d1001",
@@ -4078,8 +4062,7 @@ mod tests {
     // -----------------------------------------------------------------
     // Route through the ONE gate: the pane
     // fires CLOSED on a locally-held, provenance-carrying, digest-matching
-    // foreign sibling -- mirroring capsule-emit-mesh's
-    // `tests/test_pane_fires_on_pushed_sibling.py`. The CLOSED/CONTRADICTED
+    // foreign sibling. The CLOSED/CONTRADICTED
     // DECISION is the ONE gate's (`exchange-row-state.ts::deriveRightCellState`,
     // `signatureOk && digestsCiteOurHalf`); these tests prove `build_pane_c_list`
     // SUPPLIES that gate its two inputs honestly -- the correlated sibling
@@ -4112,7 +4095,7 @@ mod tests {
             "e".repeat(64).as_str(),
             "node-b-82777e20",
         );
-        // The door verified & recorded the foreign half; the two host-minted
+        // The receiver verified & recorded the foreign half; the two host-minted
         // exchange_ids differ, so ONLY the digest correlator groups them.
         let provenance: HashMap<String, ReceivedProvenance> =
             [provenance_for("b".repeat(64).as_str(), "node-b")]
@@ -4132,7 +4115,7 @@ mod tests {
         assert_eq!(row["unilateral"], json!(false)); // NOT the old hardcode.
                                                      // The gate's `digestsCiteOurHalf` input: both digests agree -> verified.
         assert_eq!(row["digest_match"]["state"], json!(STATE_VERIFIED));
-        // The gate's `signatureOk` input: the door's recorded provenance triple.
+        // The gate's `signatureOk` input: the receiver's recorded provenance triple.
         assert_eq!(row["theirs"]["signature_ok"], json!(true));
         assert_eq!(row["theirs"]["received_from"], json!("node-b"));
         assert_eq!(row["theirs"]["via"], json!("push"));
@@ -4199,7 +4182,7 @@ mod tests {
 
     /// The provenance rule, no-provenance variant: a genuine cross-node sibling
     /// whose capsule_id carries NO provenance line (self-declared present in the
-    /// ledger but never granted the triple at the door) is treated as `mine`,
+    /// ledger but never granted the triple at the receiver) is treated as `mine`,
     /// so the row stays unilateral/OPEN -- the gate has nothing to close on.
     #[test]
     fn pane_c_sibling_without_a_provenance_line_never_fills_theirs() {
@@ -4340,7 +4323,7 @@ mod tests {
         assert_eq!(digest_match_state(&alias, &theirs(&other_id, &other, &other)), STATE_VERIFIED, "a name alone never counts");
     }
 
-    /// Attack B/D at the pane: the door refused the provider's half for a
+    /// Attack B/D at the pane: the receiver refused the provider's half for a
     /// claim check, so the row is marked `claims_refused` (the page shows
     /// CONTRADICTED), never left open. A refusal of a push from a node our
     /// record did not route to leaves the row alone.
@@ -4372,7 +4355,7 @@ mod tests {
     }
 
     /// The Peers row and the drill read disagreements from Pane B: an exchange
-    /// whose other half the door refused for contradicting our record reaches
+    /// whose other half the receiver refused for contradicting our record reaches
     /// the ONE gate as a `claims_refused` sibling (the page counts it as a
     /// disagreement), the same outcome Pane C's row carries. A refusal of a
     /// push from anyone else adds nothing.
@@ -4664,8 +4647,8 @@ mod tests {
 
     /// The digest is the correlator that survives a cross-node exchange, so
     /// it is preferred over the host-minted `exchange_id` whenever a record
-    /// carries one (see `exchange_key_for`'s doc + `served_request_join.py`'s
-    /// CORRELATION FALLBACK). A record with BOTH keys groups by digest.
+    /// carries one (see `exchange_key_for`'s doc). A record with BOTH keys
+    /// groups by digest.
     #[test]
     fn exchange_key_for_prefers_request_digest_over_host_minted_exchange_id() {
         let mut record = fixture_record("cap-1", "2026-09-01T00:00:00Z", "req-1", None);
@@ -4729,7 +4712,7 @@ mod tests {
 
         // And a CONFLICTING pair (equal host-minted exchange_id, DIFFERENT
         // request_digest) stays SPLIT -- distinct digest keys keep two
-        // different requests apart, matching served_request_join.py's refusal.
+        // different requests apart.
         let mut conflict_a = fixture_record("cap-a", "2026-09-25T00:00:00Z", "digest-a", None);
         conflict_a["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"] =
             json!({ "serving_provenance": { "exchange_id": "same-id" } });
@@ -4840,7 +4823,7 @@ mod tests {
         assert_eq!(card["covered_record_count"], json!(2));
     }
 
-    /// The door's inbound log reaches every Pane B row, newest lines kept,
+    /// The receiver's inbound log reaches every Pane B row, newest lines kept,
     /// malformed lines dropped; no log means no `asked_of_you` at all.
     #[test]
     fn pane_b_rows_carry_the_door_log_of_requests_made_of_this_node() {
@@ -5099,11 +5082,8 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Retired vocabulary gate -- same
-    // discipline as capsule-emit-mesh's `f0e3af6` Pane C gate
-    // (`tests/test_accountability_pane_routes.py`'s
-    // `_assert_no_retired_vocabulary`), ported to this reader's own
-    // fixtures since it's the surface that actually emits raw JSON
+    // Retired vocabulary gate, over this reader's own fixtures, since it's
+    // the surface that actually emits raw JSON
     // strangers can read (native/sidecar-DOWN is the demo's real path).
     // -----------------------------------------------------------------
 
@@ -5525,7 +5505,7 @@ mod tests {
 
     /// Only this node's own ledger supplies settlement records. A peer that
     /// pushes a settlement-shaped record, even one naming our own exchange id
-    /// and held by the door with a verified citing record, never enters the
+    /// and held by the receiver with a verified citing record, never enters the
     /// settlement index: our row carries no summary from it, nothing reads it
     /// as unjoined, Pane A never lists it as our payment record, and Peers
     /// never counts it.

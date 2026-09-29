@@ -6,9 +6,7 @@
 //! *same plugin* on a target peer, gated on both ends declaring the channel
 //! in their manifest (`plugin_event_channel_declared`). This module declares
 //! `evidence-request/1` and bridges bytes on both ends -- mesh never parses
-//! either side, exactly the HTTP evidence door's contract,
-//! carried over the mesh instead of a reachable HTTP door. Zero upstream
-//! (`mesh-llm`) code.
+//! either side. Zero upstream (`mesh-llm`) code.
 //!
 //! **Responder role** (`on_open_stream`): the host already gated this call on
 //! the channel being declared before `connect_stream` ever reaches us. This
@@ -24,10 +22,9 @@
 //! `policy_declined` before the ledger is read. Every answer is logged to
 //! the "asked of you" log (`received_log`).
 //!
-//! One subject still goes to the local evidence door: a referee's
-//! `adjudicate` request (`subject.kind == "adjudicate"`), which moves with
-//! the referee. It is proxied as one buffered HTTP POST, authenticated both
-//! ways (`door_auth`), exactly as before.
+//! This node has no referee yet. A referee's `adjudicate` request is not a
+//! -00 subject, so it is answered like any other request that does not
+//! parse: a signed `request_malformed` refusal, never a verdict.
 //!
 //! **Requester role**: the streamed-HTTP-binding path mesh-llm ships
 //! (`handle_streamed_http_binding`) forwards a binding's *static* manifest
@@ -38,7 +35,7 @@
 //! (`ToolRouter`/`invoke_operation`, reachable locally over
 //! `POST /api/plugins/admission-policy/tools/mesh_evidence_request`) -- hands
 //! its handler the full JSON arguments AND a `&mut PluginContext` in the same
-//! call, so `ask_history.py --via mesh <peer_id>` drives this tool locally;
+//! call, so a local client drives this tool;
 //! the handler opens the mesh stream, writes the E14 request bytes, and
 //! returns whatever the peer's own responder wrote back (Artifact or signed
 //! Refusal, untouched) as the tool's JSON result. A peer that never declared
@@ -61,14 +58,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// (checked against the responder's manifest).
 pub const EVIDENCE_REQUEST_CHANNEL: &str = "evidence-request/1";
 
-/// The tool name `ask_history.py --via mesh` calls locally
+/// The tool name a local client calls
 /// (`POST /api/plugins/<plugin_id>/tools/mesh_evidence_request`).
 pub const EVIDENCE_REQUEST_OPERATION: &str = "mesh_evidence_request";
 
 /// How long the RESPONDER waits at each step of an already-open mesh stream:
-/// the requester's connection, its request bytes, the local door (for an
-/// `adjudicate` request), and writing the answer. Bounds a silent peer and a
-/// wedged door; mesh-llm's own `idle_timeout_ms` on the
+/// the requester's connection, its request bytes, and writing the answer.
+/// Bounds a silent peer; mesh-llm's own `idle_timeout_ms` on the
 /// `OpenMeshStreamRequest` bounds the mesh stream separately, host-side.
 /// Overridable so a test proving the bound is actually enforced does not
 /// have to wait out the production default.
@@ -142,14 +138,13 @@ where
 
 
 // ---------------------------------------------------------------------
-// Responder role: mesh-inbound `evidence-request/1` stream -> local E15 door
+// Responder role: mesh-inbound `evidence-request/1` stream -> answered in-process
 // ---------------------------------------------------------------------
 
 /// Registered as this plugin's `on_open_stream` handler. Never fabricates an
-/// Artifact/Refusal itself -- a transport failure (local door unreachable,
-/// peer went silent) just drops the stream; only `evidence_server.py`'s own
-/// `answer()` ever produces a signed response, so nothing unsigned is ever
-/// returned in its place.
+/// Artifact/Refusal itself -- a transport failure (the peer went silent)
+/// just drops the stream; only `evidence_answer` ever produces a signed
+/// response, so nothing unsigned is ever returned in its place.
 pub async fn handle_open_stream(
     request: OpenStreamRequest,
     _context: &mut PluginContext<'_>,
@@ -194,15 +189,11 @@ async fn bridge_inbound_evidence_stream(
     )
     .await??;
 
-    let response_bytes = if is_adjudicate_request(&request_bytes) {
-        answer_at_door(&capsules, request_bytes).await?
-    } else {
-        match answer_in_process(capsules, request_bytes).await {
-            Some(bytes) => bytes,
-            // Nothing this node can sign: send nothing, never an unsigned
-            // stand-in. The requester records an absence.
-            None => return Ok(()),
-        }
+    let response_bytes = match answer_in_process(capsules, request_bytes).await {
+        Some(bytes) => bytes,
+        // Nothing this node can sign: send nothing, never an unsigned
+        // stand-in. The requester records an absence.
+        None => return Ok(()),
     };
 
     tokio::time::timeout(bound, async {
@@ -211,13 +202,6 @@ async fn bridge_inbound_evidence_stream(
     })
     .await??;
     Ok(())
-}
-
-/// A referee's `adjudicate` request, in the door's request shape.
-fn is_adjudicate_request(request_bytes: &[u8]) -> bool {
-    serde_json::from_slice::<serde_json::Value>(request_bytes)
-        .ok()
-        .is_some_and(|r| r.pointer("/subject/kind").and_then(|k| k.as_str()) == Some("adjudicate"))
 }
 
 /// Answer in-process, on the blocking pool (the answer reads the ledger and
@@ -250,40 +234,6 @@ async fn answer_in_process(
     })
     .await;
     answered.ok().flatten()
-}
-
-/// The referee's path: proxy to the local door, authenticated both ways.
-async fn answer_at_door(
-    capsules: &std::sync::Arc<crate::capsule_emit::CapsuleState>,
-    request_bytes: Vec<u8>,
-) -> anyhow::Result<Vec<u8>> {
-    let client = reqwest::Client::builder()
-        .timeout(responder_http_timeout())
-        .build()?;
-    // Authenticated both ways (`door_auth`): a reply without the door's proof
-    // is never forwarded to the peer.
-    let reply = crate::door_auth::call(
-        &client,
-        reqwest::Method::POST,
-        "/evidence-request",
-        &[("Content-Type", "application/json")],
-        Some(request_bytes),
-    )
-    .await?;
-    let mut response_bytes = reply.body.to_vec();
-
-    // A verdict this node issued as referee goes on its chain BEFORE the
-    // reply leaves (`adjudication_records`); a failed seal answers with a
-    // refusal instead, so "issued" always means "recorded".
-    if let Ok(door_reply) = serde_json::from_slice::<serde_json::Value>(&response_bytes) {
-        if crate::adjudication_records::is_issued_reply(&door_reply) {
-            if let Err(error) = crate::adjudication_records::seal_issued(capsules, &door_reply).await {
-                tracing::warn!(%error, "door issued a verdict but its record seal failed -- refusing instead");
-                response_bytes = crate::adjudication_records::seal_failed_reply();
-            }
-        }
-    }
-    Ok(response_bytes)
 }
 
 // ---------------------------------------------------------------------
@@ -330,8 +280,8 @@ pub async fn handle_mesh_evidence_request(
         return Err(PluginError::invalid_params("peer_id must not be empty"));
     }
     // An adjudicate request names the referee this node CHOSE for a pair:
-    // recorded before it is sent, so this node's door holds a verdict from
-    // that referee about that pair, and from no one else (`adjudication_hold`).
+    // recorded before it is sent, so a verdict about that pair is only ever
+    // taken from that referee.
     if let Some(asked) = requested_adjudication(&args.peer_id, &args.request) {
         record_requested_adjudication(&ledger_dir, &asked)
             .map_err(|e| PluginError::internal(format!("could not record the adjudication request: {e}")))?;

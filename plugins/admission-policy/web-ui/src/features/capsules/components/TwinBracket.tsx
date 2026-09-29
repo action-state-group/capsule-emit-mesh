@@ -123,9 +123,9 @@ export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, childr
           {verdict === null ? (
             <>
               <StatusBadge size="caption" tone="muted">
-                no verdict
+                not adjudicated
               </StatusBadge>
-              <InfoHover census="twin:no_verdict" describes="the no verdict badge" label={TWIN_NO_VERDICT_TOOLTIP} />
+              <InfoHover census="twin:no_verdict" describes="the not adjudicated badge" label={TWIN_NO_VERDICT_TOOLTIP} />
             </>
           ) : (
             <HoverChip census={`twin:verdict:${verdict.kind}`} label={TWIN_VERDICT_TOOLTIPS[verdict.kind]}>
@@ -154,7 +154,7 @@ export function TwinBracket({ bracketId, rows, twinSampleRateDenominator, childr
            itself. */}
         {verdict === null ? (
           <p className="type-caption text-fg-faint">
-            No verdict yet — no referee has signed one for this pair.
+            Not adjudicated: this node has no referee yet.
           </p>
         ) : (
           <p className="type-caption flex flex-wrap items-center gap-x-2 text-fg-faint">

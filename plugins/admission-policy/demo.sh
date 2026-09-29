@@ -6,24 +6,21 @@
 #
 #   up      two nodes on this machine: A serves GGUF, B joins A's private mesh.
 #           The plugin is installed on each from the package (`mesh-llm plugins
-#           install --archive`), each node's evidence door is started with the
-#           other node's public key, then ONE exchange is sent (B asks A's model).
+#           install --archive`); once each node has reported its id and key,
+#           both restart knowing the other's key, then ONE exchange is sent
+#           (B asks A's model).
 #           Ends when both sides hold the other's signed record of that exchange,
 #           and prints the plugin page URL.
 #   ask     one more exchange (B -> A)
 #   status  records, received records, confirmed exchanges, per node
-#   down    stop both nodes and doors; redact the invite token from the logs
+#   down    stop both nodes; redact the invite token from the logs
 #
 # Inputs (environment):
 #   MESH_LLM_BIN                        a stock mesh-llm release build
 #   MESH_LLM_NATIVE_RUNTIME_BUNDLE_DIR  the native runtime bundle built with it
 #   PLUGIN_PKG                          capsule-emit-mesh.tar.gz (the plugin package)
-#   DOOR_REPO                           optional: run the door from a capsule-emit-mesh
-#                                       checkout (evidence_server.py) with PYTHON; by
-#                                       default each node runs the door that ships in
-#                                       the package (door/run-door.sh)
-#   PYTHON                              python3 3.11+ (the packaged door's first start
-#                                       installs its pinned dependencies, ~60 MB)
+#   PYTHON                              python3, for this script's own small JSON
+#                                       helpers (the plugin itself needs no Python)
 #   GGUF                                the model node A serves
 #   DEMO_DIR                            state dir (default: ./demo-run next to this script)
 #
@@ -34,8 +31,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_DIR="${DEMO_DIR:-$HERE/demo-run}"
 PYTHON="${PYTHON:-python3}"
-A_CONSOLE=${A_CONSOLE:-3811} A_API=${A_API:-9811} A_DOOR=${A_DOOR:-8811}
-B_CONSOLE=${B_CONSOLE:-3812} B_API=${B_API:-9812} B_DOOR=${B_DOOR:-8812}
+A_CONSOLE=${A_CONSOLE:-3811} A_API=${A_API:-9811}
+B_CONSOLE=${B_CONSOLE:-3812} B_API=${B_API:-9812}
 PLUGIN=capsule-emit-mesh
 
 need() { [ -n "${!1:-}" ] || { echo "demo: set $1" >&2; exit 2; }; }
@@ -51,7 +48,7 @@ until_ok() {   # until_ok SECONDS WHAT CMD...
   done
 }
 
-node_env() {   # node_env NAME DOOR_PORT
+node_env() {   # node_env NAME
   local d="$DEMO_DIR/$1"
   echo HOME="$d/home" TMPDIR="/tmp/demo-$(id -u)-$1/" \
     MESH_LLM_PLUGIN_DIR="$d/plugins" \
@@ -60,21 +57,25 @@ node_env() {   # node_env NAME DOOR_PORT
     ADMISSION_POLICY_DATA_DIR="$d/plugin-data" \
     ADMISSION_POLICY_RECEIVED_LOG_DIR="$d/logs/received" \
     MESH_LLM_CAPSULE_LEDGER_DIR="$d/plugin-data/ledger" \
-    MESH_LLM_CAPSULE_RECEIVED_LOG_DIR="$d/logs/received" \
-    ADMISSION_POLICY_EVIDENCE_SERVER_URL="http://127.0.0.1:$2"
+    MESH_LLM_CAPSULE_RECEIVED_LOG_DIR="$d/logs/received"
+  # Each node's plugin checks the records it receives against the other
+  # node's key: the JSON map holds no spaces, so it passes through `env`.
+  [ -f "$DEMO_DIR/peer-keys.json" ] && echo ADMISSION_POLICY_PEER_KEYS="$(cat "$DEMO_DIR/peer-keys.json")"
+  return 0
 }
 
 install_plugin() {   # the maintainer step: one command per node
   local d="$DEMO_DIR/$1"
   mkdir -p "$d/home" "$d/logs" "$d/plugin-data" "/tmp/demo-$(id -u)-$1/"
-  env $(node_env "$1" 0) "$MESH_LLM_BIN" plugins install --archive "$PLUGIN_PKG" --name "$PLUGIN" > "$d/logs/install.log" 2>&1 \
+  env $(node_env "$1") "$MESH_LLM_BIN" plugins install --archive "$PLUGIN_PKG" --name "$PLUGIN" > "$d/logs/install.log" 2>&1 \
     || { cat "$d/logs/install.log" >&2; return 1; }
-  echo "  node $1: $(env $(node_env "$1" 0) "$MESH_LLM_BIN" plugins list 2>/dev/null | grep "$PLUGIN" | head -n 1)"
+  echo "  node $1: $(env $(node_env "$1") "$MESH_LLM_BIN" plugins list 2>/dev/null | grep "$PLUGIN" | head -n 1)"
 }
 
-start_node() {   # start_node NAME CONSOLE API DOOR ARGS...
-  local name=$1 console=$2 api=$3 door=$4 d="$DEMO_DIR/$1"; shift 4
-  ( cd "$d/home"; exec env $(node_env "$name" "$door") "$MESH_LLM_BIN" "$@" --disable-iroh-relays \
+start_node() {   # start_node NAME CONSOLE API ARGS...
+  local name=$1 console=$2 api=$3 d="$DEMO_DIR/$1"; shift 3
+  mkdir -p "$d/logs/received"
+  ( cd "$d/home"; exec env $(node_env "$name") "$MESH_LLM_BIN" "$@" --disable-iroh-relays \
       --console "$console" --port "$api" --log-format json ) >> "$d/logs/node.log" 2>&1 &
   echo $! > "$d/node.pid"
   until_ok 240 "node $name console :$console" up_port "$console"
@@ -89,27 +90,22 @@ print(d[-32:].hex() if len(d) == 44 else "")' "$DEMO_DIR/$1/plugin-data/keys/nod
 }
 wired() { [ -n "$(self_id a)" ] && [ -n "$(self_id b)" ] && [ -n "$(pub_key a)" ] && [ -n "$(pub_key b)" ]; }
 
-start_door() {   # start_door NAME PORT
+stop_node() {   # stop_node NAME CONSOLE API
   local d="$DEMO_DIR/$1"
-  mkdir -p "$d/logs/received"
-  if [ -z "${DOOR_REPO:-}" ]; then
-    # The door that ships in the package: it reads the plugin's token and data
-    # directory, listens on the port in ADMISSION_POLICY_EVIDENCE_SERVER_URL.
-    ( . "$DEMO_DIR/peer-keys.env"
-      exec env ADMISSION_POLICY_DATA_DIR="$d/plugin-data" ADMISSION_POLICY_EVIDENCE_SERVER_URL="http://127.0.0.1:$2" \
-        "$d/plugins/installed/$PLUGIN/door/run-door.sh" ) >> "$d/logs/door.log" 2>&1 &
-    echo $! > "$d/door.pid"
-    # The first start installs the door's dependencies.
-    until_ok 600 "door $1 on :$2" busy "$2"
-    return
-  fi
-  ( cd "$DOOR_REPO"; . "$DEMO_DIR/peer-keys.env"
-    exec "$PYTHON" evidence_server.py --ledger-dir "$d/plugin-data/ledger" \
-      --node-key "$d/plugin-data/keys/node-key.pem" --listen-host 127.0.0.1 --listen-port "$2" \
-      --received-log-dir "$d/logs/received" \
-      $( [ -f "$d/plugin-data/evidence-door.token" ] && echo --token-file "$d/plugin-data/evidence-door.token" ) ) >> "$d/logs/door.log" 2>&1 &
-  echo $! > "$d/door.pid"
-  until_ok 30 "door $1 on :$2" busy "$2"
+  alive "$d/node.pid" && kill -TERM "$(cat "$d/node.pid")" 2>/dev/null || true
+  rm -f "$d/node.pid"
+  for p in "$2" "$3"; do until_ok 60 "port $p to close" bash -c "! (exec 3<>/dev/tcp/127.0.0.1/$p) 2>/dev/null"; done
+}
+
+start_both() {   # node A serves, node B joins A's private mesh with a fresh invite
+  start_node a $A_CONSOLE $A_API serve --gguf "$GGUF" --ctx-size 2048
+  rm -f "$DEMO_DIR/join-token"
+  (umask 077; curl -fs "http://127.0.0.1:$A_CONSOLE/api/status" | "$PYTHON" -c '
+import json, sys
+t = json.load(sys.stdin).get("token") or ""
+sys.exit("demo: node A has no invite token") if not t else sys.stdout.write(t)' > "$DEMO_DIR/join-token")
+  start_node b $B_CONSOLE $B_API client --join-file "$DEMO_DIR/join-token"
+  until_ok 300 "node B to list node A's model" has_model
 }
 
 model_on_a() {
@@ -177,26 +173,23 @@ status() {
 
 up() {
   for v in MESH_LLM_BIN MESH_LLM_NATIVE_RUNTIME_BUNDLE_DIR PLUGIN_PKG GGUF; do need $v; done
-  for p in $A_CONSOLE $A_API $A_DOOR $B_CONSOLE $B_API $B_DOOR; do busy $p && { echo "demo: port $p is in use" >&2; exit 1; }; done
+  for p in $A_CONSOLE $A_API $B_CONSOLE $B_API; do busy $p && { echo "demo: port $p is in use" >&2; exit 1; }; done
   mkdir -p "$DEMO_DIR/a" "$DEMO_DIR/b" "$DEMO_DIR/runtime-cache"; chmod 700 "$DEMO_DIR"
+  rm -f "$DEMO_DIR/peer-keys.json"
   say "1/5  Install the plugin on both nodes (mesh-llm plugins install --archive $(basename "$PLUGIN_PKG"))"
   install_plugin a; install_plugin b
 
   say "2/5  Start node A (serves $(basename "$GGUF")) and node B (joins A's private mesh)"
-  start_node a $A_CONSOLE $A_API $A_DOOR serve --gguf "$GGUF" --ctx-size 2048
-  rm -f "$DEMO_DIR/join-token"
-  (umask 077; curl -fs "http://127.0.0.1:$A_CONSOLE/api/status" | "$PYTHON" -c '
-import json, sys
-t = json.load(sys.stdin).get("token") or ""
-sys.exit("demo: node A has no invite token") if not t else sys.stdout.write(t)' > "$DEMO_DIR/join-token")
-  start_node b $B_CONSOLE $B_API $B_DOOR client --join-file "$DEMO_DIR/join-token"
-  until_ok 300 "node B to list node A's model" has_model
+  start_both
   echo "  node A console http://127.0.0.1:$A_CONSOLE · node B console http://127.0.0.1:$B_CONSOLE"
 
-  say "3/5  Each node's evidence door learns the other node's public key (before any traffic)"
+  say "3/5  Each node learns the other node's public key (before any traffic)"
+  # A node's key and id exist only after its first start, and a running
+  # node's environment can't change: record both, then restart both with them.
   until_ok 120 "both plugins to report their peer id and key" wired
-  echo "export ADMISSION_POLICY_PEER_KEYS='{\"$(self_id a)\":\"$(pub_key a)\",\"$(self_id b)\":\"$(pub_key b)\"}'" > "$DEMO_DIR/peer-keys.env"
-  start_door a $A_DOOR; start_door b $B_DOOR
+  printf '{"%s":"%s","%s":"%s"}' "$(self_id a)" "$(pub_key a)" "$(self_id b)" "$(pub_key b)" > "$DEMO_DIR/peer-keys.json"
+  stop_node b $B_CONSOLE $B_API; stop_node a $A_CONSOLE $A_API
+  start_both
   echo "  node A $(self_id a | cut -c1-10)… · node B $(self_id b | cut -c1-10)…"
 
   say "4/5  One exchange: node B asks node A's model"
@@ -210,12 +203,7 @@ sys.exit("demo: node A has no invite token") if not t else sys.stdout.write(t)' 
 }
 
 down() {
-  local n w
-  for n in b a; do for w in door node; do
-    alive "$DEMO_DIR/$n/$w.pid" && kill -TERM "$(cat "$DEMO_DIR/$n/$w.pid")" 2>/dev/null || true
-    rm -f "$DEMO_DIR/$n/$w.pid"
-  done; done
-  for p in $A_CONSOLE $A_API $A_DOOR $B_CONSOLE $B_API $B_DOOR; do until_ok 60 "port $p to close" bash -c "! (exec 3<>/dev/tcp/127.0.0.1/$p) 2>/dev/null"; done
+  stop_node b $B_CONSOLE $B_API; stop_node a $A_CONSOLE $A_API
   rm -f "$DEMO_DIR/join-token"
   "$PYTHON" "$HERE/redact-node-log.py" "$DEMO_DIR" >/dev/null && echo "demo: stopped; invite token redacted from the logs"
 }
@@ -227,17 +215,7 @@ case "${1:-}" in
   down) down ;;
   restart)      # restart a stopped run on its own data: no install, no new exchange
     for v in MESH_LLM_BIN MESH_LLM_NATIVE_RUNTIME_BUNDLE_DIR GGUF; do need $v; done
-    start_node a $A_CONSOLE $A_API $A_DOOR serve --gguf "$GGUF" --ctx-size 2048
-    rm -f "$DEMO_DIR/join-token"
-    (umask 077; curl -fs "http://127.0.0.1:$A_CONSOLE/api/status" | "$PYTHON" -c 'import json,sys; t=json.load(sys.stdin).get("token") or ""; sys.exit("no token") if not t else sys.stdout.write(t)' > "$DEMO_DIR/join-token")
-    start_node b $B_CONSOLE $B_API $B_DOOR client --join-file "$DEMO_DIR/join-token"
-    until_ok 300 "node B to list node A's model" has_model
-    start_door a $A_DOOR; start_door b $B_DOOR
+    start_both
     echo "demo: restarted on $DEMO_DIR (no new exchange)"; status ;;
-  door-stop)    # door-stop a|b : stop one node's evidence door (its node keeps running)
-    n=${2:?a|b}; alive "$DEMO_DIR/$n/door.pid" && kill -TERM "$(cat "$DEMO_DIR/$n/door.pid")"; rm -f "$DEMO_DIR/$n/door.pid"
-    port=$([ "$n" = a ] && echo $A_DOOR || echo $B_DOOR); until_ok 30 "door $n to close" bash -c "! (exec 3<>/dev/tcp/127.0.0.1/$port) 2>/dev/null"; echo "door $n stopped" ;;
-  door-start)   # door-start a|b
-    n=${2:?a|b}; start_door "$n" "$([ "$n" = a ] && echo $A_DOOR || echo $B_DOOR)"; echo "door $n started" ;;
-  *) sed -n '2,20p' "$0"; echo "  door-stop|door-start a|b  stop / start one node's evidence door"; exit 2 ;;
+  *) sed -n '2,20p' "$0"; exit 2 ;;
 esac

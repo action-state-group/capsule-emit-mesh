@@ -166,8 +166,8 @@ fn parse_usage(response_bytes: &[u8]) -> Option<TokenUsage> {
 }
 
 /// The generation-parameter (sampling knob) keys carried verbatim in the
-/// capsule, in step with the Python reference's `GENERATION_PARAM_KEYS`
-/// (`capsule_sidecar.py`). These are the settings the CLIENT asked for in the
+/// capsule, in step with the reference implementation's
+/// `GENERATION_PARAM_KEYS`. These are the settings the CLIENT asked for in the
 /// request -- requested, not proven-effective -- and are legible policy values
 /// (not prompt content), so they ride as-is rather than digested. Kept
 /// byte-identical to the Python list so both capture paths seal the SAME param
@@ -216,8 +216,8 @@ fn parse_generation_parameters(request_bytes: &[u8]) -> Map<String, Value> {
 
 /// The OPTIONAL labeled sub-digests over one response body: `tool_calls_digest`
 /// and `reasoning_digest`, each the canonical `jcs::json_digest` (plain JCS,
-/// matching the Python reference `capsule_ledger/conversation/exchange.py`'s
-/// `digest_conversation_exchange`) of the flattened `tool_calls` /
+/// matching the capsule-ledger package's `digest_conversation_exchange`) of
+/// the flattened `tool_calls` /
 /// `reasoning_content` across the response's assistant message(s). Each is
 /// `None` -- and then ABSENT from the sealed capsule, never a fabricated digest
 /// over `[]` -- when the response carried none. Used by the plugin-served path,
@@ -635,9 +635,8 @@ impl CapsuleState {
                 }
                 .to_string(),
                 // Renamed from the overclaiming `model_package_digest`: this is
-                // SHA-256 of the model NAME only, not the weights/package. The
-                // real package digest lives in the Python `model_identity.py`
-                // path; the live plugin only has the request's model name.
+                // SHA-256 of the model NAME only, not the weights/package: the
+                // live plugin only has the request's model name.
                 model_name_digest: hex_sha256(model.as_bytes()),
                 serving_provenance: ServingProvenance {
                     // Prefer the host event's serving node id; fall back to
@@ -1387,8 +1386,8 @@ impl CapsuleState {
     /// single-writer path (`seal` -> `attach_producer_envelope` ->
     /// `Ledger::append`) every other local capsule uses -- so the received
     /// half produces a chained, checkpoint-covered record OF OURS without the
-    /// foreign body ever entering `capsules.jsonl`. The Python door has
-    /// already verified the half and stored its bytes in the held-artifact
+    /// foreign body ever entering `capsules.jsonl`. The record-push receiver
+    /// has already verified the half and stored its bytes in the held-artifact
     /// store `received-capsules.jsonl`; this is the chained citation of it.
     /// "cite, never mutate."
     ///
@@ -1405,7 +1404,7 @@ impl CapsuleState {
     /// its citing records already cite (`Ledger::cites_counterparty_half`,
     /// rebuilt on open, keyed on `citation_purpose == "counterparty_half"`
     /// alone); a duplicate returns `Ok(None)` --
-    /// the half IS still received/held (the door stored it), there is just
+    /// the half IS still received/held (the receiver stored it), there is just
     /// nothing new to cite.
     pub fn emit_citing_record(
         &self,
@@ -1443,7 +1442,7 @@ impl CapsuleState {
 
     /// Seal, chain, and ledger the `counterparty_inclusion` citing record for
     /// a held half's inclusion evidence (a pushed bundle's proof + covering
-    /// checkpoint, verified and stored by the door) -- the same single-writer
+    /// checkpoint, verified and stored by the receiver) -- the same single-writer
     /// path as [`Self::emit_citing_record`], and deduped the same way: a
     /// re-pushed bundle for a half already covered seals nothing (`Ok(None)`).
     pub fn emit_inclusion_citing_record(
@@ -1484,6 +1483,7 @@ impl CapsuleState {
     /// `capsule_producer::capsule::seal_adjudication_issued_record`), on the
     /// same single-writer path as [`Self::emit_citing_record`]. A verdict
     /// already recorded seals nothing (`Ok(None)`).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn emit_adjudication_issued(
         &self,
         facts: &VerdictFacts,
@@ -1498,6 +1498,7 @@ impl CapsuleState {
     /// Seal this node's own record of a verdict delivered to it (see
     /// `capsule_producer::capsule::seal_adjudication_received_record`). A
     /// verdict already recorded seals nothing (`Ok(None)`).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn emit_adjudication_received(
         &self,
         facts: &VerdictFacts,
@@ -1517,19 +1518,7 @@ impl CapsuleState {
         })
     }
 
-    /// Seal this node's record of a verdict delivery its receiver refused
-    /// (see `capsule_producer::capsule::seal_adjudication_ack_refused_record`).
-    /// One record per verdict and receiver (`Ok(None)` for a repeat).
-    pub fn emit_adjudication_ack_refused(
-        &self,
-        refused: &capsule_producer::capsule::RefusedDelivery,
-    ) -> anyhow::Result<Option<EmittedCapsule>> {
-        let key = format!("{}/{}", refused.verdict_capsule_id, refused.refused_by);
-        self.emit_keyed_record(capsule_producer::capsule::ADJUDICATION_ACK_REFUSED_BLOCK, &key, |head, signing| {
-            capsule_producer::capsule::seal_adjudication_ack_refused_record(refused, head, signing)
-        })
-    }
-
+    #[cfg_attr(not(test), allow(dead_code))]
     fn emit_adjudication_record(
         &self,
         block: &str,
@@ -1539,6 +1528,7 @@ impl CapsuleState {
         self.emit_keyed_record(block, facts.verdict_capsule_id, seal)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn emit_keyed_record(
         &self,
         block: &str,
@@ -3623,7 +3613,7 @@ mod tests {
 
     /// The two-sided ledger's peer fetch: the requester-side
     /// capsule carries the PEER's self-asserted capsule id -- the lookup key
-    /// an evidence-door fetch will dereference to populate the two-sided
+    /// a ledger fetch will dereference to populate the two-sided
     /// ledger's "theirs" column. Forwarded verbatim, labeled as self-attested
     /// (`peer_asserted`), never promoted to a verified/countersigned claim.
     #[test]

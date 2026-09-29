@@ -12,7 +12,6 @@ import {
   attachPushedHalfRecomputeToPaneB,
   attachPushedHalfRecomputeToPaneC
 } from '@/features/capsules/lib/pushed-half-recompute'
-import { DOOR_ROUTE, type DoorStatus } from '@/features/capsules/lib/door-status'
 import { PluginRouteError, getPluginJson } from '@/plugin-host/host'
 
 /** A non-2xx from a pane route, carrying the HTTP status so callers can tell
@@ -52,8 +51,3 @@ export function fetchPaneCDrilldown(exchangeId: string): Promise<PaneCDrilldownJ
   return getPluginJson<PaneCDrilldownJson>(`${PANE_ROUTES.paneC}?exchange_id=${encodeURIComponent(exchangeId)}`)
 }
 
-/** Whether this node's evidence door is running and holds this install's
- *  token (`http/door`). */
-export function fetchDoorStatus(): Promise<DoorStatus> {
-  return getPluginJson<DoorStatus>(DOOR_ROUTE)
-}

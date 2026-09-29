@@ -53,7 +53,7 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
     expect(screen.getByText('row b')).toBeInTheDocument()
   })
 
-  it('LOAD-BEARING — item 4: never renders a verdict word (PASS/FAIL/identical/differs), only "no verdict"', () => {
+  it('LOAD-BEARING — item 4: never renders a verdict word (PASS/FAIL/identical/differs), only "not adjudicated"', () => {
     const rows = [
       twinRow('a', { mine: { state: 'present', capsule_id: null, text: 'same text' } }),
       twinRow('b', { mine: { state: 'present', capsule_id: null, text: 'same text' } })
@@ -64,7 +64,8 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
         <p>row b</p>
       </TwinBracket>
     )
-    expect(screen.getByText('no verdict')).toBeInTheDocument()
+    expect(screen.getByText('not adjudicated')).toBeInTheDocument()
+    expect(screen.getByText('Not adjudicated: this node has no referee yet.')).toBeInTheDocument()
     expect(screen.queryByText(/\bPASS\b/)).not.toBeInTheDocument()
     expect(screen.queryByText(/\bFAIL\b/)).not.toBeInTheDocument()
     expect(screen.queryByText(/identical/i)).not.toBeInTheDocument()
@@ -114,7 +115,7 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
     expect(screen.getByText('Second answer')).toBeInTheDocument()
   })
 
-  it('says "same answer" / "different answers" from the pane twin facts, and keeps "no verdict" until a referee signs one', () => {
+  it('says "same answer" / "different answers" from the pane twin facts, and keeps "not adjudicated" until a referee signs one', () => {
     const facts = (same: boolean | null) => ({ bracket_id: 'twin-xyz', same_answer: same, other_row: null })
     const { unmount } = render(
       <TwinBracket bracketId="twin-xyz" rows={[twinRow('a', { twin: facts(true) }), twinRow('b', { twin: facts(true) })]} twinSampleRateDenominator={1}>
@@ -122,7 +123,7 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
       </TwinBracket>
     )
     expect(screen.getByText('same answer')).toBeInTheDocument()
-    expect(screen.getByText('no verdict')).toBeInTheDocument()
+    expect(screen.getByText('not adjudicated')).toBeInTheDocument()
     unmount()
     const second = render(
       <TwinBracket bracketId="twin-xyz" rows={[twinRow('a', { twin: facts(false) }), twinRow('b', { twin: facts(false) })]} twinSampleRateDenominator={1}>
@@ -139,7 +140,7 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
     expect(screen.getByText('not compared yet')).toBeInTheDocument()
   })
 
-  it("shows the referee's signed verdict, and only then drops \"no verdict\"", () => {
+  it("shows the referee's signed verdict, and only then drops \"not adjudicated\"", () => {
     const withVerdict = {
       bracket_id: 'twin-xyz',
       same_answer: false,
@@ -153,7 +154,7 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
       </TwinBracket>
     )
     expect(screen.getByText(/referee: contradicted 2e981e8089/)).toBeInTheDocument()
-    expect(screen.queryByText('no verdict')).not.toBeInTheDocument()
+    expect(screen.queryByText('not adjudicated')).not.toBeInTheDocument()
     expect(screen.getByText(/a9a0ca668223/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'View the verdict' })).toBeInTheDocument()
     // The signature is checked only when the record is opened, so the face
@@ -162,7 +163,7 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
     expect(screen.getByTestId('twin-bracket-twin-xyz').textContent).not.toMatch(/signed verdict/)
   })
 
-  it('a not-comparable ruling is a verdict, shown as not comparable, never as no verdict or a disagreement', () => {
+  it('a not-comparable ruling is a verdict, shown as not comparable, never as not adjudicated or a disagreement', () => {
     render(
       <TwinBracket
         bracketId="twin-xyz"
@@ -173,7 +174,7 @@ describe('TwinBracket — v3 §5, OBSERVE-ONLY', () => {
       </TwinBracket>
     )
     expect(screen.getByText('not comparable')).toBeInTheDocument()
-    expect(screen.queryByText('no verdict')).not.toBeInTheDocument()
+    expect(screen.queryByText('not adjudicated')).not.toBeInTheDocument()
     expect(screen.queryByText(/contradicted/)).not.toBeInTheDocument()
   })
 
