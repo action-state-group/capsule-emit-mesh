@@ -26,31 +26,3 @@ ade1789f73ba5e617eaa2d6b18fbc691b63ca4f9:plugins/admission-policy/web-ui/src/fea
 af9815c74a3a2aa03cfac605ec6dc1642afa2630:moderation_twin.py:generic-api-key:115
 # the Ed25519PrivateKey type annotation
 f5d875b95fe775226c985d32148dd8fc3e2985c4:moderation_twin.py:generic-api-key:115
-
-# In branches not yet published.
-# a fixture PUBLIC key id in a unit test
-2bc5223f42925a41dc0e8d210e4368f3b3f7e80e:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:3271
-# a fixture PUBLIC key id in a unit test
-2bc5223f42925a41dc0e8d210e4368f3b3f7e80e:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:3272
-# a fixture PUBLIC key id in a unit test
-3a2e3c48a48f5495983f208b96a41393bf507048:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:2589
-# a fixture PUBLIC key id in a unit test
-3a2e3c48a48f5495983f208b96a41393bf507048:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:2676
-# a fixture PUBLIC key id in a unit test
-3a2e3c48a48f5495983f208b96a41393bf507048:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:2722
-# a fixture PUBLIC key id in a unit test
-3a2e3c48a48f5495983f208b96a41393bf507048:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:2766
-# a fixture PUBLIC key id in a unit test
-3a2e3c48a48f5495983f208b96a41393bf507048:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:2795
-# a fixture PUBLIC key id in a unit test
-3a2e3c48a48f5495983f208b96a41393bf507048:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:2906
-# a fixture PUBLIC key id in a unit test
-6ac92aee8fa801e8f6e6cd923febcea4fa1475d2:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:3089
-# the HMAC of the all-zero test token (a cross-language test vector)
-78e3845e30e59ed5e875df3cd18aa56d9aee9079:tests/test_door_auth.py:generic-api-key:34
-# the HMAC of the all-zero test token (a cross-language test vector)
-8b5f831a22a76e3d842d839168032c7d8a91160e:tests/test_door_auth.py:generic-api-key:34
-# prose (a token count)
-e108bcfe66df029ba47419884dee40c51ffe25dd:_work/mesh-live-run-2026-09-06/EVIDENCE.md:generic-api-key:220
-# a fixture PUBLIC key id in a unit test
-e61873f7f91798bc434dec40638d902a1e88fdc7:plugins/admission-policy/src/evidence_panes.rs:generic-api-key:2880
