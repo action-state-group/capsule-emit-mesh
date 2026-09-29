@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Provenance fold, option 3b: the sidecar<->plugin
+"""Provenance fold: the sidecar<->plugin
 hardware-provenance join.
 
 Proves `provenance_fold_join.join_hardware_provenance` mints a join capsule

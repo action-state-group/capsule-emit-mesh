@@ -70,7 +70,7 @@ signature are RECOMPUTED at render time via
 tab runs (the JS ``mesh_verify.js`` recompute's Python-equivalent
 implementation) -- never asserted from a passed-through field.
 
-[ledger-T9-retire-rung-vocab]: this view no longer computes or exposes the
+This view no longer computes or exposes the
 freshness/cross-party/runtime-binding rung ladder (``rung``/
 ``unilateral_fallback`` were never rendered here, only carried in the public
 JSON payload) -- ``properties`` above is this pane's one graded surface.
