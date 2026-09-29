@@ -59,12 +59,15 @@ pub struct PeerKeyArgs {
 pub const ENV_PEER_KEYS: &str = "ADMISSION_POLICY_PEER_KEYS";
 
 /// The key `peer` is announced with in `registry` (the JSON object in
-/// [`ENV_PEER_KEYS`]), lower-case. `None` when the map is unset, is not a
-/// JSON object, or has no non-empty string for `peer`: never a guess.
+/// [`ENV_PEER_KEYS`]), exactly as the operator wrote it. `None` when the map
+/// is unset, empty, not JSON, not a JSON object, or has no non-empty string
+/// for `peer`: never a guess. The same rule as the door's
+/// `peer_keys.announced_key_for`; replace with the plugin's shared
+/// `peer_keys::announced_key_in` once that lands, so the rule has one copy.
 pub fn announced_key_for(registry: Option<&str>, peer: &str) -> Option<String> {
-    let registry: Value = serde_json::from_str(registry?).ok()?;
-    let key = registry.as_object()?.get(peer)?.as_str()?.trim();
-    (!key.is_empty()).then(|| key.to_ascii_lowercase())
+    let registry: Value = serde_json::from_str(registry.filter(|r| !r.is_empty())?).ok()?;
+    let key = registry.as_object()?.get(peer)?.as_str()?;
+    (!key.is_empty()).then(|| key.to_string())
 }
 
 /// `peer-key`: what "Ask them for their record" judges a reply under. The
@@ -79,7 +82,7 @@ pub fn peer_key_json(registry: Option<&str>, peer: &Value) -> Result<Value, Plug
             "peer must be a 64-hex endpoint id",
         ));
     };
-    Ok(json!({ "announced_key_id": announced_key_for(registry, &peer.to_ascii_lowercase()) }))
+    Ok(json!({ "announced_key_id": announced_key_for(registry, peer) }))
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -515,13 +518,19 @@ mod tests {
     #[test]
     fn a_peer_key_is_the_announced_one_or_null_never_a_guess() {
         let peer = "ab".repeat(32);
-        let registry = format!("{{\"{peer}\": \" CDEF \"}}");
+        let registry = format!("{{\"{peer}\": \"CDef\"}}");
+        // As written, for exactly that id (the door's rule).
+        assert_eq!(
+            peer_key_json(Some(&registry), &json!(peer)).unwrap(),
+            json!({"announced_key_id": "CDef"})
+        );
         assert_eq!(
             peer_key_json(Some(&registry), &json!(peer.to_uppercase())).unwrap(),
-            json!({"announced_key_id": "cdef"})
+            json!({"announced_key_id": null})
         );
         for registry in [
             None,
+            Some(""),
             Some("not json"),
             Some("[]"),
             Some("{\"other\": \"k\"}"),
@@ -532,7 +541,11 @@ mod tests {
             );
         }
         assert_eq!(
-            announced_key_for(Some(&format!("{{\"{peer}\": \"  \"}}")), &peer),
+            announced_key_for(Some(&format!("{{\"{peer}\": \"\"}}")), &peer),
+            None
+        );
+        assert_eq!(
+            announced_key_for(Some(&format!("{{\"{peer}\": 7}}")), &peer),
             None
         );
         for bad in [json!("ab"), json!(7), json!(null)] {
