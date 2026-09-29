@@ -273,23 +273,21 @@ pub struct MeshPocV1 {
     /// the `served_by_node_id`-vs-self consistency check disagree -- both raw
     /// signals still ride alongside in `serving_provenance` so a reader never
     /// has to take this label's word for it), or `"unknown"` (an
-    /// unrecognized `dispatch_path`). 2026-09-06 role ruling.
-    /// `capsule_mesh_view.label_role()` reads this exact top-level field
-    /// FIRST, as the authoritative signal -- mirrors `capsule_sidecar.py`'s
-    /// own top-level `x-mesh-poc-v1.role` field exactly, and deliberately
-    /// lives HERE, a sibling of `serving_provenance`, not nested inside it:
-    /// `serving_provenance` there already has its own `role` key in the
-    /// Python sidecar's unrelated CLI-role vocabulary ("provider"/
-    /// "requester"), a different axis this field must never collide with.
+    /// unrecognized `dispatch_path`). A reader takes this top-level field
+    /// FIRST, as the authoritative signal. It deliberately lives HERE, a
+    /// sibling of `serving_provenance`, not nested inside it: other producers
+    /// use a `serving_provenance.role` key for an unrelated vocabulary
+    /// ("provider"/"requester"), a different axis this field must never
+    /// collide with.
     /// NEVER silently defaulted to `"served"` -- a missing/unrecognized
     /// signal must never become a claim; that silent default was the actual
     /// bug this field exists to close.
     pub role: String,
-    /// Complementary vantage provenance (2026-09-06 ruling, option C):
+    /// Complementary vantage provenance:
     /// `Some("client_egress")` on the `RemoteMesh` dispatch path only -- this
     /// node observed the exchange at its own outbound/client-facing vantage
     /// point, not a serving vantage. `None` on every other path. A top-level
-    /// sibling of `role`, mirroring where `capsule_sidecar.py` places its own
+    /// sibling of `role`, where other producers place their own
     /// (provisional) `observation_point` field. Independent of `role`: one
     /// more honestly-scoped fact, not a restatement of it.
     pub observation_point: Option<String>,
