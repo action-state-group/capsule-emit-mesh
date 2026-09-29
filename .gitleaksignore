@@ -1,0 +1,28 @@
+# gitleaks: findings checked by hand and found NOT to be secrets. Each entry is one exact
+# finding (commit:path:rule:line). A new finding is never covered by these: check it, then add it here with its reason.
+
+# In the published history.
+# the Ed25519PrivateKey type annotation
+41c1d6ae2e5ecb49c37f92e661118dec707594b5:requester_identity_binding.py:generic-api-key:120
+# the Ed25519PrivateKey type annotation
+5076c10a9d55703f7b29ea840ae94fb505f87118:requester_commitment.py:generic-api-key:101
+# the Ed25519PrivateKey type annotation
+78f3900bf000d431220bef3cd3a7e7dda3852906:delegation_issuer.py:generic-api-key:127
+# the Ed25519PrivateKey type annotation
+7921438c9cfc55481b4a98028eeadb8411e5cdb7:delegation_issuer.py:generic-api-key:127
+# the Ed25519PrivateKey type annotation
+8c0b4e5a3e74fff94c7b7a3158771d88844363af:requester_identity_binding.py:generic-api-key:119
+# the Ed25519PrivateKey type annotation
+9fd84058dbdd103033a4f27951baec3378323eb4:requester_commitment.py:generic-api-key:76
+# the Ed25519PrivateKey type annotation
+aa280e87dbbb75d716da5fbc17a77d9aec7e7053:bilateral_demo.py:generic-api-key:83
+# a fixture exchange id (exch-*)
+ade1789f73ba5e617eaa2d6b18fbc691b63ca4f9:plugins/admission-policy/web-ui/src/features/capsules/lib/exchange-fixtures.ts:generic-api-key:294
+# a fixture exchange id (exch-*)
+ade1789f73ba5e617eaa2d6b18fbc691b63ca4f9:plugins/admission-policy/web-ui/src/features/capsules/lib/exchange-fixtures.ts:generic-api-key:331
+# a fixture exchange id (exch-*)
+ade1789f73ba5e617eaa2d6b18fbc691b63ca4f9:plugins/admission-policy/web-ui/src/features/capsules/pages/LedgerPage.test.tsx:generic-api-key:953
+# the Ed25519PrivateKey type annotation
+af9815c74a3a2aa03cfac605ec6dc1642afa2630:moderation_twin.py:generic-api-key:115
+# the Ed25519PrivateKey type annotation
+f5d875b95fe775226c985d32148dd8fc3e2985c4:moderation_twin.py:generic-api-key:115

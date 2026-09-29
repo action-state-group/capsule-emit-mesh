@@ -1,3 +1,8 @@
 __pycache__/
 *.pyc
 keys/node-key*.pem
+# A node's own signing key and data dir, wherever a run creates them.
+**/keys/node-key*.pem
+**/admission-policy-data/
+**/plugin-data/
+**/demo-plugin-keys/
