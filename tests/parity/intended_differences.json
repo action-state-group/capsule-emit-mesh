@@ -1,0 +1,51 @@
+{
+ "cases": {
+  "bundle_version_bool": {
+   "answers": [
+    {
+     "appended": {},
+     "reply": {
+      "issued_at_is_now": true,
+      "refused": "bundle_malformed",
+      "request_digest_is_body_sha256": true,
+      "signed_by_node": true,
+      "status": null
+     }
+    }
+   ],
+   "why": "The Python door compares the bundle marker with `!= 1`, and in Python `True == 1`, so a bundle marked `\"record_push_bundle\": true` is read as version 1. Every other count in a bundle must be an exact integer, never a bool (the door's own S2 rule); the port applies that rule to the marker too and refuses the bundle bundle_malformed."
+  },
+  "bundle_version_float": {
+   "answers": [
+    {
+     "appended": {},
+     "reply": {
+      "issued_at_is_now": true,
+      "refused": "bundle_malformed",
+      "request_digest_is_body_sha256": true,
+      "signed_by_node": true,
+      "status": null
+     }
+    }
+   ],
+   "why": "The Python door compares the bundle marker with `!= 1`, and in Python `1.0 == 1`, so a bundle marked `\"record_push_bundle\": 1.0` is read as version 1. Every other count in a bundle must be an exact integer (the door's own S2 rule); the port applies that rule to the marker too and refuses the bundle bundle_malformed."
+  },
+  "raw_utf16": {
+   "answers": [
+    {
+     "appended": {},
+     "reply": {
+      "issued_at_is_now": true,
+      "refused": "request_malformed",
+      "request_digest_is_body_sha256": true,
+      "signed_by_node": true,
+      "status": null
+     }
+    }
+   ],
+   "why": "Python's json.loads, given bytes, detects UTF-16 and UTF-32 and reads them, so the door holds a record pushed as UTF-16. JSON exchanged between systems is UTF-8 (RFC 8259 section 8.1), and the port reads only UTF-8: the same bytes are refused request_malformed and nothing is stored."
+  }
+ },
+ "note": "Cases where the port is held to a different answer than the Python door gives. Each is a Python leniency the port does not copy; the golden file stays exactly what the Python door answers.",
+ "v": 1
+}
