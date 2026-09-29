@@ -116,7 +116,7 @@ const RECORD_TYPE_PADDING: &str = "padding";
 /// is shown as a record, never hidden.
 fn is_padding_record(record: &Value) -> bool {
     record.get("record_type").and_then(Value::as_str) == Some(RECORD_TYPE_PADDING)
-        && capsule_producer::padding::check_padding_shape(record).is_ok()
+        && crate::producer::padding::check_padding_shape(record).is_ok()
 }
 
 /// Every line of `<ledger_dir>/capsules.jsonl`, padding included, in leaf
@@ -2305,12 +2305,12 @@ fn attach_adjudications(
         let Some(attestation) = record.pointer("/model_attestation/compute_attestation") else {
             continue;
         };
-        if let Some(block) = attestation.get(capsule_producer::capsule::ADJUDICATION_ISSUED_BLOCK) {
+        if let Some(block) = attestation.get(crate::producer::capsule::ADJUDICATION_ISSUED_BLOCK) {
             if let Some(referee) = block.get("referee_capsule_id").and_then(Value::as_str) {
                 issued.insert(referee.to_string(), block);
             }
         }
-        if let Some(block) = attestation.get(capsule_producer::capsule::ADJUDICATION_RECEIVED_BLOCK) {
+        if let Some(block) = attestation.get(crate::producer::capsule::ADJUDICATION_RECEIVED_BLOCK) {
             for (i, half) in block.get("halves").and_then(Value::as_array).into_iter().flatten().enumerate() {
                 if let Some(half) = half.as_str() {
                     received.insert(half.to_string(), (block, i));
@@ -3640,8 +3640,8 @@ mod tests {
         assert!(twins(&missing).iter().all(|x| x["same_answer"].is_null()));
     }
 
-    fn verdict_facts<'a>(halves: [&'a str; 2], nodes: [&'a str; 2], verdict: &'a str) -> capsule_producer::capsule::VerdictFacts<'a> {
-        capsule_producer::capsule::VerdictFacts {
+    fn verdict_facts<'a>(halves: [&'a str; 2], nodes: [&'a str; 2], verdict: &'a str) -> crate::producer::capsule::VerdictFacts<'a> {
+        crate::producer::capsule::VerdictFacts {
             verdict,
             verdict_capsule_id: "vvvv26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d",
             referee_node_id: "c0c0c0",
@@ -3672,7 +3672,7 @@ mod tests {
         let provenance: HashMap<String, ReceivedProvenance> =
             [provenance_for(&h_a, &node_a), provenance_for(&h_b, &node_b)].into_iter().collect();
         let verdict = format!("contradicted:{node_b}");
-        let received = capsule_producer::capsule::seal_adjudication_received_record(
+        let received = crate::producer::capsule::seal_adjudication_received_record(
             &verdict_facts([&h_a, &h_b], [&node_a, &node_b], &verdict),
             &h_a,
             "courier",
@@ -3700,7 +3700,7 @@ mod tests {
         let (h_a, h_b) = ("3".repeat(64), "4".repeat(64));
         let own_b = mesh_half_served_by(&h_b, "served", &"d".repeat(64), &"6".repeat(64), "b-1", node_b);
         let seal = |verdict: &str| {
-            capsule_producer::capsule::seal_adjudication_received_record(
+            crate::producer::capsule::seal_adjudication_received_record(
                 &verdict_facts([&h_a, &h_b], [node_a, node_b], verdict),
                 &h_b,
                 "courier",
@@ -3724,7 +3724,7 @@ mod tests {
         let answer = mesh_half_served_by(&referee_record, "served", &"f".repeat(64), &"0".repeat(64), "r-1", "c0c0c0");
         let other = mesh_half_served_by(&"8".repeat(64), "served", &"e".repeat(64), &"1".repeat(64), "r-2", "c0c0c0");
         let (h_a, h_b) = ("3".repeat(64), "4".repeat(64));
-        let issued = capsule_producer::capsule::seal_adjudication_issued_record(
+        let issued = crate::producer::capsule::seal_adjudication_issued_record(
             &verdict_facts([&h_a, &h_b], ["a0a0", "b0b0"], "contradicted:b0b0"),
             Some(&referee_record),
             "2026-09-28T15:00:00Z",
@@ -3748,7 +3748,7 @@ mod tests {
     fn a_received_adjudication_record_is_not_this_nodes_verdict() {
         let (h_a, h_b) = ("3".repeat(64), "4".repeat(64));
         let own_b = mesh_half_served_by(&h_b, "served", &"d".repeat(64), &"6".repeat(64), "b-1", "b0b0");
-        let foreign = capsule_producer::capsule::seal_adjudication_received_record(
+        let foreign = crate::producer::capsule::seal_adjudication_received_record(
             &verdict_facts([&h_a, &h_b], ["a0a0", "b0b0"], "contradicted:b0b0"),
             &h_b,
             "courier",

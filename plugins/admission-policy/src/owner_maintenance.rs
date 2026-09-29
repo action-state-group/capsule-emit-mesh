@@ -28,7 +28,7 @@
 //! `mesh_evidence_request` is.
 
 use crate::capsule_emit::{CapsuleState, EmittedCapsule};
-use capsule_producer::capsule::{OwnerMaintenance, OWNER_MAINTENANCE_BLOCK};
+use crate::producer::capsule::{OwnerMaintenance, OWNER_MAINTENANCE_BLOCK};
 use mesh_llm_plugin::{PluginError, PluginResult};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -455,7 +455,7 @@ impl Maintenance {
             .emit_owner_maintenance(&OwnerMaintenance { kind: "history_closing", facts, prior_history_head: None })
             .map_err(internal)?;
         let pending = PendingNewHistory {
-            requested_at: capsule_producer::timestamp::utc_now_iso8601(),
+            requested_at: crate::producer::timestamp::utc_now_iso8601(),
             prior_log_id: self.log_id.clone(),
             closing_record_id: emitted.capsule_id.clone(),
             archived_as: None,
@@ -518,7 +518,7 @@ fn sharing_status() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use capsule_producer::ledger::Ledger;
+    use crate::producer::ledger::Ledger;
 
     #[test]
     fn a_witness_url_is_shown_without_any_credential() {
@@ -580,7 +580,7 @@ mod tests {
     /// The chain the owner ends up with must still open clean: every link,
     /// id and signed statement re-checked by the same code that loads it.
     fn reopen_clean(dir: &Path) -> Ledger {
-        Ledger::open(&dir.join("ledger")).expect("chain must reload clean after a cleanup").0
+        crate::producer::index::open_ledger(&dir.join("ledger")).expect("chain must reload clean after a cleanup").0
     }
 
     #[test]
@@ -760,7 +760,7 @@ mod tests {
         finish_pending_after_open(&dir, &state, &log_id).unwrap();
         assert!(read_pending(&dir).is_none());
 
-        let (old, _) = Ledger::open(&dir.join("archive/1")).expect("the old history still opens clean");
+        let (old, _) = crate::producer::index::open_ledger(&dir.join("archive/1")).expect("the old history still opens clean");
         assert_eq!(old.chain_head(), Some(closing_id.as_str()));
         assert_eq!(old.len(), 4);
         assert!(dir.join("archive/1/disclosures").exists(), "stored text moves with its records");

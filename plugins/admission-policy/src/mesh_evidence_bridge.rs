@@ -384,7 +384,7 @@ pub fn requested_adjudication(peer_id: &str, request: &serde_json::Value) -> Opt
         "referee": peer_id,
         "halves": halves,
         "twin_bracket_id": request.get("twin_bracket_id").cloned().unwrap_or(serde_json::Value::Null),
-        "asked_at": capsule_producer::timestamp::utc_now_minute(),
+        "asked_at": crate::producer::timestamp::utc_now_minute(),
     }))
 }
 

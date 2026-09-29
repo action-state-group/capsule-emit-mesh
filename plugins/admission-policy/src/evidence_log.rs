@@ -214,7 +214,7 @@ impl LedgerIndex {
             .ok_or("capsule_id is not 32 bytes")?;
         add_leaf(&mut self.nodes, leaf_hash(&raw)).map_err(|e| e.to_string())?;
         let index = self.leaves.len() as u64;
-        let padding = capsule_producer::padding::is_padding(&record);
+        let padding = crate::producer::padding::is_padding(&record);
         if !padding {
             self.by_id.entry(capsule_id.clone()).or_insert(index);
             let mut ids = Vec::new();
@@ -237,7 +237,7 @@ impl LedgerIndex {
             never_leaves: crate::evidence_panes::is_local_routing_choice(&record)
                 || record
                     .pointer("/model_attestation/compute_attestation")
-                    .and_then(|c| c.get(capsule_producer::capsule::OWNER_MAINTENANCE_BLOCK))
+                    .and_then(|c| c.get(crate::producer::capsule::OWNER_MAINTENANCE_BLOCK))
                     .is_some(),
             facts: LeafFacts::of(&record),
         });
@@ -458,7 +458,7 @@ impl Responder for LogView<'_> {
 pub fn record_digest(body: &[u8]) -> Option<String> {
     let record: Value = serde_json::from_slice(body).ok()?;
     let stated = record.get("capsule_id").and_then(Value::as_str)?;
-    let recomputed = capsule_producer::jcs::compute_capsule_id(&record).ok()?;
+    let recomputed = crate::producer::jcs::compute_capsule_id(&record).ok()?;
     (recomputed == stated).then_some(recomputed)
 }
 

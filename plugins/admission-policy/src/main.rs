@@ -1,4 +1,9 @@
 mod adjudication_records;
+// Library-shaped: the split-stage verifier, the frame fold and a few record
+// kinds are exercised by their own tests and the split-stage fixtures, not
+// yet by a live path of this binary.
+#[allow(dead_code)]
+mod producer;
 mod capsule_emit;
 mod data_dir;
 mod checkpoint_cadence;
@@ -45,7 +50,7 @@ use axum::{
     Json, Router,
 };
 use capsule_emit::{CapsuleState, HostProvenance, ObservedHostExchange};
-use capsule_producer::capsule::TokenUsage;
+use crate::producer::capsule::TokenUsage;
 use decision::Decision;
 use lifecycle_channel::{
     peer_capsule_id_for_seal, HostServingProvenance, MirrorUsage, ObservedLifecycleEvents,
@@ -454,7 +459,7 @@ async fn handle_stage_event(
             return;
         }
     };
-    if event.block.side == capsule_producer::stage::Side::Coordinator {
+    if event.block.side == crate::producer::stage::Side::Coordinator {
         if let Err(error) = splits.collector.on_stage_zero(event, split_stage::now_ms()) {
             tracing::warn!(%error, dropped = splits.collector.dropped(), "stage-0 event not taken");
         }

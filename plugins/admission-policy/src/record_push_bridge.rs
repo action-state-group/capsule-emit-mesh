@@ -73,7 +73,7 @@ use mesh_llm_plugin::proto::{OpenMeshStreamRequest, OpenStreamRequest, OpenStrea
 use mesh_llm_plugin::{LocalListener, LocalStream, PluginContext, PluginError, PluginResult, bind_side_stream};
 use tokio::io::AsyncWriteExt;
 
-use capsule_producer::checkpoint::{inclusion_proof_json, Coverage};
+use crate::producer::checkpoint::{inclusion_proof_json, Coverage};
 
 use crate::capsule_emit::{CapsuleState, InclusionCitation, ReceivedHalfProvenance};
 
@@ -287,7 +287,7 @@ async fn bridge_inbound_record_push(
             capsules.signing_key(),
             &capsule_bytes,
             crate::record_push_receive::REASON_ADJUDICATION_UNAVAILABLE,
-            &capsule_producer::timestamp::utc_now_iso8601(),
+            &crate::producer::timestamp::utc_now_iso8601(),
         );
         tracing::info!(received_from = %sender_peer_id, "refused a delivered verdict: this node has no referee yet");
         write_half.write_all(&serde_json::to_vec(&refusal)?).await?;
@@ -353,7 +353,7 @@ async fn receive_pushed_record(
             &receiver,
             &body,
             Some(&sender_peer_id),
-            &capsule_producer::timestamp::utc_now_iso8601(),
+            &crate::producer::timestamp::utc_now_iso8601(),
         )
     })
     .await
@@ -438,7 +438,7 @@ async fn seal_citing_record_for_push(
     };
     let foreign_capsule_id = foreign_capsule_id.to_string();
     let received_from = sender_peer_id.to_string();
-    let received_at = capsule_producer::timestamp::utc_now_minute();
+    let received_at = crate::producer::timestamp::utc_now_minute();
     let foreign_input = foreign_digest(&foreign, "agent_input_digest").map(str::to_string);
     let foreign_output = foreign_digest(&foreign, "agent_output_digest").map(str::to_string);
     let capsules = capsules.clone();
@@ -723,8 +723,8 @@ mod tests {
     }
 
     fn sample_coverage() -> Coverage {
-        use capsule_producer::checkpoint::{CheckpointCadenceConfig, CheckpointState};
-        use capsule_producer::anchor::AnchorClient;
+        use crate::producer::checkpoint::{CheckpointCadenceConfig, CheckpointState};
+        use crate::producer::anchor::AnchorClient;
         use std::io::Write;
         let dir = std::env::temp_dir().join(format!("bundle-body-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -804,8 +804,8 @@ mod tests {
     /// ledger, build the bundle -- and the bundle's proof verifies against its
     /// checkpoint, which is signed by the half's own key.
     fn real_bundle(dir: &std::path::Path) -> serde_json::Value {
-        use capsule_producer::anchor::AnchorClient;
-        use capsule_producer::checkpoint::{CheckpointCadenceConfig, CheckpointState};
+        use crate::producer::anchor::AnchorClient;
+        use crate::producer::checkpoint::{CheckpointCadenceConfig, CheckpointState};
         let capsules = CapsuleState::open(dir, "rust-node").expect("open capsule state");
         let exchange = crate::capsule_emit::ExchangeRecord {
             model: "m",
@@ -856,7 +856,7 @@ mod tests {
                 .map(|v| v.as_str().unwrap().to_string())
                 .collect::<Vec<_>>()
         };
-        let proof = capsule_producer::checkpoint::InclusionProof {
+        let proof = crate::producer::checkpoint::InclusionProof {
             v: p["v"].as_u64().unwrap() as u32,
             kind: p["kind"].as_str().unwrap().to_string(),
             size: p["size"].as_u64().unwrap(),
@@ -880,9 +880,9 @@ mod tests {
         size: u64,
         leaf_index: u64,
         body: &[u8; 32],
-        proof: &capsule_producer::checkpoint::InclusionProof,
+        proof: &crate::producer::checkpoint::InclusionProof,
     ) -> bool {
-        capsule_producer::checkpoint::verify_inclusion(root, size, leaf_index, body, proof)
+        crate::producer::checkpoint::verify_inclusion(root, size, leaf_index, body, proof)
     }
 
     /// Writes `tests/fixtures/record_push_bundle_rust.json`, the bundle the

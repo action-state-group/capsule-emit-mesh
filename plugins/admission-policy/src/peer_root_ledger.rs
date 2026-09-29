@@ -61,7 +61,7 @@ impl CheckpointHead {
             "root": self.root,
             "timestamp_unix_ms": self.timestamp_unix_ms,
         });
-        capsule_producer::jcs::jcs(&value).context("canonicalize checkpoint head signing body")
+        crate::producer::jcs::jcs(&value).context("canonicalize checkpoint head signing body")
     }
 
     /// Verify this head's signature against `peer_id_hex`'s own mesh node

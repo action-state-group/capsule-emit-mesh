@@ -74,7 +74,7 @@ pub struct LeafFacts {
 
 impl LeafFacts {
     pub fn of(record: &Value) -> Self {
-        if capsule_producer::padding::is_padding(record) {
+        if crate::producer::padding::is_padding(record) {
             return Self::default();
         }
         let served = (crate::evidence_panes::label_role(record) == "served").then(|| {

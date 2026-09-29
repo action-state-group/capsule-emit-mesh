@@ -189,7 +189,7 @@ fn may_serve(record: &Value, requester_id: Option<&str>, history_segments: &str)
         || crate::evidence_panes::is_local_routing_choice(record)
         || record
             .pointer("/model_attestation/compute_attestation")
-            .and_then(|c| c.get(capsule_producer::capsule::OWNER_MAINTENANCE_BLOCK))
+            .and_then(|c| c.get(crate::producer::capsule::OWNER_MAINTENANCE_BLOCK))
             .is_some()
     {
         return false;
@@ -447,7 +447,7 @@ mod tests {
         let state = open_state("block");
         let block = state
             .emit_local_routing_choice(
-                capsule_producer::capsule::RoutingChoiceChange::Block,
+                crate::producer::capsule::RoutingChoiceChange::Block,
                 ASKER,
                 None,
                 &[3u8; 32],

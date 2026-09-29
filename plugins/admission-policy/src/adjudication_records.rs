@@ -86,8 +86,8 @@ fn recorded_as(ledger_dir: &std::path::Path, verdict_capsule_id: &str) -> Option
             continue;
         };
         for (block, kind) in [
-            (capsule_producer::capsule::ADJUDICATION_ISSUED_BLOCK, "issued"),
-            (capsule_producer::capsule::ADJUDICATION_RECEIVED_BLOCK, "received"),
+            (crate::producer::capsule::ADJUDICATION_ISSUED_BLOCK, "issued"),
+            (crate::producer::capsule::ADJUDICATION_RECEIVED_BLOCK, "received"),
         ] {
             if attestation.pointer(&format!("/{block}/verdict_capsule_id")).and_then(Value::as_str)
                 == Some(verdict_capsule_id)
@@ -110,7 +110,7 @@ pub fn verdict_json(ledger_dir: &std::path::Path, verdict_capsule_id: &str) -> V
     let Some(capsule) = held_verdict(ledger_dir, verdict_capsule_id) else {
         return json!({ "capsule": null, "signed_by_key_id": null, "verify_ok": false });
     };
-    let signature = capsule_producer::cose::verify_producer_envelope(&capsule);
+    let signature = crate::producer::cose::verify_producer_envelope(&capsule);
     let recorded = recorded_as(ledger_dir, verdict_capsule_id);
     let referee = capsule
         .pointer("/model_attestation/compute_attestation/adjudication/referee_node_id")
@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn a_verdict_the_reference_referee_signed_verifies_here() {
         let fx = fixture();
-        let key = capsule_producer::cose::verify_producer_envelope(&fx["verdict_capsule"]).expect("verifies");
+        let key = crate::producer::cose::verify_producer_envelope(&fx["verdict_capsule"]).expect("verifies");
         assert_eq!(json!(key), fx["referee_key_id"]);
     }
 

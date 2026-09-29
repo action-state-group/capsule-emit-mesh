@@ -7,11 +7,11 @@
 //! seals the record onto the node's one chain. The record names the peer by a
 //! salted commitment; the host chooses the salt, keeps it in its local store,
 //! and checks the returned commitment against its own
-//! (see `capsule_producer::capsule::seal_local_routing_choice`).
+//! (see `crate::producer::capsule::seal_local_routing_choice`).
 
 use std::sync::Arc;
 
-use capsule_producer::capsule::{RoutingChoiceChange, RoutingRuleCitation};
+use crate::producer::capsule::{RoutingChoiceChange, RoutingRuleCitation};
 use mesh_llm_plugin::{PluginError, PluginResult};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -118,7 +118,7 @@ mod tests {
         );
         assert_eq!(
             out["peer_commitment"].as_str(),
-            Some(capsule_producer::capsule::peer_commitment(&"a".repeat(64), &[7u8; 32]).as_str())
+            Some(crate::producer::capsule::peer_commitment(&"a".repeat(64), &[7u8; 32]).as_str())
         );
         assert!(
             out.get("salt").is_none(),
