@@ -18,7 +18,7 @@ import {
 } from '@/features/capsules/lib/peer-fixtures'
 import { deriveMeshStatus } from '@/features/capsules/lib/peer-mesh-status'
 import { advertisedOnlyRowView, dealtWithRowView, SELF_REPORTED_NOTE } from '@/features/capsules/lib/peer-row-view'
-import { ROUTING_NOT_ON_THIS_PAGE } from '@/features/capsules/lib/tooltip-copy'
+import { PEER_PAYMENTS_TOOLTIP, ROUTING_NOT_ON_THIS_PAGE } from '@/features/capsules/lib/tooltip-copy'
 
 const [CLEAN_ROW, ALARMED_ROW] = HARNESS_PANE_B_PAYLOAD.rows
 
@@ -94,7 +94,7 @@ describe('PeerTableRow — dealt-with peers', () => {
     expect(container.textContent).not.toContain('you measured')
   })
 
-  it('opens the PeerInspector modal on row click, Overview tab active by default -- meshStatus still flows to the modal', async () => {
+  it('opens the PeerInspector modal on row click, Overview tab active by default, with no liveness line', async () => {
     const user = userEvent.setup()
     const meshStatus = deriveMeshStatus(
       CLEAN_ROW.peer_id ?? '',
@@ -109,9 +109,12 @@ describe('PeerTableRow — dealt-with peers', () => {
 
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByRole('tab', { name: /overview/i })).toHaveAttribute('data-state', 'active')
-    // The modal's own Overview tab still shows the operational facts --
-    // only the summary row dropped them.
-    expect(within(dialog).getByText('online')).toBeInTheDocument()
+    // Accountability only: the drill shows no mesh status, latency or
+    // online state (the Network tab's), and no per-drill self-reported line.
+    for (const liveness of ['online', 'offline', 'status unknown', 'latency unknown', 'mesh status not available']) {
+      expect(within(dialog).queryByText(liveness)).not.toBeInTheDocument()
+    }
+    expect(within(dialog).queryByText('self-reported — not independently attested')).not.toBeInTheDocument()
   })
 
   it('the drill shows your dealings with them and says plainly that routing is not changed here', async () => {
@@ -166,5 +169,27 @@ describe('PeerTableRow — advertised-but-unused peers (no Pane B row)', () => {
 
     await user.click(screen.getByText('node:unused-peer'))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+})
+
+describe('PeerTableRow -- payments with this peer', () => {
+  const settlement = {
+    paid_exchanges: 3,
+    settled_payer_observed: 2,
+    no_settlement_seen: 1,
+    provider_book: 'not_available'
+  }
+
+  it('counts paid exchanges from your own records, with a one-sentence hover', () => {
+    renderInTable(<PeerTableRow meshStatus={null} view={dealtWithRowView({ ...CLEAN_ROW, settlement })} />)
+    const line = document.querySelector('[data-peer-payments]') as HTMLElement
+    expect(line.textContent).toContain('3 paid · 2 settled by your wallet · 1 no payment seen')
+    const describedBy = line.closest('[aria-describedby]')?.getAttribute('aria-describedby') as string
+    expect(document.getElementById(describedBy)?.textContent).toBe(PEER_PAYMENTS_TOOLTIP)
+  })
+
+  it('shows no payments line for a peer with no paid exchange on record', () => {
+    renderInTable(<PeerTableRow meshStatus={null} view={dealtWithRowView(CLEAN_ROW)} />)
+    expect(document.querySelector('[data-peer-payments]')).toBeNull()
   })
 })

@@ -138,6 +138,13 @@ export function pageIndexForGroupKey(pages: readonly ExchangeRowGroup[][], group
   return index === -1 ? null : index
 }
 
+/** The page holding the row with this key, whether it stands alone or sits
+ *  inside a group (a twin pair's group key is not either row's key). */
+export function pageIndexForRowKey(pages: readonly ExchangeRowGroup[][], rowKey: string): number | null {
+  const index = pages.findIndex((page) => page.some((group) => group.rows.some((row) => row.exchangeKey === rowKey)))
+  return index === -1 ? null : index
+}
+
 /** The row-index range `[start, end)` a page occupies in the flattened
  *  (filtered, time-ordered) stream -- used to slice the full-stream rail
  *  segments so cross-page continuity (L-N/L-O) can be detected per page. */

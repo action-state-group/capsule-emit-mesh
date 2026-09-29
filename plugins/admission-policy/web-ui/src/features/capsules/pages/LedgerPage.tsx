@@ -20,8 +20,16 @@ import { navigateHost } from '@/plugin-host/host'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { TabPanel } from '@/components/ui/TabPanel'
 import { fetchCapsuleLedger } from '@/features/capsules/api/client'
+import { askForRecord } from '@/features/capsules/api/evidenceRequestClient'
+import { judgeAskReply, type AskOutcome, type AskTarget } from '@/features/capsules/lib/ask-for-record'
 import type { CapsuleRecord, JsonRecord } from '@/features/capsules/api/types'
-import { PaneFetchError, fetchDoorStatus, fetchPaneA, fetchPaneB, fetchPaneCList } from '@/features/capsules/api/sidecarClient'
+import {
+  PaneFetchError,
+  fetchDoorStatus,
+  fetchPaneA,
+  fetchPaneB,
+  fetchPaneCList
+} from '@/features/capsules/api/sidecarClient'
 import { doorNotice } from '@/features/capsules/lib/door-status'
 import { balanceCoverage } from '@/features/capsules/lib/balance-view'
 import { LedgerPeersTable } from '@/features/capsules/components/LedgerPeersTable'
@@ -125,9 +133,18 @@ import {
   SETUP_STEPS_TOOLTIP,
   TRUST_MAP_URL,
   HERO_TOOLTIPS,
-  NO_CONTRADICTION_REASON,
-  SAMPLE_DATA_UNAVAILABLE
+  CLOSE_CARD_COUNTS_TOOLTIP,
+  CLOSE_CARD_TOOLTIP,
+  SAMPLE_DATA_UNAVAILABLE,
+  WITNESS_OFF
 } from '@/features/capsules/lib/tooltip-copy'
+import type { PaymentsPresence } from '@/features/capsules/api/sidecarTypes'
+import {
+  settlementCloseCounts,
+  settlementCloseLine,
+  type SettlementCloseCounts,
+  unjoinedSettlementText
+} from '@/features/capsules/lib/settlement-view'
 
 // ---------------------------------------------------------------------------
 // Error helper — honest fetch-failure messages, never "set the URL"
@@ -255,9 +272,10 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
   // headline count below instead of a synthetic "unknown peer" row.
   const allRawRows = query.data?.rows ?? []
   const dealtWithRawRows = allRawRows.filter((row) => peerDisplayId(row) !== null)
-  const unattributedExchangeCount = allRawRows
-    .filter((row) => peerDisplayId(row) === null)
-    .reduce((sum, row) => sum + (row.exchange_count ?? 0), 0)
+  // Counted from the SAME rows Exchanges lists (pane C), so the sentence
+  // "They appear under Exchanges" is true by construction: never a pane B
+  // residual that Exchanges does not show.
+  const unattributedExchangeCount = (paneCQuery.data?.rows ?? []).filter((row) => !row.counterparty).length
 
   // Closest-first (latency asc); any row carrying an alarm floats to top.
   const sortedDealtWithRawRows = sortPeerRows(dealtWithRawRows, (row) =>
@@ -330,9 +348,7 @@ function PeersSection({ recordsById }: { recordsById: Map<string, CapsuleRecord>
         exchangeSourcesFor={(peerId) => sourcesByPeerId.get(peerId) ?? []}
         meshStatus={meshStatus}
         recordsById={effectiveRecordsById}
-        throughSplit={peersThroughSplit(
-          (paneCQuery.data?.rows ?? []).flatMap((row) => (row.split ? [row.split] : []))
-        )}
+        throughSplit={peersThroughSplit((paneCQuery.data?.rows ?? []).flatMap((row) => (row.split ? [row.split] : [])))}
       />
     </div>
   )
@@ -474,14 +490,28 @@ function ExchangesSection({
   const [roleFilter, setRoleFilter] = useState<Set<string>>(new Set(ALL_ROLE_VALUES))
   const [checksFilter, setChecksFilter] = useState<Set<string>>(new Set(ALL_CHECKS_VALUES))
   const [stateFilter, setStateFilter] = useState<Set<string>>(new Set(ALL_STATE_FILTER_VALUES))
-  // the row's action cell must never open a
-  // detail surface of its own. The evidence-request carrier this would
-  // actually dispatch through is still unwired end-to-end (exchange-row-
-  // state.ts's own forward-compat note; capsule-emit-mesh's evidence_
-  // responder.py: "not yet reachable over the wire"), so this stays a no-op
-  // stub -- honest absence of a real ask, never a fabricated one -- until
-  // that carrier lands.
+  // the row's action cell must never open a detail surface of its own. The
+  // remaining row actions (view a statement, ask them to state their
+  // content) have no carrier yet, so they stay a no-op -- honest absence,
+  // never a fabricated result.
   const handleAskForHalf = useCallback((_row: ExchangeLedgerRow) => {}, [])
+
+  // "Ask them for their record": one evidence request to the other side over
+  // the mesh (this plugin's `mesh_evidence_request` tool), judged in
+  // `ask-for-record.ts`. The row shows "Asked …" at once, then whatever
+  // their reply proves. A saved sample can't ask anyone.
+  const [askOutcomes, setAskOutcomes] = useState<ReadonlyMap<string, AskOutcome>>(() => new Map())
+  const handleAskForRecord = useCallback((row: ExchangeLedgerRow, target: AskTarget) => {
+    const askedAt = new Date().toISOString()
+    const record = row.raw.mine.record as { effect?: { request_digest?: unknown } } | undefined
+    const requestDigest = typeof record?.effect?.request_digest === 'string' ? record.effect.request_digest : null
+    const settle = (outcome: AskOutcome) =>
+      setAskOutcomes((previous) => new Map(previous).set(row.exchangeKey, outcome))
+    settle({ kind: 'asking', at: askedAt })
+    void askForRecord(target.peerId, target.nonce)
+      .then((reply) => judgeAskReply(reply, requestDigest, askedAt))
+      .then(settle)
+  }, [])
 
   // windowed paging (v3 §2a) state. `pageIndex`
   // is the source of truth; render/handlers read `safePageIndex` so a
@@ -864,10 +894,11 @@ function ExchangesSection({
             triggerLabel="Filter exchanges"
             visibleCount={visibleRows.length}
           />
-          <DisabledReason reason={hasContradiction ? null : NO_CONTRADICTION_REASON}>
+          {/* Only when there is one to jump to: a greyed control that can
+             never act is noise (p2 item 1). */}
+          {hasContradiction ? (
             <Button
               className="ui-control h-8 gap-1.5 rounded-[var(--radius)] px-2.5 text-[length:var(--density-type-caption)]"
-              disabled={!hasContradiction}
               onClick={jumpToNextContradiction}
               size="sm"
               type="button"
@@ -875,7 +906,7 @@ function ExchangesSection({
             >
               Next contradiction ▸
             </Button>
-          </DisabledReason>
+          ) : null}
           {/* Two distinct actions, never collapsed: a CSV of the current
              view vs. the portable evidence bundle (full records). */}
           <Button
@@ -1002,6 +1033,8 @@ function ExchangesSection({
                         }
                         nodePubKeyPem={nodePubKeyPem}
                         onAction={handleAskForHalf}
+                        askOutcome={askOutcomes.get(row.exchangeKey) ?? null}
+                        onAskForRecord={harnessMode || sampleData ? undefined : handleAskForRecord}
                         ownerLinked={nodeOwnerLinked}
                         onToggleChecks={handleToggleChecks}
                         onToggleContent={handleToggleContent}
@@ -1153,6 +1186,50 @@ function SetupChecklist({ steps }: { steps: readonly SetupStep[] }) {
   )
 }
 
+/** The Close card: agreed periods need a Close record neither side has
+ *  sealed yet, so it says "none yet". The counts so far over inference and
+ *  payment sit under their own heading, never under "Agreed periods" --
+ *  counts only, never an amount. */
+function CloseCard({
+  counts,
+  payments,
+  unjoined
+}: {
+  counts: SettlementCloseCounts
+  payments: PaymentsPresence | undefined
+  unjoined: string | null
+}) {
+  return (
+    <div
+      className="panel-shell flex flex-col gap-1 rounded-[var(--radius-lg)] border border-border bg-panel px-[var(--panel-x)] py-[var(--panel-y)]"
+      data-testid="close-card"
+    >
+      <span className="type-label inline-flex items-center gap-1 text-fg-faint">
+        <span>Agreed periods</span>
+        <InfoHover census="integrity:close_card" describes="Agreed periods" label={CLOSE_CARD_TOOLTIP} />
+      </span>
+      <p className="text-sm text-foreground" data-close-agreed="true">
+        none yet
+      </p>
+      <span className="type-label mt-2 inline-flex items-center gap-1 text-fg-faint" data-close-counts-heading="true">
+        <span>Not in an agreed period yet</span>
+        <InfoHover
+          census="integrity:close_card_counts"
+          describes="Not in an agreed period yet"
+          label={CLOSE_CARD_COUNTS_TOOLTIP}
+        />
+      </span>
+      <p className="type-caption text-fg-dim" data-close-inference="true">
+        So far: {counts.exchanges} exchanges · {counts.closed} confirmed by the other side
+      </p>
+      <p className="type-caption text-fg-dim" data-close-settlement="true">
+        {settlementCloseLine(counts, payments)}
+      </p>
+      {unjoined ? <p className="type-caption text-fg-faint">{unjoined}</p> : null}
+    </div>
+  )
+}
+
 function IntegritySection() {
   const { mode } = useDataMode()
   const harnessMode = mode === 'harness'
@@ -1206,7 +1283,11 @@ function IntegritySection() {
   // counts exchanges. The difference is the records that note a record
   // received from the other side -- said on the tile so 8 and 5 reconcile.
   const receivedNoteCount = rows.filter((row) => row.kind === 'counterparty_half_citation').length
-  const ownExchangeCount = sealedCount - receivedNoteCount
+  // Payment records are this node's own log entries too, but not exchanges.
+  const paymentRecordCount = rows.filter((row) => row.kind === 'settlement_observation').length
+  // §7.5: a block or unblock is sealed too, but it is not an exchange.
+  const routingChoiceCount = rows.filter((row) => row.kind === 'local_routing_choice').length
+  const ownExchangeCount = sealedCount - receivedNoteCount - paymentRecordCount - routingChoiceCount
   // Same predicate the Exchanges stream badge uses (`deriveRightCellState`,
   // called with no live fetch state here -- Integrity has no per-row peer
   // fetch to draw on) so the two sections can never again show
@@ -1217,6 +1298,12 @@ function IntegritySection() {
   // Exchanges asserted CLOSED on the same rows from an unrelated bug).
   const closedByOtherSideCount = paneCRows.filter((row) => deriveRightCellState(row).kind === 'closed').length
   const contradictedCount = paneCRows.filter((row) => deriveRightCellState(row).kind === 'contradicted').length
+  // The Close card counts over the same rows with the same gate.
+  const closeCounts = settlementCloseCounts(paneCRows, (row) => deriveRightCellState(row).kind === 'closed')
+  const unjoinedPayments = unjoinedSettlementText(
+    paneCQuery.data?.settlement_unjoined,
+    paneCQuery.data?.settlement_missing_exchange_id ?? 0
+  )
 
   const setupSteps = buildSetupSteps(card ?? null, owner, closedByOtherSideCount)
   const registrationCopy = buildRegistrationCopy(card ?? null)
@@ -1260,13 +1347,13 @@ function IntegritySection() {
           <IntegrityStatCard
             info={INTEGRITY_TILE_INFO.sealed}
             label="Sealed"
-            sub={sealedBreakdownText(ownExchangeCount, receivedNoteCount)}
+            sub={sealedBreakdownText(ownExchangeCount, receivedNoteCount, routingChoiceCount, paymentRecordCount)}
             value={sealedCount}
           />
           <IntegrityStatCard
             info={INTEGRITY_TILE_INFO.sharedWithWitness}
             label="Shared with a witness"
-            sub={witnessCount === 0 ? 'off — your choice' : undefined}
+            sub={witnessCount === 0 ? WITNESS_OFF : undefined}
             value={witnessCount}
           />
           <IntegrityStatCard
@@ -1281,6 +1368,8 @@ function IntegritySection() {
             value={contradictedCount}
           />
         </div>
+
+        <CloseCard counts={closeCounts} payments={paneCQuery.data?.payments} unjoined={unjoinedPayments} />
 
         <SetupChecklist steps={setupSteps} />
 
@@ -1402,7 +1491,12 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
           description={
             <>
               {HERO_DESCRIPTION_BEFORE_LINK}
-              <a className="underline underline-offset-2 hover:text-foreground" href={TRUST_MAP_URL} rel="noreferrer" target="_blank">
+              <a
+                className="underline underline-offset-2 hover:text-foreground"
+                href={TRUST_MAP_URL}
+                rel="noreferrer"
+                target="_blank"
+              >
                 {HERO_DESCRIPTION_LINK_TEXT}
               </a>
               {HERO_DESCRIPTION_AFTER_LINK}
@@ -1515,7 +1609,8 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
                         className="underline underline-offset-2 hover:text-foreground"
                         href="/"
                         onClick={(event) => {
-                          if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+                          if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+                            return
                           event.preventDefault()
                           navigateHost('/')
                         }}

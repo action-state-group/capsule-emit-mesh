@@ -54,7 +54,27 @@ const RETIRED_PHRASES = [
   'Registration is a separate step', // said once, in step 1
   // 
   'no key bound', // records ARE signed by the node key -> "not linked to an owner"
-  'open in Logs' // an inert control; returns only when it can link
+  'open in Logs', // an inert control; returns only when it can link
+  // The dead pill -> the
+  // `Your records` button that opens the panel
+  "This node's copy",
+  'This node’s copy',
+  // Design copy: plain words, no protocol terms on the
+  // face -> "in a checkpoint" / "a witness holds it"; times in the viewer's
+  // own zone, never a raw ISO stamp.
+  'not registered',
+  'Registered with',
+  'registered no later than',
+  'Register your checkpoints',
+  'inclusion proof',
+  'nothing here is registered',
+  // Tooltip honesty: no claim the code doesn't back.
+  'Everything here is checked on this machine',
+  'checkable only by you',
+  'The next one will be checked against it',
+  'Register a checkpoint',
+  'The response bytes hash to the digest',
+  'disagree about the request or the answer'
 ] as const
 
 const HERE = dirname(fileURLToPath(import.meta.url))

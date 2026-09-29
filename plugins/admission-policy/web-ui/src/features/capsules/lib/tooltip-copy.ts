@@ -15,9 +15,15 @@ export const HERO_TOOLTIPS = {
   live: 'Reading this node’s records over its running local API. They update as this node seals them.',
   local: 'Reading a saved local copy. This node’s API is not connected, so the records are not updating.',
   sample: 'Showing a saved sample run, not this node’s records. Nothing here updates.',
-  // §8 adds "Open to see where they are and what you share." -- held back
-  // until the pill opens something (rule 5: never ask for what can't be done).
-  yourRecords: 'The records this node keeps, sealed and checkpointed. Open to see where they are and what you share.'
+  yourRecords: 'The records this node keeps, sealed and checkpointed. Open to see where they are and what you share.',
+  // The storage-posture pills,
+  // mirroring Logs. Facts, not features.
+  // Shown only when every switch under What you share is off.
+  localOnly: 'Nothing is sent from this machine: every switch under What you share is off.',
+  digestsOnly: 'Each record holds a fingerprint of the prompt and the answer, never the words themselves.',
+  promptsKept: 'The words of your prompts and answers are stored on this machine only, apart from the records.',
+  promptsNotKept: 'No prompt or answer text is stored on this machine. The records hold fingerprints only.',
+  promptsUnknown: 'This view can’t tell whether prompt and answer text is stored on this machine.'
 } as const
 
 /** p2 item 3: the owner-link fact, worded once for Integrity's step 2 and
@@ -27,7 +33,6 @@ export const OWNER_NOT_LINKED_PHRASE = 'not linked to an owner'
 
 /** p2 item 5: why an action is disabled -- said on hover, never a silent grey. */
 export const SAMPLE_DATA_UNAVAILABLE = 'Not available on sample data.'
-export const NO_CONTRADICTION_REASON = 'No contradicted exchange to jump to.'
 
 /** The InfoBanner description under the tab title: what the page holds, and
  *  what can be shown about it. "docs" links the trust map (`TRUST_MAP_URL`). */
@@ -63,9 +68,33 @@ export const PEER_NEEDS_A_LOOK_LABEL = 'Needs a look'
 export const SELF_REPORTED_TOOLTIP =
   'This identity is self-reported: it’s what the peer says about itself. Only the records they signed, checked on this machine, count as evidence.'
 
-/** The one line at the top of the old peer inspector, until the new peer
- *  drill replaces it. */
-export const PEER_INSPECTOR_HEADER = 'What you’ve recorded with this peer. Their own log and what others say come next.'
+/** The one line at the top of the peer inspector. */
+export const PEER_INSPECTOR_HEADER =
+  'What you’ve recorded with this peer. Their log, as shown to you, is what they and others let you see.'
+
+/** The drill's "Their log, as shown to you" hover follows the
+ *  section's state: "checked" only once a fetched log was checked
+ *  (peer_evidence_client fails closed). */
+export const THEIR_LOG_TOOLTIPS = {
+  shown:
+    'Their log as your node fetched and checked it: counts per checkpoint, no record contents. Witnesses a checkpoint lists are shown as listed, not checked here.',
+  failed: 'Your node fetched their log and it didn’t check out on this machine, so none of it is shown as checked.',
+  refused: 'They refused to show their log. Nothing of it is checked here.',
+  no_answer: 'Your node asked for their log and no answer has been checked here yet.',
+  not_asked: 'Your node hasn’t asked for their log, so nothing of it is checked here.'
+} as const
+
+/** The peer drill's "Their history" sections
+ *  (UX review §7.2 names). One tooltip per section heading. */
+export const PEER_HISTORY_TOOLTIPS = {
+  dealings: 'Your exchanges with this peer, and how many of them their own signed record confirms.',
+  theirLog:
+    'Their log as your node fetched and checked it: counts per checkpoint, no record contents. Witnesses a checkpoint lists are shown as listed, not checked here.',
+  othersSay: 'What the nodes you asked about this peer said. A node that answered with a refusal still answered.',
+  verdicts:
+    'Verdicts on exchanges this peer took part in; a verdict can find against either side. Each column is counted on its own and never added to another.',
+  askedOfYou: 'Requests your node logged from a node naming itself as this peer, and what your node did with each one.'
+} as const
 
 /** Peer attention badges -- the specific thing, counted, replacing the old
  *  generic ⚠ alarm chip. Each is one sentence naming exactly that. */
@@ -182,9 +211,56 @@ export const TWIN_VERDICT_TOOLTIPS = {
   not_comparable: 'The two answers were sampled, so a referee can’t compare them. This is never a disagreement.'
 } as const
 
+/** One sentence per chip AND per state, plain words first, then what
+ *  was actually checked (TOOLTIPS-ASSESSMENT §0: C1 content binding and C2
+ *  signature are redone in this browser, `recompute-identity.ts:28-80`; C10
+ *  checkpoint coverage is a count, `integrity-view.ts:237-244`, so it is
+ *  never ✓; the witness receipt is read, never checked here; their record
+ *  is the ONE gate, `exchange-row-state.ts`). */
+export const ENTRY_CHIP_STATE_TOOLTIPS = {
+  content: {
+    '✓': 'Your record still matches its id: this browser redid its fingerprint just now.',
+    '✗': 'Your record no longer matches its id, so it may have been changed. This browser redid its fingerprint and it differs.',
+    '–': 'Not checked here yet: this browser hasn’t redone your record’s fingerprint (it isn’t loaded, or this is sample data).',
+    '◐': 'Not checked here yet: this browser hasn’t redone your record’s fingerprint.'
+  },
+  sig: {
+    '✓': 'Your record is signed with this node’s key. This browser checked the signature just now.',
+    '✗': 'The signature on your record doesn’t check out against this node’s key.',
+    '–': 'Not checked here yet: the signature on your record hasn’t been checked on this page.',
+    '◐': 'Not checked here yet: the signature on your record hasn’t been checked on this page.'
+  },
+  inclusion: {
+    '✓': 'A checkpoint on this node covers this record, by the count Integrity shows. The proof itself is not checked here.',
+    '✗': 'This node reports that its checkpoint doesn’t cover this record as it should. Not checked here.',
+    '–': 'No checkpoint on this node covers this record yet, as far as this node says. Not checked here.',
+    '◐': 'A checkpoint on this node covers this record, by the count Integrity shows. The proof itself is not checked here.'
+  },
+  registered: {
+    '✓': 'A witness you don’t run holds a checkpoint covering this record, as this node reports. Not checked here.',
+    '✗': 'This node reports a problem with the witness’s copy of the checkpoint. Not checked here.',
+    '–': 'No witness you don’t run holds a checkpoint covering this record, as far as this node says. Not checked here.',
+    '◐': 'No witness you don’t run holds a checkpoint covering this record, as far as this node says. Not checked here.'
+  },
+  theirs: {
+    '✓': 'The other side’s signed record agrees with yours: the same request and answer, from the node that served you. Checked on this machine.',
+    '✗': 'The other side’s record doesn’t agree with yours, or your node refused it. The badge says which; Compare shows where.',
+    '–': 'The other side’s record isn’t here, or couldn’t be confirmed as theirs, so nothing is compared yet.',
+    '◐': 'The other side’s record isn’t here, or couldn’t be confirmed as theirs, so nothing is compared yet.'
+  }
+} as const
+
+/** The `in a checkpoint ◐` chip: covered, but the proof is not checked here. */
+export const ENTRY_CHIP_COVERED_TOOLTIP =
+  'A checkpoint on this node covers this record, as Integrity counts. This row hasn’t checked that for itself yet.'
+
 /** The TWIN bracket's `no verdict` badge. */
 export const TWIN_NO_VERDICT_TOOLTIP =
   'The same request went to two machines and both answers are recorded. No one has compared them and sealed a verdict yet.'
+
+/** The one wording for "no witness holds your checkpoints": the hero, the
+ *  Your records panel and the Integrity tile all say this. */
+export const WITNESS_OFF = 'witness off — your choice'
 
 /** Integrity tiles. */
 export const INTEGRITY_TILE_TOOLTIPS = {
@@ -288,10 +364,54 @@ export const REFEREE_VERDICTS_ABOUT_THEM = {
 /** The drill's routing section. Stopping routing to a peer needs the host's
  *  local block list, which this page does not reach, so the page says so
  *  instead of offering a button that could not act. */
+/** The row's "see in Logs": opening Logs at one exchange needs a host hook
+ *  this page doesn't have, so the row says so instead of a dead link. */
+export const SEE_IN_LOGS_NOT_ON_THIS_PAGE = 'this page can’t open Logs at this exchange yet'
+
 export const ROUTING_NOT_ON_THIS_PAGE = {
   sectionTitle: 'Routing to this peer',
   text: 'This page can’t stop routing to a peer. It shows your records and changes nothing about routing.'
 } as const
 
-/** The hero line's words when no witness holds a checkpoint (console copy). */
-export const WITNESS_OFF = 'witness off — your choice'
+/** Payments on an exchange row: the `paid` chip and its settlement state.
+ *  Only this node's records exist, so every sentence is about your side. */
+export const SETTLEMENT_TERMS_TOOLTIP = 'You accepted the terms for this exchange, and no invoice was recorded for it.'
+
+export const SETTLEMENT_PAID_TOOLTIP =
+  'This exchange was invoiced, and this node recorded each payment step it saw. The wallet keeps the money; these are the records.'
+
+export const SETTLEMENT_STATE_TOOLTIPS = {
+  settled:
+    'Every invoice you saw for this exchange was reported paid by your wallet, under the same payment reference.',
+  settled_without_reference:
+    'Your wallet reported each invoice’s part of this exchange paid, but at least one report carried no payment reference to match on.',
+  no_settlement_seen: 'At least one invoice has no payment reported by your wallet. Your records alone can’t say why.',
+  terms_only: 'You accepted the terms, and no invoice was recorded.',
+  unmatched_settlement: 'Your wallet reported a payment that no invoice for this exchange names.'
+} as const
+
+export const SETTLEMENT_PROVIDER_BOOK_TOOLTIP =
+  'The provider’s own record of this payment isn’t shared with this node, so only your side is shown.'
+
+/** Who stated each recorded payment value. */
+export const SETTLEMENT_SOURCE_TOOLTIPS = {
+  payer_asserted: 'Recorded by this node as what it agreed to or accounted.',
+  provider_asserted: 'What the provider stated, as it reached this node.',
+  wallet_reported: 'What your wallet reported.'
+} as const
+
+/** The Peers row's payments line. */
+export const PEER_PAYMENTS_TOOLTIP =
+  'Counts of your paid exchanges with this peer, from your own records. The provider’s own book isn’t shared with this node.'
+
+/** Integrity's Close card: agreed periods, then the counts that are in none. */
+export const CLOSE_CARD_TOOLTIP =
+  'A period both sides have closed: one side seals a Close with its counts for the period, and the other side acknowledges it. None yet on this node.'
+
+export const CLOSE_CARD_COUNTS_TOOLTIP =
+  'Counts over the exchanges shown here, none of them in an agreed period: how many the other side confirmed, and how many were paid and settled by your wallet.'
+
+/** Where a check result in the checks panel came from, in words. */
+export const CHECK_SOURCE_WORDS = { here: 'checked here', node: 'node says' } as const
+export const CHECK_SOURCE_LEGEND =
+  'checked here = your browser redid this check just now; node says = taken from this node without re-checking.'

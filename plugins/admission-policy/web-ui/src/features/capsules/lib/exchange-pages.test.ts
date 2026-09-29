@@ -7,6 +7,7 @@ import {
   isTwinBracketGroup,
   pageBoundaryContinuity,
   pageIndexForGroupKey,
+  pageIndexForRowKey,
   pageRowRange,
   paginateGroups,
   windowBannerHeadline,
@@ -182,6 +183,22 @@ describe('pageIndexForGroupKey', () => {
   it('returns null when the key is not present in any page (e.g. filtered out)', () => {
     const pages = paginateGroups(singletonGroups(10), 50)
     expect(pageIndexForGroupKey(pages, 'not-there')).toBeNull()
+  })
+})
+
+describe('pageIndexForRowKey', () => {
+  it('finds a row inside a multi-row group, whose group key is not the row key', () => {
+    const pages = paginateGroups(
+      [
+        ...singletonGroups(50),
+        { groupKey: 'twin:t1', rows: [streamRow({ exchangeKey: 'twin-a' }), streamRow({ exchangeKey: 'twin-b' })] }
+      ],
+      50
+    )
+    expect(pageIndexForGroupKey(pages, 'twin-b')).toBeNull()
+    expect(pageIndexForRowKey(pages, 'twin-b')).toBe(1)
+    expect(pageIndexForRowKey(pages, 'exch-3')).toBe(0)
+    expect(pageIndexForRowKey(pages, 'not-there')).toBeNull()
   })
 })
 

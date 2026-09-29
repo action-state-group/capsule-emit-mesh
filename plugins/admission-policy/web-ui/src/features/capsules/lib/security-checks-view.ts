@@ -16,7 +16,7 @@
 // COMMITS TO" comparison already lives by).
 import type { CapsuleRecord } from '@/features/capsules/api/types'
 import type { PaneCRow } from '@/features/capsules/api/sidecarTypes'
-import type { RightCellStateKind } from '@/features/capsules/lib/exchange-row-state'
+import { pushedHalfRecompute, type RightCellStateKind } from '@/features/capsules/lib/exchange-row-state'
 import type { PeerRecomputeState, RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 import { peerFetchJoinKey } from '@/features/capsules/lib/recompute-identity'
 import { NINE_PROPERTY_LABELS, PROPERTY_GROUP, RECOMPUTED_PROPERTIES } from '@/features/capsules/lib/nine-properties'
@@ -399,7 +399,7 @@ function checkpointCoverageCell(key: string, covered: boolean | null): { state: 
       state: 'NOT_CHECKED',
       text:
         key === 'local_inclusion'
-          ? 'a checkpoint covers this record — see Integrity; its inclusion proof isn’t checked here'
+          ? 'a checkpoint covers this record — see Integrity; this row hasn’t checked that for itself yet'
           : 'a checkpoint covers this record; not checked here'
     }
   }
@@ -579,7 +579,24 @@ export function buildChecksRows(
 
     let theirs: ChecksSideCell | null = null
     if (held) {
-      if (recomputable && theirsActuallyRecomputed(theirsRecompute)) {
+      // A pushed record the badge already judged (CLOSED / CONTRADICTED)
+      // fills THEIRS too, from the same evidence the gate reads
+      // (`pushedHalfRecompute`): its id was redone in this browser (checked
+      // here); its signature was checked by this node's door when it arrived
+      // (node says).
+      const pushed = theirsActuallyRecomputed(theirsRecompute) ? null : pushedHalfRecompute(row)
+      if (recomputable && pushed && pushed.status === 'found' && pushed.idMatch !== null) {
+        const pushedState = boolToWireState(key === 'content_binding' ? pushed.idMatch : pushed.signatureOk)
+        theirs = {
+          state: pushedState,
+          label: labelForState(pushedState),
+          detail:
+            key === 'content_binding'
+              ? 'their record, redone in this browser'
+              : 'their record, checked by this node when it arrived',
+          recomputed: key === 'content_binding'
+        }
+      } else if (recomputable && theirsActuallyRecomputed(theirsRecompute)) {
         const theirsRecomputedState = boolToWireState(
           key === 'content_binding' ? (theirsRecompute?.idMatch ?? null) : (theirsRecompute?.signatureOk ?? null)
         )

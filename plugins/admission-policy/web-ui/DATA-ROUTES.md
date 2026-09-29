@@ -21,7 +21,9 @@ plugin keeps on disk arrive wrapped in JSON.
 | `panes/pane-b` | pane B JSON (`PaneBJson`) | the ledger |
 | `panes/pane-c[?limit=&after_seq=]` | pane C list (`PaneCListJson`) | the ledger |
 | `panes/pane-c?exchange_id=<id>` | pane C drilldown (`PaneCDrilldownJson`) | the ledger |
+| `peer-key?peer=<64 hex>` | `{ "announced_key_id": "<hex>" \| null }`: the key the operator announced for that peer (`ADMISSION_POLICY_PEER_KEYS`); "Ask them for their record" judges a reply only under it, never under a key the reply names | the plugin's environment |
 | POST `tools/mesh_ledger_fetch` (a tool, not under `http/`) | the plugin's `mesh_ledger_fetch` tool: `LedgerFetchResponse` (`found` / `not_found` / `not_authorized` / `error`) | a peer's plugin, over a mesh stream |
+| POST `tools/mesh_evidence_request` (a tool) | the plugin's `mesh_evidence_request` tool, `{peer_id, request}`: the peer's own reply, unchanged (a record, or the refusal it signed); the page's "Ask them for their record" sends one by nonce | a peer's plugin, over a mesh stream |
 
 **Split requests.** A `panes/pane-c` row may carry `split` (`api/sidecarTypes.ts`
 `PaneCRow.split`, `lib/split-stage.ts` `SplitRowJson`):
@@ -61,8 +63,9 @@ message. A failed peer fetch renders as a transport error, never as a result.
 ## Where they are served
 
 All of them are the plugin's own code: `src/evidence_routes.rs` declares the
-six GET bindings, `src/evidence_panes.rs` builds the panes from the plugin's
-ledger directory (padding left out of every count), and `src/ledger_fetch_bridge.rs` answers `mesh_ledger_fetch`.
+GET bindings, `src/evidence_panes.rs` builds the panes from the plugin's
+ledger directory (padding left out of every count), `src/ledger_fetch_bridge.rs` answers `mesh_ledger_fetch`, and
+`src/mesh_evidence_bridge.rs` answers `mesh_evidence_request`.
 `evidence_routes`'s manifest test pins the bindings. Fixture mode strips the
 `http/` prefix and answers from recorded route captures.
 

@@ -2393,7 +2393,7 @@ mod tests {
 
     // =======================================================================
     // twin_bracket_id -- forwarded verbatim off the terminal envelope, never
-    // minted here. [ledger-T11b-twin-bracket]
+    // minted here.
     // =======================================================================
 
     /// An observed host exchange whose terminal envelope carried a

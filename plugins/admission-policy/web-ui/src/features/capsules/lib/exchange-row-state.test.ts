@@ -167,7 +167,13 @@ describe('deriveRightCellState — the ONE gate: pushed and fetched halves take 
   // `pushed-half-recompute.test.ts`; here it is supplied as the pane query
   // delivers it.
   function pushedRow(theirs: PaneCRow['theirs'], overrides: Partial<PaneCRow> = {}): PaneCRow {
-    return paneCRow({ unilateral: false, mine: fixtureMineCell(), theirs, digest_match: { state: 'verified' }, ...overrides })
+    return paneCRow({
+      unilateral: false,
+      mine: fixtureMineCell(),
+      theirs,
+      digest_match: { state: 'verified' },
+      ...overrides
+    })
   }
 
   it('a pushed half that agrees closes on the LIST path (no recompute, no local record passed)', () => {
@@ -201,11 +207,95 @@ describe('deriveRightCellState — the ONE gate: pushed and fetched halves take 
   })
 
   it('a pushed body that does not recompute to its capsule_id -> CONTRADICTED', () => {
-    expect(deriveRightCellState(pushedRow({ ...fixtureTheirsCell('agrees'), id_match: false })).kind).toBe('contradicted')
+    expect(deriveRightCellState(pushedRow({ ...fixtureTheirsCell('agrees'), id_match: false })).kind).toBe(
+      'contradicted'
+    )
   })
 
   it('a door verdict other than true -> not CLOSED', () => {
-    expect(deriveRightCellState(pushedRow({ ...fixtureTheirsCell('agrees'), signature_ok: false })).kind).toBe('open_not_held')
+    expect(deriveRightCellState(pushedRow({ ...fixtureTheirsCell('agrees'), signature_ok: false })).kind).toBe(
+      'open_not_held'
+    )
+  })
+
+  it('a pushed half from a node that did not serve us never CONTRADICTS, whatever its bytes', () => {
+    const theirs = fixtureTheirsCell('disagrees')
+    const record = fixtureHalfBody({ capsuleId: theirs.capsule_id ?? undefined, servedBy: 'd'.repeat(64) })
+    expect(deriveRightCellState(pushedRow({ ...theirs, record })).kind).toBe('open_not_held')
+    expect(deriveRightCellState(pushedRow({ ...theirs, record, id_match: false })).kind).toBe('open_not_held')
+  })
+
+  it('a FETCHED half keeps its id-recompute contradiction (it came from the peer we asked)', () => {
+    const peerRecord = fixtureHalfBody({ capsuleId: 'a'.repeat(64), servedBy: 'd'.repeat(64) })
+    const state = deriveRightCellState(pushedRow(fixtureTheirsCell('agrees')), fetched({ idMatch: false, peerRecord }))
+    expect(state.kind).toBe('contradicted')
+  })
+
+  describe('attack D: a swapped model never reads CLOSED', () => {
+    const asked = 'a'.repeat(64)
+    const swapped = 'b'.repeat(64)
+    function withWeights(
+      body: Record<string, unknown>,
+      modelId: string,
+      attested?: string,
+      served?: string
+    ): Record<string, unknown> {
+      const attestation = body.model_attestation as Record<string, Record<string, unknown>>
+      const compute = attestation.compute_attestation
+      const poc = compute['x-mesh-poc-v1'] as Record<string, Record<string, unknown>>
+      return {
+        ...body,
+        model_attestation: {
+          ...attestation,
+          model_id: modelId,
+          compute_attestation: {
+            ...compute,
+            ...(attested ? { weights_digest: { digest: attested } } : {}),
+            'x-mesh-poc-v1': {
+              ...poc,
+              serving_provenance: {
+                ...poc.serving_provenance,
+                ...(served ? { model: { weights_digest: served } } : {})
+              }
+            }
+          }
+        }
+      }
+    }
+    const kindFor = (ourModelId: string, theirModelId: string, attested: string, served: string) => {
+      const theirs = fixtureTheirsCell('agrees')
+      const record = withWeights(theirs.record as Record<string, unknown>, theirModelId, attested, served)
+      const ours = withWeights(fixtureHalfBody({ capsuleId: 'mine-1' }), ourModelId) as CapsuleRecord
+      return deriveRightCellState(pushedRow({ ...theirs, record }), undefined, ours).kind
+    }
+    const askedId = `local-gguf/sha256-${asked}`
+    const swappedId = `local-gguf/sha256-${swapped}`
+
+    it('control: every weights claim names the asked weights -> CLOSED', () => {
+      expect(kindFor(askedId, askedId, asked, asked)).toBe('closed')
+    })
+    it('case 1: only the serving provenance weights swapped -> CONTRADICTED', () => {
+      expect(kindFor(askedId, askedId, asked, swapped)).toBe('contradicted')
+    })
+    it('case 2: model_id and both weights fields swapped together -> CONTRADICTED', () => {
+      expect(kindFor(askedId, swappedId, swapped, swapped)).toBe('contradicted')
+    })
+    it('alias: our model_id is a name with no weights -> CLOSED', () => {
+      expect(kindFor('qwen', askedId, asked, asked)).toBe('closed')
+    })
+  })
+
+  it('attack B: the door refused our provider’s half on its claims -> CONTRADICTED, dated', () => {
+    const row = paneCRow({
+      theirs: {
+        state: 'absent',
+        capsule_id: null,
+        evidence_outcome: 'claims_refused',
+        evidence_outcome_date: '2026-09-28T08:00:00Z',
+        evidence_outcome_reason: 'model_mismatch'
+      }
+    })
+    expect(deriveRightCellState(row)).toEqual({ kind: 'contradicted', date: '2026-09-28T08:00:00Z' })
   })
 
   it('PROVISIONAL provider check (i): a pushed body naming a different server -> not CLOSED', () => {
@@ -215,14 +305,16 @@ describe('deriveRightCellState — the ONE gate: pushed and fetched halves take 
   })
 
   it('the fetch path takes the SAME predicate: agreeing, signed, same provider -> CLOSED', () => {
-    expect(deriveRightCellState(paneCRow(), fetched({ peerRecord: citingPeerRecord() }), localRecordWithDigests()).kind).toBe(
-      'closed'
-    )
+    expect(
+      deriveRightCellState(paneCRow(), fetched({ peerRecord: citingPeerRecord() }), localRecordWithDigests()).kind
+    ).toBe('closed')
   })
 
   it('the fetch path takes the SAME predicate: digests differ -> CONTRADICTED', () => {
     const peerRecord = fixtureHalfBody({ capsuleId: 'a'.repeat(64), responseDigest: 'e'.repeat(64) })
-    expect(deriveRightCellState(paneCRow(), fetched({ peerRecord }), localRecordWithDigests()).kind).toBe('contradicted')
+    expect(deriveRightCellState(paneCRow(), fetched({ peerRecord }), localRecordWithDigests()).kind).toBe(
+      'contradicted'
+    )
   })
 
   it('a PUSHED half from a node that did not serve us never contradicts: junk digests or a bad id stay OPEN', () => {
@@ -234,7 +326,9 @@ describe('deriveRightCellState — the ONE gate: pushed and fetched halves take 
 
   it('the fetch path takes the SAME predicate: a different provider -> not CLOSED', () => {
     const peerRecord = fixtureHalfBody({ capsuleId: 'a'.repeat(64), servedBy: 'd'.repeat(64) })
-    expect(deriveRightCellState(paneCRow(), fetched({ peerRecord }), localRecordWithDigests()).kind).toBe('open_not_held')
+    expect(deriveRightCellState(paneCRow(), fetched({ peerRecord }), localRecordWithDigests()).kind).toBe(
+      'open_not_held'
+    )
   })
 
   it('a live fetch this browser ran wins over the pushed evidence on the same row', () => {
@@ -434,7 +528,9 @@ describe('rightCellDetail — Item 4: the fuller story behind each state, moved 
 
   it('never names a banned word, even to deny it, and none of the engineer’s words', () => {
     for (const kind of ALL_KINDS) {
-      expect(rightCellDetail(stateOf(kind))).not.toMatch(/\b(reputation|judgement|capsule id|half|halves|recomputed?)\b/i)
+      expect(rightCellDetail(stateOf(kind))).not.toMatch(
+        /\b(reputation|judgement|capsule id|half|halves|recomputed?)\b/i
+      )
     }
   })
 
@@ -467,9 +563,7 @@ describe('rightCellAction', () => {
     expect(rightCellAction(stateOf('closed'))).toBeNull()
     expect(rightCellAction(stateOf('open_not_held'))).toBeNull()
     expect(rightCellAction(stateOf('open_not_given'))).toBeNull()
-    for (const kind of ALL_KINDS.filter(
-      (k) => k !== 'closed' && k !== 'open_not_held' && k !== 'open_not_given'
-    )) {
+    for (const kind of ALL_KINDS.filter((k) => k !== 'closed' && k !== 'open_not_held' && k !== 'open_not_given')) {
       expect(rightCellAction(stateOf(kind))).not.toBeNull()
     }
   })

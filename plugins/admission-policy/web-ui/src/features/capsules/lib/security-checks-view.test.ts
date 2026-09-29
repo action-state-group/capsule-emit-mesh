@@ -8,6 +8,7 @@ import {
 } from '@/features/capsules/lib/nine-properties'
 import type { PeerRecomputeState, RecomputedIdentity } from '@/features/capsules/lib/recompute-identity'
 import { peerFetchJoinKey } from '@/features/capsules/lib/recompute-identity'
+import { fixtureMineCell, fixtureTheirsCell } from '@/features/capsules/lib/pushed-half-fixtures'
 import {
   buildChecksRows,
   buildCommitsToRows,
@@ -141,7 +142,7 @@ describe('buildChecksRows — look finding 2: per-record checkpoint coverage agr
       expect(byKey[key].yours?.state).toBe('NOT_CHECKED')
     }
     expect(byKey.local_inclusion.yours?.detail).toBe(
-      'a checkpoint covers this record — see Integrity; its inclusion proof isn’t checked here'
+      'a checkpoint covers this record — see Integrity; this row hasn’t checked that for itself yet'
     )
   })
 
@@ -785,5 +786,27 @@ describe('buildCommitsToRows — theirs column, finding 2 corrected', () => {
     }
     const rows = buildCommitsToRows(paneCRow(), LOCAL_RECORD, theirsRecompute)
     expect(rows.find((r) => r.label === 'task binding')?.theirs).toBeNull()
+  })
+})
+
+describe('buildChecksRows — a pushed record the badge judged fills THEIRS', () => {
+  it('their id is redone in this browser (checked here); their signature was checked by this node (node says)', () => {
+    const row = {
+      exchange_key: 'exch-pushed',
+      role_tag: 'ASKED',
+      header_state: 'ok',
+      properties: null,
+      has_issue: false,
+      mine: fixtureMineCell(),
+      theirs: fixtureTheirsCell('agrees'),
+      unilateral: false,
+      timestamp: '2026-09-28T00:00:00Z'
+    } as PaneCRow
+    const rows = buildChecksRows(row, { idMatch: true, signatureOk: true }, undefined, { gateKind: 'closed' })
+    const content = rows.find((r) => r.key === 'content_binding')?.theirs
+    const signature = rows.find((r) => r.key === 'producer_signature')?.theirs
+    expect(content).toMatchObject({ state: 'PASS', recomputed: true })
+    expect(signature).toMatchObject({ state: 'PASS', recomputed: false })
+    expect(signature?.detail).toMatch(/checked by this node when it arrived/)
   })
 })

@@ -63,7 +63,7 @@ export function PeerTimeline({ row, points, onSelectPoint }: PeerTimelineProps) 
       {/* Lane 1: their-chain spine -- a single labeled band, honest about
          what it can and can't show (see file-level note). */}
       <div className="rounded border border-border-soft bg-panel-strong/50 px-3 py-2">
-        <p className="text-xs font-medium text-fg-dim">Their history</p>
+        <p className="text-xs font-medium text-fg-dim">Their log, as shown to you</p>
         <p className="mt-0.5 text-xs text-fg-faint">{chain.text}</p>
         <p className="mt-1 text-[11px] text-fg-faint">We never fetch what a peer holds about other peers.</p>
       </div>

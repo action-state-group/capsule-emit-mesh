@@ -23,7 +23,7 @@ import {
 } from '@/features/capsules/lib/peer-row-view'
 import { HoverChip } from '@/features/capsules/components/HoverChip'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
-import { PEER_ALIAS_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
+import { PEER_ALIAS_TOOLTIP, PEER_PAYMENTS_TOOLTIP } from '@/features/capsules/lib/tooltip-copy'
 
 export type PeerTableRowProps = {
   view: PeerTableRowView
@@ -92,6 +92,13 @@ export function PeerTableRow({
             {/* Visible while collapsed (chooser-v2 §3-F), but as the specific
                thing, counted, with one sentence on hover -- never a generic
                warning glyph (UX §8). */}
+            {view.payments ? (
+              <HoverChip census="peer:payments" label={PEER_PAYMENTS_TOOLTIP}>
+                <span className="text-xs text-fg-dim" data-peer-payments="true">
+                  Payments: {view.payments}
+                </span>
+              </HoverChip>
+            ) : null}
             {view.attention.map((item) => (
               <HoverChip census={`peer_attention:${item.key}`} key={item.key} label={item.tooltip}>
                 <span>

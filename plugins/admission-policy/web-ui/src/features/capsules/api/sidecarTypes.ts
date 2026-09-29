@@ -87,6 +87,51 @@ export type PaneBHistoryCell = PaneState & {
     witnessed?: PaneState & { witnesses?: string[] }
     [key: string]: unknown
   } | null
+  /** `refusal_reason`, `segment` and
+   *  `adjudications` below: no producer emits them yet (the Python sidecar's
+   *  `peer_history_cell` and the native reader carry none); each degrades to
+   *  omission. `refusal_reason` is the signed refusal's registry token when
+   *  `state === 'refused'`. */
+  refusal_reason?: string
+  /** The peer's `chain_segment` answer (`capsule_emit.chain_segment.ChainSegment`),
+   *  present only on a verified fetch. Coarsened: per-checkpoint leaf counts by
+   *  kind; any `leaf_digests` a peer volunteers are never read by the UI. */
+  segment?: { links: PaneBSegmentLink[] }
+  /** The peer's own history-card `adjudications` block (provenance 2 of
+   *  `ADJUDICATIONS-ON-HISTORY-CARD.md`): verdicts on twins they were party to,
+   *  delivered to them, with their ack/rebuttal. Keyed by bare verdict kind: the
+   *  owner a `contradicted:<owner>` verdict names is dropped, so a contradicted
+   *  count can be against either side. `state` separates "never enriched" from
+   *  "enriched, none". */
+  adjudications?: {
+    state: 'never_enriched' | 'enriched'
+    delivered?: Partial<Record<AdjudicationVerdictKind, PaneBDeliveredVerdict>>
+  }
+}
+
+export type AdjudicationVerdictKind = 'corroborated' | 'contradicted' | 'inconclusive'
+
+/** One checkpoint of a peer's `chain_segment` (`CheckpointLink.to_dict`). */
+export type PaneBSegmentLink = {
+  checkpoint: { mmr_size: number; timestamp: string; witnesses?: unknown[] }
+  leaf_counts: Record<string, number>
+  leaf_digests?: string[]
+}
+
+/** `history_card` `adjudications.delivered[<verdict>]`. */
+export type PaneBDeliveredVerdict = { delivered: number; acknowledged: number; disputed: number }
+
+/** One `received_log.jsonl` line (`evidence_server.ReceivedLogEntry`).
+ *  The log is node-wide and `requester_id` is the
+ *  requester's self-declared id (`null` on a record push); the drill keeps only
+ *  the `evidence-request` lines whose id matches this peer's row. */
+export type AskedOfYouEntry = {
+  ts: string
+  path: string
+  requester_id: string | null
+  subject_kind: string | null
+  status: 'answered' | 'refused' | 'received'
+  reason: string | null
 }
 
 /** `served_cell` ("Served (theirs)"). Same peer-fetch-gap discipline as
@@ -122,6 +167,10 @@ export type PaneBVerdictsCell = PaneState & {
   references_tally?: { corroborated: number; contradicted: number; inconclusive: number }
   references_asked?: number
   references_answered?: number
+  /** Records the references hold of THIS peer refusing a verdict delivered
+   *  to it (`verdicts_cell`'s `ack_refusals`) -- a count of records, not of
+   *  references. Present with `references_asked`. */
+  ack_refusals?: number
 }
 
 /** `asked_cell` -- evidence requests THIS node sent to this peer. Absent
@@ -158,6 +207,9 @@ export type PaneBPeerIdentity = {
   signing_key_id?: string | null
   endpoint_id?: string | null
   node_id?: string | null
+  /** Where `node_id` came from: this node's own records, or the peer's own
+   *  record naming itself. Absent on an older host. */
+  node_id_source?: 'your_records' | 'their_record' | null
 }
 
 export type PaneBRow = {
@@ -179,6 +231,16 @@ export type PaneBRow = {
    *  (`verdict_counts.rs`). Absent from a plugin that predates it. */
   referee_verdicts?: RefereeVerdictCounts
   asked: PaneBAskedCell
+  /** Your node's `received_log.jsonl` lines,
+   *  as the producer carries them to this row. No producer emits this yet; an
+   *  absent field reads as "not shown in this view", never as zero requests. */
+  /** `requester_id_source` is always `self_declared`: each entry's requester
+   *  id is what the request said about itself. */
+  /** Exchanges with this peer the door refused because their signed claims
+   *  contradict our record (another server named, other weights). Absent
+   *  when none. They count as disagreements. */
+  claims_refused?: number
+  asked_of_you?: { entries: AskedOfYouEntry[]; requester_id_source?: 'self_declared' }
   exchange_count: number
   first_seen: string | null
   last_seen: string | null
@@ -186,6 +248,8 @@ export type PaneBRow = {
     pair_ledger?: Array<{ exchange_id: string; state: string }>
     their_card?: PaneState
   }
+  /** Present only when this node holds settlement records at all. */
+  settlement?: PeerSettlementCounts
   [key: string]: unknown
 }
 
@@ -201,7 +265,74 @@ export type RefereeVerdictCounts = Record<RefereeVerdictBucketKey, RefereeVerdic
 export type PaneBJson = {
   peer_count: number
   rows: PaneBRow[]
+  /** See `PaymentsPresence`. */
+  payments?: PaymentsPresence
   [key: string]: unknown
+}
+
+// ---------------------------------------------------------------------------
+// Settlement (`capsule_panes_settlement.rs`): this node's own sealed records
+// of the payer-side payment lifecycle, joined to exchanges by `exchange_id`.
+// ---------------------------------------------------------------------------
+
+/** Whether this node has a payments provider, as the host answers it. `off`
+ *  is the free-only configuration; `unknown` means the lookup failed. */
+export type PaymentsPresence = 'on' | 'off' | 'unknown'
+
+/** Who asserted a recorded value: this node, the provider (as relayed to this
+ *  node), or this node's wallet. */
+export type SettlementSource = 'payer_asserted' | 'provider_asserted' | 'wallet_reported'
+
+export type SettlementPhase =
+  | 'terms_accepted'
+  | 'input_invoice_issued'
+  | 'output_invoice_issued'
+  | 'input_settlement_observed'
+  | 'output_settlement_observed'
+  | 'final_accounted'
+
+/** One sealed observation, values as recorded (amounts are never summed). */
+export type SettlementEntry = {
+  capsule_id: string | null
+  timestamp: string | null
+  phase: SettlementPhase | string
+  source: SettlementSource | string | null
+  segment: number | null
+  payment_hash: string | null
+  amount_msat: number | null
+}
+
+/** The payer's book for one exchange: every invoice settled by this node's
+ *  wallet (`settled`), an invoice with no settlement seen, terms with no
+ *  invoice, or a settlement that names no invoice of this exchange. */
+export type PayerBookState = 'settled' | 'no_settlement_seen' | 'terms_only' | 'unmatched_settlement'
+
+export type PayerBook = {
+  observed_by: 'payer'
+  state: PayerBookState | string
+  terms_digests: string[]
+  entries: SettlementEntry[]
+  /** True when a settlement carried no payment hash and could only be matched
+   *  to its segment's invoice. */
+  matched_by_segment_only?: boolean
+  /** `not_available` until the provider side emits its own observations. */
+  provider_book: string
+  /** The exchange ids whose books this summary covers; the row's state is the
+   *  worst of them. */
+  exchange_ids?: string[]
+}
+
+/** Per-peer counts, from this node's own records only. The provider's side
+ *  is not seen here at all (`provider_book: "not_available"`), so no
+ *  provider-side count is sent. */
+export type PeerSettlementCounts = {
+  /** Exchanges with at least one invoice recorded. */
+  paid_exchanges: number
+  /** Exchanges whose terms were accepted with no invoice: not paid. */
+  terms_only?: number
+  settled_payer_observed: number
+  no_settlement_seen: number
+  provider_book: string
 }
 
 // ---------------------------------------------------------------------------
@@ -288,7 +419,10 @@ export type PaneCRow = {
     text?: string
     evidence_outcome?: EvidenceRequestOutcome
     evidence_outcome_date?: string | null
-    /** piece 3 -- the mesh peer id to fetch FROM
+    /** Why the door refused, with `claims_refused`: `served_by_mismatch` or
+     *  `model_mismatch`. */
+    evidence_outcome_reason?: string | null
+    /** Piece 3 -- the mesh peer id to fetch FROM
      *  (`capsule_panes_native.rs::theirs_cell`'s `served_by_node_id`),
      *  present only alongside `theirs.state === 'NOT_CHECKED'` and a real
      *  `capsule_id`. Never guessed: `null`/absent means this row carries no
@@ -317,6 +451,11 @@ export type PaneCRow = {
      *  sent by the host). `null` when the recompute could not run; absent
      *  until it has run. */
     id_match?: boolean | null
+    /** Where their record sits in their own log, from our record citing
+     *  their inclusion proof and checkpoint: `checkpoint_leaves` is the leaves
+     *  that checkpoint covers, their padding included, so never a record
+     *  count. Null/absent until that arrives. */
+    in_their_log?: { leaf_index: number; checkpoint_leaves: number } | null
   }
   unilateral: boolean
   /** The STRUCTURAL digest reconciliation of a
@@ -358,6 +497,10 @@ export type PaneCRow = {
   /** On the REFEREE node: the verdict it issued, on the row of the call it
    *  answered as referee. Absent when there is none. */
   adjudication_issued?: IssuedAdjudication
+  /** The payer-book summary of the settlement records this exchange's ids
+   *  join. `null`/absent means no payment lifecycle was recorded for it --
+   *  free, payments off, or failed before authorization -- never unpaid. */
+  settlement?: PayerBook | null
 }
 
 export type TwinRowFacts = {
@@ -420,6 +563,12 @@ export type PaneCListJson = {
    *  renders without it, just without a specific N in the sentence, never
    *  a hardcoded "50". */
   twin_sample_rate_denominator?: number | null
+  /** See `PaymentsPresence`. */
+  payments?: PaymentsPresence
+  /** Exchange ids with settlement records that no row carries. */
+  settlement_unjoined?: string[]
+  /** Settlement records with no exchange id at all. */
+  settlement_missing_exchange_id?: number
 }
 
 export type PaneCDrilldownJson =
