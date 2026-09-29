@@ -13,9 +13,9 @@
 //! - The channel is the payer's. Every record here is this node's view as the
 //!   paying side, so the provider's book is always reported as
 //!   `not_available` until the provider side emits its own observations.
-//! - Lapsed and debt are states of the provider's receivables. The payer's
-//!   events cannot observe them, so the counts are `null` (not available),
-//!   never `0`.
+//! - The provider's side of a payment is not something the payer's events
+//!   can see, so nothing about it is sent: per-peer counts carry only this
+//!   node's own facts, beside `provider_book: "not_available"`.
 //! - An exchange with no settlement records has no payment summary at all
 //!   (`settlement: null`). That covers a free exchange, a node with payments
 //!   off, and a paid request that failed before authorization (the host emits
@@ -296,8 +296,8 @@ fn payer_book(entries: &[&Value]) -> Value {
 }
 
 /// Per-peer settlement counts from the payer-book summaries of the peer's
-/// exchanges. Counts only: no amounts, no rates. The provider-side states are
-/// `null` because this node cannot observe them.
+/// exchanges. Counts only: no amounts, no rates, and nothing about the
+/// provider's side, which this node cannot observe (`provider_book`).
 pub(super) fn peer_counts(summaries: &[Value]) -> Value {
     let count = |state: &str| {
         summaries
@@ -305,16 +305,13 @@ pub(super) fn peer_counts(summaries: &[Value]) -> Value {
             .filter(|s| s.get("state").and_then(Value::as_str) == Some(state))
             .count()
     };
-    // An exchange whose terms were accepted but that never got an invoice was
-    // priced, not paid: it is counted on its own.
+    // An exchange whose terms were accepted but that never got an invoice is
+    // not paid: it is counted on its own.
     json!({
         "paid_exchanges": summaries.len() - count(PAYER_TERMS_ONLY),
         "terms_only": count(PAYER_TERMS_ONLY),
         "settled_payer_observed": count(PAYER_SETTLED),
         "no_settlement_seen": count(PAYER_NO_SETTLEMENT_SEEN),
-        "settled_both_books": Value::Null,
-        "lapsed": Value::Null,
-        "debt": Value::Null,
         "provider_book": PROVIDER_BOOK_NOT_AVAILABLE,
     })
 }
@@ -515,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn a_row_of_settled_and_priced_exchanges_reads_settled() {
+    fn a_row_of_settled_and_terms_only_exchanges_reads_settled() {
         let mut records = paid_and_settled("ex-a");
         records.push(event(
             "ex-b",
@@ -549,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn an_output_invoice_without_its_settlement_is_no_settlement_seen_not_lapsed() {
+    fn an_output_invoice_without_its_settlement_is_no_settlement_seen() {
         let mut records = paid_and_settled("ex-2");
         records.remove(4);
         let summary = index(records).summary_for(["ex-2"]).unwrap();
@@ -702,8 +699,10 @@ mod tests {
         assert_eq!(counts["paid_exchanges"], 2);
         assert_eq!(counts["settled_payer_observed"], 1);
         assert_eq!(counts["no_settlement_seen"], 1);
-        assert!(counts["lapsed"].is_null());
-        assert!(counts["debt"].is_null());
-        assert!(counts["settled_both_books"].is_null());
+        assert_eq!(counts["provider_book"], "not_available");
+        // Nothing about the provider's side is sent, not even as null.
+        for key in ["lapsed", "debt", "settled_both_books"] {
+            assert!(counts.get(key).is_none(), "{key}");
+        }
     }
 }

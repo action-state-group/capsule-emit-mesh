@@ -5523,6 +5523,58 @@ mod tests {
         assert_eq!(row["unilateral"], json!(true));
     }
 
+    /// Only this node's own ledger supplies settlement records. A peer that
+    /// pushes a settlement-shaped record, even one naming our own exchange id
+    /// and held by the door with a verified citing record, never enters the
+    /// settlement index: our row carries no summary from it, nothing reads it
+    /// as unjoined, Pane A never lists it as our payment record, and Peers
+    /// never counts it.
+    #[test]
+    fn a_pushed_settlement_record_never_joins_as_ours() {
+        let dir = tempfile::tempdir().unwrap();
+        let foreign = settlement_record(
+            "cap-foreign-settle",
+            "ex-ours",
+            "input_settlement_observed",
+            Some(0),
+            Some("aa"),
+        );
+        write_fixture_ledger(
+            dir.path(),
+            &[
+                asked_record("cap-ours", "req-ours", "ex-ours"),
+                citing_fixture("cap-foreign-settle", "peer-r", true),
+            ],
+        );
+        std::fs::write(
+            dir.path().join("received-capsules.jsonl"),
+            format!("{}\n", serde_json::to_string(&foreign).unwrap()),
+        )
+        .unwrap();
+
+        let el = effective_ledger(dir.path());
+        assert!(el.settlements.is_empty(), "a pushed record is never our settlement");
+
+        let pane_c = build_pane_json("pane-c", dir.path(), None).unwrap();
+        let rows = pane_c["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{rows:#?}");
+        assert!(rows[0]["settlement"].is_null());
+        assert_eq!(pane_c["settlement_unjoined"], json!([]));
+        assert_eq!(pane_c["settlement_missing_exchange_id"], json!(0));
+
+        let pane_a = build_pane_json("pane-a", dir.path(), None).unwrap();
+        assert!(pane_a["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["kind"] != json!("settlement_observation")));
+
+        let pane_b = build_pane_json("pane-b", dir.path(), None).unwrap();
+        for row in pane_b["rows"].as_array().unwrap() {
+            assert!(row.get("settlement").is_none(), "{row:#?}");
+        }
+    }
+
     /// Settlement records are our log entries (Pane A) and join Pane B/C rows
     /// by `exchange_id`; they never become exchange rows themselves. Before
     /// this, a sealed settlement record fell through to "one of this node's
@@ -5593,8 +5645,8 @@ mod tests {
             .expect("a peer row carries settlement counts");
         assert_eq!(counts["paid_exchanges"], json!(1));
         assert_eq!(counts["settled_payer_observed"], json!(1));
-        assert!(counts["lapsed"].is_null());
-        assert!(counts["debt"].is_null());
+        assert_eq!(counts["provider_book"], json!("not_available"));
+        assert!(counts.get("lapsed").is_none() && counts.get("debt").is_none());
     }
 
     #[test]
