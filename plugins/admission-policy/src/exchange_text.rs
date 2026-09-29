@@ -14,6 +14,16 @@
 //! Files older than `ADMISSION_POLICY_KEEP_EXCHANGE_TEXT_DAYS` (default 30)
 //! are removed, checked at most once an hour per directory, on a write.
 //! "Clean up records" deletes them (`owner_maintenance`).
+//!
+//! Size: one file is at most [`MAX_FILE_BYTES`] (256 KiB). An exchange whose
+//! file would be larger keeps no bodies at all (a cut body could never match
+//! its sealed digest, so it would only mislead): the file says
+//! `"truncated": true`, gives the size it would have had (`original_bytes`),
+//! and keeps the start of the answer text that fits.
+//!
+//! Memory: the bodies are taken off the event as soon as it arrives
+//! ([`take`]), whether or not this plugin keeps them, so no copy of the text
+//! is held in memory beyond the one being written.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -21,13 +31,15 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{json, Value};
 
-use crate::lifecycle_channel::ExchangeBodies;
+use crate::lifecycle_channel::{ExchangeBodies, OpenAiExchangeEnvelope, Phase};
 
 /// Set to `1` to keep prompt and answer text. Off by default.
 pub const KEEP_EXCHANGE_TEXT_ENV: &str = "ADMISSION_POLICY_KEEP_EXCHANGE_TEXT";
 /// How many days a kept text stays; a positive whole number, else the default.
 pub const KEEP_EXCHANGE_TEXT_DAYS_ENV: &str = "ADMISSION_POLICY_KEEP_EXCHANGE_TEXT_DAYS";
 const DEFAULT_KEEP_DAYS: u64 = 30;
+/// The largest exchange text file this plugin writes.
+pub const MAX_FILE_BYTES: usize = 256 * 1024;
 /// A directory is pruned at most this often.
 const PRUNE_EVERY: Duration = Duration::from_secs(60 * 60);
 
@@ -39,12 +51,64 @@ fn enabled_from(value: Option<&str>) -> bool {
     value.map(str::trim) == Some("1")
 }
 
-fn retention(days: Option<&str>) -> Duration {
-    let days = days
-        .and_then(|value| value.trim().parse::<u64>().ok())
+fn retention_days(days: Option<&str>) -> u64 {
+    days.and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|days| *days > 0)
-        .unwrap_or(DEFAULT_KEEP_DAYS);
-    Duration::from_secs(days.saturating_mul(24 * 60 * 60))
+        .unwrap_or(DEFAULT_KEEP_DAYS)
+}
+
+fn retention(days: Option<&str>) -> Duration {
+    Duration::from_secs(retention_days(days).saturating_mul(24 * 60 * 60))
+}
+
+/// How many days a kept text stays, as configured.
+pub fn configured_retention_days() -> u64 {
+    retention_days(std::env::var(KEEP_EXCHANGE_TEXT_DAYS_ENV).ok().as_deref())
+}
+
+/// One exchange's text, taken off its event, waiting to be written.
+pub struct Pending {
+    exchange_id: String,
+    twin_bracket_id: Option<String>,
+    bodies: ExchangeBodies,
+}
+
+impl Pending {
+    /// Write it ([`keep`]).
+    pub fn write(self, ledger_dir: &Path) -> std::io::Result<Option<PathBuf>> {
+        keep(
+            ledger_dir,
+            &self.exchange_id,
+            self.twin_bracket_id.as_deref(),
+            &self.bodies,
+        )
+    }
+}
+
+/// Take the bodies off an observed event, always, so nothing downstream (the
+/// in-memory event window, the split collector, the events log) ever holds
+/// them. Returns them to write only when `keeping` is on and the event is a
+/// terminal one with an exchange id.
+pub fn take(envelope: &mut OpenAiExchangeEnvelope, keeping: bool) -> Option<Pending> {
+    let bodies = envelope.exchange_bodies.take()?;
+    if !keeping || envelope.phase != Phase::Terminal {
+        return None;
+    }
+    Some(Pending {
+        exchange_id: envelope.exchange_id.clone()?,
+        twin_bracket_id: envelope.twin_bracket_id.clone(),
+        bodies,
+    })
+}
+
+/// The longest prefix of `text` that is at most `max` bytes and ends on a
+/// character boundary.
+fn prefix(text: &str, max: usize) -> &str {
+    let mut end = text.len().min(max);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 /// Remove kept texts (and leftover temp files) last written more than
@@ -132,6 +196,27 @@ pub fn keep(
     if let Some(bracket) = twin_bracket_id {
         document["twin_bracket_id"] = json!(bracket);
     }
+    let mut bytes = serde_json::to_vec(&document)?;
+    if bytes.len() > MAX_FILE_BYTES {
+        let original_bytes = bytes.len();
+        document["request_body"] = Value::Null;
+        document["response_body"] = Value::Null;
+        document["response_text"] = Value::Null;
+        document["truncated"] = json!(true);
+        document["original_bytes"] = json!(original_bytes);
+        let room = MAX_FILE_BYTES.saturating_sub(serde_json::to_vec(&document)?.len() + 2);
+        if let Some(text) = response_text.as_deref() {
+            // Room is counted in bytes the text takes once JSON-escaped; a
+            // character that escapes wide makes the prefix shorter, never the
+            // file bigger.
+            let mut cut = prefix(text, room);
+            while serde_json::to_string(cut)?.len() > room + 2 {
+                cut = prefix(cut, cut.len().saturating_sub(64));
+            }
+            document["response_text"] = json!(cut);
+        }
+        bytes = serde_json::to_vec(&document)?;
+    }
     let disclosures = ledger_dir.join("disclosures");
     let dir = disclosures.join("by-exchange");
     std::fs::create_dir_all(&dir)?;
@@ -151,10 +236,16 @@ pub fn keep(
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(&tmp)?;
-    file.write_all(&serde_json::to_vec(&document)?)?;
-    file.sync_all()?;
-    std::fs::rename(&tmp, &path)?;
+    let written = options.open(&tmp).and_then(|mut file| {
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, &path)
+    });
+    if let Err(error) = written {
+        // Never leave a half-written copy of the text behind.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
     prune_if_due(&dir);
     Ok(Some(path))
 }
@@ -207,6 +298,69 @@ mod tests {
             assert_eq!(mode(written.parent().unwrap()), 0o700);
             assert_eq!(mode(&dir.path().join("disclosures")), 0o700);
         }
+    }
+
+    fn envelope(phase: &str, exchange_id: Option<&str>) -> OpenAiExchangeEnvelope {
+        let mut value = json!({"dispatch_path": "raw_proxy", "phase": phase, "model": "m",
+            "exchange_bodies": {"request": {"model": "m"}}});
+        if let Some(id) = exchange_id {
+            value["exchange_id"] = json!(id);
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    /// The bodies always come off the event; they are handed back only to
+    /// be kept, and only for a terminal event with an id.
+    #[test]
+    fn take_always_strips_the_bodies_and_returns_them_only_to_keep() {
+        for (phase, id, keeping, kept) in [
+            ("terminal", Some("ex-1"), true, true),
+            ("terminal", Some("ex-1"), false, false),
+            ("effective_request", Some("ex-1"), true, false),
+            ("terminal", None, true, false),
+        ] {
+            let mut event = envelope(phase, id);
+            let pending = take(&mut event, keeping);
+            assert!(event.exchange_bodies.is_none(), "{phase} {id:?} {keeping}");
+            assert_eq!(pending.is_some(), kept, "{phase} {id:?} {keeping}");
+        }
+    }
+
+    /// A file never exceeds the cap. An oversized exchange keeps no bodies
+    /// (a cut body could not match its digest), says it was truncated and
+    /// how big it was, and keeps the start of the answer.
+    #[test]
+    fn an_oversized_exchange_is_capped_with_an_explicit_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let long = "é".repeat(MAX_FILE_BYTES);
+        let response = json!({"choices": [{"message": {"content": long}}]});
+        let written = keep(
+            dir.path(),
+            "0f8fad5b-d9cb-469f-a165-70867728950e",
+            None,
+            &bodies(Some(json!({"model": "m"})), Some(response)),
+        )
+        .unwrap()
+        .expect("a file");
+        let raw = std::fs::read(&written).unwrap();
+        assert!(raw.len() <= MAX_FILE_BYTES, "{} bytes", raw.len());
+        let saved: Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(saved["truncated"], json!(true));
+        assert!(saved["original_bytes"].as_u64().unwrap() > MAX_FILE_BYTES as u64);
+        assert!(saved["request_body"].is_null() && saved["response_body"].is_null());
+        let kept = saved["response_text"].as_str().unwrap();
+        assert!(!kept.is_empty() && long.starts_with(kept));
+        // A file under the cap carries no marker.
+        let small = keep(
+            dir.path(),
+            "6f9619ff-8b86-d011-b42d-00c04fc964ff",
+            None,
+            &bodies(Some(json!({"model": "m"})), None),
+        )
+        .unwrap()
+        .unwrap();
+        let small: Value = serde_json::from_slice(&std::fs::read(small).unwrap()).unwrap();
+        assert!(small.get("truncated").is_none());
     }
 
     #[test]

@@ -962,22 +962,16 @@ async fn main() -> anyhow::Result<()> {
                 }
                 if message.channel == OPENAI_EXCHANGE_CHANNEL {
                     match serde_json::from_slice::<OpenAiExchangeEnvelope>(&message.body) {
-                        Ok(envelope) => {
-                            // The owner's opt-in to keep the text
-                            // (`exchange_text`), from the bodies an opted-in
-                            // host handed over. Independent of sealing.
-                            if let (Some(bodies), Some(exchange_id), true) = (
-                                envelope.exchange_bodies.clone(),
-                                envelope.exchange_id.clone(),
-                                envelope.phase == lifecycle_channel::Phase::Terminal
-                                    && exchange_text::enabled(),
-                            ) {
+                        Ok(mut envelope) => {
+                            // The bodies an opted-in host handed over come off
+                            // the event here, always: nothing below (the
+                            // event window, the split collector, the log) ever
+                            // holds them. They are written only with the
+                            // owner's opt-in (`exchange_text`).
+                            if let Some(pending) = exchange_text::take(&mut envelope, exchange_text::enabled()) {
                                 let ledger_dir = capsules.ledger_dir().to_path_buf();
-                                let twin = envelope.twin_bracket_id.clone();
                                 let _ = tokio::task::spawn_blocking(move || {
-                                    if let Err(error) =
-                                        exchange_text::keep(&ledger_dir, &exchange_id, twin.as_deref(), &bodies)
-                                    {
+                                    if let Err(error) = pending.write(&ledger_dir) {
                                         tracing::warn!(%error, "could not keep this exchange's text");
                                     }
                                 })
@@ -1405,5 +1399,69 @@ mod published_operations_tests {
         ] {
             assert!(declared.contains(&name), "{name} is routed but not declared: {declared:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod exchange_text_wiring_tests {
+    use super::*;
+    use std::path::Path;
+
+    /// A terminal event from a host that hands bodies to plugins, parsed the
+    /// way the channel handler parses it.
+    fn event_with_bodies() -> OpenAiExchangeEnvelope {
+        serde_json::from_str(
+            r#"{"dispatch_path":"raw_proxy","phase":"terminal","model":"m","status":200,
+                "exchange_id":"0f8fad5b-d9cb-469f-a165-70867728950e",
+                "exchange_bodies":{"request":{"messages":[{"role":"user","content":"SECRET-PROMPT"}]},
+                                   "response":{"choices":[{"message":{"content":"SECRET-ANSWER"}}]}}}"#,
+        )
+        .unwrap()
+    }
+
+    /// The handler's order: take the bodies, write them only when kept, then
+    /// hand the event on to the store.
+    fn observe(data_dir: &Path, keeping: bool) -> ObservedLifecycleEvents {
+        let store = ObservedLifecycleEvents::open(data_dir).unwrap();
+        let mut envelope = event_with_bodies();
+        if let Some(pending) = exchange_text::take(&mut envelope, keeping) {
+            pending.write(&data_dir.join("ledger")).unwrap();
+        }
+        store.record(envelope);
+        store
+    }
+
+    fn by_exchange(data_dir: &Path) -> Vec<String> {
+        std::fs::read_dir(data_dir.join("ledger/disclosures/by-exchange"))
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Host on, plugin off: nothing on disk, and the text is held nowhere
+    /// in memory or in the events log either.
+    #[test]
+    fn host_on_plugin_off_keeps_nothing_on_disk_or_in_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = observe(dir.path(), false);
+        assert!(by_exchange(dir.path()).is_empty());
+        assert!(store.snapshot().iter().all(|e| e.exchange_bodies.is_none()));
+        let log = std::fs::read_to_string(dir.path().join("lifecycle-events.jsonl")).unwrap_or_default();
+        assert!(!log.contains("SECRET"), "{log}");
+    }
+
+    /// Plugin on: one file on disk, and still no copy in memory once written.
+    #[test]
+    fn plugin_on_writes_the_file_then_holds_no_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = observe(dir.path(), true);
+        assert_eq!(by_exchange(dir.path()), vec!["0f8fad5b-d9cb-469f-a165-70867728950e.json".to_string()]);
+        assert!(store.snapshot().iter().all(|e| e.exchange_bodies.is_none()));
+        let log = std::fs::read_to_string(dir.path().join("lifecycle-events.jsonl")).unwrap_or_default();
+        assert!(!log.contains("SECRET"), "{log}");
     }
 }
