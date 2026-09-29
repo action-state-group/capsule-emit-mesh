@@ -59,7 +59,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # `capsule-emit` is a git dependency pinned to a merged commit until it is on
 # crates.io; `cll` is the published checkpointed-local-log. Renamed because
 # this crate already has a `capsule_emit` module.
-capsule-emit-lib = { package = "capsule-emit", git = "https://github.com/action-state-group/capsule-emit", rev = "6e8108ddb99b144f0076cf116d1fdbe73bf9f2b7" }
+capsule-emit-lib = { package = "capsule-emit", git = "https://github.com/action-state-group/capsule-emit", rev = "69ba8166cf2f12badb38a5d98ebf80a66cb9c103" }
 cll = { package = "checkpointed-local-log", version = "0.2.0" }
 
 [dev-dependencies]

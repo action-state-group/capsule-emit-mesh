@@ -192,7 +192,7 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 [[package]]
 name = "capsule-emit"
 version = "0.0.1"
-source = "git+https://github.com/action-state-group/capsule-emit?rev=6e8108ddb99b144f0076cf116d1fdbe73bf9f2b7#6e8108ddb99b144f0076cf116d1fdbe73bf9f2b7"
+source = "git+https://github.com/action-state-group/capsule-emit?rev=69ba8166cf2f12badb38a5d98ebf80a66cb9c103#69ba8166cf2f12badb38a5d98ebf80a66cb9c103"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
