@@ -93,22 +93,18 @@ Packaging is `package_release.py`; installing a package on a node is
 The page's data comes from this plugin's own routes (`web-ui/DATA-ROUTES.md`),
 read from `ADMISSION_POLICY_DATA_DIR`.
 
-**The evidence door.** The other side's records reach this node, and requests
-for yours are answered, through the local evidence door (`evidence_server.py`),
-at `ADMISSION_POLICY_EVIDENCE_SERVER_URL` (default `http://127.0.0.1:8091`). At
-startup the plugin creates `<data dir>/evidence-door.token` (0600, never
-replaced) and signs every call to the door with it; start the door with
-`--token-file <data dir>/evidence-door.token`. A reply that doesn't prove the
-door holds the token is ignored. When the door isn't running or fails that
-check, the plugin logs it and the page says "Confirmation unavailable".
+**No second process.** The other side's records are received, and requests
+for yours answered, in-process: `record_push_receive` checks a pushed record
+against the sender's announced key (`ADMISSION_POLICY_PEER_KEYS`) and holds
+it; `evidence_answer` answers a record request under the sharing policy.
+This node has no referee yet: a delivered verdict is refused, signed, and a
+twin pair that differs reads "Not adjudicated: this node has no referee yet".
 
-Two more settings, both optional:
+One more setting, optional:
 
 - **"Asked of you"** (the peer drill's log of requests made of this node) is
-  read from `ADMISSION_POLICY_RECEIVED_LOG_DIR`, default
-  `<ADMISSION_POLICY_DATA_DIR>/received-log`. The evidence door writes it
-  when started with `--received-log-dir` pointing there. With no such
-  directory the drill says the log is not shown.
+  written to and read from `ADMISSION_POLICY_RECEIVED_LOG_DIR`, default
+  `<ADMISSION_POLICY_DATA_DIR>/received-log`.
 
 ## Running the tests
 
@@ -145,3 +141,27 @@ cargo test --test interop --features mutant-allow-malformed -- --test-threads=1
 
 See `DELTA.md` for the full already-covered-vs-needed-added accounting, and
 `REAL-HOST-VERIFICATION.md` for the real-host-specific findings.
+
+## Rebuild the package
+
+Only packages built by `.github/workflows/release.yml` are published. The
+workflow builds from the tagged commit with every action pinned to a commit,
+a pinned Rust toolchain, `cargo build --locked` with the build machine's
+paths remapped out of the executable, and `pnpm install --frozen-lockfile`.
+The archive step (`plugins/admission-policy/package_release.py`) is
+deterministic, so the same executable always gives the same archive digest.
+To build the package for your own machine from a checkout of the tag:
+
+```bash
+cd plugins/admission-policy
+RUSTFLAGS="--remap-path-prefix=$PWD=/build --remap-path-prefix=$HOME=/home" \
+  cargo build --locked --release --bin admission-policy-plugin
+(cd web-ui && pnpm install --frozen-lockfile && pnpm build)
+python3 package_release.py --version "$VERSION" --target "$TARGET" \
+  --binary target/release/admission-policy-plugin --out-dir dist
+```
+
+The resulting `dist/capsule-emit-mesh-$VERSION-$TARGET.tar.gz` installs with
+the same command as step 3 of [`INSTALL.md`](INSTALL.md). A different compiler or build machine can produce
+a different executable, and then a different digest; `SHA256SUMS` covers the
+published packages.

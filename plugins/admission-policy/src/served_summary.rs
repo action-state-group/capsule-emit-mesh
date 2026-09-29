@@ -1,7 +1,7 @@
 //! The served summary (`served_summary/1`): what this node served, per model,
 //! over its checkpointed range. Never who asked.
 //!
-//! A port of `served_summary.py`'s fold and its published value
+//! A port of the reference served summary's fold and its published value
 //! (`build_served_summary`, `ServedSummary.to_value`), answered in-process by
 //! `evidence_answer` under the `served_summary/1` derivation.
 //!

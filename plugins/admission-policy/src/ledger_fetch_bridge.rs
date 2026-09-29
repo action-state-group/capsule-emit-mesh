@@ -1,15 +1,14 @@
 //! `ledger-fetch/1`: the plugin-mesh-stream carrier for the E9/E10 two-sided
-//! ledger's "evidence-door fetch" -- on demand, off the request hot path, a
+//! ledger's peer fetch -- on demand, off the request hot path, a
 //! peer reads back ONE of THIS node's own sealed ledger entries by
 //! `capsule_id` (the join key `lifecycle_channel::peer_capsule_id_for_seal`
 //! already threads onto the requester's own sealed row). Modeled directly on
 //! `mesh_evidence_bridge`'s responder/requester shape -- same
 //! `OpenMeshStreamRequest`/`connect_mesh_stream` mechanism, zero new
 //! mesh-llm-host-runtime protocol code -- but answers from
-//! `CapsuleState::lookup` instead of proxying to `evidence_server.py`: this
-//! door carries no E14/E15 Bundle semantics and no checkpoint-coverage
-//! requirement (`capsule_emit.bundle.py`'s `BundleError` gate does not apply
-//! here), so a capsule sealed seconds ago is fetchable immediately.
+//! `CapsuleState::lookup`, in-process: this channel carries no Bundle
+//! semantics and no checkpoint-coverage requirement, so a capsule sealed
+//! seconds ago is fetchable immediately.
 //!
 //! **Witness-level recompute only, never a second attestation.** The
 //! responder returns the raw, *unsigned* `{capsule, signed_statement_b64,

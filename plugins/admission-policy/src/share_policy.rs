@@ -1,15 +1,13 @@
 //! This plugin's `config_schema` declaration for
 //! the one sharing-policy object -- four switches, one key
-//! (`docs/SHARING-POLICY.md`; Python-side shape at
-//! `capsule-emit-mesh/share_policy.py`'s `SharePolicy`). Declaring it here
+//! (`docs/SHARING-POLICY.md`). Declaring it here
 //! makes mesh's console render the four switches under Configuration >
 //! Plugins with the host's own controls -- nothing here is a score, and
 //! nothing here ranks anyone.
 //!
-//! **Declarative only, same honest scope-cut as the Python side.** mesh-llm
-//! 0.76 gives a plugin its own declared `config_schema` but there is no
-//! live host-to-plugin config channel wired yet (`share_policy.py`'s own
-//! "Known gap" note) -- an operator sets the four `ADMISSION_POLICY_SHARE_*`
+//! **Declarative only.** mesh-llm 0.76 gives a plugin its own declared
+//! `config_schema` but there is no live host-to-plugin config channel wired
+//! yet -- an operator sets the four `ADMISSION_POLICY_SHARE_*`
 //! / `ADMISSION_POLICY_WITNESS` env vars directly on the node today. This
 //! module's setting keys match those env var suffixes byte for byte
 //! (`share_record_at_completion` -> `ADMISSION_POLICY_SHARE_RECORD_AT_COMPLETION`,
@@ -37,13 +35,12 @@ pub const STOP_ROUTING_WINDOW_KEY: &str = "stop_routing_window_days";
 /// This process's own runtime env var for `share_record_at_completion` --
 /// see the module doc's "declarative only" note: no live host->plugin
 /// config channel exists yet, so an operator sets this directly on the
-/// node, same as `share_policy.py`'s `ENV_RECORD_AT_COMPLETION`.
+/// node.
 pub const ENV_RECORD_AT_COMPLETION: &str = "ADMISSION_POLICY_SHARE_RECORD_AT_COMPLETION";
 
 /// This process's runtime `share_record_at_completion` value: `true` only
 /// when explicitly set to `"off"`; unset or any other value resolves to the
-/// documented default (`"counterparty"`, i.e. NOT off) -- mirrors
-/// `share_policy.py::_read_enum`'s default-on behavior byte for byte.
+/// documented default (`"counterparty"`, i.e. NOT off).
 /// Seam A1.
 pub fn record_at_completion_is_off() -> bool {
     record_at_completion_is_off_for(std::env::var(ENV_RECORD_AT_COMPLETION).ok().as_deref())
@@ -53,8 +50,7 @@ fn record_at_completion_is_off_for(raw: Option<&str>) -> bool {
     raw == Some("off")
 }
 
-/// This process's own env var for `share_history_segments`, same as
-/// `share_policy.py`'s `ENV_HISTORY_SEGMENTS`.
+/// This process's own env var for `share_history_segments`.
 pub const ENV_HISTORY_SEGMENTS: &str = "ADMISSION_POLICY_SHARE_HISTORY_SEGMENTS";
 
 /// Who may read one of this node's records back: `off`, `counterparties`,
@@ -200,8 +196,8 @@ mod tests {
 
     #[test]
     fn setting_keys_match_the_python_env_var_suffix_convention() {
-        // share_policy.py's ENV_* constants, minus
-        // the shared ADMISSION_POLICY_ prefix -- this module's whole "no
+        // Each env var is the setting key with the shared
+        // ADMISSION_POLICY_ prefix -- this module's whole "no
         // re-naming exercise later" claim rests on this correspondence.
         let expected_env_suffix = [
             (RECORD_AT_COMPLETION_KEY, "SHARE_RECORD_AT_COMPLETION"),

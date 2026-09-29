@@ -15,8 +15,7 @@ Nothing joins or publishes to a public mesh. Node B joins node A with an invite 
 |---|---|
 | `MESH_LLM_BIN` | a mesh-llm release build, plus `MESH_LLM_NATIVE_RUNTIME_BUNDLE_DIR` (the native runtime built with it) |
 | `PLUGIN_PKG` | the plugin package, `capsule-emit-mesh.tar.gz` for your platform |
-| `python3` | 3.11 or newer, for the evidence door that ships in the package (`door/`). Its first start installs the door's pinned, hash-checked dependencies (about 60 MB) into `door/.venv` |
-| `DOOR_REPO`, `PYTHON` | optional: run the door from a capsule-emit-mesh checkout instead (its `evidence_server.py`, and a Python with its `requirements.txt` installed) |
+| `python3` | any recent one, for `demo.sh`'s own small JSON helpers. The plugin itself needs no Python. |
 | `GGUF` | any small chat model for node A |
 
 ## Run it
@@ -49,11 +48,11 @@ Use `plugins install`; don't unpack the archive into the plugin directory by han
 - Node B: `mesh-llm client --join-file …`. It joins A's private mesh and lists A's model.
 - Consoles: node A at `http://127.0.0.1:3811`, node B at `http://127.0.0.1:3812`.
 
-**3. Each node's evidence door starts, knowing the other node's public key.**
+**3. Each node learns the other node's public key.**
 
-- When the plugin starts, it writes the node's id and public key, and a random token in its data directory (`evidence-door.token`).
-- Each node starts the evidence door that ships in the package: `door/run-door.sh` in the installed plugin directory, with the node's `ADMISSION_POLICY_DATA_DIR` and `ADMISSION_POLICY_EVIDENCE_SERVER_URL`. It is started knowing the other node's key (`ADMISSION_POLICY_PEER_KEYS`), before any traffic, and checks the signature of every record it receives against that key.
-- The door listens on loopback only and answers only its own plugin: every request and reply between them proves the token. If the door isn't running, the plugin's Evidence page says confirmation is unavailable.
+- When the plugin first starts, it writes the node's id and public key in its data directory.
+- Both nodes then restart knowing the other node's key (`ADMISSION_POLICY_PEER_KEYS` in each node's environment), before any traffic. The plugin checks the signature of every record it receives against that key, and refuses a record from a node whose key it doesn't know.
+- There is no second process: the plugin receives the other node's records itself.
 
 **4. One exchange: node B asks node A's model.**
 
@@ -67,7 +66,7 @@ Use `plugins install`; don't unpack the archive into the plugin directory by han
 
 ## On a stock node today
 
-Steps 1, 2, 4 and 5 work on a stock mesh-llm node:
+Steps 1 to 5 work on a stock mesh-llm node:
 - the install;
 - the page (served by the node from the plugin's package);
 - a signed record on each side.

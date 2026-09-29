@@ -254,9 +254,9 @@ export const ENTRY_CHIP_STATE_TOOLTIPS = {
 export const ENTRY_CHIP_COVERED_TOOLTIP =
   'A checkpoint on this node covers this record, as Integrity counts. This row hasn’t checked that for itself yet.'
 
-/** The TWIN bracket's `no verdict` badge. */
+/** The TWIN bracket's `not adjudicated` badge. */
 export const TWIN_NO_VERDICT_TOOLTIP =
-  'The same request went to two machines and both answers are recorded. No one has compared them and sealed a verdict yet.'
+  'The same request went to two machines and both answers are recorded. This node has no referee yet, so no one compares them and seals a verdict.'
 
 /** The one wording for "no witness holds your checkpoints": the hero, the
  *  Your records panel and the Integrity tile all say this. */

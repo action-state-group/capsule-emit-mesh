@@ -8,10 +8,6 @@
 //! here as a regression guard) and a ledger-fetch-tagged open must reach
 //! the NEW responder -- never the other way around.
 
-mod common {
-    pub mod door;
-}
-
 use mesh_llm_plugin::proto::{self, envelope::Payload};
 use mesh_llm_plugin::{
     connect_side_stream, read_envelope, write_envelope, LocalListener, LocalStream,
@@ -19,7 +15,7 @@ use mesh_llm_plugin::{
 };
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, UnixListener};
+use tokio::net::UnixListener;
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -46,7 +42,7 @@ impl Harness {
         let listener = UnixListener::bind(&socket_path).expect("bind fake-host socket");
 
         let data_dir = std::env::temp_dir().join(format!("ledger-fetch-interop-data-{}", nonce()));
-        common::door::seed_token(&data_dir);
+        std::fs::create_dir_all(&data_dir).expect("create the data dir");
         let mut cmd = Command::new(PLUGIN_BIN);
         cmd.env("MESH_LLM_PLUGIN_ENDPOINT", &socket_path)
             .env("MESH_LLM_PLUGIN_TRANSPORT", "unix")
@@ -403,11 +399,7 @@ async fn responder_reports_not_found_for_a_real_miss_over_the_real_wire() {
 /// change introduces.
 #[tokio::test]
 async fn untagged_open_still_reaches_the_evidence_responder_not_ledger_fetch() {
-    let refusal = br#"{"reason":"no_such_record"}"#;
-    let (evidence_server_url, _received) = spawn_fake_evidence_server(refusal).await;
-
-    let mut harness =
-        Harness::spawn(&[("ADMISSION_POLICY_EVIDENCE_SERVER_URL", &evidence_server_url)]).await;
+    let mut harness = Harness::spawn(&[]).await;
     harness.initialize().await;
 
     let request_id = harness
@@ -436,9 +428,8 @@ async fn untagged_open_still_reaches_the_evidence_responder_not_ledger_fetch() {
         .await
         .expect("dial the plugin's local listener");
     let (mut read_half, mut write_half) = stream.into_split();
-    // A referee's `adjudicate` request: the one subject the evidence
-    // responder still takes to the local door, so the door's canned bytes
-    // coming back prove which responder the untagged open reached.
+    // Any request the evidence responder refuses: its signed -00 refusal
+    // (`reason` + `sig`) proves which responder the untagged open reached.
     write_half
         .write_all(br#"{"subject":{"kind":"adjudicate"},"halves":[]}"#)
         .await
@@ -450,53 +441,15 @@ async fn untagged_open_still_reaches_the_evidence_responder_not_ledger_fetch() {
         .await
         .expect("responder answered before timeout")
         .expect("read response bytes");
-    // The evidence responder proxies an adjudicate request to
-    // `evidence_server.py` verbatim -- a ledger-fetch response would instead
-    // be `{"status": ...}` JSON, which this exact byte comparison rules out.
-    assert_eq!(response_bytes, refusal);
+    // A ledger-fetch response would instead be `{"status": ...}` JSON.
+    let reply: serde_json::Value = serde_json::from_slice(&response_bytes).expect("a JSON answer");
+    assert!(reply.get("status").is_none(), "not a ledger-fetch answer: {reply}");
+    assert!(reply["reason"].is_string(), "{reply}");
+    assert!(reply["sig"].as_str().is_some_and(|s| s.len() == 128), "a signed refusal: {reply}");
 
     harness.shutdown_process().await;
 }
 
-async fn spawn_fake_evidence_server(
-    response_body: &'static [u8],
-) -> (String, std::sync::Arc<tokio::sync::Mutex<Vec<Vec<u8>>>>) {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind fake evidence_server.py");
-    let port = listener.local_addr().unwrap().port();
-    let received = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
-    let received_for_task = received.clone();
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut socket, _)) = listener.accept().await else {
-                return;
-            };
-            let received = received_for_task.clone();
-            tokio::spawn(async move {
-                let mut buf = vec![0u8; 64 * 1024];
-                let read = socket.read(&mut buf).await.unwrap_or(0);
-                let request = &buf[..read];
-                let header_end = request
-                    .windows(4)
-                    .position(|w| w == b"\r\n\r\n")
-                    .map(|i| i + 4)
-                    .unwrap_or(request.len());
-                received.lock().await.push(request[header_end..].to_vec());
-
-                let proof = common::door::proof_header(&common::door::request_nonce(request), 200, response_body);
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{proof}\r\n",
-                    response_body.len()
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-                let _ = socket.write_all(response_body).await;
-                let _ = socket.shutdown().await;
-            });
-        }
-    });
-    (format!("http://127.0.0.1:{port}"), received)
-}
 
 /// (D) Requester role, happy path: the `mesh_ledger_fetch` tool opens a real
 /// outbound, correctly-tagged `OpenMeshStreamRequest`, writes the

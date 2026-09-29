@@ -9,7 +9,7 @@
 //!
 //! `ADMISSION_POLICY_SELF_PEER_ID` still overrides the learned id when set.
 //! The learned id is written to `<data dir>/self-peer-id` so an operator (or
-//! a harness wiring a door's `ADMISSION_POLICY_PEER_KEYS`) can read exactly
+//! a harness wiring a peer's `ADMISSION_POLICY_PEER_KEYS`) can read exactly
 //! what this node will declare.
 
 use std::path::{Path, PathBuf};

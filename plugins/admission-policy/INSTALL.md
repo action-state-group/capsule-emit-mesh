@@ -16,7 +16,7 @@ Records are kept on this node. With the default settings:
 | --- | --- | --- | --- |
 | This node's own sealed record of a completed exchange | the peer in that exchange | on | `share_record_at_completion = "off"` |
 | Answers to record requests | past counterparties and peers about to become one | on | `share_history_segments = "off"` |
-| A sealed verdict, when this node judges an exchange | the node it judged | on | `share_adjudications = "off"` |
+| A sealed verdict about an exchange | — | **not yet**: this node has no referee | — |
 | A signed checkpoint of the log | a witness service | **off**: only if you set `witness` | leave `witness` empty |
 
 All peer traffic travels over mesh-llm's own peer connections; nothing goes
@@ -28,15 +28,12 @@ Configuration › Plugins › Sharing policy, or in the node's config:
 name = "capsule-emit-mesh"
 
 [plugin.settings]
-share_adjudications = "off"
+share_history_segments = "off"
 ```
 
-Local listeners, loopback only:
-
-- the plugin's own HTTP endpoint on `127.0.0.1` at a random port, which the
-  node reaches it through;
-- the evidence door (below), if you start it, on `127.0.0.1:8091` or the
-  port in `ADMISSION_POLICY_EVIDENCE_SERVER_URL`.
+Local listener, loopback only: the plugin's own HTTP endpoint on `127.0.0.1`
+at a random port, which the node reaches it through. The plugin is one
+executable; there is no second process to install or run.
 
 ## Install
 
@@ -103,30 +100,6 @@ one). After the node serves an exchange, the page shows the peer, the
 exchange, and the log's integrity. The plugin's options are under
 Configuration › Plugins.
 
-**6. Start the evidence door (needed for confirmations).** The door is the
-local service the plugin hands peers' records and record requests to. It
-ships in the package under `door/`. It needs `python3` 3.11 or newer; the
-first run installs its pinned, hash-checked dependencies into `door/.venv`.
-Start it after the node has run once, as the same user and with the same
-`ADMISSION_POLICY_*` environment as the node:
-
-```bash
-~/.mesh-llm/plugins/installed/capsule-emit-mesh/door/run-door.sh
-```
-
-(If you set `MESH_LLM_PLUGIN_DIR`, the path starts there instead;
-`mesh-llm plugins info capsule-emit-mesh` shows it.) It prints the data
-directory it uses, which must be the plugin's (the plugin
-logs its own at startup).
-
-The door listens on loopback only and answers only the plugin: on first
-start the plugin writes a random token to `<data dir>/evidence-door.token`
-(readable by you alone), and every request and every reply between the two
-proves that token without sending it. Another local process that takes the
-door's port gets no plugin traffic it can answer. If the door is not running,
-or does not prove the token, the plugin says so in its log and treats the
-door as unavailable, and nothing is confirmed.
-
 ## Confirmed exchanges: what they need
 
 **On an unmodified mesh-llm node today:**
@@ -154,14 +127,11 @@ Until both fields exist in mesh-llm, every exchange on an unmodified node
 stays one-sided: each node holds only its own record, and nothing is
 confirmed.
 
-**Where the fields exist, confirmation also needs, on each node:**
-
-- **The evidence door running** (step 6).
-- **Each other node's public key.** Nodes do not exchange keys yet. The door
-  accepts a record only from a peer whose key you have configured, and
-  refuses the rest. Set `ADMISSION_POLICY_PEER_KEYS` in the door's
-  environment to a JSON object mapping each peer's id to its raw Ed25519
-  public key in hex. A node writes its own id to `<data dir>/self-peer-id`
+**Where the fields exist, confirmation also needs, on each node, each other
+node's public key.** Nodes do not exchange keys yet. The plugin accepts a
+record only from a peer whose key you have configured, and refuses the rest.
+Set `ADMISSION_POLICY_PEER_KEYS` in the node's environment to a JSON object
+mapping each peer's id to its raw Ed25519 public key in hex. A node writes its own id to `<data dir>/self-peer-id`
   and its public key to `<data dir>/keys/node-key.pub.pem`.
 
 ## Where the records are kept
@@ -170,8 +140,8 @@ The plugin writes under its data directory: `ADMISSION_POLICY_DATA_DIR` if set
 in the node's environment (give an absolute path), else
 `$XDG_DATA_HOME/capsule-emit-mesh`, else `~/.local/share/capsule-emit-mesh`.
 The sealed log is
-`<data dir>/ledger/capsules.jsonl`; the door's log of what peers asked is
-`<data dir>/received-log/`.
+`<data dir>/ledger/capsules.jsonl`; its log of what peers asked of this node
+is `<data dir>/received-log/`.
 
 ## Turn it off or remove it
 
@@ -180,8 +150,7 @@ mesh-llm plugins disable capsule-emit-mesh   # keeps it installed
 mesh-llm plugins delete capsule-emit-mesh    # removes the installed files
 ```
 
-Stop the door first if it is running. Removing the plugin does not delete its
-data directory.
+Removing the plugin does not delete its data directory.
 
 ## Five-minute demo
 
@@ -197,8 +166,6 @@ capsule-emit-mesh/
   plugin.toml              package marker (name, version)
   plugin-manifest.json     the plugin's settings schema and web UI declaration
   bundle/register-mesh-plugin-ui.js   the Evidence page
-  door/                    the evidence door: evidence_server.py, the modules
-                           it imports, requirements.lock, run-door.sh
   README.md                this file
   DEMO.md                  the five-minute demo
   LICENSE, NOTICE          Apache-2.0
@@ -211,24 +178,7 @@ example-data mode; in live mode, the default, it shows this node's records.
 
 ## Rebuild it yourself
 
-Only packages built by `.github/workflows/release.yml` are published. The
-workflow builds from the tagged commit with every action pinned to a commit,
-a pinned Rust toolchain, `cargo build --locked` with the build machine's
-paths remapped out of the executable, and `pnpm install --frozen-lockfile`.
-The archive step (`plugins/admission-policy/package_release.py`) is
-deterministic, so the same executable always gives the same archive digest.
-To build the package for your own machine from a checkout of the tag:
-
-```bash
-cd plugins/admission-policy
-RUSTFLAGS="--remap-path-prefix=$PWD=/build --remap-path-prefix=$HOME=/home" \
-  cargo build --locked --release --bin admission-policy-plugin
-(cd web-ui && pnpm install --frozen-lockfile && pnpm build)
-python3 package_release.py --version "$VERSION" --target "$TARGET" \
-  --binary target/release/admission-policy-plugin --out-dir dist
-```
-
-The resulting `dist/capsule-emit-mesh-$VERSION-$TARGET.tar.gz` installs with
-the same command as step 3. A different compiler or build machine can produce
-a different executable, and then a different digest; `SHA256SUMS` covers the
-published packages.
+Only packages built by this repository's release workflow are published, and
+the archive step is deterministic. To build the package from source, see
+"Rebuild the package" in the
+[plugin's README](https://github.com/action-state-group/capsule-emit-mesh/tree/main/plugins/admission-policy#rebuild-the-package).

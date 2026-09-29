@@ -14,10 +14,6 @@
 //! plugin's OWN behavior once reached, not the host's gate (untestable here
 //! without `mesh-llm-host-runtime`; that gate is upstream, unmodified code).
 
-mod common {
-    pub mod door;
-}
-
 use mesh_llm_plugin::proto::{self, envelope::Payload};
 use mesh_llm_plugin::{
     connect_side_stream, read_envelope, write_envelope, LocalListener, LocalStream,
@@ -48,7 +44,6 @@ impl Harness {
         let listener = UnixListener::bind(&socket_path).expect("bind fake-host socket");
 
         let data_dir = std::env::temp_dir().join(format!("mesh-evidence-interop-data-{}", nonce()));
-        common::door::seed_token(&data_dir);
         // The "asked of you" log is opt-in: its directory must exist.
         std::fs::create_dir_all(data_dir.join("received-log")).expect("create the received-log dir");
         let mut cmd = Command::new(PLUGIN_BIN);
@@ -254,13 +249,10 @@ async fn accept_one_remote_peer_connection() -> (UnixListener, std::path::PathBu
     (listener, path)
 }
 
-/// A minimal local HTTP server standing in for `evidence_server.py`: always
-/// answers `POST /evidence-request` with a canned body, recording every
-/// request it received. Proves the RESPONDER role's proxy plumbing
-/// (mesh bytes in -> real HTTP POST out -> HTTP body back as mesh bytes)
-/// without depending on a Python process from a Rust test -- `evidence_
-/// responder.answer()`'s own correctness is proven in `tests/test_ask_
-/// history.py` and friends, unchanged and untouched by this carrier.
+/// A local HTTP listener where an evidence door used to be, at the address
+/// the plugin was once pointed to (`ADMISSION_POLICY_EVIDENCE_SERVER_URL`):
+/// it records every request it receives and answers with a canned body. The
+/// plugin has no door, so a test asserts it received nothing.
 async fn spawn_fake_evidence_server(
     response_body: &'static [u8],
 ) -> (String, std::sync::Arc<tokio::sync::Mutex<Vec<Vec<u8>>>>) {
@@ -285,9 +277,8 @@ async fn spawn_fake_evidence_server(
                     .unwrap_or(request.len());
                 received.lock().await.push(request[header_end..].to_vec());
 
-                let proof = common::door::proof_header(&common::door::request_nonce(request), 200, response_body);
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{proof}\r\n",
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                     response_body.len()
                 );
                 let _ = socket.write_all(response.as_bytes()).await;
@@ -316,7 +307,7 @@ async fn ask_over_stream(stream: LocalStream, request_bytes: &[u8]) -> Vec<u8> {
 /// (A) Responder role: a mesh-inbound -00 evidence request is answered
 /// in-process -- here a signed `coverage_unsatisfiable` refusal (a fresh
 /// node has no checkpoint yet), bound to the digest of the bytes the peer
-/// sent -- without the local door ever being asked, and the request is
+/// sent -- with nothing sent to a door, and the request is
 /// logged to the "asked of you" log.
 #[tokio::test]
 async fn responder_answers_an_evidence_request_in_process() {
@@ -336,7 +327,7 @@ async fn responder_answers_an_evidence_request_in_process() {
         response["request_digest"],
         capsule_emit_evidence_request::digest::request_digest(request_bytes)
     );
-    assert!(received.lock().await.is_empty(), "the door is not asked");
+    assert!(received.lock().await.is_empty(), "nothing is sent to a door");
 
     let log = std::fs::read_to_string(harness.data_dir.join("received-log/received_log.jsonl"))
         .expect("the request was logged");
@@ -350,22 +341,26 @@ async fn responder_answers_an_evidence_request_in_process() {
     harness.shutdown_process().await;
 }
 
-/// (A2) A referee's `adjudicate` request still goes to the local door (it
-/// moves with the referee): bridged byte for byte to a real HTTP POST, and
-/// the door's answer comes back unaltered.
+/// (A2) This node has no referee and no door: a referee's `adjudicate`
+/// request is answered in-process with a refusal signed by this node, never
+/// a verdict, and never forwarded anywhere. The stub listening where a door
+/// used to be receives nothing.
 #[tokio::test]
-async fn responder_takes_an_adjudicate_request_to_the_door() {
-    let refusal = br#"{"reason":"policy_decline","request_digest":"a","issued_at":"b","key_id":"c","sig":"d"}"#;
-    let (evidence_server_url, received) = spawn_fake_evidence_server(refusal).await;
-    let mut harness = Harness::spawn(&[("ADMISSION_POLICY_EVIDENCE_SERVER_URL", &evidence_server_url)]).await;
+async fn responder_refuses_an_adjudicate_request_signed_and_asks_no_door() {
+    let (door_url, received) = spawn_fake_evidence_server(b"{}").await;
+    let mut harness = Harness::spawn(&[("ADMISSION_POLICY_EVIDENCE_SERVER_URL", &door_url)]).await;
     harness.initialize().await;
 
     let stream = harness.open_evidence_stream().await;
     let request_bytes = br#"{"subject":{"kind":"adjudicate"},"halves":[]}"#;
     let response_bytes = ask_over_stream(stream, request_bytes).await;
 
-    assert_eq!(response_bytes, refusal);
-    assert_eq!(received.lock().await.as_slice(), &[request_bytes.to_vec()]);
+    let reply: serde_json::Value = serde_json::from_slice(&response_bytes).expect("a JSON refusal");
+    assert_eq!(reply["reason"], "request_malformed", "{reply}");
+    assert!(reply.get("adjudication_verdict").is_none(), "never a verdict");
+    assert!(reply["key_id"].as_str().is_some_and(|k| k.len() == 64), "{reply}");
+    assert!(reply["sig"].as_str().is_some_and(|s| s.len() == 128), "signed: {reply}");
+    assert!(received.lock().await.is_empty(), "nothing is sent to a door");
 
     harness.shutdown_process().await;
 }

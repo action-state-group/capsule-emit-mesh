@@ -12,7 +12,7 @@
 //! unblock, exactly as for a manual block.
 //!
 //! Inputs: only [`crate::verdict_counts::fold`] over this node's own chain:
-//! verdicts whose referee signature this node's door verified, from a referee
+//! verdicts whose referee signature was verified before they were recorded, from a referee
 //! this node itself asked about that pair of halves, once per (referee, pair).
 //! On top of that, one referee alone never fires the rule when N is 2 or more:
 //! it contributes at most N - 1 contradictions ([`per_referee_cap`]).
@@ -450,7 +450,7 @@ mod tests {
     }
 
     /// "Not for unsigned verdicts": the rule reads only the fold, and the fold
-    /// reads only the records the door-verified path seals. A bare
+    /// reads only the records sealed after a referee's signature verified. A bare
     /// adjudication block claiming three contradictions fires nothing.
     #[test]
     fn unsigned_verdicts_never_fire_the_rule() {
@@ -555,7 +555,7 @@ mod tests {
 
     /// A verdict from `referee` contradicting `peer` (against its twin `q`),
     /// about a pair of halves of its own, recorded on the chain the way the
-    /// door-verified path records one. With `asked`, this node's own request
+    /// verified-verdict path records one. With `asked`, this node's own request
     /// to that referee about that pair is noted too. Each test uses its own
     /// `peer`: the pending citations are one map per process.
     fn contradiction(capsules: &CapsuleState, peer: &str, id: &str, referee: &str, asked: bool, at: DateTime<Utc>) {
@@ -648,7 +648,7 @@ mod tests {
 
     /// The adversarial case end to end: a peer with an announced key signs
     /// many contradictions of `f`, each with its own id and a pair this node
-    /// never asked it about. The door-verified records exist, but nothing is
+    /// never asked it about. The verified records exist, but nothing is
     /// asked of the host.
     #[tokio::test]
     async fn verdicts_this_node_never_asked_for_block_nobody() {

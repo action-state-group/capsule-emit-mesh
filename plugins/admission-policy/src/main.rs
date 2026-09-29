@@ -1,7 +1,6 @@
 mod adjudication_records;
 mod capsule_emit;
 mod data_dir;
-mod door_auth;
 mod checkpoint_cadence;
 mod decision;
 mod evidence_answer;
@@ -688,9 +687,9 @@ fn with_evidence_operations(
     builder = builder.mcp_item(
         mcp::tool(adjudication_records::DELIVER_OPERATION)
             .description(
-                "Deliver a referee's signed twin verdict to a node it concerns (this node's own id \
-                 delivers to itself). That node's door checks the referee's signature and holds it; \
-                 its plugin seals an adjudication_received record before answering.",
+                "Deliver a referee's signed twin verdict to a node it concerns. Not available yet: \
+                 this node has no referee, so it neither issues nor delivers verdicts, and every \
+                 call is refused.",
             )
             .input::<adjudication_records::DeliverAdjudicationArgs>()
             .handle({
@@ -827,12 +826,6 @@ async fn main() -> anyhow::Result<()> {
     // Absolute, never the working directory's; see `data_dir`.
     let data_dir = data_dir::data_dir()?;
     tracing::info!(data_dir = %data_dir.display(), "plugin data directory");
-    let token_path = door_auth::init(&data_dir)?;
-    tracing::info!(
-        token_file = %token_path.display(),
-        door = %door_auth::door_url(),
-        "evidence door token ready; start the door with --token-file pointing at it"
-    );
     // A new history the owner asked for last run starts HERE, before the
     // ledger or the checkpoint cadence opens (see `owner_maintenance`).
     let log_id = owner_maintenance::apply_pending_before_open(&data_dir, PLUGIN_ID)?;
@@ -850,9 +843,8 @@ async fn main() -> anyhow::Result<()> {
     let self_peer = self_peer::SelfPeer::new(&data_dir);
     let self_peer_for_events = self_peer.clone();
 
-    // Checkpoint cadence: off by default, node-by-node cutover away from
-    // checkpoint_daemon.py -- see checkpoint_cadence.rs's module doc and
-    // the Path 1 README note. `checkpoint_shutdown_tx` held for the
+    // Checkpoint cadence: on by default (see checkpoint_cadence.rs's module
+    // doc). `checkpoint_shutdown_tx` held for the
     // process lifetime so dropping it doesn't fire the watch early.
     let (checkpoint_shutdown_tx, checkpoint_shutdown_rx) = tokio::sync::watch::channel(false);
     let checkpoints = if checkpoint_cadence::is_enabled() {
@@ -1097,7 +1089,7 @@ async fn main() -> anyhow::Result<()> {
     .customize(move |plugin| {
         // the record-push responder
         // seals a LOCAL citing record onto THIS node's own chain after the
-        // door confirms a received half -- so it needs the SAME single-writer
+        // receiver holds a received half -- so it needs the SAME single-writer
         // `CapsuleState` every other local seal uses. Cloned into the handler
         // closure (an `Arc`, so this is a refcount bump, one ledger).
         let capsules_for_stream = capsules_for_stream.clone();

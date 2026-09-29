@@ -31,7 +31,7 @@
 //! panics on the request.
 //!
 //! **The sharing policy** (`share_policy::history_segments`) decides who gets
-//! record bodies, by the same rule the plugin's `ledger-fetch/1` door uses:
+//! record bodies, by the same rule the plugin's `ledger-fetch/1` channel uses:
 //! `off` serves none; a local block or an owner-maintenance record is never
 //! served; under `peers` every other record goes to anyone; otherwise a
 //! record goes only to the node it names as the other side of its exchange.
@@ -697,4 +697,27 @@ mod tests {
         assert!(matches!(answer(b"{}", None, &responder), Outcome::Unanswerable(_)));
         assert_eq!(answer(b"{}", None, &responder).wire_bytes(), None);
     }
+
+    /// This node has no referee: a referee's `adjudicate` request is answered
+    /// in-process with a signed refusal, never a verdict, never silence.
+    #[test]
+    fn an_adjudicate_request_is_refused_signed_never_a_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        let request = json!({
+            "v": 1,
+            "subject": {"kind": "adjudicate", "halves": ["a".repeat(64), "b".repeat(64)]},
+            "requester_id": "peer-x",
+        })
+        .to_string();
+        let outcome = ask(dir.path(), request.as_bytes(), "peers");
+        assert!(refused(&outcome).is_some(), "refused");
+        let wire = outcome.wire_bytes().expect("something signed is sent");
+        let reply: Value = serde_json::from_slice(&wire).unwrap();
+        assert!(reply.get("adjudication_verdict").is_none());
+        let key_id = hex::encode(key().verifying_key().to_bytes());
+        assert_eq!(reply["key_id"], json!(key_id));
+        let check = refusal::verify_for(&reply, &key().verifying_key(), &request_digest(request.as_bytes()));
+        assert!(check.is_ok(), "the refusal verifies under this node's key: {check:?}");
+    }
+
 }

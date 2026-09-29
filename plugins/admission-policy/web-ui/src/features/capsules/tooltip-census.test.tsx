@@ -183,7 +183,6 @@ const PANE_C: PaneCListJson = {
 }
 
 vi.mock('@/features/capsules/api/sidecarClient', () => ({
-  fetchDoorStatus: vi.fn().mockResolvedValue({ state: 'ready', url: 'http://127.0.0.1:8091' }),
   fetchPaneA: vi.fn().mockResolvedValue({ rows: [], operator: null, witness_checkpoint_supplied: false, card: null }),
   fetchPaneB: vi.fn(async () => HARNESS_PANE_B_PAYLOAD),
   fetchPaneCList: vi.fn(async () => PANE_C)

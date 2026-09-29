@@ -5,9 +5,9 @@
 //! Two gates, both required:
 //!
 //! 1. **Verified.** Only `adjudication_received` / `adjudication_issued` on this
-//!    node's own chain count. The plugin seals those only after the door has
-//!    checked the referee's signature under the key that referee announced
-//!    (`adjudication_hold.verdict_facts`); on the referee, its own door signed.
+//!    node's own chain count. Those are sealed only after the referee's
+//!    signature has been checked under the key that referee announced; on the
+//!    referee, it signed them itself.
 //!    A verdict string in any other record counts nowhere.
 //! 2. **Asked for by this node.** A signature only says which referee signed,
 //!    not that anyone asked it: any peer with an announced key could mint as

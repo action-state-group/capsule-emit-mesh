@@ -88,6 +88,9 @@ pub const REASON_MODEL_MISMATCH: &str = "model_mismatch";
 pub const REASON_INCLUSION_UNVERIFIED: &str = "inclusion_unverified";
 pub const REASON_CHECKPOINT_STALE: &str = "checkpoint_stale";
 pub const REASON_CHECKPOINT_EQUIVOCATION: &str = "checkpoint_equivocation";
+/// A referee's verdict delivered here: this node has no referee yet, so it
+/// neither checks nor holds verdicts, and refuses every delivery.
+pub const REASON_ADJUDICATION_UNAVAILABLE: &str = "adjudication_unavailable";
 
 /// The held-artifact stores, beside `capsules.jsonl`. Nothing chains or
 /// checkpoints them.
@@ -333,6 +336,12 @@ pub fn receive(
     }
     append(node.ledger_dir, RECEIVED_INCLUSION_FILENAME, &held)?;
     Ok(received_reply(&held))
+}
+
+/// A refusal of `body` for `reason`, signed by this node's key: for a push
+/// this module does not take at all (a delivered verdict).
+pub fn refuse(signing_key: &SigningKey, body: &[u8], reason: &str, now: &str) -> Value {
+    refusal(signing_key, &hex::encode(Sha256::digest(body)), reason, now)
 }
 
 /// The success reply for a held bundle: the facts the bridge cites, never the
@@ -1257,4 +1266,24 @@ mod tests {
         let unknown = receive(&node, &body_bytes(push), Some("nobody"), NOW).unwrap();
         assert_eq!(unknown["reason"], REASON_SIGNATURE_UNVERIFIED);
     }
+
+    /// A delivered verdict is refused, signed by this node over the body it
+    /// was sent, never acknowledged: this node has no referee yet.
+    #[test]
+    fn a_delivered_verdict_is_refused_signed() {
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let body = br#"{"adjudication_delivery": 1, "verdict_capsule": {}}"#;
+        let reply = refuse(&key, body, REASON_ADJUDICATION_UNAVAILABLE, NOW);
+        assert_eq!(reply["reason"], REASON_ADJUDICATION_UNAVAILABLE);
+        assert!(reply.get("status").is_none(), "never a receipt");
+        assert_eq!(reply["request_digest"], hex::encode(Sha256::digest(body)));
+        let signed = sorted_compact(&json!({
+            "issued_at": NOW, "reason": REASON_ADJUDICATION_UNAVAILABLE, "request_digest": reply["request_digest"],
+        }));
+        let sig: [u8; 64] = hex::decode(reply["sig"].as_str().unwrap()).unwrap().try_into().unwrap();
+        key.verifying_key()
+            .verify_strict(signed.as_bytes(), &Signature::from_bytes(&sig))
+            .expect("signed by this node");
+    }
+
 }
