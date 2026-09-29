@@ -696,13 +696,13 @@ describe('ExchangeStreamRow — UX §3: the left cell is the event in words; no 
           }
         }}
         rail={NO_RAIL}
-        row={makeRow('closed', { counterparty: 'key:71eb26f8' })}
+        row={makeRow('closed', { counterparty: 'key:71eb7777' })}
       />
     )
     const line = document.querySelector('[data-event-line="true"]') as HTMLElement
     // The model's name, never the local-gguf/<hash> path (§3); the full
     // reference stays on hover.
-    expect(line).toHaveTextContent('You asked key:71eb26f8 · local model · 212 → 256 tokens · 1.4 s')
+    expect(line).toHaveTextContent('You asked key:71eb7777 · local model · 212 → 256 tokens · 1.4 s')
     expect(line).not.toHaveTextContent('local-gguf')
     expect(screen.queryByText('exch-closed')).not.toBeInTheDocument()
     expect(screen.queryByText('mine-1')).not.toBeInTheDocument()

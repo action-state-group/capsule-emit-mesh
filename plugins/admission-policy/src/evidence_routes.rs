@@ -525,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn pane_b_carries_asked_of_you_only_when_the_door_keeps_a_log() {
+    fn pane_b_carries_asked_of_you_only_when_a_received_log_is_kept() {
         let dir = ledger(&[record(&"1".repeat(64))]);
         let log = tempfile::tempdir().unwrap();
         std::fs::write(

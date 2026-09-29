@@ -391,40 +391,40 @@ describe('peerDisplayId — no synthetic peer', () => {
 describe('peerAliasLine — D3: aliases on ONE row, never extra peers', () => {
   it('renders "signed by <key16> · endpoint <id>" for a key-joined peer with no node evidence', () => {
     const row = baseRow({
-      peer_id: 'key:71eb26f8e583ccc9',
+      peer_id: 'key:71eb777777777777',
       identity: {
-        signing_key_id: '71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d',
+        signing_key_id: '71eb777777777777777777777777777777777777777777777777777777777777',
         endpoint_id: 'e5ba9d1001',
         node_id: null
       }
     })
-    expect(peerAliasLine(row)).toBe('signed by 71eb26f8e583ccc9 · endpoint e5ba9d1001')
+    expect(peerAliasLine(row)).toBe('signed by 71eb777777777777 · endpoint e5ba9d1001')
   })
 
   it('never puts a 64-hex endpoint id on the row face: 16 characters and an ellipsis', () => {
     const endpoint = 'c6839699559fd005'.repeat(4)
     const row = baseRow({
-      peer_id: 'key:71eb26f8e583ccc9',
+      peer_id: 'key:71eb777777777777',
       identity: {
-        signing_key_id: '71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d',
+        signing_key_id: '71eb777777777777777777777777777777777777777777777777777777777777',
         endpoint_id: endpoint,
         node_id: null
       }
     })
-    expect(peerAliasLine(row)).toBe('signed by 71eb26f8e583ccc9 · endpoint c6839699559fd005…')
+    expect(peerAliasLine(row)).toBe('signed by 71eb777777777777 · endpoint c6839699559fd005…')
     expect(peerAliasLine(row)).not.toMatch(/[0-9a-f]{64}/)
   })
 
   it('adds the node alias only when the evidence carries one (the bridged case)', () => {
     const row = baseRow({
-      peer_id: 'key:71eb26f8e583ccc9',
+      peer_id: 'key:71eb777777777777',
       identity: {
-        signing_key_id: '71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d',
+        signing_key_id: '71eb777777777777777777777777777777777777777777777777777777777777',
         endpoint_id: 'e5ba9d1001',
         node_id: `a70d3967bea3b22f${'a'.repeat(48)}`
       }
     })
-    expect(peerAliasLine(row)).toBe('signed by 71eb26f8e583ccc9 · node a70d3967bea3b22f… · endpoint e5ba9d1001')
+    expect(peerAliasLine(row)).toBe('signed by 71eb777777777777 · node a70d3967bea3b22f… · endpoint e5ba9d1001')
   })
 
   it('labels the UNLINKED node-id row honestly — the id is from our own records, no signing key linked yet', () => {

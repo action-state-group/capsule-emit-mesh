@@ -1,4 +1,4 @@
-// Balance header (Part 1) -- the
+// Exchanges served / asked strip (Part 1) -- the
 // quantity strip that sits above the Exchanges records table. Reads ONLY
 // the fields `capsule_accountability_tab.build_served_summary_block` (which
 // wraps `served_summary.build_served_summary`)
@@ -7,17 +7,17 @@
 // EXCHANGES per model (`by_model[*].served`/`completed`/`failed`), not
 // tokens, so this view labels them for what they are rather than borrowing
 // "tokens" language the data doesn't support. There is no symmetric
-// "consumed" (this node AS REQUESTER) fold exposed yet -- rendered as an
+// "asked" (this node AS REQUESTER) fold exposed yet -- rendered as an
 // honest absence, the same discipline `asked_cell`'s "this node doesn't
 // persist a send log yet" already uses on Pane B, never a fabricated zero.
 import type { JsonRecord } from '@/features/capsules/api/types'
 
-export type BalanceCoverage =
+export type ServedAskedCoverage =
   | { kind: 'absent'; headline: string }
   | { kind: 'failed'; headline: string }
-  | { kind: 'verified'; servedText: string; consumedText: string; statement: string }
+  | { kind: 'verified'; servedText: string; askedText: string; statement: string }
 
-export const CONSUMED_ABSENT_TEXT = 'Consumed from other nodes: not tracked by this fold yet.'
+export const ASKED_ABSENT_TEXT = 'Asked of other nodes: not tracked by this fold yet.'
 
 function asRecord(value: unknown): JsonRecord | null {
   return value !== null && typeof value === 'object' ? (value as JsonRecord) : null
@@ -27,10 +27,10 @@ function shortRoot(root: unknown): string {
   return typeof root === 'string' && root.length > 0 ? `${root.slice(0, 12)}…` : 'no root yet'
 }
 
-/** Derives the Balance header's coverage state from pane-a's raw `card`
+/** Derives the exchanges served / asked strip's coverage state from pane-a's raw `card`
  *  field. Total over any shape -- an absent/malformed block degrades to
  *  `'absent'`, never a thrown error or an invented number. */
-export function balanceCoverage(card: JsonRecord | null | undefined): BalanceCoverage {
+export function servedAskedCoverage(card: JsonRecord | null | undefined): ServedAskedCoverage {
   const block = asRecord(card?.served_summary)
   const headline = typeof block?.text === 'string' ? block.text : 'No served-summary data available yet.'
   const state = typeof block?.state === 'string' ? block.state : 'NOT_CHECKED'
@@ -70,7 +70,7 @@ export function balanceCoverage(card: JsonRecord | null | undefined): BalanceCov
   return {
     kind: 'verified',
     servedText: headline,
-    consumedText: CONSUMED_ABSENT_TEXT,
+    askedText: ASKED_ABSENT_TEXT,
     statement: `${rangeText} · ${capturedText} · ${reconciledText}`
   }
 }

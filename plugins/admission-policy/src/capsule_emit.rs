@@ -1,15 +1,13 @@
-//! Wires `capsule-producer` (COSE-sign -> chain -> ledger) into this plugin,
-//! closing the #1332 integration gap: previously `capsule-producer` and the
-//! admission plugin were two crates with zero shared dependency (see
-//! `adv-mesh-1332-e2e-scorecard`). Every ALLOWED chat-completion exchange
-//! this plugin itself serves is turned into a signed, chained, ledgered AAC
-//! (`x-mesh-poc-v1` mapping) -- `effect_request_digest`/`effect_response_digest`
-//! are the canonical JSON-DIGEST (RFC 8785 JCS) of the parsed request/response
-//! body, matching this crate's own `jcs::json_digest` and the Python sidecar's
-//! `capsule_sidecar.digest_json` (spec §5.1) -- NOT a raw hash of the wire
-//! bytes, so reserializing the identical semantic content (key order,
-//! whitespace) does not change the digest, and it stays comparable across
-//! implementations. Mutating the actual content still changes `capsule_id`.
+//! Seals the plugin's records (COSE-sign -> chain -> ledger). Every ALLOWED
+//! chat-completion exchange this plugin itself serves is turned into a
+//! signed, chained, ledgered AAC (`x-mesh-poc-v1` mapping) --
+//! `effect_request_digest`/`effect_response_digest` are the canonical
+//! JSON-DIGEST (RFC 8785 JCS, spec §5.1) of the parsed request/response
+//! body, the same digest the Agent Action Capsule reference implementation
+//! computes -- NOT a raw hash of the wire bytes, so reserializing the
+//! identical semantic content (key order, whitespace) does not change the
+//! digest, and it stays comparable across implementations. Mutating the
+//! actual content still changes `capsule_id`.
 
 use crate::lifecycle_channel::{dispatch_path_wire_value, role_for_dispatch_path, DispatchPath};
 use crate::producer::capsule::{
@@ -97,7 +95,7 @@ fn role_and_observation_point(
 }
 
 /// Recursively replace JSON floats with their exact decimal-string form,
-/// mirroring `capsule_sidecar._stringify_floats` in the Python reference:
+/// as the Agent Action Capsule reference implementation does:
 /// the JSON-DIGEST (spec §5.1) refuses any float in a digest-bearing value
 /// (float serialization isn't cross-implementation deterministic), and
 /// OpenAI-shaped chat request/response bodies are full of floats
@@ -188,15 +186,15 @@ const GENERATION_PARAM_KEYS: &[&str] = &[
 ];
 
 /// Lift the generation parameters the client ACTUALLY sent in this request body
-/// into a map for the capsule, mirroring the Python sidecar's
-/// `build_capsule` allowlist comprehension. Honest-by-absence: a key that was
+/// into a map for the capsule, by the allowlist above. Honest-by-absence: a
+/// key that was
 /// not present in the request (or was JSON `null`) is OMITTED, never defaulted
 /// to a fabricated value -- so a request that carried only `temperature` seals
 /// exactly `temperature`, and the old hardcoded `temperature=0.0` is gone.
 /// Values are stringified through the same `stringify_floats` used for the
 /// digest path, so `0.7` -> `"0.7"` (float) while integers like `seed`/`n`
-/// stay JSON numbers -- matching the Python reference's `_stringify_floats`
-/// convention exactly, keeping the sealed shape stable across implementations.
+/// stay JSON numbers -- the reference implementation's convention, keeping
+/// the sealed shape stable across implementations.
 /// A non-JSON or non-object body yields an empty map (no params claimed).
 fn parse_generation_parameters(request_bytes: &[u8]) -> Map<String, Value> {
     let mut out = Map::new();
@@ -2553,25 +2551,18 @@ mod tests {
         );
     }
 
-    /// Rust<->Python digest-equality. The expected
-    /// digest was computed by running the actual Python reference,
-    /// `capsule_sidecar.digest_json`, over the identical JSON value:
-    ///
-    ///   python3 -c "
-    ///   from capsule_sidecar import digest_json
-    ///   print(digest_json({
-    ///       'model': 'hermes-2-pro-mistral-7b',
-    ///       'messages': [{'role': 'user', 'content': 'hello'}],
-    ///       'temperature': 0.7,
-    ///       'top_p': 1.0,
-    ///       'max_tokens': 512,
-    ///   }))"
+    /// Digest equality with the reference implementation: the expected digest
+    /// is the Agent Action Capsule reference JSON-DIGEST
+    /// (`agent_action_capsule.canonical.json_digest`) over the identical JSON
+    /// value, its floats written as decimal strings the way
+    /// `stringify_floats` writes them (`"temperature": "0.7"`,
+    /// `"top_p": "1.0"`).
     ///
     /// `top_p: 1.0` exercises the whole-number-float edge case
     /// (`python_repr_f64` must emit "1.0", not Rust's default "1") that a
     /// naive float-to-string port would get wrong.
     #[test]
-    fn canonical_body_digest_matches_python_reference_digest_json() {
+    fn canonical_body_digest_matches_the_reference_json_digest() {
         let body = br#"{"model": "hermes-2-pro-mistral-7b", "messages": [{"role": "user", "content": "hello"}], "temperature": 0.7, "top_p": 1.0, "max_tokens": 512}"#;
         let expected = "a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5";
         assert_eq!(canonical_body_digest(body).expect("digest"), expected);

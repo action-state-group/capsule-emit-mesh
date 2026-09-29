@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_door_verified_record_kinds_count() {
+    fn only_the_receiver_verified_record_kinds_count() {
         let bare = json!({ "model_attestation": { "compute_attestation": { "adjudication": {
             "verdict": "contradicted:b", "verdict_capsule_id": "v0", "referee_node_id": "ref",
             "halves": ["ha", "hb"], "half_node_ids": ["a", "b"],

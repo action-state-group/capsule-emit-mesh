@@ -2,7 +2,7 @@
  *
  * A stand-in for the mesh-llm console's global stylesheet, so fixture mode
  * looks the way the page looks mounted in the console: mesh-llm-ui
- * `src/styles/globals.css` in the mesh-llm console fork at commit e1319bdb99feb6b48ae02f217f5703915ccfaa47, with ONE
+ * `src/styles/globals.css` at upstream Mesh-LLM/mesh-llm main at commit d635e6156c87a2e7e7d0c0c7173a2b388fb225b2, with ONE
  * change: Tailwind scans no sources here (`source(none)`, and the original
  * `@source` line dropped). The real console compiles utilities for ITS OWN
  * sources only, so every utility this page needs must come from the page's

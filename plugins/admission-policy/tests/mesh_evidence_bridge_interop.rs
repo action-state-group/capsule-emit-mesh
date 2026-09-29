@@ -249,14 +249,14 @@ async fn accept_one_remote_peer_connection() -> (UnixListener, std::path::PathBu
     (listener, path)
 }
 
-/// A local HTTP listener where an evidence door used to be, at the address
-/// the plugin was once pointed to (`ADMISSION_POLICY_EVIDENCE_SERVER_URL`):
-/// it records every request it receives and answers with a canned body. The
-/// plugin has no door, so a test asserts it received nothing.
+/// A local HTTP listener set as `ADMISSION_POLICY_EVIDENCE_SERVER_URL`, a
+/// setting older builds read: it records every request it receives and
+/// answers with a canned body. No external evidence server is contacted, so
+/// a test asserts it received nothing.
 async fn spawn_fake_evidence_server(
     response_body: &'static [u8],
 ) -> (String, std::sync::Arc<tokio::sync::Mutex<Vec<Vec<u8>>>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind fake evidence_server.py");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind the listening stub");
     let port = listener.local_addr().unwrap().port();
     let received = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let received_for_task = received.clone();
@@ -307,7 +307,7 @@ async fn ask_over_stream(stream: LocalStream, request_bytes: &[u8]) -> Vec<u8> {
 /// (A) Responder role: a mesh-inbound -00 evidence request is answered
 /// in-process -- here a signed `coverage_unsatisfiable` refusal (a fresh
 /// node has no checkpoint yet), bound to the digest of the bytes the peer
-/// sent -- with nothing sent to a door, and the request is
+/// sent -- no external evidence server is contacted, and the request is
 /// logged to the "asked of you" log.
 #[tokio::test]
 async fn responder_answers_an_evidence_request_in_process() {
@@ -327,7 +327,7 @@ async fn responder_answers_an_evidence_request_in_process() {
         response["request_digest"],
         capsule_emit_evidence_request::digest::request_digest(request_bytes)
     );
-    assert!(received.lock().await.is_empty(), "nothing is sent to a door");
+    assert!(received.lock().await.is_empty(), "no external evidence server is contacted");
 
     let log = std::fs::read_to_string(harness.data_dir.join("received-log/received_log.jsonl"))
         .expect("the request was logged");
@@ -341,12 +341,12 @@ async fn responder_answers_an_evidence_request_in_process() {
     harness.shutdown_process().await;
 }
 
-/// (A2) This node has no referee and no door: a referee's `adjudicate`
-/// request is answered in-process with a refusal signed by this node, never
-/// a verdict, and never forwarded anywhere. The stub listening where a door
-/// used to be receives nothing.
+/// (A2) This node has no referee: a referee's `adjudicate` request is
+/// answered in-process with a refusal signed by this node, never a verdict,
+/// and never forwarded anywhere. No external evidence server is contacted:
+/// the listening stub receives nothing.
 #[tokio::test]
-async fn responder_refuses_an_adjudicate_request_signed_and_asks_no_door() {
+async fn responder_refuses_an_adjudicate_request_signed_and_contacts_no_evidence_server() {
     let (door_url, received) = spawn_fake_evidence_server(b"{}").await;
     let mut harness = Harness::spawn(&[("ADMISSION_POLICY_EVIDENCE_SERVER_URL", &door_url)]).await;
     harness.initialize().await;
@@ -360,7 +360,7 @@ async fn responder_refuses_an_adjudicate_request_signed_and_asks_no_door() {
     assert!(reply.get("adjudication_verdict").is_none(), "never a verdict");
     assert!(reply["key_id"].as_str().is_some_and(|k| k.len() == 64), "{reply}");
     assert!(reply["sig"].as_str().is_some_and(|s| s.len() == 128), "signed: {reply}");
-    assert!(received.lock().await.is_empty(), "nothing is sent to a door");
+    assert!(received.lock().await.is_empty(), "no external evidence server is contacted");
 
     harness.shutdown_process().await;
 }
@@ -546,9 +546,8 @@ async fn requester_reports_a_clean_failure_when_the_peer_never_answers() {
 
 /// (D) Mutant: tamper the bytes the peer writes back, in flight, before the
 /// requester ever sees them -- proves the carrier does not itself validate
-/// or silently repair anything; that job stays with the caller's own
-/// offline verify (`ask_history.py`'s `verify_bundle`/`verify_refusal_
-/// offline`, unchanged and exercised in `tests/test_ask_history.py`).
+/// or silently repair anything; that job stays with the requester's own
+/// offline verification of the bytes it receives.
 #[tokio::test]
 async fn tampered_bytes_in_flight_pass_through_unvalidated_and_unrepaired() {
     let mut harness = Harness::spawn(&[]).await;
@@ -592,10 +591,9 @@ async fn tampered_bytes_in_flight_pass_through_unvalidated_and_unrepaired() {
     let round_tripped = serde_json::to_vec(&structured).expect("re-encode");
 
     // The carrier delivered the TAMPERED bytes untouched -- it neither
-    // detected nor repaired the flip. (Confirming that a flip THIS SHAPED is
-    // rejected downstream is `test_tamper_check_detects_a_flipped_byte` in
-    // `tests/test_ask_history.py` -- a carrier-independent property of
-    // `verify_bundle`, deliberately not re-proven here.)
+    // detected nor repaired the flip. (That the requester's own verification
+    // rejects a flipped byte is a property of that verification, independent
+    // of the carrier, and deliberately not re-proven here.)
     assert_ne!(round_tripped, genuine, "the tampered byte must reach the caller");
 
     harness.shutdown_process().await;

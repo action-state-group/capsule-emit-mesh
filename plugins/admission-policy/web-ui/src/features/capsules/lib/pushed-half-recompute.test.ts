@@ -160,7 +160,7 @@ describe('the ONE gate on a pushed half (list-path call, verdict ready on first 
 describe('attachPushedHalfRecomputeToPaneB -- Peers reads the same gate', () => {
   async function peerRow(pair: PaneCRow): Promise<PaneBRow> {
     return {
-      peer_id: 'key:71eb26f8e583ccc9',
+      peer_id: 'key:71eb777777777777',
       exchange_count: 1,
       confirmed_siblings: [{ mine: pair.mine, theirs: pair.theirs, digest_match: pair.digest_match }]
     } as unknown as PaneBRow

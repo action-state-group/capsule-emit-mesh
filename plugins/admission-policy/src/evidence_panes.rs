@@ -3243,7 +3243,7 @@ mod tests {
     // further code change the day the receiver captures it.
     // -----------------------------------------------------------------
 
-    /// A live requester ledger shape, exactly: 3 served halves + 3 pushed foreign
+    /// A requester ledger of this shape: 3 served halves + 3 pushed foreign
     /// requester halves signed by `71eb…` and received from endpoint
     /// `e5ba9d1001`, PLUS 2 requester halves naming mesh node `a70d…`. The
     /// pushing peer is ONE row keyed by its signing key (aliases: endpoint),
@@ -3252,7 +3252,7 @@ mod tests {
     /// `node:<received_from>` and the `key:` row disappears.
     #[test]
     fn pane_b_joins_the_pushing_peer_on_the_signing_key_with_the_endpoint_as_alias() {
-        let peer_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let peer_key: &str = &format!("71eb{}", "7".repeat(60));
         let their_node = format!("a70d{}", "3".repeat(60));
         // This node served the peer; the peer pushed its requester half.
         let local_served = mesh_half_served_by(
@@ -3295,7 +3295,7 @@ mod tests {
         // ONE key-identified row for the pushing peer, endpoint as alias.
         let key_row = rows
             .iter()
-            .find(|r| r["peer_id"] == json!("key:71eb26f8e583ccc9"))
+            .find(|r| r["peer_id"] == json!("key:71eb777777777777"))
             .expect("the pushing peer is keyed by its signing key");
         assert_eq!(key_row["identity"]["signing_key_id"], json!(peer_key));
         assert_eq!(key_row["identity"]["endpoint_id"], json!("e5ba9d1001"));
@@ -3339,7 +3339,7 @@ mod tests {
     /// source reads `your_records`.
     #[test]
     fn pane_b_labels_a_self_asserted_node_id_as_their_record() {
-        let peer_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let peer_key = "71eb777777777777777777777777777777777777777777777777777777777777";
         let claimed = format!("b0b0{}", "4".repeat(60));
         // Our own record names no serving node, so the only node id on the
         // row is the peer's own claim.
@@ -3372,7 +3372,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|r| r["peer_id"] == json!("key:71eb26f8e583ccc9"))
+            .find(|r| r["peer_id"] == json!("key:71eb777777777777"))
             .expect("the pushing peer is keyed by its signing key");
         assert_eq!(key_row["identity"]["node_id"], json!(claimed));
         assert_eq!(key_row["identity"]["node_id_source"], json!("their_record"));
@@ -3385,7 +3385,7 @@ mod tests {
     /// the row reads `their_record` (not blockable) or the peer's claim.
     #[test]
     fn pane_b_takes_the_node_id_our_own_requester_record_routed_to() {
-        let peer_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let peer_key = "71eb777777777777777777777777777777777777777777777777777777777777";
         let routed = format!("c1f5{}", "5".repeat(60));
         for claimed in [routed.clone(), format!("b0b0{}", "4".repeat(60))] {
             let local_requested = mesh_half_served_by(
@@ -3415,7 +3415,7 @@ mod tests {
             let pane = build_pane_b(&[local_requested, pushed_served], &provenance);
             let rows = pane["rows"].as_array().unwrap();
             assert_eq!(rows.len(), 1, "one peer row");
-            assert_eq!(rows[0]["peer_id"], json!("key:71eb26f8e583ccc9"));
+            assert_eq!(rows[0]["peer_id"], json!("key:71eb777777777777"));
             if claimed == routed {
                 assert_eq!(
                     rows[0]["identity"]["node_id"],
@@ -3439,7 +3439,7 @@ mod tests {
     /// first-entry-wins gives M H's id.
     #[test]
     fn the_same_prompt_to_two_peers_never_gives_one_peer_the_other_nodes_id() {
-        let m_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let m_key = "71eb777777777777777777777777777777777777777777777777777777777777";
         let node_h = format!("aaaa{}", "1".repeat(60));
         let node_m = format!("bbbb{}", "2".repeat(60));
         let asked_h = mesh_half_served_by(
@@ -3468,7 +3468,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|r| r["peer_id"] == json!("key:71eb26f8e583ccc9"))
+            .find(|r| r["peer_id"] == json!("key:71eb777777777777"))
             .expect("M's row");
         assert_ne!(row["identity"]["node_id"], json!(node_h), "never H's id on M's row");
         // M's half names M as its server, and our records routed this key to
@@ -3483,7 +3483,7 @@ mod tests {
     /// H's id from `your_records`.
     #[test]
     fn a_half_from_a_node_we_did_not_route_to_never_takes_our_routed_node() {
-        let m_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let m_key = "71eb777777777777777777777777777777777777777777777777777777777777";
         let node_h = format!("aaaa{}", "1".repeat(60));
         let node_m = format!("bbbb{}", "2".repeat(60));
         let asked_h = mesh_half_served_by(
@@ -3501,7 +3501,7 @@ mod tests {
             [provenance_for("b".repeat(64).as_str(), &node_m)].into_iter().collect();
         let pane = build_pane_b(&[asked_h.clone(), pushed_m], &provenance);
         let row = pane["rows"].as_array().unwrap().iter()
-            .find(|r| r["peer_id"] == json!("key:71eb26f8e583ccc9")).expect("M's row");
+            .find(|r| r["peer_id"] == json!("key:71eb777777777777")).expect("M's row");
         assert_ne!(row["identity"]["node_id"], json!(node_h), "never H's id on M's row");
         assert_ne!(row["identity"]["node_id_source"], json!("your_records"));
 
@@ -3518,7 +3518,7 @@ mod tests {
             [provenance_with_node("b".repeat(64).as_str(), "e5ba9d1001", &node_m)].into_iter().collect();
         let pane = build_pane_b(&[asked_h.clone(), lying_m], &provenance);
         let row = pane["rows"].as_array().unwrap().iter()
-            .find(|r| r["peer_id"] == json!("key:71eb26f8e583ccc9")).expect("M's row");
+            .find(|r| r["peer_id"] == json!("key:71eb777777777777")).expect("M's row");
         assert_eq!(row["identity"]["node_id"], json!(node_m));
         assert_eq!(row["identity"]["node_id_source"], json!("your_records"));
 
@@ -3777,7 +3777,7 @@ mod tests {
     /// requested-role record: only our own records route.
     #[test]
     fn a_received_requested_record_never_supplies_our_routed_node() {
-        let peer_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let peer_key = "71eb777777777777777777777777777777777777777777777777777777777777";
         let claimed = format!("b0b0{}", "4".repeat(60));
         let pushed_requested = with_key(
             mesh_half_served_by(
@@ -3806,7 +3806,7 @@ mod tests {
     /// splits back into two rows.
     #[test]
     fn pane_b_received_from_node_id_bridges_the_asked_node_row_onto_the_signing_key_row() {
-        let peer_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let peer_key = "71eb777777777777777777777777777777777777777777777777777777777777";
         let their_node = format!("a70d{}", "3".repeat(60));
         let local_served = mesh_half_served_by(
             "a".repeat(64).as_str(),
@@ -3853,7 +3853,7 @@ mod tests {
             "the evidence-backed bridge merges the rows"
         );
         let row = &rows[0];
-        assert_eq!(row["peer_id"], json!("key:71eb26f8e583ccc9"));
+        assert_eq!(row["peer_id"], json!("key:71eb777777777777"));
         assert_eq!(row["identity"]["signing_key_id"], json!(peer_key));
         assert_eq!(row["identity"]["endpoint_id"], json!("e5ba9d1001"));
         assert_eq!(row["identity"]["node_id"], json!(their_node));
@@ -3917,7 +3917,7 @@ mod tests {
     /// row key), so the two panes can never name one peer differently.
     #[test]
     fn pane_c_counterparty_matches_the_pane_b_row_key_for_a_pushed_sibling() {
-        let peer_key = "71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d";
+        let peer_key = "71eb777777777777777777777777777777777777777777777777777777777777";
         let local = mesh_half(
             "a".repeat(64).as_str(),
             "requested",
@@ -3947,7 +3947,7 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        assert_eq!(c_counterparty, "key:71eb26f8e583ccc9");
+        assert_eq!(c_counterparty, "key:71eb777777777777");
         assert!(
             pane_b["rows"]
                 .as_array()
@@ -4826,7 +4826,7 @@ mod tests {
     /// The receiver's inbound log reaches every Pane B row, newest lines kept,
     /// malformed lines dropped; no log means no `asked_of_you` at all.
     #[test]
-    fn pane_b_rows_carry_the_door_log_of_requests_made_of_this_node() {
+    fn pane_b_rows_carry_the_log_of_requests_made_of_this_node() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("received_log.jsonl"),

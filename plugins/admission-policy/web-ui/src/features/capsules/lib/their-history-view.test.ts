@@ -18,8 +18,8 @@ const [CLEAN, ALARMED] = HARNESS_PANE_B_PAYLOAD.rows
  *  fetched, nothing asked (`asked` state `absent`), no inbound log. */
 const NEVER_ASKED: PaneBRow = {
   ...CLEAN,
-  peer_id: 'key:71eb26f8e583ccc9',
-  identity: { signing_key_id: '71eb26f8e583ccc9'.padEnd(64, '0'), endpoint_id: 'e5ba9d1001', node_id: null },
+  peer_id: 'key:71eb777777777777',
+  identity: { signing_key_id: '71eb777777777777'.padEnd(64, '0'), endpoint_id: 'e5ba9d1001', node_id: null },
   history: { state: 'NOT_CHECKED' },
   verdicts: { state: 'NOT_CHECKED' },
   asked: { state: 'absent', count: 0 },
@@ -61,7 +61,7 @@ function entry(overrides: Partial<AskedOfYouEntry>): AskedOfYouEntry {
   return {
     ts: '2026-09-26T05:00:00Z',
     path: 'evidence-request',
-    requester_id: 'key:71eb26f8e583ccc9',
+    requester_id: 'key:71eb777777777777',
     subject_kind: 'chain_segment',
     status: 'answered',
     reason: null,
@@ -225,14 +225,14 @@ describe('asked of you', () => {
     expect(view.lines).toEqual([
       {
         when: '26 Sep 06:00 UTC',
-        who: 'key:71eb26f8e583ccc9',
+        who: 'key:71eb777777777777',
         subject: 'one record',
         outcome: 'refused',
         reason: 'not shared under the sharing setting'
       },
       {
         when: '26 Sep 05:00 UTC',
-        who: 'key:71eb26f8e583ccc9',
+        who: 'key:71eb777777777777',
         subject: 'a piece of your log',
         outcome: 'answered',
         reason: null
@@ -252,7 +252,7 @@ describe('asked of you', () => {
         entries: [
           entry({ requester_id: null }),
           entry({ requester_id: 'node:a70d3967bea3b22f' }),
-          entry({ path: 'evidence/record-push', requester_id: 'key:71eb26f8e583ccc9', status: 'received' })
+          entry({ path: 'evidence/record-push', requester_id: 'key:71eb777777777777', status: 'received' })
         ]
       }
     })

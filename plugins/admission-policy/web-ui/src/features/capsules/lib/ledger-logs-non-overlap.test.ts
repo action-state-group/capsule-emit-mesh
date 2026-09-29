@@ -8,7 +8,7 @@
 // pinned here: the `id`/`accessorKey` of every column
 // `buildLogEventLedgerColumns()` returned in mesh-llm-ui
 // `src/features/logs/components/LogEventLedgerColumns.tsx` at
-// the mesh-llm console fork at commit e1319bdb99feb6b48ae02f217f5703915ccfaa47. Re-pin when
+// upstream Mesh-LLM/mesh-llm main at commit d635e6156c87a2e7e7d0c0c7173a2b388fb225b2. Re-pin when
 // the console's Logs columns change.
 import { describe, expect, it } from 'vitest'
 import { buildExchangeColumns } from '@/features/capsules/components/ExchangeColumns'
