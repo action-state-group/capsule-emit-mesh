@@ -729,6 +729,27 @@ describe('LedgerPageContent', () => {
     expect(screen.queryByTestId('hero-exchange-text-notice')).not.toBeInTheDocument()
   })
 
+  it('after keeping is turned off, says how much kept text is still held, and Delete now opens Clean up records', async () => {
+    const { fetchRecordsStatus } = await import('@/features/capsules/api/recordsClient')
+    const status = await vi.mocked(fetchRecordsStatus)()
+    vi.mocked(fetchRecordsStatus).mockResolvedValue({
+      ...status,
+      stored_text_count: 4,
+      exchange_text: { kept: false, retention_days: 30 }
+    })
+    try {
+      const user = userEvent.setup()
+      render(<LedgerPageContent />, { wrapper: makeWrapper() })
+      expect(await screen.findByTestId('hero-exchange-text-notice')).toHaveTextContent(
+        'This node still holds 4 kept texts on its own disk (deleted after 30 days, or delete them now). Nothing is shared.'
+      )
+      await user.click(screen.getByTestId('hero-exchange-text-delete'))
+      expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    } finally {
+      vi.mocked(fetchRecordsStatus).mockResolvedValue(status)
+    }
+  })
+
   it('the hero never shows the retired "This node\'s copy" or "Local only" labels', () => {
     render(<LedgerPageContent />, { wrapper: makeWrapper() })
     expect(screen.queryByText("This node's copy")).not.toBeInTheDocument()

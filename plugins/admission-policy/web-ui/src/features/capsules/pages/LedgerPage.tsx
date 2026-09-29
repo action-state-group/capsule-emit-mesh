@@ -131,6 +131,7 @@ import {
   SETUP_STEPS_TOOLTIP,
   TRUST_MAP_URL,
   HERO_TOOLTIPS,
+  EXCHANGE_TEXT_DELETE_NOW,
   CLOSE_CARD_COUNTS_TOOLTIP,
   CLOSE_CARD_TOOLTIP,
   SAMPLE_DATA_UNAVAILABLE,
@@ -1512,7 +1513,20 @@ export function LedgerPageContent({ focusExchangeKey }: { focusExchangeKey?: str
                 ) : null}
                 {exchangeText ? (
                   <p className="type-caption mt-1 text-foreground" data-testid="hero-exchange-text-notice" role="note">
-                    {exchangeText}
+                    {exchangeText.text}
+                    {exchangeText.offerDelete ? (
+                      <>
+                        {' '}
+                        <button
+                          className="underline underline-offset-2 hover:text-accent"
+                          data-testid="hero-exchange-text-delete"
+                          onClick={() => setCleanUpOpen(true)}
+                          type="button"
+                        >
+                          {EXCHANGE_TEXT_DELETE_NOW}
+                        </button>
+                      </>
+                    ) : null}
                   </p>
                 ) : null}
               </>

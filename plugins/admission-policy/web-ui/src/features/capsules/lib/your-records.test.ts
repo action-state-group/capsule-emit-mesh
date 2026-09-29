@@ -177,14 +177,30 @@ describe('exchangeTextNotice', () => {
   }
 
   it('says plainly that this node keeps exchange text, where, for how long, and that nothing is shared', () => {
-    expect(exchangeTextNotice({ ...base, exchange_text: { kept: true, retention_days: 30 } })).toBe(
-      'This node keeps the text of exchanges on its own disk (deleted after 30 days). Nothing is shared.'
+    expect(exchangeTextNotice({ ...base, exchange_text: { kept: true, retention_days: 30 } })).toEqual({
+      text: 'This node keeps the text of exchanges on its own disk (deleted after 30 days). Nothing is shared.',
+      offerDelete: false
+    })
+    expect(exchangeTextNotice({ ...base, exchange_text: { kept: true, retention_days: 1 } })?.text).toContain(
+      'after 1 day)'
     )
-    expect(exchangeTextNotice({ ...base, exchange_text: { kept: true, retention_days: 1 } })).toContain('after 1 day)')
   })
 
-  it('says nothing when text is not kept, or the plugin cannot say', () => {
+  it('once keeping is off, still says so while kept text is on disk, and offers to delete it now', () => {
+    expect(
+      exchangeTextNotice({ ...base, stored_text_count: 3, exchange_text: { kept: false, retention_days: 30 } })
+    ).toEqual({
+      text: 'This node still holds 3 kept texts on its own disk (deleted after 30 days, or delete them now). Nothing is shared.',
+      offerDelete: true
+    })
+    expect(
+      exchangeTextNotice({ ...base, stored_text_count: 1, exchange_text: { kept: false, retention_days: 30 } })?.text
+    ).toContain('holds 1 kept text on')
+  })
+
+  it('says nothing when no text is kept or held, or the plugin cannot say', () => {
     expect(exchangeTextNotice({ ...base, exchange_text: { kept: false, retention_days: 30 } })).toBeNull()
+    expect(exchangeTextNotice({ ...base, stored_text_count: 2 })).toBeNull()
     expect(exchangeTextNotice(base)).toBeNull()
     expect(exchangeTextNotice(null)).toBeNull()
   })

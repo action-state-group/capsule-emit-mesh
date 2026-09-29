@@ -12,7 +12,10 @@
 //! (both directories 0700, file 0600, written whole by rename), keyed by the
 //! host's `exchange_id`, which this plugin seals in `serving_provenance`.
 //! Files older than `ADMISSION_POLICY_KEEP_EXCHANGE_TEXT_DAYS` (default 30)
-//! are removed, checked at most once an hour per directory, on a write.
+//! are removed: at plugin start, every hour after that ([`spawn_retention`]),
+//! and on a write (at most once an hour per directory). The age-out runs
+//! whether or not keeping is still on, so text kept before the owner turned
+//! it off still goes after its retention.
 //! "Clean up records" deletes them (`owner_maintenance`).
 //!
 //! Size: one file is at most [`MAX_FILE_BYTES`] (256 KiB). An exchange whose
@@ -162,6 +165,40 @@ fn prune_if_due(dir: &Path) {
     }
 }
 
+/// The directory kept texts live in.
+fn by_exchange_dir(ledger_dir: &Path) -> PathBuf {
+    ledger_dir.join("disclosures").join("by-exchange")
+}
+
+/// Remove every kept text older than the configured retention, now. A
+/// ledger with no kept texts removes nothing. Returns how many were removed.
+pub fn age_out(ledger_dir: &Path) -> std::io::Result<usize> {
+    let dir = by_exchange_dir(ledger_dir);
+    if !dir.is_dir() {
+        return Ok(0);
+    }
+    let max_age = retention(std::env::var(KEEP_EXCHANGE_TEXT_DAYS_ENV).ok().as_deref());
+    prune(&dir, max_age, SystemTime::now())
+}
+
+/// Age kept texts out at start and every [`PRUNE_EVERY`] after, off the
+/// async workers. Failures are logged, never fatal.
+pub fn spawn_retention(ledger_dir: PathBuf) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(PRUNE_EVERY);
+        loop {
+            tick.tick().await;
+            let dir = ledger_dir.clone();
+            match tokio::task::spawn_blocking(move || age_out(&dir)).await {
+                Ok(Ok(0)) => {}
+                Ok(Ok(removed)) => tracing::info!(removed, "aged out kept exchange text"),
+                Ok(Err(error)) => tracing::warn!(%error, "could not age out kept exchange text"),
+                Err(error) => tracing::warn!(%error, "kept-text age-out task did not complete"),
+            }
+        }
+    });
+}
+
 /// An exchange id is host-minted (a UUID); anything else never names a file.
 fn safe_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
@@ -218,7 +255,7 @@ pub fn keep(
         bytes = serde_json::to_vec(&document)?;
     }
     let disclosures = ledger_dir.join("disclosures");
-    let dir = disclosures.join("by-exchange");
+    let dir = by_exchange_dir(ledger_dir);
     std::fs::create_dir_all(&dir)?;
     #[cfg(unix)]
     {
@@ -414,6 +451,27 @@ mod tests {
         assert_eq!(retention(Some("7")), 7 * day);
         assert_eq!(retention(Some("0")), 30 * day);
         assert_eq!(retention(Some("soon")), 30 * day);
+    }
+
+    /// Text kept before the owner turned keeping off still ages out: no
+    /// write is needed. MUTANT: prune only on a write and the stale text
+    /// stays.
+    #[test]
+    fn age_out_removes_stale_texts_without_a_write() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            age_out(dir.path()).unwrap(),
+            0,
+            "no kept texts, nothing to do"
+        );
+        let by_exchange = by_exchange_dir(dir.path());
+        std::fs::create_dir_all(&by_exchange).unwrap();
+        let stale = by_exchange.join("0f8fad5b-d9cb-469f-a165-000000000000.json");
+        let fresh = by_exchange.join("0f8fad5b-d9cb-469f-a165-000000000001.json");
+        file_aged(&stale, Duration::from_secs(400 * 24 * 60 * 60));
+        file_aged(&fresh, Duration::from_secs(60));
+        assert_eq!(age_out(dir.path()).unwrap(), 1);
+        assert!(!stale.exists() && fresh.exists());
     }
 
     /// The wiring: a write prunes its directory.

@@ -422,3 +422,14 @@ export function exchangeTextKeptNotice(days: number): string {
   const unit = days === 1 ? 'day' : 'days'
   return `This node keeps the text of exchanges on its own disk (deleted after ${days} ${unit}). Nothing is shared.`
 }
+
+/** Said on the page while keeping is off but kept text is still on disk:
+ *  how many, when it goes, and that it can go now. */
+export function exchangeTextStillHeldNotice(count: number, days: number): string {
+  const texts = count === 1 ? 'kept text' : 'kept texts'
+  const unit = days === 1 ? 'day' : 'days'
+  return `This node still holds ${count} ${texts} on its own disk (deleted after ${days} ${unit}, or delete them now). Nothing is shared.`
+}
+
+/** The notice's action while kept text is still held. */
+export const EXCHANGE_TEXT_DELETE_NOW = 'Delete now'
