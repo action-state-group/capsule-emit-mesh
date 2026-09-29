@@ -37,7 +37,10 @@
 //!
 //! Every refusal from step 4 on is recorded in `rejected-record-pushes.jsonl`,
 //! up to [`MAX_REJECTED_LOG_BYTES`]; past that, the refusals still go out,
-//! signed, and the ones not recorded are counted and logged.
+//! signed, and the ones not recorded are counted and logged. A refusal
+//! issued before the record's signature verified is recorded only while the
+//! log is under a sixteenth of that ([`UNAUTHENTICATED_LOG_SHARE`]), so
+//! anyone's flood leaves room for the refusals of authenticated pushes.
 //!
 //! **What is kept.** A received half is evidence this node holds, not a
 //! record it made: it goes to the held-artifact store
@@ -47,7 +50,8 @@
 //! citing record the bridge seals after this returns. A record already held
 //! from the same sender is not stored again: a resent push is acknowledged
 //! and adds nothing to disk. A line of a held store that does not parse (a
-//! write torn by a crash) is skipped, counted and logged.
+//! write torn by a crash) is skipped, counted and logged; the next line
+//! written after such a fragment starts on its own line.
 //!
 //! **Bounded work.** The body is at most `MAX_SIDE_STREAM_BYTES` before it
 //! gets here. Every size a peer states is checked before anything is sized by
@@ -140,6 +144,12 @@ pub struct Receiver<'a> {
 /// and only the local record of them stops.
 pub const MAX_REJECTED_LOG_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Refusals issued before a record's signature has verified are logged only
+/// while the log is under this fraction of its cap (a sixteenth: 256 KiB of
+/// the 4 MiB), so an unauthenticated flood leaves the rest for refusals of
+/// authenticated pushes.
+pub const UNAUTHENTICATED_LOG_SHARE: u64 = 16;
+
 static REJECTED_LOG_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static TORN_LINES_SKIPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -199,44 +209,51 @@ pub fn receive(
 
     // The id the half claims (not yet checked) until it is verified below.
     let mut logged_id = half.get("capsule_id").and_then(Value::as_str);
-    let reject =
-        |logged_id: Option<&str>, reason: &str, exchange: Option<&str>| -> std::io::Result<Value> {
-            let mut entry = json!({
-                "capsule_id": logged_id,
-                "claimed_sender_peer_id": sender,
-                "reason": reason,
-                "rejected_at": now,
-            });
-            if let Some(digest) = exchange {
-                entry["request_digest"] = json!(digest);
-            }
-            append_capped(
-                node.ledger_dir,
-                REJECTED_PUSHES_FILENAME,
-                &entry,
-                node.rejected_log_limit,
-            )?;
-            Ok(refuse(reason))
+    // A refusal issued before the record's signature has verified (no sender,
+    // a sender with no announced key, or a key or signature that does not
+    // match) may use only a small share of the log: anyone can fill that
+    // share, but never crowd out the refusals of authenticated pushes.
+    let reject = |logged_id: Option<&str>,
+                  reason: &str,
+                  exchange: Option<&str>,
+                  authenticated: bool|
+     -> std::io::Result<Value> {
+        let mut entry = json!({
+            "capsule_id": logged_id,
+            "claimed_sender_peer_id": sender,
+            "reason": reason,
+            "rejected_at": now,
+        });
+        if let Some(digest) = exchange {
+            entry["request_digest"] = json!(digest);
+        }
+        let limit = if authenticated {
+            node.rejected_log_limit
+        } else {
+            node.rejected_log_limit / UNAUTHENTICATED_LOG_SHARE
         };
+        append_capped(node.ledger_dir, REJECTED_PUSHES_FILENAME, &entry, limit)?;
+        Ok(refuse(reason))
+    };
 
     let Some(sender) = sender.filter(|s| !s.is_empty()) else {
-        return reject(logged_id, REASON_SIGNATURE_UNVERIFIED, None);
+        return reject(logged_id, REASON_SIGNATURE_UNVERIFIED, None, false);
     };
     let Some(announced) = crate::peer_keys::announced_key_in(node.peer_keys, sender) else {
-        return reject(logged_id, REASON_SIGNATURE_UNVERIFIED, None);
+        return reject(logged_id, REASON_SIGNATURE_UNVERIFIED, None, false);
     };
 
     let Some(capsule_id) = record_id(half) else {
         return Ok(refuse(malformed));
     };
     logged_id = Some(capsule_id);
-    let reject = |reason: &str, exchange: Option<&str>| reject(logged_id, reason, exchange);
-
     if half.get("key_id").and_then(Value::as_str) != Some(announced.as_str())
         || !signed_by(half, &announced)
     {
-        return reject(REASON_SIGNATURE_UNVERIFIED, None);
+        return reject(logged_id, REASON_SIGNATURE_UNVERIFIED, None, false);
     }
+    // From here on the record is signed by the sender's announced key.
+    let reject = |reason: &str, exchange: Option<&str>| reject(logged_id, reason, exchange, true);
 
     if let Some(reason) = claims_verdict(node.ledger_dir, half, sender)? {
         let exchange = half
@@ -435,13 +452,27 @@ fn already_held(ledger_dir: &Path, capsule_id: &str, sender: &str) -> std::io::R
 }
 
 fn append(ledger_dir: &Path, filename: &str, entry: &Value) -> std::io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
     std::fs::create_dir_all(ledger_dir)?;
-    let mut line = entry.to_string();
-    line.push('\n');
     let mut file = std::fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(ledger_dir.join(filename))?;
+    // A write torn by a crash leaves a fragment with no newline after it.
+    // End it first, so this line starts on its own and the fragment stays
+    // one line that `json_lines` skips, instead of swallowing this one.
+    let mut line = String::new();
+    if file.metadata()?.len() > 0 {
+        let mut last = [0u8; 1];
+        file.seek(SeekFrom::End(-1))?;
+        file.read_exact(&mut last)?;
+        if last[0] != b'\n' {
+            line.push('\n');
+        }
+    }
+    line.push_str(&entry.to_string());
+    line.push('\n');
     file.write_all(line.as_bytes())?;
     file.sync_data()
 }
@@ -1112,7 +1143,8 @@ mod tests {
         let unknown = case(&corpus, "bare_unknown_sender");
         let dir = tempfile::tempdir().unwrap();
         let key = SigningKey::from_bytes(&[9; 32]);
-        let limit = 2_000;
+        // An unknown sender's refusals get a sixteenth of the cap: 2,000 bytes.
+        let limit = 32_000;
         let node = receiver(dir.path(), &key, unknown, limit);
         let push = &unknown["pushes"][0];
         let before = rejected_log_drops();
@@ -1124,7 +1156,7 @@ mod tests {
         let size = std::fs::metadata(dir.path().join(REJECTED_PUSHES_FILENAME))
             .unwrap()
             .len();
-        assert!(size <= limit, "{size} bytes");
+        assert!(size <= limit / UNAUTHENTICATED_LOG_SHARE, "{size} bytes");
         let written = lines(dir.path(), REJECTED_PUSHES_FILENAME);
         assert!(written > 0 && written < 200);
         assert!(rejected_log_drops() - before >= u64::try_from(200 - written).unwrap());
@@ -1137,8 +1169,9 @@ mod tests {
         let corpus = corpus();
         let valid = case(&corpus, "bundle_valid");
         let dir = tempfile::tempdir().unwrap();
+        // A torn write: a fragment with NO newline after it.
         for store in [RECEIVED_INCLUSION_FILENAME, RECEIVED_PROVENANCE_FILENAME] {
-            std::fs::write(dir.path().join(store), b"{\"half_capsule_id\": \"ab\n").unwrap();
+            std::fs::write(dir.path().join(store), b"{\"half_capsule_id\": \"ab").unwrap();
         }
         let key = SigningKey::from_bytes(&[9; 32]);
         let node = receiver(dir.path(), &key, valid, MAX_REJECTED_LOG_BYTES);
@@ -1148,6 +1181,62 @@ mod tests {
         assert_eq!(reply["status"], "received");
         assert!(reply["inclusion"].is_object());
         assert!(torn_lines_skipped() - before >= 2);
+        // The genuine lines written after the fragment survive it: each store
+        // now holds the fragment and one whole line that parses.
+        for store in [RECEIVED_INCLUSION_FILENAME, RECEIVED_PROVENANCE_FILENAME] {
+            let rows = json_lines(dir.path(), store).unwrap();
+            assert_eq!(rows.len(), 1, "{store}");
+        }
+        assert_eq!(
+            held_inclusions(dir.path()).unwrap()[0]["half_capsule_id"],
+            reply["inclusion"]["half_capsule_id"]
+        );
+        // And they are read back as held: a resend is a replay, stored once.
+        let again = receive(&node, &body_bytes(push), push["sender"].as_str(), NOW).unwrap();
+        assert_eq!(again, reply);
+        assert_eq!(
+            json_lines(dir.path(), RECEIVED_PROVENANCE_FILENAME)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    /// Anyone can send unauthenticated pushes; their refusals use only a
+    /// small share of the log, and never crowd out an authenticated one.
+    #[test]
+    fn an_unauthenticated_flood_cannot_crowd_out_an_authenticated_refusal() {
+        let corpus = corpus();
+        let unknown = case(&corpus, "bare_unknown_sender");
+        let lie = case(&corpus, "claims_served_by_other");
+        let dir = tempfile::tempdir().unwrap();
+        let own: String = lie["node"]["own_records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.to_string() + "\n")
+            .collect();
+        std::fs::write(dir.path().join("capsules.jsonl"), own).unwrap();
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let limit = 32_000;
+        let flood = receiver(dir.path(), &key, unknown, limit);
+        let push = &unknown["pushes"][0];
+        for _ in 0..2_000 {
+            receive(&flood, &body_bytes(push), push["sender"].as_str(), NOW).unwrap();
+        }
+        let size = std::fs::metadata(dir.path().join(REJECTED_PUSHES_FILENAME))
+            .unwrap()
+            .len();
+        assert!(
+            size <= limit / UNAUTHENTICATED_LOG_SHARE,
+            "the flood kept to its share: {size} bytes"
+        );
+        let known = receiver(dir.path(), &key, lie, limit);
+        let push = &lie["pushes"][0];
+        let reply = receive(&known, &body_bytes(push), push["sender"].as_str(), NOW).unwrap();
+        assert_eq!(reply["reason"], REASON_SERVED_BY_MISMATCH);
+        let logged = json_lines(dir.path(), REJECTED_PUSHES_FILENAME).unwrap();
+        assert_eq!(logged.last().unwrap()["reason"], REASON_SERVED_BY_MISMATCH);
     }
 
     /// An unknown sender is refused before its record's bytes are checked:

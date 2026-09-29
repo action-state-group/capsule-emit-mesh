@@ -137,8 +137,10 @@ Two more differences don't show in any corpus answer:
   refused `signature_unverified` even when its record would also fail the
   structure checks; the door would have said `request_malformed`.
 - **Local bookkeeping.** The rejected-push log stops at 4 MiB, after which
-  refusals are counted, not logged. A torn line in a held store is skipped,
-  not fatal.
+  refusals are counted, not logged. Refusals issued before a record's
+  signature has verified may use only 256 KiB of it. A torn line in a held
+  store is skipped, not fatal, and the next line written after it starts on
+  its own line.
 
 ## Changing the corpus
 
