@@ -10,7 +10,11 @@ mod ledger_fetch_bridge;
 mod lifecycle_channel;
 mod mesh_evidence_bridge;
 mod owner_maintenance;
+mod peer_keys;
 mod record_push_bridge;
+mod record_push_receive;
+#[cfg(test)]
+mod record_push_parity;
 mod routing_choice_bridge;
 mod routing_rule;
 mod self_peer;
@@ -24,6 +28,7 @@ mod peer_root_ledger;
 mod settlement_channel;
 mod share_policy;
 mod split_stage;
+mod strict_json;
 mod verdict_counts;
 mod web_ui_manifest;
 

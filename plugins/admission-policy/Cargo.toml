@@ -18,6 +18,11 @@ mutant-allow-blocked = []
 # Deliberately-broken variant: treats an unparseable body as allow instead of
 # deny (silently fail-open on malformed input instead of failing safe).
 mutant-allow-malformed = []
+# Deliberately-broken receiver: skips the claim checks on a served half (who
+# served it, which weights). CI builds it and requires the record-push parity
+# run to FAIL, so the parity run is shown to catch a receiver that drops a
+# check, not only a changed answer file.
+mutant-record-push-skips-claims = []
 
 [dependencies]
 mesh-llm-plugin = "0.76"
@@ -48,11 +53,31 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # bridge (`mesh_evidence_bridge::handle_open_stream`) proxies a mesh-inbound
 # evidence request to the local `evidence_server.py` E15 door over real HTTP.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# A pushed record is received in-process (`record_push_receive`): its Class 1
+# checks, `capsule_id` and producer signature are checked with the
+# capsule-emit crate, and a bundle's inclusion proof with `cll`. Git
+# dependencies pinned to merged commits until both crates are on crates.io;
+# renamed because this crate already has a `capsule_emit` module.
+capsule-emit-lib = { package = "capsule-emit", git = "https://github.com/action-state-group/capsule-emit", rev = "6e8108ddb99b144f0076cf116d1fdbe73bf9f2b7" }
+cll = { package = "checkpointed-local-log", version = "0.2.0" }
 
 [dev-dependencies]
+# The record-push parity run reads its own golden answers, which hold a record
+# nested at the strict parser's limit inside the answer's own nesting. Only
+# the test's fixture reader lifts the limit (`disable_recursion_limit`); a
+# pushed body is still parsed under the default one.
+serde_json = { version = "1", features = ["unbounded_depth"] }
 # Temporary ledger directories in the Evidence route and pane tests.
 tempfile = "3"
 # Decodes the `CallToolResult` a `tools/call` `RpcResponse` carries, in
 # `tests/mesh_evidence_bridge_interop.rs` -- same version mesh-llm-plugin
 # itself pins, so the wire shape matches exactly.
 rmcp = "1.8"
+
+# TEMPORARY: capsule-emit needs checkpointed-local-log 0.2.0 and evidencebook
+# 0.0.1, which are not on crates.io yet. Resolve them from
+# checkpointed-local-log main at the commit that made them publishable (the
+# same pin capsule-emit's own workspace uses). Remove once both are published.
+[patch.crates-io]
+checkpointed-local-log = { git = "https://github.com/action-state-group/checkpointed-local-log", rev = "6b1335228a6bc541407800e9e756a66f68f4a639" }
+evidencebook = { git = "https://github.com/action-state-group/checkpointed-local-log", rev = "6b1335228a6bc541407800e9e756a66f68f4a639" }

@@ -15,7 +15,9 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
+ "capsule-emit",
  "capsule-producer",
+ "checkpointed-local-log",
  "chrono",
  "ed25519-dalek",
  "hex",
@@ -188,6 +190,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "capsule-emit"
+version = "0.0.1"
+source = "git+https://github.com/action-state-group/capsule-emit?rev=6e8108ddb99b144f0076cf116d1fdbe73bf9f2b7#6e8108ddb99b144f0076cf116d1fdbe73bf9f2b7"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "checkpointed-local-log",
+ "chrono",
+ "coset",
+ "ed25519-dalek",
+ "evidencebook 0.0.1",
+ "hex",
+ "pkcs8",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "spki",
+ "thiserror 1.0.69",
+ "ureq",
+]
+
+[[package]]
 name = "capsule-producer"
 version = "0.2.0"
 dependencies = [
@@ -199,7 +224,7 @@ dependencies = [
  "der",
  "ecdsa",
  "ed25519-dalek",
- "evidencebook",
+ "evidencebook 0.1.0",
  "hex",
  "p256",
  "p384",
@@ -245,6 +270,21 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
  "rand_core 0.10.1",
+]
+
+[[package]]
+name = "checkpointed-local-log"
+version = "0.2.0"
+source = "git+https://github.com/action-state-group/checkpointed-local-log?rev=6b1335228a6bc541407800e9e756a66f68f4a639#6b1335228a6bc541407800e9e756a66f68f4a639"
+dependencies = [
+ "coset",
+ "ed25519-dalek",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "ureq",
 ]
 
 [[package]]
@@ -606,6 +646,21 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "evidencebook"
+version = "0.0.1"
+source = "git+https://github.com/action-state-group/checkpointed-local-log?rev=6b1335228a6bc541407800e9e756a66f68f4a639#6b1335228a6bc541407800e9e756a66f68f4a639"
+dependencies = [
+ "checkpointed-local-log",
+ "ed25519-dalek",
+ "hex",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

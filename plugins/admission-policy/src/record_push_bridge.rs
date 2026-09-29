@@ -1,26 +1,23 @@
-//! Seam A1 -- the record-push-at-completion
-//! transport. Mechanical sibling of `mesh_evidence_bridge.rs`: the SAME
-//! `OpenMeshStreamRequest`/`connect_stream` mesh-stream mechanism, a NEW
-//! declared channel (`record-push/1`), bridging bytes on both ends straight
-//! to `record_push.py`'s already-shipped, already-tested receiver
-//! (`evidence_server.py`'s `/evidence/record-push` door, `handle_record_push`)
-//! -- never re-implemented in Rust. Zero upstream (`mesh-llm`) code.
+//! The record-push-at-completion transport: the `record-push/1` mesh
+//! channel, a sibling of `mesh_evidence_bridge.rs` over the same
+//! `OpenMeshStreamRequest`/`connect_stream` mechanism. Plugin-internal
+//! behaviour, not a standardized wire; it may change. Zero upstream
+//! (`mesh-llm`) code.
 //!
-//! **Wire shape.** `push_record`'s own contract is "body = the pushed
-//! capsule's own canonical JSON bytes -- opaque at the transport level"
-//! (`record_push.py` module doc) -- unchanged here. What this module adds on
-//! top, ON THE STREAM (never inside the JSON body, so `record_push.py`'s own
-//! opacity contract stays intact) is exactly one line before it: the
-//! pusher's own self-declared mesh peer id, then `\n`, then the capsule
-//! bytes unchanged. The responder splits on the first `\n` and forwards the
-//! id as the SAME `X-Mesh-Requester-Id` header `/evidence-request` already
-//! uses for its own self-declared caller identity (`evidence_server.py`'s
-//! own "relationship gate" doc note) -- one self-attestation convention,
-//! reused, not invented twice. `evidence_server.py`'s door verifies the
-//! capsule's cryptographic signature against this claimed identity's
-//! announced key before ever storing it as a sibling (`record_push.py`'s
-//! `handle_record_push`) -- this module never itself authenticates anything;
-//! it only carries the claim and the bytes.
+//! **Receiving.** An inbound push is received in-process by
+//! [`crate::record_push_receive`], which verifies it (the sender's announced
+//! key, the signature, the claims, a bundle's proof and checkpoint) and holds
+//! it. This module carries the bytes, then seals the citing records for what
+//! was received. A referee's verdict delivered over the same channel still
+//! goes to the evidence door until the referee moves into the plugin.
+//!
+//! **Wire shape.** The body is the pushed capsule's own JSON bytes, opaque at
+//! the transport level. On the stream, never inside the body, one line comes
+//! before it: the pusher's self-declared mesh peer id, then `\n`, then the
+//! body unchanged. The responder splits on the first `\n`. The receiver
+//! checks the record's signature against the key announced for that id
+//! before it holds anything; this module never itself authenticates
+//! anything, it only carries the claim and the bytes.
 //!
 //! **Why a self-declared id, not a mesh-authenticated one.** `mesh-llm-plugin
 //! 0.76.2`'s `OpenStreamRequest` (verified against the vendored crate
@@ -48,13 +45,13 @@
 //! host-filled source-peer field on `OpenStreamRequest`, a
 //! `received_from_node_id` cannot be recorded honestly, so it is not
 //! recorded at all (never synthesized); the ledger carries only the
-//! door-verified self-declared `received_from`.
+//! verified self-declared `received_from`.
 //!
 //! **Push-a-bundle.** When the sender's
 //! checkpoint cadence is on, the JSON body is a bundle instead of the bare
 //! capsule: `{"record_push_bundle": 1, "capsule": <the half, unchanged>,
 //! "inclusion": {"leaf_index", "proof"}, "checkpoint": <signed checkpoint>}`
-//! (~2.5 KB). The door verifies all three (`record_push.py`) and its success
+//! (~2.5 KB). The receiver verifies all three and its success
 //! reply names the verified inclusion; this bridge then seals the
 //! `counterparty_half` citing record AND a second, `counterparty_inclusion`
 //! citing record -- the row reaches "in their log" in one step. A door that
@@ -101,7 +98,7 @@ pub fn bundle_body(capsule_json: &serde_json::Value, coverage: &Coverage) -> ser
 
 /// The bundle member that carries a split's stage records from the
 /// coordinator to the requester (`docs/DESIGN-split-stage-records.md` §6.3).
-/// The door checks each one and holds it; the requester's hop check then runs
+/// The receiver checks each one and holds it; the requester's hop check then runs
 /// offline, without contacting any stage.
 pub const SPLIT_STAGE_RECORDS: &str = "split_stage_records";
 
@@ -173,29 +170,29 @@ fn split_wire(wire: &[u8]) -> Option<(&str, &[u8])> {
 }
 
 // ---------------------------------------------------------------------
-// Responder role: mesh-inbound `record-push/1` stream -> local E15 door
+// Responder role: mesh-inbound `record-push/1` stream -> received in-process
 // ---------------------------------------------------------------------
 
 /// Registered (via `main.rs`'s dispatching `on_open_stream`) for every
 /// inbound stream whose `content_type` is [`RECORD_PUSH_CONTENT_TYPE`].
 ///
 /// REPLY CONTRACT (revised for the ack-before-seal fix): a transport failure
-/// just drops the stream, and the door's own reply -- success or signed
-/// `Refusal` -- is forwarded byte-for-byte, with ONE exception this bridge
-/// itself mints: when the door accepted+stored the half but this node could
-/// NOT seal its citing record (see [`SEAL_FAILED_REFUSAL_REASON`]), the peer
-/// gets an unsigned `{"reason": ...}` refusal INSTEAD of the door's success
-/// bytes. "received" on this wire therefore always implies "cited" -- the
-/// success ack is only ever written AFTER the citing record is durably on
-/// our chain, so a crash/cancel can no longer leave the door's store and our
-/// chain divergent behind an ack the peer will never retry.
+/// just drops the stream, and the receiver's reply -- success or signed
+/// refusal -- is sent as it is, with ONE exception this bridge mints: when
+/// the half was verified and stored but this node could NOT seal its citing
+/// record (see [`SEAL_FAILED_REFUSAL_REASON`]), the peer gets an unsigned
+/// `{"reason": ...}` refusal INSTEAD of the success reply. "received" on
+/// this wire therefore always implies "cited" -- the success ack is only ever
+/// written AFTER the citing record is durably on our chain, so a
+/// crash/cancel can no longer leave the held store and our chain divergent
+/// behind an ack the peer will never retry.
 ///
-/// `capsules` -- this node's own
-/// `CapsuleState` (the SAME single-writer ledger every other local capsule is
-/// sealed onto). After the Python door confirms the pushed half verified and
-/// was stored in the held-artifact store `received-capsules.jsonl`, this
-/// responder seals a LOCAL CITING record of the receiving event onto OUR
-/// chain -- the foreign body NEVER enters `capsules.jsonl`.
+/// `capsules` -- this node's own `CapsuleState` (the SAME single-writer
+/// ledger every other local capsule is sealed onto). Once the receiver has
+/// verified the pushed half and stored it in the held-artifact store
+/// `received-capsules.jsonl`, this responder seals a LOCAL CITING record of
+/// the receiving event onto OUR chain -- the foreign body NEVER enters
+/// `capsules.jsonl`.
 pub async fn handle_open_stream(
     request: OpenStreamRequest,
     _context: &mut PluginContext<'_>,
@@ -224,20 +221,21 @@ pub async fn handle_open_stream(
     Ok(Some(response))
 }
 
-/// True when the door's JSON reply is a success (`{"status": "received"}`),
+/// True when a reply is a success (`{"status": "received"}`),
 /// false for a signed `Refusal` (carries `reason`). Mirrors
 /// `push_capsule_to_peer`'s own `response.get("reason").is_some()` convention.
-fn door_accepted(response: &serde_json::Value) -> bool {
+fn accepted(response: &serde_json::Value) -> bool {
     response.get("reason").is_none() && response.get("status").and_then(|s| s.as_str()) == Some("received")
 }
 
 /// The `reason` of the ONE reply this bridge mints itself (unsigned -- the
-/// door signs its own refusals; this one is the bridge's, see
-/// `handle_open_stream`'s reply contract): the door verified+stored the half
+/// receiver signs its own refusals; this one is the bridge's, see
+/// `handle_open_stream`'s reply contract): the half was verified and stored
 /// but the local citing-record seal failed, so the peer must NOT be told
-/// "received" (it would never retry, leaving the door's store and our chain
-/// divergent). The peer's next push retries the seal; the door re-stores the
-/// artifact idempotently-enough and the citing dedup seals at most one record.
+/// "received" (it would never retry, leaving the held store and our chain
+/// divergent). The peer's next push retries the seal; a bare half is stored
+/// again, a bundle is answered from what is held, and the citing dedup seals
+/// at most one record.
 const SEAL_FAILED_REFUSAL_REASON: &str = "citing_record_seal_failed";
 
 fn seal_failed_refusal() -> Vec<u8> {
@@ -284,33 +282,41 @@ async fn bridge_inbound_record_push(
     let sender_peer_id = sender_peer_id.to_string();
     let capsule_bytes = capsule_bytes.to_vec();
 
-    let client = reqwest::Client::builder()
-        .timeout(responder_http_timeout())
-        .build()?;
-    // Authenticated both ways (`door_auth`): a reply without the door's proof
-    // is never acked or cited.
-    let reply = crate::door_auth::call(
-        &client,
-        reqwest::Method::POST,
-        "/evidence/record-push",
-        &[("Content-Type", "application/json"), ("X-Mesh-Requester-Id", &sender_peer_id)],
-        Some(capsule_bytes.clone()),
-    )
-    .await?;
-    let response_bytes = reply.body;
+    // A pushed record is received here, in-process (`record_push_receive`).
+    // A referee's verdict delivered over the same stream still goes to the
+    // evidence door until the referee moves into the plugin.
+    let (response_bytes, reply) = if is_verdict_delivery(&capsule_bytes) {
+        let client = reqwest::Client::builder()
+            .timeout(responder_http_timeout())
+            .build()?;
+        // Authenticated both ways (`door_auth`): a reply without the door's
+        // proof is never acked or cited.
+        let reply = crate::door_auth::call(
+            &client,
+            reqwest::Method::POST,
+            "/evidence/record-push",
+            &[("Content-Type", "application/json"), ("X-Mesh-Requester-Id", &sender_peer_id)],
+            Some(capsule_bytes.clone()),
+        )
+        .await?;
+        let parsed = serde_json::from_slice::<serde_json::Value>(&reply.body).ok();
+        (reply.body.to_vec(), parsed)
+    } else {
+        let reply = receive_pushed_record(&capsules, &sender_peer_id, &capsule_bytes).await?;
+        (serde_json::to_vec(&reply)?, Some(reply))
+    };
 
-    // SEAL BEFORE ACK (the ack-before-seal window fix): the door is the ONE
-    // authority on whether the half verified + stored, and its refusal bytes
-    // are still forwarded untouched -- but on door SUCCESS the citing record
-    // is sealed FIRST, and only then is the door's success reply written, so
+    // SEAL BEFORE ACK (the ack-before-seal window fix): the receiver is the
+    // ONE authority on whether the half verified + stored, and its refusal
+    // bytes are forwarded untouched -- but on SUCCESS the citing record is
+    // sealed FIRST, and only then is the success reply written, so
     // "received" always implies "cited". A seal failure replies with this
     // bridge's own refusal (`SEAL_FAILED_REFUSAL_REASON`) instead of the
     // success bytes: the peer sees a refusal and retries, instead of
     // trusting an ack for a half our chain never cited. Awaited inline (no
     // detached task), so a failure is handled before any reply exists.
-    let door_reply = serde_json::from_slice::<serde_json::Value>(&response_bytes).ok();
-    let reply_bytes = match door_reply {
-        Some(reply) if door_accepted(&reply) && is_verdict_delivery(&capsule_bytes) => {
+    let reply_bytes = match reply {
+        Some(reply) if accepted(&reply) && is_verdict_delivery(&capsule_bytes) => {
             // A referee's verdict delivered here: this node's own
             // `adjudication_received` record, sealed before the ack.
             match crate::adjudication_records::seal_received(&capsules, &reply).await {
@@ -321,25 +327,59 @@ async fn bridge_inbound_record_push(
                 }
             }
         }
-        Some(reply) if door_accepted(&reply) => {
+        Some(reply) if accepted(&reply) => {
             match seal_citing_records_for_push(&capsules, &sender_peer_id, &capsule_bytes, &reply).await {
                 Ok(()) => {
                     collect_stage_record(&splits, &sender_peer_id, &capsule_bytes);
                     response_bytes.to_vec()
                 }
                 Err(error) => {
-                    tracing::warn!(%error, received_from = %sender_peer_id, "door stored the pushed half but a citing-record seal failed -- refusing instead of acking");
+                    tracing::warn!(%error, received_from = %sender_peer_id, "the pushed half was stored but a citing-record seal failed -- refusing instead of acking");
                     seal_failed_refusal()
                 }
             }
         }
-        // Door refusal (or unparseable door reply): forwarded byte-for-byte;
+        // A refusal (or an unparseable door reply): sent as it is;
         // a refusal never chains anything.
         _ => response_bytes.to_vec(),
     };
     write_half.write_all(&reply_bytes).await?;
     write_half.shutdown().await?;
     Ok(())
+}
+
+/// Receive a pushed record in-process: `record_push_receive::receive` against
+/// this node's ledger directory and key, the peer-key registry and sharing
+/// policy as this process has them. Runs on the blocking pool: every stored
+/// line is synced to disk before the reply exists. An `Err` is a local write
+/// that failed; the caller then acks nothing, and the peer retries.
+async fn receive_pushed_record(
+    capsules: &Arc<CapsuleState>,
+    sender_peer_id: &str,
+    body: &[u8],
+) -> anyhow::Result<serde_json::Value> {
+    let capsules = capsules.clone();
+    let sender_peer_id = sender_peer_id.to_string();
+    let body = body.to_vec();
+    let peer_keys = std::env::var(crate::peer_keys::ENV_PEER_KEYS).ok();
+    let record_at_completion_off = crate::share_policy::record_at_completion_is_off();
+    tokio::task::spawn_blocking(move || {
+        let receiver = crate::record_push_receive::Receiver {
+            ledger_dir: capsules.ledger_dir(),
+            signing_key: capsules.signing_key(),
+            peer_keys: peer_keys.as_deref(),
+            record_at_completion_off,
+        };
+        crate::record_push_receive::receive(
+            &receiver,
+            &body,
+            Some(&sender_peer_id),
+            &capsule_producer::timestamp::utc_now_iso8601(),
+        )
+    })
+    .await
+    .map_err(|join_error| anyhow::anyhow!("record-push receive task did not complete: {join_error}"))?
+    .map_err(|io_error| anyhow::anyhow!("record-push receive could not store what it verified: {io_error}"))
 }
 
 /// A received stage record of a split this node coordinates goes to the
@@ -367,22 +407,22 @@ fn collect_stage_record(
     }
 }
 
-/// On door success: the half's `counterparty_half` citing record, then --
-/// for a bundle the door verified -- the `counterparty_inclusion` one. Both
+/// On success: the half's `counterparty_half` citing record, then -- for a
+/// verified bundle -- the `counterparty_inclusion` one. Both
 /// must be on our chain before the ack is written (seal-before-ack); a
 /// retried push re-runs both, and each dedups on its own.
 async fn seal_citing_records_for_push(
     capsules: &Arc<CapsuleState>,
     sender_peer_id: &str,
     body_bytes: &[u8],
-    door_reply: &serde_json::Value,
+    reply: &serde_json::Value,
 ) -> anyhow::Result<()> {
     let body: serde_json::Value = serde_json::from_slice(body_bytes)
-        .map_err(|e| anyhow::anyhow!("door accepted an unparseable body: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("an unparseable body was received: {e}"))?;
     let half = pushed_half(&body);
     let half_bytes = serde_json::to_vec(half)?;
     seal_citing_record_for_push(capsules, sender_peer_id, &half_bytes).await?;
-    if let Some(inclusion) = door_inclusion(door_reply)? {
+    if let Some(inclusion) = received_inclusion(reply)? {
         let half_id = half
             .get("capsule_id")
             .and_then(|v| v.as_str())
@@ -392,11 +432,11 @@ async fn seal_citing_records_for_push(
     Ok(())
 }
 
-/// on door success, seal OUR OWN
-/// citing record of the receiving event onto OUR chain. The door already
-/// verified the signature (it returns success only when it did) and stored
-/// the foreign body in the held-artifact store -- so `signature_ok = true`
-/// here is the door's recorded verdict, read, never a second check. This
+/// On success, seal OUR OWN citing record of the receiving event onto OUR
+/// chain. The receiver already verified the signature (it returns success
+/// only when it did) and stored the foreign body in the held-artifact store
+/// -- so `signature_ok = true` here is its recorded verdict, read, never a
+/// second check. This
 /// never touches the foreign body except to lift its own digests (for the
 /// pane's correlator); the bytes stay in `received-capsules.jsonl`.
 ///
@@ -410,12 +450,12 @@ async fn seal_citing_record_for_push(
     capsule_bytes: &[u8],
 ) -> anyhow::Result<()> {
     let foreign: serde_json::Value = serde_json::from_slice(capsule_bytes)
-        // The door accepted a body it could not have parsed? It never does
-        // (it refuses request_malformed first) -- but if the contract ever
+        // A received body that does not parse? The receiver refuses
+        // request_malformed first, so it never happens -- but if that ever
         // changed, we must not ack a half we cannot cite.
-        .map_err(|e| anyhow::anyhow!("door accepted an unparseable body: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("an unparseable body was received: {e}"))?;
     let Some(foreign_capsule_id) = foreign.get("capsule_id").and_then(|v| v.as_str()) else {
-        anyhow::bail!("door accepted a body with no capsule_id -- nothing citable");
+        anyhow::bail!("a body with no capsule_id was received -- nothing citable");
     };
     let foreign_capsule_id = foreign_capsule_id.to_string();
     let received_from = sender_peer_id.to_string();
@@ -459,15 +499,15 @@ async fn seal_citing_record_for_push(
     Ok(())
 }
 
-/// The door's verified inclusion facts for a bundle push, lifted from its
-/// success reply (`record_push.py`'s `inclusion` member). `Ok(None)` when the
+/// The verified inclusion facts for a bundle push, lifted from the
+/// receiver's success reply (its `inclusion` member). `Ok(None)` when the
 /// reply has no `inclusion` (a bare push); an `inclusion` member that is
 /// present but incomplete or mistyped is an ERROR, never a silent downgrade
 /// to "half only" -- the caller then refuses to ack, and the push is retried.
-/// The door is the one authority on whether the proof and checkpoint
+/// The receiver is the one authority on whether the proof and checkpoint
 /// verified -- this reads its verdict, same as `signature_ok`.
 #[derive(Debug, PartialEq, Eq)]
-struct DoorInclusion {
+struct ReceivedInclusion {
     half_capsule_id: String,
     leaf_index: u64,
     mmr_size: u64,
@@ -476,7 +516,7 @@ struct DoorInclusion {
     received_at: String,
 }
 
-fn door_inclusion(reply: &serde_json::Value) -> anyhow::Result<Option<DoorInclusion>> {
+fn received_inclusion(reply: &serde_json::Value) -> anyhow::Result<Option<ReceivedInclusion>> {
     let Some(inclusion) = reply.get("inclusion") else {
         return Ok(None);
     };
@@ -485,15 +525,15 @@ fn door_inclusion(reply: &serde_json::Value) -> anyhow::Result<Option<DoorInclus
             .get(k)
             .and_then(|v| v.as_str())
             .map(str::to_string)
-            .ok_or_else(|| anyhow::anyhow!("door reply inclusion.{k} missing or not a string"))
+            .ok_or_else(|| anyhow::anyhow!("reply inclusion.{k} missing or not a string"))
     };
     let num = |k: &str| {
         inclusion
             .get(k)
             .and_then(|v| v.as_u64())
-            .ok_or_else(|| anyhow::anyhow!("door reply inclusion.{k} missing or not a count"))
+            .ok_or_else(|| anyhow::anyhow!("reply inclusion.{k} missing or not a count"))
     };
-    Ok(Some(DoorInclusion {
+    Ok(Some(ReceivedInclusion {
         half_capsule_id: text("half_capsule_id")?,
         leaf_index: num("leaf_index")?,
         mmr_size: num("mmr_size")?,
@@ -511,11 +551,11 @@ async fn seal_inclusion_citing_record_for_push(
     capsules: &Arc<CapsuleState>,
     sender_peer_id: &str,
     pushed_capsule_id: &str,
-    inclusion: DoorInclusion,
+    inclusion: ReceivedInclusion,
 ) -> anyhow::Result<()> {
     if inclusion.half_capsule_id != pushed_capsule_id {
         anyhow::bail!(
-            "door inclusion names half {} but the pushed half is {pushed_capsule_id}",
+            "the reply's inclusion names half {} but the pushed half is {pushed_capsule_id}",
             inclusion.half_capsule_id
         );
     }
@@ -543,16 +583,16 @@ async fn seal_inclusion_citing_record_for_push(
 }
 
 // ---------------------------------------------------------------------
-// Requester role: push this node's own sealed capsule to a peer's door
+// Requester role: push this node's own sealed capsule to a peer
 // ---------------------------------------------------------------------
 
 /// Opens a `record-push/1` mesh stream to `peer_id` and pushes
-/// `capsule_json` (this node's own just-sealed capsule, unmodified --
-/// `record_push.py`'s "AS TRANSMITTED, never re-signed" invariant), self-
+/// `capsule_json` (this node's own just-sealed capsule, unmodified -- a
+/// receiver holds it as transmitted, never re-signed), self-
 /// declaring `self_peer_id` as the sender (see module doc's "wire shape").
 /// With `coverage` the body is the bundle (module doc, "push-a-bundle");
-/// a `request_malformed` refusal of a bundle is read as a door that predates
-/// bundles, and the bare capsule is pushed once more.
+/// a `request_malformed` refusal of a bundle is read as a receiver that
+/// predates bundles, and the bare capsule is pushed once more.
 /// Best-effort by design -- the caller (`main.rs`'s seal-on-observe path)
 /// logs success/failure and never lets a push failure disturb sealing or
 /// channel-message processing, same discipline as
@@ -614,16 +654,16 @@ async fn push_plain_bundle(
     Ok(response)
 }
 
-/// A bundle refused `request_malformed` came from a door that reads the body
-/// as a bare capsule and found no `capsule_id` at its top level. A door that
-/// reads bundles refuses a malformed one `bundle_malformed` instead
-/// (`record_push.py`), so that reason -- like every other refusal -- is
-/// final, never a trigger to re-push the bare record.
+/// A bundle refused `request_malformed` came from a receiver that reads the
+/// body as a bare capsule and found no `capsule_id` at its top level. A
+/// receiver that reads bundles refuses a malformed one `bundle_malformed`
+/// instead ([`crate::record_push_receive`]), so that reason -- like every
+/// other refusal -- is final, never a trigger to re-push the bare record.
 fn refused_as_older_door(response: &serde_json::Value) -> bool {
     response.get("reason").and_then(|r| r.as_str()) == Some("request_malformed")
 }
 
-/// One `record-push/1` stream: write `sender\n<body>`, read the door's reply.
+/// One `record-push/1` stream: write `sender\n<body>`, read the peer's reply.
 pub(crate) async fn send_push(
     context: &mut PluginContext<'_>,
     peer_id: &str,
@@ -754,7 +794,7 @@ mod tests {
     }
 
     #[test]
-    fn door_inclusion_is_read_only_when_every_fact_is_present() {
+    fn received_inclusion_is_read_only_when_every_fact_is_present() {
         let reply = serde_json::json!({
             "status": "received",
             "inclusion": {
@@ -763,21 +803,21 @@ mod tests {
                 "received_at": "2026-09-27T00:00:00Z"
             }
         });
-        let inclusion = door_inclusion(&reply).unwrap().expect("complete inclusion facts");
+        let inclusion = received_inclusion(&reply).unwrap().expect("complete inclusion facts");
         assert_eq!(inclusion.leaf_index, 4);
         assert_eq!(inclusion.mmr_size, 8);
-        assert!(door_inclusion(&serde_json::json!({"status": "received"})).unwrap().is_none());
+        assert!(received_inclusion(&serde_json::json!({"status": "received"})).unwrap().is_none());
         // N1 (EM review): a present-but-broken inclusion is an error (no ack,
         // the sender retries), never a silent "half only".
         let mut partial = reply.clone();
         partial["inclusion"].as_object_mut().unwrap().remove("checkpoint_digest");
-        assert!(door_inclusion(&partial).is_err(), "a partial verdict is an error");
+        assert!(received_inclusion(&partial).is_err(), "a partial verdict is an error");
         let mut mistyped = reply.clone();
         mistyped["inclusion"]["leaf_index"] = serde_json::json!("4");
-        assert!(door_inclusion(&mistyped).is_err());
+        assert!(received_inclusion(&mistyped).is_err());
         let mut not_an_object = reply;
         not_an_object["inclusion"] = serde_json::json!("verified");
-        assert!(door_inclusion(&not_an_object).is_err());
+        assert!(received_inclusion(&not_an_object).is_err());
     }
 
     /// The whole sender flow over a REAL sealed half: seal through
