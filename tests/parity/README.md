@@ -35,10 +35,10 @@ It deliberately leaves out two things:
 ```json
 {"name": "bundle_valid",
  "covers": "a verified bundle is held with its inclusion",
- "node": {"peer_keys_env": "{\"m3\": \"<key_id>\"}",
+ "node": {"peer_keys_env": "{\"node-a\": \"<key_id>\"}",
           "record_at_completion": null,
           "own_records": []},
- "pushes": [{"sender": "m3", "body": "<the push body>"}]}
+ "pushes": [{"sender": "node-a", "body": "<the push body>"}]}
 ```
 
 - `peer_keys_env` is the raw value of `ADMISSION_POLICY_PEER_KEYS`. It is
