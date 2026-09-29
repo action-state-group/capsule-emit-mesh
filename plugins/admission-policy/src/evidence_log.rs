@@ -55,7 +55,7 @@ const MAX_CORRELATION_ID_LEN: usize = 256;
 
 /// The members whose text values identify an exchange a record belongs to
 /// (a `correlation` subject), wherever they appear in the record. The same
-/// correlators the earlier door matched by nonce and exchange id; a
+/// correlators the Python reference matched by nonce and exchange id; a
 /// counterparty's id is an identity, not a correlation, and is not one.
 const CORRELATION_KEYS: [&str; 3] = ["nonce", "client_nonce", "exchange_id"];
 

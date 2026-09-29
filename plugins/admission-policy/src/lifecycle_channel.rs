@@ -191,7 +191,7 @@ pub struct OpenAiExchangeEnvelope {
     /// `RemoteMesh` terminal envelope this is the PEER's asserted capsule id
     /// for its own half of the exchange (host-side
     /// `CapsuleIdProvenance::PeerAsserted`) -- the lookup key a later
-    /// evidence-door fetch dereferences, never itself verified here. `None`
+    /// ledger fetch dereferences, never itself verified here. `None`
     /// exactly when `capsule_id` is `None`, and always `None` on a host that
     /// predates this field -- never fabricated.
     #[serde(default)]

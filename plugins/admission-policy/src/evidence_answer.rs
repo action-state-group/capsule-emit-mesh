@@ -1,7 +1,7 @@
 //! Answering an evidence request in-process
-//! (draft-mih-agent-evidence-request-00), replacing the Python door's
-//! `evidence_responder` for every subject except a referee's `adjudicate`
-//! (which moves with the referee).
+//! (draft-mih-agent-evidence-request-00), for every subject. A referee's
+//! `adjudicate` request is not a -00 subject and is refused, signed: this
+//! node has no referee yet.
 //!
 //! The protocol is the `capsule-emit-evidence-request` crate's: this module
 //! parses with `request::parse_json`, resolves with `resolve::resolve`,
@@ -323,8 +323,8 @@ fn may_serve_all(index: &LedgerIndex, records: &[u64], requester_id: Option<&str
 }
 
 /// The `served_summary/1` derivation: a static export, answered only under
-/// an `expected_pin` naming this node's latest checkpoint (the Python door's
-/// rule). A `min_freshness` request asks for an on-demand export, which this
+/// an `expected_pin` naming this node's latest checkpoint (the Python
+/// reference's rule). A `min_freshness` request asks for an on-demand export, which this
 /// node declines.
 fn served_summary_answer(
     req: &Request,

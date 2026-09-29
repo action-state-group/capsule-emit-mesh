@@ -187,7 +187,7 @@ up() {
   # A node's key and id exist only after its first start, and a running
   # node's environment can't change: record both, then restart both with them.
   until_ok 120 "both plugins to report their peer id and key" wired
-  printf '{"%s":"%s","%s":"%s"}' "$(self_id a)" "$(pub_key a)" "$(self_id b)" "$(pub_key b)" > "$DEMO_DIR/peer-keys.json"
+  (umask 077; printf '{"%s":"%s","%s":"%s"}' "$(self_id a)" "$(pub_key a)" "$(self_id b)" "$(pub_key b)" > "$DEMO_DIR/peer-keys.json")
   stop_node b $B_CONSOLE $B_API; stop_node a $A_CONSOLE $A_API
   start_both
   echo "  node A $(self_id a | cut -c1-10)… · node B $(self_id b | cut -c1-10)…"

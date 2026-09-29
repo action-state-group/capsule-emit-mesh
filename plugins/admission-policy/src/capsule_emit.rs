@@ -3220,7 +3220,7 @@ mod tests {
     }
 
     /// Writes `tests/fixtures/split-stage/rust-split-bundle.json`, which the
-    /// Python door's split test verifies. Run to regenerate:
+    /// Python reference's split test verifies. Run to regenerate:
     ///   cargo test writes_the_split_bundle_fixture -- --ignored
     #[test]
     #[ignore = "regenerates a committed fixture"]

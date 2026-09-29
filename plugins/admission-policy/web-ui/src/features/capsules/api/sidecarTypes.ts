@@ -536,6 +536,10 @@ export type IssuedAdjudication = {
 export type VerdictRecordJson = {
   capsule: Record<string, unknown>
   signed_by_key_id: string | null
+  /** An earlier run of this node recorded this verdict. This node has no
+   *  referee now and doesn't check the signer against the referee's
+   *  announced key, so a legacy verdict is never `verify_ok`. */
+  legacy?: boolean
   /** The referee's signature verifies AND this node's chain records the
    *  verdict. */
   verify_ok: boolean

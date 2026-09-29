@@ -1,5 +1,6 @@
-//! Receive a peer's pushed record, in-process: the checks the evidence door
-//! (`record_push.py`) ran, in the same order, with the same answers.
+//! Receive a peer's pushed record, in-process: the checks of the Python
+//! reference receiver (`record_push.py`), in the same order, with the same
+//! answers.
 //!
 //! **What arrives.** A peer pushes its own sealed half of an exchange, either
 //! bare or as a bundle (`{"record_push_bundle": 1, "capsule", "inclusion",
@@ -13,7 +14,7 @@
 //! 2. A bundle carries exactly its members with exactly their types, else
 //!    `bundle_malformed`. From here on, a bundle's structural refusals are
 //!    `bundle_malformed` and a bare push's are `request_malformed`: that
-//!    reason in reply to a bundle is how a sender recognises a door that
+//!    reason in reply to a bundle is how a sender recognises a receiver that
 //!    predates bundles.
 //! 3. `record_at_completion: off` refuses `policy_decline`.
 //! 4. A push with no sender id, or from a sender with no announced key

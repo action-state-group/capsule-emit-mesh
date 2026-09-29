@@ -1,6 +1,6 @@
 //! The record-push parity run: the repository's parity corpus
 //! (`tests/parity/`) through [`crate::record_push_receive::receive`], every
-//! answer held to the Python door's golden answer (or, for the cases in
+//! answer held to the Python reference's golden answer (or, for the cases in
 //! `intended_differences.json`, to the stricter answer listed there). The
 //! answer format is specified in `tests/parity/README.md`.
 //!
