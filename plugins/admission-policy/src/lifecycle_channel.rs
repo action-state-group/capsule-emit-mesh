@@ -250,6 +250,21 @@ pub struct OpenAiExchangeEnvelope {
     /// host that computes it; `None` from a host that predates the field.
     #[serde(default)]
     pub response_text_digest: Option<String>,
+    /// The exchange's request and response bodies, sent only by a host whose
+    /// operator hands them to plugins (`MESH_LLM_PLUGIN_EXCHANGE_BODIES=1`,
+    /// off by default). Absent otherwise: this plugin then sees digests only.
+    /// Kept on disk only with this plugin's own opt-in (`exchange_text`).
+    #[serde(default)]
+    pub exchange_bodies: Option<ExchangeBodies>,
+}
+
+/// See [`OpenAiExchangeEnvelope::exchange_bodies`]. Either side may be absent.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct ExchangeBodies {
+    #[serde(default)]
+    pub request: Option<serde_json::Value>,
+    #[serde(default)]
+    pub response: Option<serde_json::Value>,
 }
 
 /// Mirror of the host's `ExchangeUsage` (real token counts). Every field is a
@@ -599,6 +614,21 @@ mod tests {
     /// serving-provenance hardware facts survive intact -- while the fields the
     /// host reported as `null` (synthetic plugin-served model has no GGUF
     /// metadata) stay `None`, never fabricated.
+    /// A host that hands exchange bodies to plugins sends them on the
+    /// terminal event; any other host sends none, and the field stays `None`.
+    #[test]
+    fn exchange_bodies_are_read_when_sent_and_absent_otherwise() {
+        let with = r#"{"dispatch_path":"raw_proxy","phase":"terminal","model":"m","exchange_id":"ex-1","exchange_bodies":{"request":{"model":"m"},"response":{"choices":[{"message":{"content":"hi"}}]}}}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(with).unwrap();
+        let bodies = env.exchange_bodies.expect("bodies");
+        assert_eq!(bodies.request.unwrap()["model"], "m");
+        assert_eq!(bodies.response.unwrap()["choices"][0]["message"]["content"], "hi");
+
+        let without = r#"{"dispatch_path":"raw_proxy","phase":"terminal","model":"m"}"#;
+        let env: OpenAiExchangeEnvelope = serde_json::from_str(without).unwrap();
+        assert!(env.exchange_bodies.is_none());
+    }
+
     #[test]
     fn real_host_terminal_event_deserializes_serving_provenance() {
         let wire = r#"{"dispatch_path":"raw_proxy","phase":"terminal","model":"allowed-test-model","status":200,"capsule_id":null,"nonce":null,"serving_provenance":{"served_by_node_id":"fa28d0dfe5f0b2c4a8f0fcb15838075e4e5f0b32d6dd5df029588e8992fad5ac","hostname":"node-a.local","quantization":null,"architecture":null,"context_length":null,"parameter_size":null,"layer_count":null,"model_identity_hash":null,"model_canonical_ref":null,"model_revision":null,"gpu":"Apple M4 Max","vram_bytes":28991029248,"is_soc":true}}"#;
@@ -1018,6 +1048,7 @@ mod tests {
             }),
             twin_bracket_id: None,
             response_text_digest: None,
+            exchange_bodies: None,
         };
 
         store.record(event("model-a", Some("gpu-old")));
