@@ -9,10 +9,10 @@ import { HARNESS_PANE_B_PAYLOAD } from '@/features/capsules/lib/peer-fixtures'
 
 const [CLEAN] = HARNESS_PANE_B_PAYLOAD.rows
 
-/** The freeze-candidate pane-b row for `key:71eb26f8e583ccc9`, as captured. */
+/** The freeze-candidate pane-b row for `key:71eb777777777777`, as captured. */
 const CAPTURED_PEER: PaneBRow = {
   ...CLEAN,
-  peer_id: 'key:71eb26f8e583ccc9',
+  peer_id: 'key:71eb777777777777',
   history: { state: 'NOT_CHECKED' },
   verdicts: { state: 'NOT_CHECKED' },
   asked: { state: 'absent', count: 0 },
@@ -85,7 +85,7 @@ describe('PeerHistoryTab', () => {
               {
                 ts: '2026-09-26T05:10:00Z',
                 path: 'evidence-request',
-                requester_id: 'key:71eb26f8e583ccc9',
+                requester_id: 'key:71eb777777777777',
                 subject_kind: 'chain_segment',
                 status: 'refused',
                 reason: 'not_authorized'

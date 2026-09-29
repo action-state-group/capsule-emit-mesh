@@ -2,7 +2,7 @@
 // for historical/import-site continuity -- the security view
 // added `task_binding`, the manifesto's tenth-named-but-ninth-record-check,
 // which this map had been shipping without: 8+1, not 9+1), shared between
-// LedgerCard (the Peers/Balance card chip strip) and the Exchanges table's
+// LedgerCard (the Peers/Exchanges card chip strip) and the Exchanges table's
 // Checks column (Part 3) so the two
 // never drift into different wording for the same properties -- verbatim
 // order from `manifesto-the-tenth-check-v6`'s table.

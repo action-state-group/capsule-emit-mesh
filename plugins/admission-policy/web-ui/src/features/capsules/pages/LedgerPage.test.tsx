@@ -1,6 +1,5 @@
-// Tests for LedgerPageContent — the three-section Ledger tab (Part 1 of
-// Balance retired as a standalone
-// tab, folded into a header strip on Exchanges).
+// Tests for LedgerPageContent — the three-section Ledger tab (the served / asked strip is
+// a header strip on Exchanges, not a tab of its own).
 //
 // Test goals:
 //   1. Three section tabs present (Peers/Exchanges/Integrity), Peers is the
@@ -9,7 +8,7 @@
 //   3. No leaked internal IDs or tool names in the empty state, and no
 //      sidecar URL box anywhere
 //   4. Exchanges header shows two counts, never a ratio
-//   5. The Balance header strip on Exchanges never crashes on an absent
+//   5. The Exchanges served / asked strip strip on Exchanges never crashes on an absent
 //      served-summary and never fabricates a number; it renders
 //      NOTHING on a null card rather than a "no data" line
 //   6. The exceptions-first line above the table, and the Ledger badge's
@@ -567,7 +566,7 @@ describe('LedgerPageContent', () => {
     }
   }
 
-  it('Exchanges hides the balance header strip entirely on a null card — never a "no data" line above real rows', async () => {
+  it('Exchanges hides the served / asked strip entirely on a null card — never a "no data" line above real rows', async () => {
     const { fetchPaneCList } = await import('@/features/capsules/api/sidecarClient')
     vi.mocked(fetchPaneCList).mockResolvedValue(oneCleanExchangeRow())
 
@@ -579,8 +578,8 @@ describe('LedgerPageContent', () => {
     // fabricated number, and (per the header-copy rule) no absence
     // message either: the card renders nothing at all. The coverage-
     // statement branches themselves (witnessed / not-reconciled / failed)
-    // are unit-tested directly against the pure `balanceCoverage` function
-    // in balance-view.test.ts — fetchPaneA is shared by three query sites
+    // are unit-tested directly against the pure `servedAskedCoverage` function
+    // in exchanges-served-view.test.ts — fetchPaneA is shared by three query sites
     // on this page, so asserting a specific override's exact caller here
     // would be an order-dependent test, not a real wiring check.
     await screen.findByTestId('exchanges-headline')

@@ -87,9 +87,9 @@ describe('advertisedOnlyPeers', () => {
     const fullNodeId = `a70d3967bea3b22f${'4'.repeat(48)}`
     const bridged = peer({ id: fullNodeId, shortId: 'a70d3967' })
     const unused = peer({ id: 'ff99ee88dd77cc66', shortId: 'ff99ee88', hostname: 'unused.local' })
-    const row = paneBRow('key:71eb26f8e583ccc9')
+    const row = paneBRow('key:71eb777777777777')
     row.identity = {
-      signing_key_id: '71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d',
+      signing_key_id: '71eb777777777777777777777777777777777777777777777777777777777777',
       endpoint_id: 'e5ba9d1001',
       node_id: fullNodeId
     }
@@ -99,9 +99,9 @@ describe('advertisedOnlyPeers', () => {
 
   it('never fabricates a match: a key-only row (no node evidence) does not exclude an unrelated mesh peer', () => {
     const unrelated = peer({ id: `a70d3967bea3b22f${'4'.repeat(48)}`, shortId: 'a70d3967' })
-    const row = paneBRow('key:71eb26f8e583ccc9')
+    const row = paneBRow('key:71eb777777777777')
     row.identity = {
-      signing_key_id: '71eb26f8e583ccc99e0ae72e1eee88ead06a81159d8e721ba98eeffe5c30550d',
+      signing_key_id: '71eb777777777777777777777777777777777777777777777777777777777777',
       endpoint_id: 'e5ba9d1001',
       node_id: null
     }

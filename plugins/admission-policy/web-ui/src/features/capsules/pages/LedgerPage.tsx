@@ -1,4 +1,4 @@
-// Ledger tab — four sections (Balance / Peers / Exchanges /
+// Ledger tab — four sections (Served / Peers / Exchanges /
 // Integrity) replacing the prior four sub-tabs. Data comes from this plugin's
 // own `panes/*` routes through the console host's plugin-scoped fetch
 // (`api/sidecarClient.ts`) -- the user never configures anything; honest
@@ -29,7 +29,7 @@ import {
   fetchPaneB,
   fetchPaneCList
 } from '@/features/capsules/api/sidecarClient'
-import { balanceCoverage } from '@/features/capsules/lib/balance-view'
+import { servedAskedCoverage } from '@/features/capsules/lib/exchanges-served-view'
 import { LedgerPeersTable } from '@/features/capsules/components/LedgerPeersTable'
 import { InfoHover } from '@/features/capsules/components/InfoHover'
 import { ExchangeStreamRow } from '@/features/capsules/components/ExchangeStreamRow'
@@ -168,8 +168,8 @@ function describePaneError(error: unknown): string {
 type LedgerTab = 'peers' | 'exchanges' | 'integrity'
 
 // ---------------------------------------------------------------------------
-// Balance header strip (pane-a's card.served_summary) — sits above the
-// Exchanges records table. Retired the standalone Balance tab entirely;
+// Exchanges served / asked strip strip (pane-a's card.served_summary) — sits above the
+// Exchanges records table. Retired the standalone tab that held it;
 // this is the quantity answer, records are the list below it.
 // ---------------------------------------------------------------------------
 
@@ -186,8 +186,8 @@ function DisabledReason({ reason, children }: { reason: string | null; children:
   )
 }
 
-function ExchangesBalanceHeader({ card }: { card: JsonRecord | null | undefined }) {
-  const coverage = balanceCoverage(card)
+function ExchangesServedAskedHeader({ card }: { card: JsonRecord | null | undefined }) {
+  const coverage = servedAskedCoverage(card)
 
   // No served-summary fold exists yet (`card` null, or a present card with
   // no witnessed range) -- render nothing rather than a "no data" line
@@ -206,7 +206,7 @@ function ExchangesBalanceHeader({ card }: { card: JsonRecord | null | undefined 
   return (
     <div className="flex flex-col gap-1 rounded border border-border-soft bg-panel-strong/40 px-3 py-2">
       <p className="text-sm font-medium text-foreground">Served: {coverage.servedText}</p>
-      <p className="text-xs text-fg-dim">{coverage.consumedText}</p>
+      <p className="text-xs text-fg-dim">{coverage.askedText}</p>
       <p className="text-xs text-fg-faint">{coverage.statement}</p>
     </div>
   )
@@ -411,8 +411,8 @@ function ExchangesSection({
   // Distinct queryKey from the top-level/Integrity pane-a query (no `mode`
   // suffix there) — this one's queryFn branches on harness mode, and a
   // shared key with a non-branching queryFn would race for cache ownership.
-  const balanceQuery = useQuery({
-    queryKey: ['ledger', 'pane-a', 'balance', mode],
+  const servedSummaryQuery = useQuery({
+    queryKey: ['ledger', 'pane-a', 'served-summary', mode],
     queryFn: () => (harnessMode ? Promise.resolve(HARNESS_PANE_A_PAYLOAD) : fetchPaneA()),
     refetchInterval: 15_000,
     retry: false
@@ -427,13 +427,13 @@ function ExchangesSection({
   // the Integrity chain strip shades, so a row's checks panel can never say
   // "no checkpoint covers this record" while Integrity says all are covered.
   const checkpointCoverage = useMemo(() => {
-    const card = balanceQuery.data?.card ?? null
+    const card = servedSummaryQuery.data?.card ?? null
     const covered = typeof card?.covered_leaf_count === 'number' ? card.covered_leaf_count : null
     return checkpointCoverageByRecord(
-      (balanceQuery.data?.rows ?? []).map((r) => r.capsule_id),
+      (servedSummaryQuery.data?.rows ?? []).map((r) => r.capsule_id),
       covered
     )
-  }, [balanceQuery.data])
+  }, [servedSummaryQuery.data])
   // Same queryKey as PeersSection's own pane-c query (no `mode` suffix) --
   // that one calls the identical `fetchPaneCList()` in live mode and is
   // simply `enabled: false` in harness mode, so both share ONE cache entry
@@ -695,12 +695,12 @@ function ExchangesSection({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [currentPageRows, focusedRowIndex, jumpToNextContradiction, checksExpandedKey, contentExpandedKey])
 
-  const balanceHeader = <ExchangesBalanceHeader card={balanceQuery.data?.card ?? null} />
+  const servedAskedHeader = <ExchangesServedAskedHeader card={servedSummaryQuery.data?.card ?? null} />
 
   if (query.isLoading) {
     return (
       <div className="flex flex-col gap-2">
-        {balanceHeader}
+        {servedAskedHeader}
         <p className="text-sm text-muted-foreground">Loading…</p>
       </div>
     )
@@ -708,7 +708,7 @@ function ExchangesSection({
   if (query.isError) {
     return (
       <div className="flex flex-col gap-2">
-        {balanceHeader}
+        {servedAskedHeader}
         <p className="text-sm text-amber-500">{describePaneError(query.error)}</p>
       </div>
     )
@@ -719,7 +719,7 @@ function ExchangesSection({
   if (!query.data || query.data.row_count === 0) {
     return (
       <div className="flex flex-col gap-2">
-        {balanceHeader}
+        {servedAskedHeader}
         <EmptyState
           description="Once you ask another node for an answer, or serve one to a peer, each exchange appears here as a two-sided record — your sealed record and theirs, as they send it."
           hint={
@@ -774,7 +774,7 @@ function ExchangesSection({
 
   return (
     <div className="flex flex-col gap-2">
-      {balanceHeader}
+      {servedAskedHeader}
       {/* L3.1 — Exchanges section headline */}
       <p className="text-sm text-fg-dim">
         Each exchange is a pair of sealed records — yours and theirs. Their record normally arrives when the exchange

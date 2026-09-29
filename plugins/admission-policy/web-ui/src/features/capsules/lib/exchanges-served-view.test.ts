@@ -1,19 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { balanceCoverage, CONSUMED_ABSENT_TEXT } from '@/features/capsules/lib/balance-view'
+import { servedAskedCoverage, ASKED_ABSENT_TEXT } from '@/features/capsules/lib/exchanges-served-view'
 
-describe('balanceCoverage', () => {
+describe('servedAskedCoverage', () => {
   it('is absent for a null card, never a crash or an invented number', () => {
-    const result = balanceCoverage(null)
+    const result = servedAskedCoverage(null)
     expect(result.kind).toBe('absent')
   })
 
   it('is absent when the served_summary block is missing', () => {
-    const result = balanceCoverage({})
+    const result = servedAskedCoverage({})
     expect(result.kind).toBe('absent')
   })
 
   it('is absent (not verified) when the block reports NOT_CHECKED / no witnessed checkpoint', () => {
-    const result = balanceCoverage({
+    const result = servedAskedCoverage({
       served_summary: {
         state: 'NOT_CHECKED',
         text: 'no witnessed checkpoint yet -- nothing served falls inside a witnessed range',
@@ -24,7 +24,7 @@ describe('balanceCoverage', () => {
   })
 
   it('is failed, never silently verified, when the summary fails its own recompute+match', () => {
-    const result = balanceCoverage({
+    const result = servedAskedCoverage({
       served_summary: {
         state: 'failed',
         text: 'served summary failed its own recompute+match: mismatch',
@@ -39,7 +39,7 @@ describe('balanceCoverage', () => {
   })
 
   it('is verified with a full coverage statement when witnessed', () => {
-    const result = balanceCoverage({
+    const result = servedAskedCoverage({
       served_summary: {
         state: 'verified',
         text: 'llama-2-7b: 12 served',
@@ -58,7 +58,7 @@ describe('balanceCoverage', () => {
     expect(result.kind).toBe('verified')
     if (result.kind === 'verified') {
       expect(result.servedText).toBe('llama-2-7b: 12 served')
-      expect(result.consumedText).toBe(CONSUMED_ABSENT_TEXT)
+      expect(result.askedText).toBe(ASKED_ABSENT_TEXT)
       expect(result.statement).toMatch(/range-complete through entry 42/)
       expect(result.statement).toMatch(/reconciled against 2 witnesses/)
       expect(result.statement).not.toMatch(/not reconciled/)
@@ -66,7 +66,7 @@ describe('balanceCoverage', () => {
   })
 
   it('never fabricates a witness count when not reconciled', () => {
-    const result = balanceCoverage({
+    const result = servedAskedCoverage({
       served_summary: {
         state: 'verified',
         text: '0 exchanges served in the witnessed range',
@@ -85,7 +85,7 @@ describe('balanceCoverage', () => {
   })
 
   it('never reports a property count as a score', () => {
-    const result = balanceCoverage({
+    const result = servedAskedCoverage({
       served_summary: {
         state: 'verified',
         text: 'llama-2-7b: 12 served',
@@ -98,7 +98,7 @@ describe('balanceCoverage', () => {
     })
     expect(result.kind).toBe('verified')
     if (result.kind === 'verified') {
-      expect(result.servedText + result.consumedText + result.statement).not.toMatch(/\d+\/\d+/)
+      expect(result.servedText + result.askedText + result.statement).not.toMatch(/\d+\/\d+/)
     }
   })
 })
