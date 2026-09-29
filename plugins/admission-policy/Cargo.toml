@@ -58,18 +58,15 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # checkpoints and offline verification come from the capsule-emit crate; the
 # mesh record kinds are written against its extension points in `producer`.
 # A pushed record's Class 1 checks, `capsule_id` and producer signature are
-# checked with it too, and a bundle's inclusion proof with `cll`.
-# `capsule-emit` is a git dependency pinned to its 0.0.1 commit until that
-# is on crates.io; `cll` is the published checkpointed-local-log. Renamed
-# because this crate already has a `capsule_emit` module.
-capsule-emit-lib = { package = "capsule-emit", git = "https://github.com/action-state-group/capsule-emit", rev = "656298abd7ba5d5c288b426767f6c4c7ca974a55" }
+# checked with it too, and a bundle's inclusion proof with `cll` (the
+# published checkpointed-local-log). Renamed because this crate already has
+# a `capsule_emit` module.
+capsule-emit-lib = { package = "capsule-emit", version = "0.0.1" }
 cll = { package = "checkpointed-local-log", version = "0.2.0" }
 # Evidence requests are answered in-process (`evidence_answer`): parsing,
 # resolution, signed refusals and the artifact answer come from the protocol
-# crate (draft-mih-agent-evidence-request-00). Git-pinned to the same
-# capsule-emit commit as `capsule-emit-lib`, so the lock carries one checkout;
-# 0.0.1 on crates.io predates the answer path.
-capsule-emit-evidence-request = { git = "https://github.com/action-state-group/capsule-emit", rev = "656298abd7ba5d5c288b426767f6c4c7ca974a55" }
+# crate (draft-mih-agent-evidence-request-00). 0.0.2 carries the answer path.
+capsule-emit-evidence-request = "0.0.2"
 
 [dev-dependencies]
 # The byte-parity test (`producer::parity_tests`) seals the same inputs
