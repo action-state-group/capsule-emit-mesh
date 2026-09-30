@@ -420,7 +420,7 @@ listed must be among those it reports.
 | `hold-ignores-the-asked-tier` | a verdict is held whatever tier it seals | 1 in `hold` |
 | `request-asks-twice-per-pair` | the one-call cap is not checked | 6 in `request` |
 | `counts-skip-asked-gate` | a received verdict counts whether or not this node asked for it | 2 in `counts` |
-| `verdict-names-wrong-twin` | the ruling names the twin the referee agreed with | 9 in `adjudicate`, 8 in `service` |
+| `verdict-names-wrong-twin` | the ruling names the twin the referee agreed with | 7 in `adjudicate`, 6 in `service` |
 | `hold-skips-asked-check` | every delivered verdict is treated as one this node asked for | 8 in `hold` |
 
 The lists are not guesses: `referee_mutants.py` makes each fault in the
@@ -428,6 +428,19 @@ Python that gives the expected answers (the reference, or the rule model),
 runs the corpus, and records the cases whose answers change. The two tier
 mutants are faults the Python itself has, so there the golden answers are
 taken and the one thing the rule adds is removed.
+
+A fault made in the reference is judged by what a rule-following
+implementation with the same fault answers: the rules the reference departs
+from are applied on top of its faulted answers (`referee_python.port_answers`).
+So a case the rules settle before the fault is reached is never listed. A
+rule-following implementation finds twins with an unknown weights digest not
+comparable, and refuses a request that states no tier, before any referee's
+answer is read: `adjudicate/weights_unknown_on_one_side`,
+`adjudicate/weights_unknown_on_both_sides`, `service/selection_tier_missing`
+and `service/selection_tier_out_of_range` answer the same with or without
+`verdict-names-wrong-twin`, so they are not among its cases. Their expected
+answers are those refusals (`not_comparable`, `request_malformed`); what the
+reference answers instead is in `intended_differences.json`.
 
 ## Running it
 

@@ -8,7 +8,10 @@ on the cases listed in ``mutants.json`` (``must_fail``).
 The lists are not guesses. Each fault is made here, in the Python that gives
 the expected answers (the reference for a Python-judged path, the rule model
 for a rule-stated one), the corpus is run, and the cases whose answers change
-are the list. Where the fault is something the Python itself lacks (the
+are the list. A fault made in the reference has the rules the reference
+departs from applied on top (``referee_python.port_answers``), so a case the
+rules settle before the fault is reached is never listed: a port that follows
+the rules could not fail it. Where the fault is something the Python itself lacks (the
 sealed tier), the port's golden answers are taken and that one thing removed.
 ``test_referee_parity.py`` re-runs this and requires ``mutants.json`` to say
 the same.
@@ -146,7 +149,16 @@ def answers_with(mutant: dict, path: str) -> dict:
     import referee_python
 
     with _reference_fault(mutant["name"]):
-        return referee_python.run(path)["answers"]
+        faulted = referee_python.run(path)["answers"]
+    # What an implementation that follows the rules, with the same fault,
+    # answers: the rules the Python departs from are applied on top. A case
+    # the rules settle before the fault is reached (twins with unknown
+    # weights are not comparable; a request with no tier is refused) is
+    # answered the same with or without the fault, so it catches nothing.
+    return {
+        case["name"]: referee_python.port_answers(path, case, faulted[case["name"]])[0]
+        for case in common.corpus(path)["cases"]
+    }
 
 
 def _python_lacks(name: str, path: str) -> dict:
@@ -167,11 +179,11 @@ def _python_lacks(name: str, path: str) -> dict:
 
 
 def failing_cases(mutant: dict) -> list[str]:
-    """Every case (``path/name``) whose answer the fault changes. A fault
-    made in the Python reference is judged against the Python's own answers."""
+    """Every case (``path/name``) whose expected answer the fault changes:
+    the cases a port with the fault must fail on."""
     out = []
     for path in mutant["paths"]:
-        expected, _ = referee_compare.expected_answers(path, python=mutant["kind"] == REFERENCE)
+        expected, _ = referee_compare.expected_answers(path)
         out += sorted({f"{path}/{d[0]}" for d in referee_compare.compare(answers_with(mutant, path), expected)})
     return out
 
