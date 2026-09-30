@@ -4,9 +4,10 @@
     python tests/parity/referee/referee_python.py --out answers.json
     python tests/parity/referee/referee_python.py --golden
 
-``--golden`` rewrites ``golden/*.json`` (the reference's answers, exactly),
-then ``intended_differences.json`` and ``mutants.json``, which are worked out
-from them.
+``--golden`` rewrites ``golden/*.json`` (the answers the port must give: the
+reference's, except where it departs from the rules), then
+``intended_differences.json`` (each such departure, with what the Python
+answers) and ``mutants.json``.
 
 The answer formats are the harness's contract with every implementation and
 are specified in ``README.md``. Each case runs on a fresh node, at the
@@ -27,7 +28,6 @@ from referee_common import NOW, Node
 
 from agent_action_capsule.verify import verify as verify_capsule  # noqa: E402
 from capsule_emit.evidence_request import Refusal, verify_refusal_offline  # noqa: E402
-from capsule_emit.numbers import float_to_str  # noqa: E402
 from capsule_emit.signing import verify_capsule_signature  # noqa: E402
 
 import adjudication_delivery  # noqa: E402
@@ -118,7 +118,6 @@ def run_adjudicate(case: dict) -> list[dict]:
             "status": twin_adjudicator.status_for_verdict(outcome.verdict) if outcome.verdict else None,
             "no_verdict_reason": outcome.no_verdict_reason,
             "divergence_index": outcome.divergence_index,
-            "margin": float_to_str(outcome.margin, field="margin"),
             "prefix_digest": outcome.prefix_digest,
             "twin_owner_distinct": outcome.twin_owner_distinct,
             "weights_digest": outcome.weights_digest,
@@ -314,41 +313,167 @@ PATH_DIFFERENCES = {
     },
 }
 
-SEALED_FIELDS_RULE = "rule 5 (the tier is sealed in the verdict)"
-SEALED_FIELDS_WHY = (
-    "The port seals two more facts in every verdict: the tier the referee was asked from (selection_tier, as the "
-    "requester states it in the adjudicate request) and the model hash the twins served (model_hash, from their "
-    "signed records), so a reader can see both. The Python referee ignores the request's selection_tier and seals "
-    "neither."
-)
 TIER_NOT_AS_ASKED = "tier_not_as_asked"
 
+# --- the answers the port must give -------------------------------------------
+#
+# The golden answers are the Python's, except where the Python departs from
+# the rules. Each function below states one such departure: given a case and
+# the Python's answers, it returns the answers the rule requires. A case it
+# changes is listed in ``intended_differences.json`` with the Python's answers.
 
-def _with_sealed_fields(case: dict, golden: list[dict]) -> list[dict] | None:
-    """The golden answers of a service case with the two new sealed facts in
-    every verdict, or ``None`` when the case issues no verdict."""
-    tier = model = None
-    for request in case["requests"]:
+
+def _refused(reason: str) -> dict:
+    return {"refused": reason, "status": None, "signed_by_node": True,
+            "request_digest_is_body_sha256": True, "issued_at_is_now": True}
+
+
+def _no_threshold(case: dict, answers: list[dict]) -> list[dict]:
+    answer = dict(answers[0])
+    if "error" not in answer and answer["verdict"] in ("corroborated", "inconclusive") and not answer["referee_called"]:
+        answer["verdict"] = "corroborated" if answer["divergence_index"] is None else "inconclusive"
+        answer["status"] = twin_adjudicator.status_for_verdict(answer["verdict"])
+    return [answer]
+
+
+def _unknown_weights(case: dict, answers: list[dict]) -> list[dict]:
+    answer = answers[0]
+    known = all(half["weights_digest"] for half in case["halves"])
+    compared = "error" not in answer and answer["no_verdict_reason"] not in ("no_requester_transcript", "not_comparable")
+    if known or not compared:
+        return answers
+    return [
+        {
+            "verdict": None, "status": None, "no_verdict_reason": "not_comparable", "divergence_index": None,
+            "prefix_digest": None, "twin_owner_distinct": None, "weights_digest": None, "referee_called": False,
+        }
+    ]
+
+
+def _tier(request: dict):
+    """The request's ``selection_tier`` when it is 1 or 2, else ``None``."""
+    try:
+        parsed = json.loads(body_bytes(request))
+    except ValueError:
+        return None
+    if not referee_service.is_adjudicate_request(parsed):
+        return None
+    tier = parsed.get("selection_tier")
+    return tier if type(tier) is int and tier in (1, 2) else None
+
+
+def _tier_required(case: dict, answers: list[dict]) -> list[dict]:
+    out = []
+    for request, answer in zip(case["requests"], answers):
         try:
-            parsed = json.loads(body_bytes(request))
-            capsule = parsed["halves"][0]["capsule"]
-            model = capsule["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"]["serving_provenance"]["model"][
-                "identity_hash"
-            ]
-            tier = parsed["selection_tier"]
-            break
-        except (ValueError, KeyError, TypeError, IndexError):
-            continue
-    answers = copy.deepcopy(golden)
-    changed = False
+            adjudicate = referee_service.is_adjudicate_request(json.loads(body_bytes(request)))
+        except ValueError:
+            adjudicate = False
+        if adjudicate and _tier(request) is None:
+            answer = {"reply": _refused(referee_service.REASON_REQUEST_MALFORMED), "appended": {}}
+        out.append(answer)
+    return out
+
+
+def _sealed_block(case: dict, answers: list[dict]) -> list[dict]:
+    tiers = [t for t in map(_tier, case["requests"]) if t is not None]
+    answers = copy.deepcopy(answers)
     for answer in answers:
         summaries = [answer["reply"].get("verdict_capsule")]
         summaries += [line["verdict_capsule"] for line in answer["appended"].get(ISSUED, [])]
-        for summary in summaries:
-            if summary:
-                summary["block"].update(selection_tier=tier, model_hash=model)
-                changed = True
-    return answers if changed else None
+        for summary in filter(None, summaries):
+            block = summary["block"]
+            halves = json.loads(body_bytes(case["requests"][0]))["halves"]
+            model = halves[0]["capsule"]["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"][
+                "serving_provenance"]["model"]["identity_hash"]
+            block.update(selection_tier=tiers[0], model_hash=model)
+            block.pop("margin", None)
+            block.pop("margin_tau", None)
+    return answers
+
+
+def _tier_as_asked(case: dict, answers: list[dict]) -> list[dict]:
+    if case["name"] != "hold_refuses_tier_other_than_asked":
+        return answers
+    return [
+        {
+            "reply": _refused(TIER_NOT_AS_ASKED),
+            "appended": {
+                "rejected-record-pushes.jsonl": [
+                    {"capsule_id": None, "claimed_sender_peer_id": case["pushes"][0]["sender"],
+                     "reason": TIER_NOT_AS_ASKED, "rejected_at": NOW}
+                ]
+            },
+        }
+    ]
+
+
+def _referee_signed(case: dict, answers: list[dict]) -> list[dict]:
+    if case["rule"] != "only_referee_signs":
+        return answers
+    return [{"reply": _refused("verdict_unverified"), "held": False}]
+
+
+#: Per path: ``(rule, why, the answers the rule requires)``, applied in order.
+PORT_RULES = {
+    "adjudicate": [
+        (
+            "rule 1 (trigger: any difference is a difference)",
+            "There is no similarity threshold. The Python rules 'corroborated' without a referee when at least "
+            "nine tenths of the longer answer's words match before the first difference, and 'inconclusive' "
+            "when the share is lower, even for two answers with no words at all. The rule: answers with the same "
+            "words are corroborated; any difference at temperature 0 on the same weights means the twins differ, "
+            "which without a referee is inconclusive. The port reports and seals no match share.",
+            _no_threshold,
+        ),
+        (
+            "rule 3 (eligibility: the same model hash and weights digest)",
+            "Twins are compared only when both name the same weights digest. The Python compares, and lets a "
+            "referee contradict one of them, when either half names no weights. The rule: not comparable, never a "
+            "contradiction.",
+            _unknown_weights,
+        ),
+    ],
+    "service": [
+        (
+            "rule 5 (the tier is sealed in the verdict)",
+            "The tier is part of an adjudicate request: the referee seals what the requester states. A request "
+            "with no selection_tier, or one that is not 1 or 2, is refused request_malformed. The Python ignores "
+            "the member and answers.",
+            _tier_required,
+        ),
+        (
+            "rule 5 (the tier is sealed in the verdict) and rule 1 (no similarity threshold)",
+            "The port seals two more facts in every verdict: the tier the referee was asked from (selection_tier, "
+            "as the requester states it in the adjudicate request) and the model hash the twins served "
+            "(model_hash, from their signed records), so a reader can see both. It seals no match share: the "
+            "Python's margin and margin_tau are dropped. The Python referee ignores the request's selection_tier "
+            "and seals neither of the two facts.",
+            _sealed_block,
+        ),
+    ],
+    "hold": [
+        (
+            "rule 5 (the tier is sealed in the verdict)",
+            "The tier is the requester's own statement, sealed by the referee. A verdict that seals a different "
+            "tier than this node asked at is not the verdict it asked for, so the port refuses it "
+            f"({TIER_NOT_AS_ASKED}) and holds nothing. The Python door does not read the tier and holds it.",
+            _tier_as_asked,
+        ),
+    ],
+    "deliver": [
+        (
+            "rule 7 (only the referee signs)",
+            "Only the referee signs a verdict. The Python route holds any well-formed record that carries a "
+            "ruling block and cites one of this node's records, whoever sealed it, so a requester (or anyone) "
+            "could still hand a node a ruling no referee signed. The port holds a ruling only when the referee "
+            "it names signed it with its announced key, the same check the record-push door makes, and "
+            "refuses this one verdict_unverified.",
+            _referee_signed,
+        ),
+    ],
+    "classify": [],
+}
 
 
 def python_selection_asks_outside() -> list[str]:
@@ -372,58 +497,37 @@ def python_selection_asks_outside() -> list[str]:
     return shown
 
 
-def _refused(reason: str) -> dict:
-    return {"refused": reason, "status": None, "signed_by_node": True,
-            "request_digest_is_body_sha256": True, "issued_at_is_now": True}
-
-
-def intended_differences(golden: dict[str, dict]) -> dict:
+def derive(python: dict[str, dict]) -> tuple[dict[str, dict], dict]:
+    """``(golden documents by path, the intended-differences document)`` from
+    the Python's answers."""
+    golden: dict[str, dict] = {}
     cases: dict[str, dict] = {}
-    for case in common.corpus("service")["cases"]:
-        answers = _with_sealed_fields(case, golden["service"]["answers"][case["name"]])
-        if answers is not None:
-            cases[f"service/{case['name']}"] = {"rule": SEALED_FIELDS_RULE, "why": SEALED_FIELDS_WHY, "answers": answers}
-
-    push = common.corpus("hold")["cases"]
-    tier_case = next(c for c in push if c["name"] == "hold_refuses_tier_other_than_asked")
-    cases["hold/hold_refuses_tier_other_than_asked"] = {
-        "rule": SEALED_FIELDS_RULE,
-        "why": (
-            "The tier is the requester's own statement, sealed by the referee. A verdict that seals a different "
-            "tier than this node asked at is not the verdict it asked for, so the port refuses it "
-            f"({TIER_NOT_AS_ASKED}) and holds nothing. The Python door does not read the tier and holds it."
-        ),
-        "answers": [
-            {
-                "reply": _refused(TIER_NOT_AS_ASKED),
-                "appended": {
-                    "rejected-record-pushes.jsonl": [
-                        {"capsule_id": None, "claimed_sender_peer_id": tier_case["pushes"][0]["sender"],
-                         "reason": TIER_NOT_AS_ASKED, "rejected_at": NOW}
-                    ]
-                },
-            }
-        ],
-    }
-    for name in ("verdict_the_referee_did_not_sign", "verdict_signed_by_the_requester"):
-        cases[f"deliver/{name}"] = {
-            "rule": "rule 7 (only the referee signs)",
-            "why": (
-                "Only the referee signs a verdict. The Python route holds any well-formed record that carries a "
-                "ruling block and cites one of this node's records, whoever sealed it, so a requester (or anyone) "
-                "could still hand a node a ruling no referee signed. The port holds a ruling only when the referee "
-                "it names signed it with its announced key, the same check the record-push door makes, and "
-                "refuses this one verdict_unverified."
-            ),
-            "answers": [{"reply": _refused("verdict_unverified"), "held": False}],
-        }
-    return {
+    for path in common.PYTHON_PATHS:
+        answers: dict[str, list] = {}
+        for case in common.corpus(path)["cases"]:
+            theirs = python[path]["answers"][case["name"]]
+            ours, applied = theirs, []
+            for rule, why, required in PORT_RULES[path]:
+                changed = required(case, ours)
+                if common.canonical(changed) != common.canonical(ours):
+                    ours = changed
+                    applied.append((rule, why))
+            answers[case["name"]] = ours
+            if applied:
+                cases[f"{path}/{case['name']}"] = {
+                    "rule": "; ".join(rule for rule, _ in applied),
+                    "why": " ".join(why for _, why in applied),
+                    "python_answers": theirs,
+                }
+        golden[path] = {"v": 1, "path": path, "source": "the Python reference, and the rules where it departs",
+                        "answers": answers}
+    intended = {
         "v": 1,
         "note": (
-            "Where the port is held to a different answer than the Python reference gives. 'paths' lists whole "
-            "paths where a Python module exists but does not follow the rules, so nothing it answers is golden; "
-            "'cases' lists single cases of a Python-judged path, each with the answer the port must give. The "
-            "golden files stay exactly what the Python reference answers."
+            "Where the Python reference does not follow the rules, so its answer is not the golden answer. "
+            "'paths' lists whole paths where a Python module exists but is not the reference: every answer there "
+            "is stated from the rules. 'cases' lists single cases of a Python-judged path: the golden file holds "
+            "the answer the rule requires, and 'python_answers' records what the Python answers instead."
         ),
         "paths": {
             **PATH_DIFFERENCES,
@@ -431,10 +535,7 @@ def intended_differences(golden: dict[str, dict]) -> dict:
         },
         "cases": cases,
     }
-
-
-def write_intended(doc: dict) -> None:
-    common.parity_format.write(common.INTENDED, doc, "cases")
+    return golden, intended
 
 
 def main() -> None:
@@ -449,11 +550,11 @@ def main() -> None:
         args.out.write_text(json.dumps(doc, sort_keys=True) + "\n", encoding="utf-8")
         print(f"wrote {sum(len(a['answers']) for a in answers.values())} case answers to {args.out}")
         return
-    for path, doc in answers.items():
+    golden, intended = derive(answers)
+    for path, doc in golden.items():
         common.write_answers(common.GOLDEN_DIR / f"{path}.json", doc)
         print(f"wrote {len(doc['answers']):3d} answers to golden/{path}.json")
-    intended = intended_differences(answers)
-    write_intended(intended)
+    common.parity_format.write(common.INTENDED, intended, "cases")
     print(f"wrote {len(intended['cases'])} case and {len(intended['paths'])} path differences to {common.INTENDED.name}")
     # Imported here: referee_mutants runs this module's paths with a fault.
     import referee_mutants

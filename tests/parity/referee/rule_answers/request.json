@@ -16,6 +16,7 @@
   "on_when_setting_true": [{"counts_against":"node-b","referee_calls":1,"row":{"referee":"node-c","state":"adjudicated","tier":1,"verdict":"contradicted:node-b"}}],
   "one_sampled_half_calls_nothing": [{"counts_against":null,"referee_calls":0,"row":{"because":"sampled","reason":"not_comparable","state":"not_adjudicated"}}],
   "operator_asking_again_uses_the_one_call": [{"counts_against":null,"referee_calls":0,"row":{"reason":"no_eligible_referee","state":"not_adjudicated"}},{"counts_against":"node-b","referee_calls":1,"row":{"referee":"node-c","state":"adjudicated","tier":1,"verdict":"contradicted:node-b"}},{"counts_against":"node-b","referee_calls":0,"row":{"referee":"node-c","state":"adjudicated","tier":1,"verdict":"contradicted:node-b"}}],
+  "operator_asks_again_after_no_answer": [{"counts_against":null,"referee_calls":1,"row":{"reason":"referee_unreachable","state":"not_adjudicated"}},{"counts_against":null,"referee_calls":0,"row":{"reason":"referee_unreachable","state":"not_adjudicated"}}],
   "operator_asks_again_and_still_nobody": [{"counts_against":null,"referee_calls":0,"row":{"reason":"no_eligible_referee","state":"not_adjudicated"}},{"counts_against":null,"referee_calls":0,"row":{"reason":"no_eligible_referee","state":"not_adjudicated"}}],
   "operator_off_calls_nothing_and_says_so": [{"counts_against":null,"referee_calls":0,"row":{"reason":"off","state":"not_adjudicated"}}],
   "referee_agrees_with_b": [{"counts_against":"node-a","referee_calls":1,"row":{"referee":"node-c","state":"adjudicated","tier":1,"verdict":"contradicted:node-a"}}],
@@ -25,9 +26,11 @@
   "referee_unreachable": [{"counts_against":null,"referee_calls":1,"row":{"reason":"referee_unreachable","state":"not_adjudicated"}}],
   "referee_without_plugin": [{"counts_against":null,"referee_calls":1,"row":{"reason":"referee_cannot_sign","state":"not_adjudicated"}}],
   "resealed_halves_same_exchange_still_capped": [{"counts_against":"node-b","referee_calls":1,"row":{"referee":"node-c","state":"adjudicated","tier":1,"verdict":"contradicted:node-b"}},{"counts_against":"node-b","referee_calls":0,"row":{"referee":"node-c","state":"adjudicated","tier":1,"verdict":"contradicted:node-b"}}],
+  "same_bracket_and_request_other_nodes_is_another_pair": [{"counts_against":"node-b","referee_calls":1,"row":{"referee":"node-c","state":"adjudicated","tier":1,"verdict":"contradicted:node-b"}},{"counts_against":"node-d","referee_calls":1,"row":{"referee":"node-c","state":"adjudicated","tier":1,"verdict":"contradicted:node-d"}}],
   "sampled_pair_calls_nothing": [{"counts_against":null,"referee_calls":0,"row":{"because":"sampled","reason":"not_comparable","state":"not_adjudicated"}}],
   "second_call_same_pair_refused": [{"counts_against":"node-b","referee_calls":1,"row":{"referee":"node-c","state":"adjudicated","tier":1,"verdict":"contradicted:node-b"}},{"counts_against":"node-b","referee_calls":0,"row":{"referee":"node-c","state":"adjudicated","tier":1,"verdict":"contradicted:node-b"}}],
   "twins_with_different_digests_not_adjudicated": [{"counts_against":null,"referee_calls":0,"row":{"because":"weights_differ","reason":"not_comparable","state":"not_adjudicated"}}],
+  "twins_with_different_model_hash_not_adjudicated": [{"counts_against":null,"referee_calls":0,"row":{"because":"model_hash_differs","reason":"not_comparable","state":"not_adjudicated"}}],
   "twins_with_unknown_digest_not_adjudicated": [{"counts_against":null,"referee_calls":0,"row":{"because":"weights_unknown","reason":"not_comparable","state":"not_adjudicated"}}]
  }
 }

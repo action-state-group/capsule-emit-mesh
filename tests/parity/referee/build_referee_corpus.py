@@ -261,6 +261,10 @@ def build_adjudicate() -> list[dict]:
     b = served(B, FLIPPED, "weights-unknown-b", weights=None)
     add("weights_unknown_on_one_side", "eligibility", "one half names no weights: compared, no shared digest claimed",
         half(a, HONEST, node=A), half(b, FLIPPED, node=B, weights=None), answer(HONEST))
+    a = served(A, HONEST, "weights-unknown-both-a", weights=None)
+    b = served(B, FLIPPED, "weights-unknown-both-b", weights=None)
+    add("weights_unknown_on_both_sides", "eligibility", "neither half names its weights: not comparable",
+        half(a, HONEST, node=A, weights=None), half(b, FLIPPED, node=B, weights=None), answer(HONEST))
     a = served(A, HONEST, "same-node-1")
     b = served(A, FLIPPED, "same-node-2")
     add("both_halves_from_one_node", "eligibility", "one node's two answers are not a twin pair",
@@ -337,6 +341,13 @@ def build_service() -> list[dict]:
     a, b, c = exchange("no_bracket")
     add("no_bracket_id", "verdict", "a request with no bracket id seals none",
         [adjudicate_request(a, HONEST, b, FLIPPED, bracket=None)], own=[c])
+
+    a, b, c = exchange("tier_missing")
+    add("selection_tier_missing", "tier_sealed", "an adjudicate request that states no tier is refused",
+        [adjudicate_request(a, HONEST, b, FLIPPED, tier=None)], own=[c])
+    a, b, c = exchange("tier_range")
+    add("selection_tier_out_of_range", "tier_sealed", "a tier that is not 1 or 2 (0, 3, a string, a boolean) is refused",
+        [adjudicate_request(a, HONEST, b, FLIPPED, tier=t) for t in (0, 3, "1", True)], own=[c])
 
     a, b, c = exchange("repeat")
     again = adjudicate_request(a, HONEST, b, FLIPPED)
@@ -429,6 +440,8 @@ def issued_verdict(label, *, text_a=HONEST, text_b=FLIPPED, referee_text=HONEST,
     block = dict(block_of(reply["verdict_capsule"]))
     block["selection_tier"] = tier
     block["model_hash"] = MODEL_X
+    # The port seals no match share.
+    del block["margin"], block["margin_tau"]
     return verdict_capsule(block, label, referee), half_a, half_b
 
 
@@ -842,6 +855,14 @@ def build_select() -> tuple[list[dict], dict]:
         "the bar lapsed 10 days ago and the node was corroborated 5 days ago: first tier again",
         twins + [peer(C), peer(D)], [fact(C, "contradicted", 40), fact(C, "corroborated", 5)],
         expect=(1, [C]), provisional=True)
+    add("corroborated_one_second_before_the_lapse_is_tier2", "tiers",
+        "the bar lapses 10 days before the clock; a corroboration one second earlier does not count",
+        twins + [peer(C), peer(D)], [fact(C, "contradicted", 40), fact(C, "corroborated", 10, seconds=1)],
+        expect=(2, [C, D]), provisional=True)
+    add("corroborated_one_second_after_the_lapse_is_tier1", "tiers",
+        "a corroboration one second after the lapse counts",
+        twins + [peer(C), peer(D)], [fact(C, "contradicted", 40), fact(C, "corroborated", 10, seconds=-1)],
+        expect=(1, [C]), provisional=True)
     return names(cases), answers
 
 
@@ -938,6 +959,19 @@ def build_request() -> tuple[list[dict], dict]:
     add("another_request_is_another_pair", "cap", "the same bracket id over another request is a new pair",
         [attempt(), attempt(pair(request_digest=REQ_OTHER))], [(1, contradicts_b, B), (1, contradicts_b, B)])
 
+    add("same_bracket_and_request_other_nodes_is_another_pair", "cap",
+        "the two node ids are part of what makes a pair: another twin under the same bracket and request is asked about",
+        [attempt(), attempt(pair(twin(A, HONEST), twin(D, FLIPPED)), selection={"tier": 1, "asked": C})],
+        [(1, contradicts_b, B), (1, adjudicated(f"contradicted:{D}"), D)])
+    add("operator_asks_again_after_no_answer", "cap",
+        "a call was made and not answered: the pair's one call is used, and the operator asking again makes no other",
+        [attempt(reanswer=None), attempt(manual=True)],
+        [(1, not_adjudicated("referee_unreachable"), None), (0, not_adjudicated("referee_unreachable"), None)])
+    add("twins_with_different_model_hash_not_adjudicated", "trigger",
+        "twins under different model hashes are not compared, whatever their weights digest says",
+        [attempt(pair(twin(A, HONEST), twin(B, FLIPPED, model=MODEL_Y)))],
+        [(0, not_adjudicated("not_comparable", "model_hash_differs"), None)])
+
     add("no_eligible_referee", "never_contradicted", "nobody eligible: not adjudicated, and nobody is contradicted",
         [attempt(selection={"not_adjudicated": "no_eligible_referee"})],
         [(0, not_adjudicated("no_eligible_referee"), None)])
@@ -971,7 +1005,7 @@ def build_request() -> tuple[list[dict], dict]:
 
 
 def verdict_record(kind: str, label: str, verdict: str, referee: str, days: int, *, nodes=(A, B), model=MODEL_X,
-                   halves: list[str] | None = None) -> dict:
+                   halves: list[str] | None = None, seconds: int = 0) -> dict:
     """A record on this node's own chain. ``kind`` is ``adjudication_received``
     (a verdict delivered to it), ``adjudication_issued`` (one it signed as
     referee) or ``adjudication`` (a bare ruling block: not a verified verdict)."""
@@ -983,7 +1017,7 @@ def verdict_record(kind: str, label: str, verdict: str, referee: str, days: int,
         "halves": halves or pair_of(label),
         "half_node_ids": list(nodes),
         "model_hash": model,
-        at: ago(days),
+        at: ago(days, seconds),
     }}}}
 
 
@@ -1062,6 +1096,14 @@ def build_counts() -> tuple[list[dict], dict]:
     add("window_default_is_30", "stop_rule", "with the window unset it is 30 days",
         [step(*zip(contradiction("v1", C, 20)))],
         [(both([vid("v1")]), {"after": 1, "window_days": 30}, [blocked_outcome(A, ["v1"])], [vid("v1")])], after="1")
+
+    n1 = {"after": 1, "window_days": 7}
+    add("one_second_inside_the_window_counts", "stop_rule", "a contradiction seven days less one second old is in a seven-day window",
+        [step(*zip(contradiction("v1", C, 7, seconds=-1)))],
+        [(both([vid("v1")]), n1, [blocked_outcome(A, ["v1"])], [vid("v1")])], after="1", window="7")
+    add("one_second_outside_the_window_does_not_count", "stop_rule",
+        "a contradiction seven days and one second old is outside a seven-day window",
+        [step(*zip(contradiction("v1", C, 7, seconds=1)))], [(both([vid("v1")]), n1, [], [])], after="1", window="7")
 
     one = [contradiction(f"r{n}", C, 0) for n in range(1, 5)]
     ids_one = [vid(f"r{n}") for n in range(1, 5)]

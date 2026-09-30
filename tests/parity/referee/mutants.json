@@ -22,6 +22,7 @@
    "fault": "The pick is made over every eligible node, not inside the best non-empty tier.",
    "feature": "mutant-referee-select-mixes-tiers",
    "must_fail": [
+    "select/corroborated_one_second_after_the_lapse_is_tier1",
     "select/lapsed_contradiction_corroborated_after_the_lapse_is_tier1",
     "select/pick_uniform_within_best_tier",
     "select/tier1_before_tier2"
@@ -33,11 +34,61 @@
    "port_module": "referee/select.rs"
   },
   {
+   "fault": "A node this node stopped routing to is treated as eligible.",
+   "feature": "mutant-referee-select-ignores-blocked",
+   "must_fail": [
+    "select/blocked_node_never_picked",
+    "select/ineligible_tier1_node_leaves_tier2",
+    "select/one_eligible_among_the_rest"
+   ],
+   "name": "select-ignores-blocked",
+   "paths": [
+    "select"
+   ],
+   "port_module": "referee/select.rs"
+  },
+  {
+   "fault": "The referee signs the verdict without the tier it was asked from.",
+   "feature": "mutant-referee-verdict-tier-not-sealed",
+   "must_fail": [
+    "service/answer_matches_neither",
+    "service/contradicts_a",
+    "service/contradicts_b",
+    "service/no_bracket_id",
+    "service/repeat_returns_the_issued_verdict",
+    "service/repeat_with_the_halves_swapped",
+    "service/sampled_twins",
+    "service/tier_two_referee",
+    "service/twins_agree_answer_unused",
+    "service/twins_agree_no_answer",
+    "service/weights_differ",
+    "service/weights_unknown"
+   ],
+   "name": "verdict-tier-not-sealed",
+   "paths": [
+    "service"
+   ],
+   "port_module": "referee/service.rs"
+  },
+  {
+   "fault": "A verdict is held whatever tier it seals, without comparing it with the tier this node asked at.",
+   "feature": "mutant-referee-hold-ignores-the-asked-tier",
+   "must_fail": [
+    "hold/hold_refuses_tier_other_than_asked"
+   ],
+   "name": "hold-ignores-the-asked-tier",
+   "paths": [
+    "hold"
+   ],
+   "port_module": "referee/hold.rs"
+  },
+  {
    "fault": "The one-call cap is not checked: a pair already asked about is asked about again.",
    "feature": "mutant-referee-request-asks-twice-per-pair",
    "must_fail": [
     "request/another_referee_is_not_tried",
     "request/operator_asking_again_uses_the_one_call",
+    "request/operator_asks_again_after_no_answer",
     "request/referee_timeout_is_not_retried",
     "request/resealed_halves_same_exchange_still_capped",
     "request/second_call_same_pair_refused"
@@ -72,12 +123,15 @@
     "adjudicate/referee_matches_a",
     "adjudicate/referee_matches_b",
     "adjudicate/temperature_zero_is_compared",
+    "adjudicate/weights_unknown_on_both_sides",
     "adjudicate/weights_unknown_on_one_side",
     "service/contradicts_a",
     "service/contradicts_b",
     "service/no_bracket_id",
     "service/repeat_returns_the_issued_verdict",
     "service/repeat_with_the_halves_swapped",
+    "service/selection_tier_missing",
+    "service/selection_tier_out_of_range",
     "service/tier_two_referee"
    ],
    "name": "verdict-names-wrong-twin",

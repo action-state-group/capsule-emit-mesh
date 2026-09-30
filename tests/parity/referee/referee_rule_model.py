@@ -27,6 +27,7 @@ CONTRADICTED_PREFIX = "contradicted:"
 
 MUTANT_SKIPS_BAR_WINDOW = "select-skips-bar-window"
 MUTANT_MIXES_TIERS = "select-mixes-tiers"
+MUTANT_IGNORES_BLOCKED = "select-ignores-blocked"
 MUTANT_ASKS_TWICE = "request-asks-twice-per-pair"
 MUTANT_SKIPS_ASKED_GATE = "counts-skip-asked-gate"
 
@@ -60,7 +61,7 @@ def select(case: dict, mutant: str | None = None) -> list[dict]:
         and p["weights_digest"] == case["weights_digest"]
         and p["node_id"] not in case["twins"]
         and p["announced_key"]
-        and not p["blocked"]
+        and (not p["blocked"] or mutant == MUTANT_IGNORES_BLOCKED)
         and not barred(p["node_id"])
     ]
 
@@ -135,6 +136,8 @@ def _decide(setting, attempt: dict) -> tuple[int, dict]:
         return 0, _not_adjudicated("host_does_not_mark_twins")
     if any(h["temperature"] > 0 for h in halves):
         return 0, _not_adjudicated("not_comparable", "sampled")
+    if halves[0]["model_hash"] != halves[1]["model_hash"]:
+        return 0, _not_adjudicated("not_comparable", "model_hash_differs")
     digests = [h["weights_digest"] for h in halves]
     if not all(digests):
         return 0, _not_adjudicated("not_comparable", "weights_unknown")

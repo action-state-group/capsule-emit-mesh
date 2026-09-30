@@ -1,6 +1,6 @@
 {
- "implementation": "python-reference",
  "path": "classify",
+ "source": "the Python reference, and the rules where it departs",
  "v": 1,
  "answers": {
   "ack_refusal_about_the_other_twin": [{"ack_refusals":0,"contradicted":0,"corroborated":1,"inconclusive":0,"not_comparable":0}],

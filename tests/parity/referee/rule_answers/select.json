@@ -11,6 +11,8 @@
   "cold_picked_only_when_tier1_empty": [{"asked":["node-c","node-d"],"not_adjudicated":null,"pool":["node-c","node-d"],"tier":2}],
   "contradiction_for_x_never_picked_for_x": [{"asked":["node-d"],"not_adjudicated":null,"pool":["node-d"],"tier":2}],
   "contradiction_for_x_ok_for_y": [{"asked":["node-c","node-d"],"not_adjudicated":null,"pool":["node-c","node-d"],"tier":2}],
+  "corroborated_one_second_after_the_lapse_is_tier1": [{"asked":["node-c"],"not_adjudicated":null,"pool":["node-c"],"tier":1}],
+  "corroborated_one_second_before_the_lapse_is_tier2": [{"asked":["node-c","node-d"],"not_adjudicated":null,"pool":["node-c","node-d"],"tier":2}],
   "corroboration_inside_d_does_not_clear": [{"asked":[],"not_adjudicated":"no_eligible_referee","pool":[],"tier":null}],
   "corroboration_is_per_model": [{"asked":["node-c","node-d"],"not_adjudicated":null,"pool":["node-c","node-d"],"tier":2}],
   "d_default_is_30": [{"asked":[],"not_adjudicated":"no_eligible_referee","pool":[],"tier":null}],

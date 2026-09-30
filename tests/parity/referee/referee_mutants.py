@@ -8,11 +8,14 @@ on the cases listed in ``mutants.json`` (``must_fail``).
 The lists are not guesses. Each fault is made here, in the Python that gives
 the expected answers (the reference for a Python-judged path, the rule model
 for a rule-stated one), the corpus is run, and the cases whose answers change
-are the list. ``test_referee_parity.py`` re-runs this and requires
-``mutants.json`` to say the same.
+are the list. Where the fault is something the Python itself lacks (the
+sealed tier), the port's golden answers are taken and that one thing removed.
+``test_referee_parity.py`` re-runs this and requires ``mutants.json`` to say
+the same.
 """
 from __future__ import annotations
 
+import copy
 import json
 from contextlib import contextmanager
 
@@ -24,6 +27,9 @@ import referee_rule_model as model
 RULE = "rule"
 #: A fault made by patching the Python reference.
 REFERENCE = "reference"
+#: A fault the Python itself has: the port's answers, less the one thing the
+#: rule adds to the Python's.
+PYTHON_LACKS = "python_lacks"
 
 MUTANTS = [
     {
@@ -41,6 +47,30 @@ MUTANTS = [
         "paths": ["select"],
         "port_module": "referee/select.rs",
         "fault": "The pick is made over every eligible node, not inside the best non-empty tier.",
+    },
+    {
+        "name": model.MUTANT_IGNORES_BLOCKED,
+        "feature": "mutant-referee-select-ignores-blocked",
+        "kind": RULE,
+        "paths": ["select"],
+        "port_module": "referee/select.rs",
+        "fault": "A node this node stopped routing to is treated as eligible.",
+    },
+    {
+        "name": "verdict-tier-not-sealed",
+        "feature": "mutant-referee-verdict-tier-not-sealed",
+        "kind": PYTHON_LACKS,
+        "paths": ["service"],
+        "port_module": "referee/service.rs",
+        "fault": "The referee signs the verdict without the tier it was asked from.",
+    },
+    {
+        "name": "hold-ignores-the-asked-tier",
+        "feature": "mutant-referee-hold-ignores-the-asked-tier",
+        "kind": PYTHON_LACKS,
+        "paths": ["hold"],
+        "port_module": "referee/hold.rs",
+        "fault": "A verdict is held whatever tier it seals, without comparing it with the tier this node asked at.",
     },
     {
         "name": model.MUTANT_ASKS_TWICE,
@@ -111,17 +141,37 @@ def answers_with(mutant: dict, path: str) -> dict:
     """``path``'s answers from an implementation with ``mutant``'s fault."""
     if mutant["kind"] == RULE:
         return {case["name"]: model.MODELS[path](case, mutant["name"]) for case in common.corpus(path)["cases"]}
+    if mutant["kind"] == PYTHON_LACKS:
+        return _python_lacks(mutant["name"], path)
     import referee_python
 
     with _reference_fault(mutant["name"]):
         return referee_python.run(path)["answers"]
 
 
+def _python_lacks(name: str, path: str) -> dict:
+    golden = copy.deepcopy(common.read(common.expected_file(path))["answers"])
+    if name == "verdict-tier-not-sealed":
+        for answers in golden.values():
+            for answer in answers:
+                summaries = [answer["reply"].get("verdict_capsule")]
+                summaries += [line["verdict_capsule"] for line in answer["appended"].get("issued-adjudications.jsonl", [])]
+                for summary in filter(None, summaries):
+                    del summary["block"]["selection_tier"]
+    elif name == "hold-ignores-the-asked-tier":
+        case = "hold_refuses_tier_other_than_asked"
+        golden[case] = common.read(common.INTENDED)["cases"][f"hold/{case}"]["python_answers"]
+    else:
+        raise ValueError(f"unknown mutant {name!r}")
+    return golden
+
+
 def failing_cases(mutant: dict) -> list[str]:
-    """Every case (``path/name``) whose answer the fault changes."""
+    """Every case (``path/name``) whose answer the fault changes. A fault
+    made in the Python reference is judged against the Python's own answers."""
     out = []
     for path in mutant["paths"]:
-        expected = common.read(common.expected_file(path))["answers"]
+        expected, _ = referee_compare.expected_answers(path, python=mutant["kind"] == REFERENCE)
         out += sorted({f"{path}/{d[0]}" for d in referee_compare.compare(answers_with(mutant, path), expected)})
     return out
 

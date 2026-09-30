@@ -2,13 +2,16 @@
 """The referee parity harness checks itself.
 
 1. The Python reference, run over the corpus now, gives exactly the golden
-   answers, and the rule model gives exactly the rule-stated answers.
+   answers, except in the listed cases where it departs from the rules (there
+   it gives exactly the answers recorded for it), and the rule model gives
+   exactly the rule-stated answers.
 2. The comparison catches a single changed answer in any case, and reports it
    against that case and no other.
 3. The corpus reaches every rule it is meant to hold, every refusal the
    referee paths can give, and every "not adjudicated" reason.
-4. Each intended difference names a real case, names the rule that governs,
-   and really differs from the Python's answer.
+4. Each case where the Python departs names the rule that governs, and the
+   golden answer there is the rule's, not the Python's. No golden answer
+   carries a match share or a threshold.
 5. Each implementation mutant is caught by exactly the cases ``mutants.json``
    lists, and never by none.
 6. The corpus is what the builder builds, holds public material only, names
@@ -66,8 +69,9 @@ def python_answers() -> dict:
 
 
 @pytest.mark.parametrize("path", common.PYTHON_PATHS)
-def test_the_python_reference_gives_exactly_the_golden_answers(python_answers, path):
-    diffs = referee_compare.compare(python_answers[path]["answers"], EXPECTED[path])
+def test_the_python_reference_gives_the_golden_answers_except_where_it_departs(python_answers, path):
+    its_own, _ = referee_compare.expected_answers(path, python=True)
+    diffs = referee_compare.compare(python_answers[path]["answers"], its_own)
     assert diffs == [], "\n".join(f"{n}[{i}]: expected {w}\n got {g}" for n, i, w, g in diffs[:5])
 
 
@@ -115,12 +119,14 @@ def _answers_file(tmp_path, name: str, paths: dict) -> Path:
 
 
 def test_the_command_line_passes_the_expected_answers_and_fails_on_one_change(tmp_path, capsys):
-    golden = _answers_file(tmp_path, "golden.json", EXPECTED)
-    assert referee_compare.main([str(golden), "--golden-only", "--table"]) == 0
-    # Held to the intended differences, the Python's own answers no longer pass.
-    assert referee_compare.main([str(golden)]) == 1
-    port = {path: referee_compare.expected_answers(path)[0] for path in common.PATHS}
-    assert referee_compare.main([str(_answers_file(tmp_path, "port.json", port))]) == 0
+    port = _answers_file(tmp_path, "port.json", EXPECTED)
+    assert referee_compare.main([str(port), "--table"]) == 0
+    # The Python's own answers pass only as the Python's: it departs from the rules.
+    its_own = {path: referee_compare.expected_answers(path, python=True)[0] for path in common.PYTHON_PATHS}
+    python = _answers_file(tmp_path, "python.json", its_own)
+    assert referee_compare.main([str(python), "--python"]) == 0
+    assert referee_compare.main([str(python)]) == 1
+    assert referee_compare.main([str(port), "--python"]) == 1
     capsys.readouterr()
 
     one_path = {"request": copy.deepcopy(EXPECTED["request"])}
@@ -190,8 +196,10 @@ def test_the_corpus_reaches_every_ruling_and_every_refusal_of_the_referee():
 
     held = {r["refused"] for r in _replies("hold") if "refused" in r}
     door = {getattr(adjudication_hold, n) for n in dir(adjudication_hold) if n.startswith("REASON_")}
-    assert held == door | {"request_malformed", "policy_decline", "signature_unverified"}
-    assert {r["refused"] for r in _replies("deliver") if "refused" in r} == {"request_malformed", "policy_decline"}
+    assert held == door | {"request_malformed", "policy_decline", "signature_unverified", "tier_not_as_asked"}
+    assert {r["refused"] for r in _replies("deliver") if "refused" in r} == {
+        "request_malformed", "policy_decline", "verdict_unverified",
+    }
 
 
 def test_a_refusal_is_signed_by_the_node_and_holds_nothing():
@@ -275,6 +283,8 @@ def test_the_provisional_cases_are_the_three_unconfirmed_defaults_and_no_others(
         "select/lapsed_contradiction_with_earlier_corroboration_is_tier2",
         "select/lapsed_contradiction_with_older_corroboration_is_tier2",
         "select/lapsed_contradiction_corroborated_after_the_lapse_is_tier1",
+        "select/corroborated_one_second_before_the_lapse_is_tier2",
+        "select/corroborated_one_second_after_the_lapse_is_tier1",
         "request/no_eligible_referee_is_not_retried_on_its_own",
         "request/no_eligible_referee_then_the_operator_asks_again",
         "request/operator_asks_again_and_still_nobody",
@@ -300,12 +310,40 @@ def test_each_intended_difference_is_explained_and_real(key):
     entry = INTENDED["cases"][key]
     path, _, name = key.partition("/")
     assert key in KEYS and path in common.PYTHON_PATHS
-    assert len(entry["why"]) > 40 and entry["rule"]
-    assert common.canonical(entry["answers"]) != common.canonical(EXPECTED[path][name])
+    assert len(entry["why"]) > 40 and entry["rule"].startswith("rule ")
+    assert common.canonical(entry["python_answers"]) != common.canonical(EXPECTED[path][name])
 
 
-def test_the_intended_differences_are_what_the_golden_answers_give(python_answers):
-    assert referee_python.intended_differences(python_answers) == INTENDED
+def test_the_golden_answers_and_the_differences_are_what_the_rules_make_of_the_python(python_answers):
+    golden, intended = referee_python.derive(python_answers)
+    assert intended == INTENDED
+    for path in common.PYTHON_PATHS:
+        assert golden[path]["answers"] == EXPECTED[path], path
+
+
+def test_no_golden_answer_encodes_the_pythons_text_threshold():
+    """Any difference at temperature 0 on the same weights is a difference:
+    no answer reports a match share, and no sealed block carries one."""
+    for path in common.PYTHON_PATHS:
+        text = common.expected_file(path).read_text(encoding="utf-8")
+        assert "margin" not in text, path
+    for name, answers in EXPECTED["adjudicate"].items():
+        answer = answers[0]
+        if answer.get("verdict") == "corroborated":
+            assert answer["divergence_index"] is None, name
+    assert EXPECTED["adjudicate"]["differ_last_word_no_referee"][0]["verdict"] == "inconclusive"
+    assert EXPECTED["adjudicate"]["both_answers_empty"][0]["verdict"] == "corroborated"
+
+
+def test_twins_without_a_shared_weights_digest_are_never_contradicted():
+    for case in CORPUS["adjudicate"]["cases"]:
+        digests = [half["weights_digest"] for half in case["halves"]]
+        if all(digests) and digests[0] == digests[1]:
+            continue
+        answer = EXPECTED["adjudicate"][case["name"]][0]
+        assert "error" in answer or answer["verdict"] is None, case["name"]
+    for name in ("weights_unknown_on_one_side", "weights_unknown_on_both_sides"):
+        assert EXPECTED["adjudicate"][name][0]["no_verdict_reason"] == "not_comparable"
 
 
 def test_each_path_difference_names_its_rule_and_the_python_it_replaces():
@@ -320,14 +358,17 @@ def test_each_path_difference_names_its_rule_and_the_python_it_replaces():
 def test_the_sealed_tier_is_the_one_the_requester_stated():
     """Rule 5: tier 1 and tier 2 are both sealed, as asked."""
     tiers = set()
-    for key, entry in INTENDED["cases"].items():
-        if not key.startswith("service/"):
-            continue
-        for answer in entry["answers"]:
+    for name, answers in EXPECTED["service"].items():
+        for answer in answers:
+            if "verdict" not in answer["reply"]:
+                continue
             block = answer["reply"]["verdict_capsule"]["block"]
-            assert block["model_hash"] and block["selection_tier"] in (1, 2), key
+            assert block["model_hash"] and block["selection_tier"] in (1, 2), name
             tiers.add(block["selection_tier"])
     assert tiers == {1, 2}
+    # A request that states no tier, or one outside 1 and 2, gets no verdict.
+    for name in ("selection_tier_missing", "selection_tier_out_of_range"):
+        assert {a["reply"]["refused"] for a in EXPECTED["service"][name]} == {"request_malformed"}, name
 
 
 # --- 5. the implementation mutants -----------------------------------------------
@@ -345,11 +386,14 @@ def test_each_mutant_is_caught_by_cases_of_its_own_path(mutant):
     assert mutant["feature"].startswith("mutant-referee-") and len(mutant["fault"]) > 20
 
 
-def test_the_bar_window_and_the_one_call_cap_each_have_a_mutant():
+def test_the_rules_each_have_a_mutant():
     by_name = {m["name"]: m["must_fail"] for m in MUTANTS["mutants"]}
     assert "select/barred_inside_d" in by_name["select-skips-bar-window"]
     assert "request/second_call_same_pair_refused" in by_name["request-asks-twice-per-pair"]
-    assert len(by_name) >= 2
+    # An eligibility check other than the bar, and the sealed tier on both sides.
+    assert "select/blocked_node_never_picked" in by_name["select-ignores-blocked"]
+    assert "service/tier_two_referee" in by_name["verdict-tier-not-sealed"]
+    assert by_name["hold-ignores-the-asked-tier"] == ["hold/hold_refuses_tier_other_than_asked"]
 
 
 # --- 6. the corpus itself ---------------------------------------------------------

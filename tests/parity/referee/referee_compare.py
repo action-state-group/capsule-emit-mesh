@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Compare an implementation's referee answers with the expected answers.
 
-    python tests/parity/referee/referee_compare.py ANSWERS.json [--golden-only] [--table]
+    python tests/parity/referee/referee_compare.py ANSWERS.json [--python] [--table]
 
 ANSWERS holds one or more paths (``{"paths": {"<path>": {"<case>": [...]}}}``);
 only the paths it holds are compared, so a port can be run one path at a time.
 
-The expected answer for a case is the Python reference's (``golden/``) or,
-for a path with no Python reference, the rule's (``rule_answers/``), except
-for the cases listed in ``intended_differences.json``: there the port is held
-to the listed answer instead. Pass ``--golden-only`` when ANSWERS is the
-Python reference's own output.
+The expected answer for a case is the golden answer (``golden/``) or, for a
+path with no Python reference, the rule's (``rule_answers/``). The Python
+reference departs from the rules in the cases ``intended_differences.json``
+lists; pass ``--python`` when ANSWERS is the Python reference's own output,
+to hold it to what the Python answers there.
 
 Exit 0 when every case matches, 1 when any answer differs (each difference
 is printed), 2 when ANSWERS does not describe this corpus.
@@ -25,21 +25,21 @@ import referee_common as common
 from referee_common import canonical
 
 
-def expected_answers(path: str, golden_only: bool = False) -> tuple[dict, set[str]]:
-    """``(expected answers by case, the cases held to an intended difference)``."""
+def expected_answers(path: str, python: bool = False) -> tuple[dict, set[str]]:
+    """``(expected answers by case, the cases where the Python departs)``.
+    With ``python``, the answers the Python reference itself gives."""
     expected = dict(common.read(common.expected_file(path))["answers"])
-    intended: set[str] = set()
-    if golden_only:
-        return expected, intended
+    departs: set[str] = set()
     for key, entry in common.read(common.INTENDED)["cases"].items():
         entry_path, _, name = key.partition("/")
         if entry_path != path:
             continue
         if name not in expected:
             raise SystemExit(f"intended_differences.json names unknown case {key!r}")
-        expected[name] = entry["answers"]
-        intended.add(name)
-    return expected, intended
+        departs.add(name)
+        if python:
+            expected[name] = entry["python_answers"]
+    return expected, departs
 
 
 def compare(answers: dict, expected: dict) -> list[tuple[str, int, str, str]]:
@@ -90,7 +90,7 @@ def table(path: str, answers: dict, expected: dict, intended: set[str], implemen
         want, got = expected.get(name, []), answers.get(name, [])
         mark = "yes" if canonical(want) == canonical(got) else "**NO**"
         if name in intended:
-            mark += " (intended difference)"
+            mark += " (the Python departs)"
         rows.append(f"| {name} | {' · '.join(map(label, want))} | {' · '.join(map(label, got))} | {mark} |")
     return "\n".join(rows)
 
@@ -98,7 +98,7 @@ def table(path: str, answers: dict, expected: dict, intended: set[str], implemen
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("answers", type=Path)
-    parser.add_argument("--golden-only", action="store_true", help="hold ANSWERS to the Python reference's answers alone")
+    parser.add_argument("--python", action="store_true", help="ANSWERS is the Python reference's own output")
     parser.add_argument("--table", action="store_true", help="print the per-case table (markdown)")
     args = parser.parse_args(argv)
 
@@ -112,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     for path in common.PATHS:
         if path not in paths:
             continue
-        expected, intended = expected_answers(path, args.golden_only)
+        expected, intended = expected_answers(path, args.python)
         diffs = compare(paths[path], expected)
         if args.table:
             print(table(path, paths[path], expected, intended, implementation))
@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"DIFFERS {path}/{where}\n  expected {want}\n  got      {have}", file=sys.stderr)
         total = len(expected)
         print(f"referee parity, {path}: {total - len({d[0] for d in diffs})}/{total} cases match"
-              f" ({len(intended)} intended differences)")
+              f" ({len(intended)} where the Python departs)")
         failed = failed or bool(diffs)
     return 1 if failed else 0
 
