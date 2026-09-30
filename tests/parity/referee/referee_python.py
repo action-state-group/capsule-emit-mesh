@@ -497,6 +497,18 @@ def python_selection_asks_outside() -> list[str]:
     return shown
 
 
+def port_answers(path: str, case: dict, theirs: list[dict]) -> tuple[list[dict], list[tuple[str, str]]]:
+    """``(the answers the rules require for case, the (rule, why) of each
+    departure applied)``, given the Python's answers ``theirs``."""
+    ours, applied = theirs, []
+    for rule, why, required in PORT_RULES[path]:
+        changed = required(case, ours)
+        if common.canonical(changed) != common.canonical(ours):
+            ours = changed
+            applied.append((rule, why))
+    return ours, applied
+
+
 def derive(python: dict[str, dict]) -> tuple[dict[str, dict], dict]:
     """``(golden documents by path, the intended-differences document)`` from
     the Python's answers."""
@@ -506,12 +518,7 @@ def derive(python: dict[str, dict]) -> tuple[dict[str, dict], dict]:
         answers: dict[str, list] = {}
         for case in common.corpus(path)["cases"]:
             theirs = python[path]["answers"][case["name"]]
-            ours, applied = theirs, []
-            for rule, why, required in PORT_RULES[path]:
-                changed = required(case, ours)
-                if common.canonical(changed) != common.canonical(ours):
-                    ours = changed
-                    applied.append((rule, why))
+            ours, applied = port_answers(path, case, theirs)
             answers[case["name"]] = ours
             if applied:
                 cases[f"{path}/{case['name']}"] = {
