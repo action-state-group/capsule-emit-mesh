@@ -1,5 +1,11 @@
 # QUICKSTART — you have Mesh-LLM, now what?
 
+> **Frozen: research + test harness. The Mesh-LLM plugin now lives at
+> https://github.com/Mesh-LLM/capsule-emit-mesh-plugin** — to install the plugin
+> on a node, follow its
+> [INSTALL.md](https://github.com/Mesh-LLM/capsule-emit-mesh-plugin/blob/main/INSTALL.md).
+> The walkthrough below exercises this repository's research code and test harness.
+
 Four independent things you can test today, in order of effort:
 
 1. **Ask -> verify** — a coordinator asks a stage node "what did you do?" and checks the
