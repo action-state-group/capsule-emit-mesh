@@ -710,8 +710,9 @@ def build_classify() -> list[dict]:
 # --- select: who is eligible, which tier, which node --------------------------
 
 
-def ago(days: int) -> str:
-    at = datetime.fromisoformat(NOW.replace("Z", "+00:00")) - timedelta(days=days)
+def ago(days: int, seconds: int = 0) -> str:
+    """The time ``days`` days and ``seconds`` seconds before the corpus clock."""
+    at = datetime.fromisoformat(NOW.replace("Z", "+00:00")) - timedelta(days=days, seconds=seconds)
     return at.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -720,8 +721,9 @@ def peer(node: str, *, model: str = MODEL_X, weights: str = W1, key: bool = True
             "announced_key": key_id(node) if key else None, "blocked": blocked}
 
 
-def fact(node: str, bucket: str, days: int, *, model: str = MODEL_X, issued_days: int | None = None) -> dict:
-    out = {"node_id": node, "model_hash": model, "bucket": bucket, "recorded_at": ago(days)}
+def fact(node: str, bucket: str, days: int, *, model: str = MODEL_X, issued_days: int | None = None,
+         seconds: int = 0) -> dict:
+    out = {"node_id": node, "model_hash": model, "bucket": bucket, "recorded_at": ago(days, seconds)}
     if issued_days is not None:
         out["referee_issued_at"] = ago(issued_days)
     return out
@@ -729,12 +731,16 @@ def fact(node: str, bucket: str, days: int, *, model: str = MODEL_X, issued_days
 
 NOBODY = {"tier": None, "pool": [], "asked": [], "not_adjudicated": "no_eligible_referee"}
 
+#: On a case whose answer follows a default that no ruling has confirmed yet.
+PROVISIONAL = "pending a ruling"
+
 
 def build_select() -> tuple[list[dict], dict]:
     cases: list[dict] = []
     answers: dict = {}
 
-    def add(name, rule, covers, peers, verdicts=(), *, expect, model=MODEL_X, weights=W1, bar_days=None, draws=None):
+    def add(name, rule, covers, peers, verdicts=(), *, expect, model=MODEL_X, weights=W1, bar_days=None, draws=None,
+            provisional=False):
         """``expect`` is ``NOBODY`` or ``(tier, pool)`` or ``(tier, pool, asked)``.
         The draws default to every index of the pool, so every member is
         asked once."""
@@ -748,6 +754,7 @@ def build_select() -> tuple[list[dict], dict]:
             "name": name, "rule": rule, "covers": covers, "now": NOW, "referee_bar_days": bar_days,
             "model_hash": model, "weights_digest": weights, "twins": [A, B],
             "peers": peers, "verdicts": list(verdicts), "draws": draws,
+            **({"provisional": PROVISIONAL} if provisional else {}),
         })
         answers[name] = [answer]
 
@@ -811,6 +818,21 @@ def build_select() -> tuple[list[dict], dict]:
         twins + [peer(C)], [fact(C, "contradicted", 2, issued_days=60)], expect=NOBODY)
     add("other_rulings_do_not_bar", "bar_window", "only a contradiction bars a node",
         twins + [peer(C)], [fact(C, "inconclusive", 2), fact(C, "not_comparable", 2)], expect=(2, [C]))
+
+    # Provisional: the window is half-open. A node is barred while the clock
+    # is before the contradiction's time plus D, and eligible from exactly D.
+    add("barred_one_second_inside_d", "bar_window", "a contradiction D days less one second ago still bars",
+        twins + [peer(C)], [fact(C, "contradicted", 30, seconds=-1)], expect=NOBODY, provisional=True)
+    add("eligible_at_exactly_d", "bar_window", "a contradiction exactly D days ago no longer bars",
+        twins + [peer(C)], [fact(C, "contradicted", 30)], expect=(2, [C]), provisional=True)
+    add("eligible_one_second_after_d", "bar_window", "a contradiction D days and one second ago no longer bars",
+        twins + [peer(C)], [fact(C, "contradicted", 30, seconds=1)], expect=(2, [C]), provisional=True)
+    # Provisional: once the window has lapsed the contradiction affects neither
+    # eligibility nor the tier.
+    add("lapsed_contradiction_with_corroboration_is_tier1", "tiers",
+        "after the window, a corroborated node is in the first tier again, whatever it was contradicted on before",
+        twins + [peer(C), peer(D)], [fact(C, "contradicted", 40), fact(C, "corroborated", 35)],
+        expect=(1, [C]), provisional=True)
     return names(cases), answers
 
 
@@ -827,8 +849,9 @@ def pair(half_a: dict | None = None, half_b: dict | None = None, *, bracket=BRAC
             "halves": [half_a or twin(A, HONEST), half_b or twin(B, FLIPPED)]}
 
 
-def attempt(the_pair: dict | None = None, *, selection=None, reanswer=HONEST, signs=True) -> dict:
-    return {"pair": the_pair or pair(), "selection": selection or {"tier": 1, "asked": C},
+def attempt(the_pair: dict | None = None, *, selection=None, reanswer=HONEST, signs=True, manual=False) -> dict:
+    """``manual``: the operator asked again, rather than the pair being seen."""
+    return {"pair": the_pair or pair(), "manual": manual, "selection": selection or {"tier": 1, "asked": C},
             "referee": {"reanswer": reanswer, "signs": signs}}
 
 
@@ -847,11 +870,12 @@ def build_request() -> tuple[list[dict], dict]:
     cases: list[dict] = []
     answers: dict = {}
 
-    def add(name, rule, covers, attempts, expect, *, setting=None):
+    def add(name, rule, covers, attempts, expect, *, setting=None, provisional=False):
         """``expect`` is one ``(referee calls, row, node a contradiction
         counts against)`` per attempt."""
         cases.append({"name": name, "rule": rule, "covers": covers,
-                      "adjudicate_differing_twins": setting, "attempts": attempts})
+                      "adjudicate_differing_twins": setting, "attempts": attempts,
+                      **({"provisional": PROVISIONAL} if provisional else {})})
         answers[name] = [{"referee_calls": calls, "row": row, "counts_against": against} for calls, row, against in expect]
 
     contradicts_b = adjudicated(f"contradicted:{B}")
@@ -912,6 +936,25 @@ def build_request() -> tuple[list[dict], dict]:
         [attempt(signs=False)], [(1, not_adjudicated("referee_cannot_sign"), None)])
     add("referee_unreachable", "never_contradicted", "the referee did not answer",
         [attempt(reanswer=None)], [(1, not_adjudicated("referee_unreachable"), None)])
+
+    # Provisional: a pair that found nobody eligible made no call, so its one
+    # call is not used up. It is not looked at again on its own; the operator
+    # asking again is, once somebody is eligible.
+    nobody = {"not_adjudicated": "no_eligible_referee"}
+    no_referee = (0, not_adjudicated("no_eligible_referee"), None)
+    add("no_eligible_referee_is_not_retried_on_its_own", "cap",
+        "the pair seen again, with a referee now eligible: nothing is asked and the row stays",
+        [attempt(selection=nobody), attempt()], [no_referee, no_referee], provisional=True)
+    add("no_eligible_referee_then_the_operator_asks_again", "cap",
+        "the operator asks again once a referee is eligible: the pair's one call is made",
+        [attempt(selection=nobody), attempt(manual=True)], [no_referee, (1, contradicts_b, B)], provisional=True)
+    add("operator_asks_again_and_still_nobody", "cap",
+        "the operator asks again with nobody eligible yet: no call, and the row stays",
+        [attempt(selection=nobody), attempt(selection=nobody, manual=True)], [no_referee, no_referee], provisional=True)
+    add("operator_asking_again_uses_the_one_call", "cap",
+        "after the operator's re-ask made the call, the pair is never asked about again",
+        [attempt(selection=nobody), attempt(manual=True), attempt(manual=True)],
+        [no_referee, (1, contradicts_b, B), (0, contradicts_b, B)], provisional=True)
     return names(cases), answers
 
 

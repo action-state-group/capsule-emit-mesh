@@ -264,6 +264,32 @@ def test_every_pick_is_inside_the_best_tier_and_every_member_can_be_picked():
     assert len(uniform["pool"]) >= 3 and set(uniform["asked"]) == set(uniform["pool"])
 
 
+def test_the_provisional_cases_are_the_three_unconfirmed_defaults():
+    """Cases whose answer follows a default no ruling has confirmed yet are
+    marked, so a later ruling is a small edit; nothing else is marked."""
+    marked = {f"{path}/{case['name']}" for path in common.PATHS for case in CORPUS[path]["cases"] if "provisional" in case}
+    assert marked == {
+        "select/barred_one_second_inside_d",
+        "select/eligible_at_exactly_d",
+        "select/eligible_one_second_after_d",
+        "select/lapsed_contradiction_with_corroboration_is_tier1",
+        "request/no_eligible_referee_is_not_retried_on_its_own",
+        "request/no_eligible_referee_then_the_operator_asks_again",
+        "request/operator_asks_again_and_still_nobody",
+        "request/operator_asking_again_uses_the_one_call",
+    }
+    # The window is half-open: barred one second inside it, eligible at its end.
+    pools = {name: EXPECTED["select"][name][0]["pool"] for name in EXPECTED["select"]}
+    assert pools["barred_one_second_inside_d"] == [] and pools["eligible_at_exactly_d"] == ["node-c"]
+    # A pair that found nobody eligible is looked at again only when the operator asks.
+    for case in CORPUS["request"]["cases"]:
+        nobody = False
+        for attempt, answer in zip(case["attempts"], EXPECTED["request"][case["name"]]):
+            if nobody and not attempt["manual"]:
+                assert answer["referee_calls"] == 0, case["name"]
+            nobody = answer["row"].get("reason") == "no_eligible_referee"
+
+
 # --- 4. the intended differences -------------------------------------------------
 
 

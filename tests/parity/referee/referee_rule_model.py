@@ -49,7 +49,7 @@ def select(case: dict, mutant: str | None = None) -> list[dict]:
         if mutant == MUTANT_SKIPS_BAR_WINDOW:
             return False
         return any(
-            v["node_id"] == node and v["bucket"] == "contradicted" and since <= _time(v["recorded_at"]) <= now
+            v["node_id"] == node and v["bucket"] == "contradicted" and since < _time(v["recorded_at"]) <= now
             for v in about
         )
 
@@ -149,16 +149,24 @@ def _counts_against(row: dict) -> str | None:
 
 def request(case: dict, mutant: str | None = None) -> list[dict]:
     asked: dict[tuple, dict] = {}
+    # Pairs that found nobody eligible: no call was made, so the cap is not
+    # used up, but only the operator asking again looks for a referee again.
+    nobody: dict[tuple, dict] = {}
     answers = []
     for attempt in case["attempts"]:
         pair = attempt["pair"]
         key = (pair["twin_bracket_id"], pair["request_digest"], tuple(sorted(h["node_id"] for h in pair["halves"])))
         if key in asked and mutant != MUTANT_ASKS_TWICE:
             calls, row = 0, asked[key]
+        elif key in nobody and not attempt["manual"]:
+            calls, row = 0, nobody[key]
         else:
             calls, row = _decide(case["adjudicate_differing_twins"], attempt)
             if calls:
                 asked[key] = row
+                nobody.pop(key, None)
+            elif row.get("reason") == "no_eligible_referee":
+                nobody[key] = row
         answers.append({"referee_calls": calls, "row": row, "counts_against": _counts_against(row)})
     return answers
 

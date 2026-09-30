@@ -47,19 +47,19 @@ tagged with the rule it holds (`rule`) and says what it covers (`covers`).
 | `hold` | a node receives a verdict delivered over record-push | Python: `record_push.handle_record_push` → `adjudication_hold` | `referee/hold.rs` | 33 |
 | `deliver` | a node receives a verdict at `/evidence/deliver` | Python: `adjudication_delivery.handle_delivery` | `referee/hold.rs` | 9 |
 | `classify` | verdicts a node's references hold about it | Python: `ask_history._classify_receipts_for_x` | `referee/verdict_counts.rs` | 22 |
-| `select` | who is eligible, in which tier, and which node is asked | the rules (3, 4) | `referee/select.rs`, `bar.rs` | 24 |
-| `request` | when a referee is asked, and at most once | the rules (1, 2, 6) | `referee/request.rs` | 22 |
+| `select` | who is eligible, in which tier, and which node is asked | the rules (3, 4) | `referee/select.rs`, `bar.rs` | 28 |
+| `request` | when a referee is asked, and at most once | the rules (1, 2, 6) | `referee/request.rs` | 26 |
 | `counts` | the counts on a node's own chain, and the stop-routing rule | the rules (8) | `referee/verdict_counts.rs`, `routing_rule.rs` | 19 |
 
-185 cases, 212 answers. By rule:
+193 cases, 225 answers. By rule:
 
 | Rule | Tag | Cases | Where |
 | --- | --- | --- | --- |
 | 1 trigger | `trigger` | 23 | request 9, adjudicate 11, service 3 |
-| 2 one call per pair | `cap` | 8 | request 6, service 2 |
+| 2 one call per pair | `cap` | 12 | request 10, service 2 |
 | 3 eligibility | `eligibility` | 20 | select 7, adjudicate 5, service 6, request 2 |
-| 3 the bar window | `bar_window` | 10 | select 9, counts 1 |
-| 4 tiers | `tiers` | 8 | select 8 |
+| 3 the bar window | `bar_window` | 13 | select 12, counts 1 |
+| 4 tiers | `tiers` | 9 | select 9 |
 | 5 the tier is sealed | `tier_sealed` | 5 | service 2, hold 3 |
 | 6 never contradicted | `never_contradicted` | 11 | request 5, service 4, adjudicate 1, hold 1 |
 | 7 only the referee signs | `only_referee_signs` | 2 | deliver 2 |
@@ -237,9 +237,8 @@ reach every member of its pool.
 With nobody eligible: `{"tier": null, "pool": [], "asked": [],
 "not_adjudicated": "no_eligible_referee"}`.
 
-No case puts one node in doubt between two conditions of a kind the rules do
-not settle: a node with a lapsed contradiction and a corroboration, or a
-contradiction exactly D days old, appears nowhere.
+The edge of the bar window and a node with a lapsed contradiction are held by
+provisional cases (below).
 
 ### `request`
 
@@ -248,8 +247,9 @@ order on one node. Each attempt is a `pair` (`twin_bracket_id`,
 `request_digest`, two `halves` of `{node_id, capsule_id, text, temperature,
 model_hash, weights_digest}`), the `selection` its selection step returns
 (`{tier, asked}` or `{not_adjudicated}`; the `select` path judges selection),
-and the `referee`: `reanswer` (its re-answer, or `null` when it does not
-answer) and `signs` (whether it can sign a verdict).
+`manual` (`true` when the operator asked again, `false` when the pair was
+simply seen), and the `referee`: `reanswer` (its re-answer, or `null` when it
+does not answer) and `signs` (whether it can sign a verdict).
 
 Answer, per attempt: `referee_calls` (calls this attempt made: 0 or 1), the
 pair's `row`, and `counts_against` (the node a contradiction counts against,
@@ -262,9 +262,8 @@ Reasons: `off`, `host_does_not_mark_twins`, `twins_agree`, `not_comparable`
 (`because`: `sampled`, `weights_differ`, `weights_unknown`),
 `no_eligible_referee`, `referee_cannot_sign`, `referee_unreachable`.
 
-No case gives a pair two reasons at once, and none repeats a pair that found
-no eligible referee (no call was made, and the rules do not say whether it
-may be asked later).
+No case gives a pair two reasons at once. A pair that found no eligible
+referee, seen or asked about again, is held by provisional cases (below).
 
 ### `counts`
 
@@ -294,7 +293,7 @@ answers.
 
 - `select`: `twin_selection.select_referee` weighs network distance, owner,
   hardware and tenure into one number and draws near the top. Rules 3 and 4
-  replace it. The entry lists 14 cases where the Python, given the same
+  replace it. The entry lists 16 cases where the Python, given the same
   peers, asks a node the rules do not allow.
 - `request`: `referee_request.request_verdict` asks whenever it is called: no
   setting, no bracket id, no cap, and an adjudicate request even for twins
@@ -326,6 +325,32 @@ the sealed members `selection_tier` and `model_hash`; the request member
 `host_does_not_mark_twins`, `twins_agree`, `off` and `not_comparable` with
 `because`. Changing one is a corpus change (below), not a port decision.
 
+## Provisional cases
+
+Eight cases hold three defaults that no ruling has confirmed yet. Each is
+marked `"provisional": "pending a ruling"` in the corpus, and the port is
+held to it like any other case. A ruling that differs is a small edit: the
+case's answer in `build_referee_corpus.py`, the matching line of
+`referee_rule_model.py`, and a rebuild.
+
+- **The bar window is half-open.** A node is barred while the clock is before
+  the contradiction's recorded time plus D days, and eligible from exactly D
+  days on. `select/barred_one_second_inside_d`, `select/eligible_at_exactly_d`,
+  `select/eligible_one_second_after_d`.
+- **A lapsed contradiction no longer counts for anything but history.** After
+  the window the node is eligible again, and in tier 1 if it has a
+  corroboration for that model. The contradiction stays in the counts.
+  `select/lapsed_contradiction_with_corroboration_is_tier1`.
+- **A pair that found no eligible referee has not used its one call, and is
+  not retried on its own.** The row stays "not adjudicated: no eligible
+  referee" when the pair is seen again, even with a referee now eligible. The
+  operator asking again (`manual`) looks for a referee again, and that call,
+  once made, is the pair's one call.
+  `request/no_eligible_referee_is_not_retried_on_its_own`,
+  `request/no_eligible_referee_then_the_operator_asks_again`,
+  `request/operator_asks_again_and_still_nobody`,
+  `request/operator_asking_again_uses_the_one_call`.
+
 ## Mutants
 
 Two kinds, as in the record-push harness.
@@ -340,9 +365,9 @@ listed must be among those it reports.
 
 | Mutant | Fault | Cases that catch it |
 | --- | --- | --- |
-| `select-skips-bar-window` | a node with a contradiction inside the bar window is treated as eligible | 6 in `select` |
-| `select-mixes-tiers` | the pick is made over every eligible node, not inside the best tier | 2 in `select` |
-| `request-asks-twice-per-pair` | the one-call cap is not checked | 4 in `request` |
+| `select-skips-bar-window` | a node with a contradiction inside the bar window is treated as eligible | 7 in `select` |
+| `select-mixes-tiers` | the pick is made over every eligible node, not inside the best tier | 3 in `select` |
+| `request-asks-twice-per-pair` | the one-call cap is not checked | 5 in `request` |
 | `counts-skip-asked-gate` | a received verdict counts whether or not this node asked for it | 2 in `counts` |
 | `verdict-names-wrong-twin` | the ruling names the twin the referee agreed with | 8 in `adjudicate`, 6 in `service` |
 | `hold-skips-asked-check` | every delivered verdict is treated as one this node asked for | 8 in `hold` |
