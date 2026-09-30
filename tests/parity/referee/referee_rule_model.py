@@ -63,7 +63,23 @@ def select(case: dict, mutant: str | None = None) -> list[dict]:
         and not p["blocked"]
         and not barred(p["node_id"])
     ]
-    tier1 = sorted(n for n in eligible if any(v["node_id"] == n and v["bucket"] == "corroborated" for v in about))
+
+    def corroborated(node: str) -> bool:
+        """A corroboration for this model counts toward the first tier only
+        when it is dated after the node's last bar lapsed: a node that was
+        contradicted starts again with no history."""
+        lapses = [
+            _time(v["recorded_at"]) + timedelta(days=days)
+            for v in about
+            if v["node_id"] == node and v["bucket"] == "contradicted"
+        ]
+        lapsed = max(lapses, default=None)
+        return any(
+            v["node_id"] == node and v["bucket"] == "corroborated" and (lapsed is None or _time(v["recorded_at"]) > lapsed)
+            for v in about
+        )
+
+    tier1 = sorted(n for n in eligible if corroborated(n))
     tier2 = sorted(n for n in eligible if n not in tier1)
     if mutant == MUTANT_MIXES_TIERS:
         tier, pool = (1 if tier1 else 2), sorted(tier1 + tier2)

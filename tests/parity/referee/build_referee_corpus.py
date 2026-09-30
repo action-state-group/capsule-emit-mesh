@@ -827,11 +827,20 @@ def build_select() -> tuple[list[dict], dict]:
         twins + [peer(C)], [fact(C, "contradicted", 30)], expect=(2, [C]), provisional=True)
     add("eligible_one_second_after_d", "bar_window", "a contradiction D days and one second ago no longer bars",
         twins + [peer(C)], [fact(C, "contradicted", 30, seconds=1)], expect=(2, [C]), provisional=True)
-    # Provisional: once the window has lapsed the contradiction affects neither
-    # eligibility nor the tier.
-    add("lapsed_contradiction_with_corroboration_is_tier1", "tiers",
-        "after the window, a corroborated node is in the first tier again, whatever it was contradicted on before",
+    # Provisional: a node whose bar has lapsed is eligible again with no
+    # history. It is in the second tier until it has a corroboration dated
+    # after the lapse; an earlier corroboration does not count.
+    add("lapsed_contradiction_with_earlier_corroboration_is_tier2", "tiers",
+        "a corroboration dated inside the window does not put the node back in the first tier",
         twins + [peer(C), peer(D)], [fact(C, "contradicted", 40), fact(C, "corroborated", 35)],
+        expect=(2, [C, D]), provisional=True)
+    add("lapsed_contradiction_with_older_corroboration_is_tier2", "tiers",
+        "a corroboration from before the contradiction does not count either",
+        twins + [peer(C), peer(D)], [fact(C, "corroborated", 60), fact(C, "contradicted", 40)],
+        expect=(2, [C, D]), provisional=True)
+    add("lapsed_contradiction_corroborated_after_the_lapse_is_tier1", "tiers",
+        "the bar lapsed 10 days ago and the node was corroborated 5 days ago: first tier again",
+        twins + [peer(C), peer(D)], [fact(C, "contradicted", 40), fact(C, "corroborated", 5)],
         expect=(1, [C]), provisional=True)
     return names(cases), answers
 

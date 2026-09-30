@@ -47,11 +47,11 @@ tagged with the rule it holds (`rule`) and says what it covers (`covers`).
 | `hold` | a node receives a verdict delivered over record-push | Python: `record_push.handle_record_push` → `adjudication_hold` | `referee/hold.rs` | 33 |
 | `deliver` | a node receives a verdict at `/evidence/deliver` | Python: `adjudication_delivery.handle_delivery` | `referee/hold.rs` | 9 |
 | `classify` | verdicts a node's references hold about it | Python: `ask_history._classify_receipts_for_x` | `referee/verdict_counts.rs` | 22 |
-| `select` | who is eligible, in which tier, and which node is asked | the rules (3, 4) | `referee/select.rs`, `bar.rs` | 28 |
+| `select` | who is eligible, in which tier, and which node is asked | the rules (3, 4) | `referee/select.rs`, `bar.rs` | 30 |
 | `request` | when a referee is asked, and at most once | the rules (1, 2, 6) | `referee/request.rs` | 26 |
 | `counts` | the counts on a node's own chain, and the stop-routing rule | the rules (8) | `referee/verdict_counts.rs`, `routing_rule.rs` | 19 |
 
-193 cases, 225 answers. By rule:
+195 cases, 227 answers. By rule:
 
 | Rule | Tag | Cases | Where |
 | --- | --- | --- | --- |
@@ -59,7 +59,7 @@ tagged with the rule it holds (`rule`) and says what it covers (`covers`).
 | 2 one call per pair | `cap` | 12 | request 10, service 2 |
 | 3 eligibility | `eligibility` | 20 | select 7, adjudicate 5, service 6, request 2 |
 | 3 the bar window | `bar_window` | 13 | select 12, counts 1 |
-| 4 tiers | `tiers` | 9 | select 9 |
+| 4 tiers | `tiers` | 11 | select 11 |
 | 5 the tier is sealed | `tier_sealed` | 5 | service 2, hold 3 |
 | 6 never contradicted | `never_contradicted` | 11 | request 5, service 4, adjudicate 1, hold 1 |
 | 7 only the referee signs | `only_referee_signs` | 2 | deliver 2 |
@@ -327,7 +327,7 @@ the sealed members `selection_tier` and `model_hash`; the request member
 
 ## Provisional cases
 
-Eight cases hold three defaults that no ruling has confirmed yet. Each is
+Ten cases hold three defaults that no ruling has confirmed yet. Each is
 marked `"provisional": "pending a ruling"` in the corpus, and the port is
 held to it like any other case. A ruling that differs is a small edit: the
 case's answer in `build_referee_corpus.py`, the matching line of
@@ -337,10 +337,13 @@ case's answer in `build_referee_corpus.py`, the matching line of
   the contradiction's recorded time plus D days, and eligible from exactly D
   days on. `select/barred_one_second_inside_d`, `select/eligible_at_exactly_d`,
   `select/eligible_one_second_after_d`.
-- **A lapsed contradiction no longer counts for anything but history.** After
-  the window the node is eligible again, and in tier 1 if it has a
-  corroboration for that model. The contradiction stays in the counts.
-  `select/lapsed_contradiction_with_corroboration_is_tier1`.
+- **A node whose bar has lapsed starts again with no history.** It is
+  eligible, and in tier 2 until it has a corroboration for that model dated
+  after the lapse; a corroboration from inside the window, or from before the
+  contradiction, does not count. The contradiction stays in the counts.
+  `select/lapsed_contradiction_with_earlier_corroboration_is_tier2`,
+  `select/lapsed_contradiction_with_older_corroboration_is_tier2`,
+  `select/lapsed_contradiction_corroborated_after_the_lapse_is_tier1`.
 - **A pair that found no eligible referee has not used its one call, and is
   not retried on its own.** The row stays "not adjudicated: no eligible
   referee" when the pair is seen again, even with a referee now eligible. The

@@ -22,7 +22,7 @@
    "fault": "The pick is made over every eligible node, not inside the best non-empty tier.",
    "feature": "mutant-referee-select-mixes-tiers",
    "must_fail": [
-    "select/lapsed_contradiction_with_corroboration_is_tier1",
+    "select/lapsed_contradiction_corroborated_after_the_lapse_is_tier1",
     "select/pick_uniform_within_best_tier",
     "select/tier1_before_tier2"
    ],

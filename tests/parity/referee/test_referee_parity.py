@@ -264,7 +264,7 @@ def test_every_pick_is_inside_the_best_tier_and_every_member_can_be_picked():
     assert len(uniform["pool"]) >= 3 and set(uniform["asked"]) == set(uniform["pool"])
 
 
-def test_the_provisional_cases_are_the_three_unconfirmed_defaults():
+def test_the_provisional_cases_are_the_three_unconfirmed_defaults_and_no_others():
     """Cases whose answer follows a default no ruling has confirmed yet are
     marked, so a later ruling is a small edit; nothing else is marked."""
     marked = {f"{path}/{case['name']}" for path in common.PATHS for case in CORPUS[path]["cases"] if "provisional" in case}
@@ -272,7 +272,9 @@ def test_the_provisional_cases_are_the_three_unconfirmed_defaults():
         "select/barred_one_second_inside_d",
         "select/eligible_at_exactly_d",
         "select/eligible_one_second_after_d",
-        "select/lapsed_contradiction_with_corroboration_is_tier1",
+        "select/lapsed_contradiction_with_earlier_corroboration_is_tier2",
+        "select/lapsed_contradiction_with_older_corroboration_is_tier2",
+        "select/lapsed_contradiction_corroborated_after_the_lapse_is_tier1",
         "request/no_eligible_referee_is_not_retried_on_its_own",
         "request/no_eligible_referee_then_the_operator_asks_again",
         "request/operator_asks_again_and_still_nobody",
