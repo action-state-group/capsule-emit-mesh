@@ -124,7 +124,9 @@ Standards this builds on: **RFC 8785** (JCS canonical JSON), **RFC 9052/9053** (
   lists. A real **consistency proof** chains each checkpoint from the previous size.
 - **Does not prove:** that anyone *else* saw it. A node could still, in principle, sign
   two divergent checkpoints for different audiences — until it's registered with a
-  witness (Link 7), which is what makes equivocation visible.
+  witness (Link 7), which is what makes equivocation visible. A "witness" is
+  a SCITT Transparency Service registering checkpoint statements under a consistency
+  Registration Policy (RFC 9943).
 
 ## Link 7 — Witness registration → the receipt (tamper-evidence, non-equivocation)
 

@@ -6,6 +6,10 @@ threat model and assurance levels."*
 
 Steven Mih · 2026-08-16 · offered for discussion, revision, or re-homing.
 
+> **Terminology.** A "witness" in this document is a SCITT Transparency Service registering
+> checkpoint statements under a consistency Registration Policy
+> ([RFC 9943](https://www.rfc-editor.org/rfc/rfc9943)).
+
 > **Revision 2026-08-17.** Ground-truth correction pass against a full read of the current
 > `README.md`, `MESHES.md`, `NODE_REP.md`, and issue #1331 (all fetched 2026-08-17). Six narrow
 > corrections: C7 changed from "Not built" to "Partly built" with reason codes named; the C-series
