@@ -16,7 +16,8 @@ It deliberately leaves out two things:
   the Python door. The Python departs from the draft in places, and the draft
   is what counts there.
 - **A referee's verdict delivered through the same door** (`adjudication_hold`).
-  That moves with the referee.
+  That moves with the referee, and is held by the referee corpus in
+  [`referee/`](referee/README.md).
 
 ## Files
 
