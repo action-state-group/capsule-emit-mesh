@@ -50,6 +50,9 @@ verified green** — four grades read straight off that stage's own disclosed by
 | `log_integrity` | A checkpoint record the node chose to disclose in `inclusion_proof` (`checkpointing.describe_witness_state`) | unwitnessed < self-checkpointed < independently witnessed |
 | `freshness` | The record's own committed `timestamp`, bucketed against wall-clock age | "self-reported, not witnessed" |
 
+A "witness" is a SCITT Transparency Service registering checkpoint statements under a
+consistency Registration Policy ([RFC 9943](https://www.rfc-editor.org/rfc/rfc9943)).
+
 A `GAP` (present but not disclosed to this verifier) or `FAIL` (tampered / wrong hop) stage is
 **not graded further** — dressing up an unresolved hole or a caught forgery with grades would be
 exactly the false-green failure mode this tool exists to catch. The headline (`ALL GREEN` /

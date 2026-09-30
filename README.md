@@ -31,6 +31,10 @@ model (step 1) alongside it.
 >    receipt), with the RFCs.
 > 4. [**TRUST-MODEL.md**](docs/TRUST-MODEL.md) — the full threat model, assurance
 >    classes, and per-role questions (§2.2–2.5).
+>
+> A "witness", here and in those documents, is a SCITT Transparency Service registering
+> checkpoint statements under a consistency Registration Policy
+> ([RFC 9943](https://www.rfc-editor.org/rfc/rfc9943)).
 
 ## Install
 
