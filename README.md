@@ -1,5 +1,12 @@
 # capsule-emit-mesh
 
+> **Frozen: research + test harness.** The plugin now lives at
+> [Mesh-LLM/capsule-emit-mesh-plugin](https://github.com/Mesh-LLM/capsule-emit-mesh-plugin);
+> new plugin work, issues and releases go there. This repository stays as the
+> research record and as the plugin's manual pre-release gate: the test
+> harness, the four-machine runs and the adversarial suite are kept here and
+> run before a plugin release.
+
 > **Already running Mesh-LLM and just want to test this?** [QUICKSTART.md](QUICKSTART.md) —
 > `pip install`, then ask a node "what did you do?" and verify the answer offline.
 
