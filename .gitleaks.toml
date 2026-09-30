@@ -1,0 +1,9 @@
+# gitleaks configuration: the default rules, plus one narrow allowlist.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Referee parity corpus: the 64-hex values of \"announced_key\" are fixed PUBLIC test keys (synthetic nodes node-a, node-b, ...), not secrets."
+paths = ['''tests/parity/referee/.*\.json$''']
+regexTarget = "line"
+regexes = ['''"announced_key"\s*:\s*"[0-9a-f]{64}"''']
