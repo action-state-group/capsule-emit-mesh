@@ -587,7 +587,7 @@ def test_render_exchange_list_html_empty_never_crashes():
 
 
 def test_render_exchange_list_html_row_carries_chip_strip_and_data_issue():
-    """Item 1: the row no longer renders the bare
+    """The row no longer renders the bare
     header_state pill (which could leak literal "present-unverified") --
     it carries a chip strip plus a machine-readable data-issue attribute."""
     requester, provider = _pair(exchange_id="ex-1")
@@ -801,7 +801,7 @@ def test_rendered_html_never_leaks_the_old_four_state_vocabulary():
 
 
 def test_rendered_card_never_leaks_build_verdicts_not_yet_proven_line():
-    """Step 5: `_pair()` has no `cross_party` block, so
+    """`_pair()` has no `cross_party` block, so
     `label_counterparty` returns "unknown" and `build_verdict`'s line 3 takes
     its warn branch -- the literal "Not yet proven: who asked ..." free-text
     the live Pane C card was leaking. That line must never render verbatim;
