@@ -1,8 +1,9 @@
 # capsule-emit-mesh
 
-> **Frozen: research + test harness.** The plugin now lives at
-> [Mesh-LLM/capsule-emit-mesh-plugin](https://github.com/Mesh-LLM/capsule-emit-mesh-plugin);
-> new plugin work, issues and releases go there. This repository stays as the
+> **Frozen: research + test harness. The Mesh-LLM plugin now lives at
+> https://github.com/Mesh-LLM/capsule-emit-mesh-plugin**
+>
+> New plugin work, issues and releases go there. This repository stays as the
 > research record and as the plugin's manual pre-release gate: the test
 > harness, the four-machine runs and the adversarial suite are kept here and
 > run before a plugin release.
@@ -38,13 +39,13 @@ model (step 1) alongside it.
 
 ## Install
 
-The fastest path onto a Mesh-LLM node — one line, once you have `mesh-llm` itself:
+The Mesh-LLM plugin is released from
+[Mesh-LLM/capsule-emit-mesh-plugin](https://github.com/Mesh-LLM/capsule-emit-mesh-plugin);
+follow its [INSTALL.md](https://github.com/Mesh-LLM/capsule-emit-mesh-plugin/blob/main/INSTALL.md)
+to download a release package for your platform, check it, and install it with
+`mesh-llm plugins install --archive`.
 
-```bash
-mesh-llm plugins install action-state-group/capsule-emit-mesh@0.1.0
-```
-
-This installs the native Rust plugin (**Path 1** below): it registers as an
+It is the native Rust plugin (**Path 1** below): it registers as an
 `inference` provider, and every exchange it admits gets sealed into a signed,
 hash-chained Agent Action Capsule the moment the node serves it — no other
 setup. Check it's running with `mesh-llm plugins list`; the sealed ledger
