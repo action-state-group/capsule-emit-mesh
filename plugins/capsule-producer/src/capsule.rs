@@ -1,5 +1,5 @@
 //! Milestone 1 AAC data model: just enough of the Capsule envelope
-//! (draft-mih-scitt-agent-action-capsule-02 §5.1) to emit ONE valid,
+//! (draft-mih-scitt-agent-action-capsule-05 §5.1) to emit ONE valid,
 //! self-attested capsule with an `x-mesh-poc-v1` compute-attestation extension —
 //! mirroring `agent_action_capsule.emit.emit()` /
 //! `capsule_sidecar.build_capsule()` closely enough for cross-language byte
@@ -10,8 +10,12 @@
 use crate::jcs::compute_capsule_id;
 use serde_json::{json, Map, Value};
 
-pub const SPEC_VERSION: &str = "draft-mih-scitt-agent-action-capsule-02";
-pub const FORMAT_VERSION: &str = "2";
+/// The draft revision this producer emits. Verifiers accept -04 and -05
+/// (the revision never selects a digest or verification algorithm).
+pub const SPEC_VERSION: &str = "draft-mih-scitt-agent-action-capsule-05";
+pub const FORMAT_VERSION: &str = "4";
+/// The canonicalization a format-4 capsule commits to (`canonicalization_id`).
+pub const CANONICALIZATION_ID: &str = "jcs";
 
 /// Token accounting for one exchange, sourced verbatim from the OpenAI-shaped
 /// response body's `usage` object (`openai-frontend`'s `Usage`:
@@ -336,11 +340,10 @@ fn epistemic_type_for_role(role: &str) -> Option<&'static str> {
     }
 }
 
-/// `chain.parent_capsule_id`/`relation` (draft-mih-scitt-agent-action-capsule-02
-/// §5.1, `Chain` in `agent_action_capsule.contracts`). Excluded from the
-/// `capsule_id` digest by `jcs::CHAIN_LINKAGE_FIELDS` (mirrors
-/// `canonical.CHAIN_LINKAGE_FIELDS`), so a capsule's content-address never
-/// depends on what later chains to it.
+/// `chain.parent_capsule_id`/`relation` (draft-mih-scitt-agent-action-capsule
+/// §5.1, `Chain` in `agent_action_capsule.contracts`). A format-4 capsule's
+/// `capsule_id` commits to it: a capsule names its parent as part of what it
+/// is. (The earlier -02 rule left it out; see `jcs::compute_capsule_id`.)
 pub struct ChainLink {
     pub parent_capsule_id: String,
     pub relation: String,
@@ -543,6 +546,7 @@ pub fn seal(input: &CapsuleInput) -> Result<Value, crate::jcs::JcsError> {
     let mut body = Map::new();
     body.insert("spec_version".into(), json!(SPEC_VERSION));
     body.insert("format_version".into(), json!(FORMAT_VERSION));
+    body.insert("canonicalization_id".into(), json!(CANONICALIZATION_ID));
     body.insert("action_id".into(), json!(input.action_id));
     body.insert("action_type".into(), json!(input.action_type));
     body.insert("operator".into(), json!(input.operator));
@@ -844,6 +848,25 @@ mod tests {
     /// `model_name_digest`. This is the record that must answer "which model,
     /// at what quantization, on whose hardware, for which exchange".
     #[test]
+    fn seal_stamps_spec_version_05() {
+        // Producers emit -05 (format 4, committed to its canonicalization);
+        // the id is computed over those fields, so a capsule stating another
+        // revision is another capsule.
+        let capsule = seal(&base_input(None)).unwrap();
+        assert_eq!(
+            capsule["spec_version"],
+            "draft-mih-scitt-agent-action-capsule-05"
+        );
+        assert_eq!(capsule["format_version"], "4");
+        assert_eq!(capsule["canonicalization_id"], "jcs");
+        let id = capsule["capsule_id"].as_str().unwrap().to_string();
+        assert_eq!(compute_capsule_id(&capsule).unwrap(), id);
+        let mut older = capsule.clone();
+        older["spec_version"] = json!("draft-mih-scitt-agent-action-capsule-04");
+        assert_ne!(compute_capsule_id(&older).unwrap(), id);
+    }
+
+    #[test]
     fn capsule_carries_full_serving_provenance() {
         let capsule = seal(&base_input(None)).unwrap();
         let poc = &capsule["model_attestation"]["compute_attestation"]["x-mesh-poc-v1"];
@@ -1126,14 +1149,10 @@ mod tests {
     }
 
     #[test]
-    fn capsule_id_is_independent_of_the_chain_blocks_content() {
-        // §5.1 / jcs::CHAIN_LINKAGE_FIELDS excludes `chain` itself from the
-        // digest -- so among capsules that are ALREADY chained (same
-        // ledger_mode), varying parent_capsule_id/relation must not perturb
-        // capsule_id. (ledger_mode itself IS digest-bearing -- see the
-        // standalone-vs-chained test above, where ledger_mode "standalone"
-        // vs "chained" correctly DOES change capsule_id; that's a different
-        // field, not the chain block's content.)
+    fn capsule_id_commits_to_the_chain_block() {
+        // Format 4 (-04/-05 §5.1): `chain` is part of the preimage, so the
+        // same capsule naming another parent, or another relation, is another
+        // capsule.
         let chained_a = seal(&base_input(Some(ChainLink {
             parent_capsule_id: "f".repeat(64),
             relation: "follows".to_string(),
@@ -1144,11 +1163,45 @@ mod tests {
             relation: "confirms".to_string(),
         })))
         .unwrap();
-        assert_eq!(chained_a["capsule_id"], chained_b["capsule_id"]);
-        // And the chain block itself is still exactly what was supplied,
-        // even though it didn't affect the digest.
+        assert_ne!(chained_a["capsule_id"], chained_b["capsule_id"]);
         assert_eq!(chained_a["chain"]["parent_capsule_id"], "f".repeat(64));
         assert_eq!(chained_b["chain"]["parent_capsule_id"], "0".repeat(64));
+    }
+
+    #[test]
+    fn a_format_2_capsule_keeps_the_earlier_id_rule() {
+        // Ledgers sealed by the -02 producer still recompute: chain left out,
+        // absent-field normalization applied.
+        let legacy = json!({
+            "spec_version": "draft-mih-scitt-agent-action-capsule-02", "format_version": "2",
+            "action_id": "a", "chain": {"parent_capsule_id": "f".repeat(64), "relation": "follows"},
+            "note": null,
+        });
+        let mut other_parent = legacy.clone();
+        other_parent["chain"]["parent_capsule_id"] = json!("0".repeat(64));
+        assert_eq!(
+            compute_capsule_id(&legacy).unwrap(),
+            compute_capsule_id(&other_parent).unwrap()
+        );
+        let mut without_note = legacy.clone();
+        without_note.as_object_mut().unwrap().remove("note");
+        assert_eq!(
+            compute_capsule_id(&legacy).unwrap(),
+            compute_capsule_id(&without_note).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_format_4_capsule_must_name_its_canonicalization() {
+        let mut capsule = seal(&base_input(None)).unwrap();
+        capsule
+            .as_object_mut()
+            .unwrap()
+            .remove("canonicalization_id");
+        assert!(matches!(
+            compute_capsule_id(&capsule),
+            Err(crate::jcs::JcsError::Canonicalization)
+        ));
     }
 
     // =======================================================================
@@ -1162,8 +1215,7 @@ mod tests {
     fn host_binding_present_is_carried_and_valid() {
         let mut input = base_input(None);
         input.host_binding = Some(HostBinding {
-            digest: "a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5"
-                .to_string(),
+            digest: "a6329c5ebb66562f38a8136a8d8511b6aeed166e4c7d889b9133ac96fc49a9d5".to_string(),
             construction: MESH_LLM_REQUEST_BODY_SHA256_V1.to_string(),
             purpose: HOST_LOG_JOIN.to_string(),
         });

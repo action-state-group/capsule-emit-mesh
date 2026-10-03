@@ -13,7 +13,9 @@ dependencies = [
     # capsule_sidecar.py imports capsule_emit.checkpoint / capsule_emit.signing (via checkpointing.py)
     # and agent_action_capsule directly; capsule-emit itself depends on agent-action-capsule, but the
     # verify/mesh modules import agent_action_capsule directly too, so it's pinned explicitly here.
-    "agent-action-capsule>=0.2.0",
+    # Floor 0.6.0: the first release whose emit() stamps
+    # draft-mih-scitt-agent-action-capsule-05 (format 4); its verifier accepts -04 and -05.
+    "agent-action-capsule>=0.6.0",
     # Floor 0.8.6 (matches requirements.txt): the release the test suite is
     # verified against. Originally 0.8.0: ask_history.py's `references <X>`
     # BUILDS a correlation-subject request, which only ships from 0.8.0 (#155);
