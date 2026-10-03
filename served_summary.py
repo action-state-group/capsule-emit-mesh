@@ -500,7 +500,7 @@ class ServedSummary:
                 "note": (
                     "verdicts this node has received() into its own log about its served "
                     "exchanges -- not this node's own judgment of itself. The counterparty-held "
-                    "references path ([mesh-ask-the-references]) is what carries weight in an "
+                    "references path is what carries weight in an "
                     "adversarial reading; this count is never presented as a substitute for it."
                 ),
             },

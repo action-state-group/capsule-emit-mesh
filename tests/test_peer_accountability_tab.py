@@ -809,7 +809,7 @@ def _read_jsonl_fixture(name: str) -> list[dict]:
 
 @pytest.mark.skipif(
     not _FIXTURE_DIR.exists(),
-    reason="cross-node fixture ledger not present at expected path",
+    reason="MESH_3NODE_LEDGERS_DIR unset: the 3-node capture ledger is a local-only fixture, not committed",
 )
 def test_cross_node_fixture_gcp_a_sees_gcp_b_as_peer():
     """Against the real 3-node capture ledger: GCP-A combined with GCP-B
@@ -842,7 +842,7 @@ def test_cross_node_fixture_gcp_a_sees_gcp_b_as_peer():
 
 @pytest.mark.skipif(
     not _FIXTURE_DIR.exists(),
-    reason="cross-node fixture ledger not present at expected path",
+    reason="MESH_3NODE_LEDGERS_DIR unset: the 3-node capture ledger is a local-only fixture, not committed",
 )
 def test_cross_node_fixture_three_nodes_yields_two_peer_rows():
     """Against the real 3-node capture ledger (GCP-A + GCP-B + M4):

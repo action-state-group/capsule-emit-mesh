@@ -110,8 +110,7 @@ __all__ = [
 BLOCK_PENDING = assurance_map.STATE_NOT_CHECKED
 
 REFERENCES_PENDING_REASON = (
-    "what my counterparties report when asked about me is not available on this view yet: "
-    "pending [mesh-ask-the-references]"
+    "what my counterparties report when asked about me is not available on this view yet"
 )
 
 # The three-state discipline (TRUST-MODEL.md §10 Rule 1), plus an explicit
