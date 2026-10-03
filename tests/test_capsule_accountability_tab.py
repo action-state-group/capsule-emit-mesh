@@ -19,6 +19,7 @@ import assurance_map
 from bilateral_demo import ClientKey, make_client_ack
 from capsule_accountability_tab import (
     BLOCK_PENDING,
+    REFERENCES_PENDING_REASON,
     STATE_ABSENT,
     STATE_FAILED,
     STATE_PRESENT_UNVERIFIED,
@@ -609,7 +610,7 @@ def test_build_counterparty_held_block_counts_adjudications_naming_my_capsule_id
     # carry -- pin the actual value, not just the alias, so a future revert
     # of BLOCK_PENDING's definition back to a bare "pending" flips this.
     assert block["references"]["state"] == assurance_map.STATE_NOT_CHECKED
-    assert "mesh-ask-the-references" in block["references"]["text"]
+    assert block["references"]["text"] == REFERENCES_PENDING_REASON
 
 
 def test_build_counterparty_held_block_never_counts_an_adjudication_about_someone_else():

@@ -132,6 +132,18 @@ jobs:
           pip install pytest
           pytest tests/ -v
 
+      # Tests write to tmp_path, never into the checkout (the committed ledger/
+      # fixtures were once deleted by a test run). tests/conftest.py fails the
+      # offending test module; this catches anything that slips past it.
+      - name: Tests left the checkout clean
+        run: |
+          status="$(git status --porcelain --untracked-files=all)"
+          if [ -n "$status" ]; then
+            echo "The test suite modified the checkout:"
+            echo "$status"
+            exit 1
+          fi
+
   # Builds the real mesh-llm-plugin admission-policy plugin against mesh-llm's
   # actual published `mesh-llm-plugin` crate and runs it GREEN over the real
   # wire protocol (length-prefixed protobuf Envelope frames), not the private

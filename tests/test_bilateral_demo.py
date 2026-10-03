@@ -459,12 +459,18 @@ def test_bilateral_and_degraded_records_are_distinguishable():
 # ===========================================================================
 
 
-def test_bilateral_demo_e2e():
+def test_bilateral_demo_e2e(tmp_path):
     """Run bilateral_demo.py as a subprocess; confirm it exits 0 with all gates passing."""
     import subprocess
 
     result = subprocess.run(
-        [sys.executable, str(Path(__file__).resolve().parent.parent / "bilateral_demo.py")],
+        [
+            sys.executable,
+            str(Path(__file__).resolve().parent.parent / "bilateral_demo.py"),
+            # Out of the repo tree: the demo deletes and recreates this directory.
+            "--ledger-dir",
+            str(tmp_path / "bilateral-ledger"),
+        ],
         capture_output=True,
         text=True,
         timeout=30,

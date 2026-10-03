@@ -44,7 +44,13 @@
 # cap/paging and pull-only-by-default allow_forced_checkpoint gate
 # ([adv-evidence-door-caps-and-subjects]) -- additive, this repo's callers pass no new arguments,
 # so the safe defaults apply automatically.
-capsule-emit[mcp]>=0.8.0
+#
+# Floor is now 0.8.6, the current release and the one the full test suite is
+# run against: on the 0.8.0 floor a fresh install could resolve an older 0.8.x
+# than the suite was last verified on, which is how earlier version-skew
+# failures crept in unnoticed. Raise this floor (and pyproject.toml's) when the
+# suite is re-verified against a newer release.
+capsule-emit[mcp]>=0.8.6
 scitt-cose>=0.2.2
 cbor2
 mcp<2

@@ -66,3 +66,47 @@ import mesh_record_verifier  # noqa: E402,F401
 import mesh_coordinator_receipt_emitter  # noqa: E402,F401
 import scitt_cose  # noqa: E402,F401
 import scitt_cose.cll  # noqa: E402,F401
+
+
+# (3) repo-tree write guard. A test that writes into the checkout (the
+#     committed ledger/ fixtures, a stray demo output directory) fails loudly
+#     at teardown of the module that did it, instead of silently deleting or
+#     rewriting committed files. Tests write to tmp_path. The check compares
+#     `git status` before and after each test module, so an already-dirty
+#     developer checkout does not trip it; outside a git checkout it is a no-op.
+#     CI additionally requires `git status --porcelain` to be empty after the
+#     whole suite.
+import subprocess  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+def _repo_status() -> set[str] | None:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=_WORKTREE_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return set(result.stdout.splitlines())
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _no_writes_under_repo_tree(request):
+    before = _repo_status()
+    yield
+    if before is None:
+        return
+    after = _repo_status() or set()
+    changed = sorted(after - before)
+    if changed:
+        pytest.fail(
+            f"{request.module.__name__} wrote under the repo tree {_WORKTREE_ROOT} "
+            "(tests must write to tmp_path); git status now shows:\n  "
+            + "\n  ".join(changed),
+            pytrace=False,
+        )

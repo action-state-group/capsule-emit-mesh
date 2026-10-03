@@ -12,10 +12,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_nonce_end_to_end_both_labels_present():
+def test_nonce_end_to_end_both_labels_present(tmp_path):
     """run_demo.py emits records with client_supplied and sidecar_generated_fallback."""
     result = subprocess.run(
-        [sys.executable, str(ROOT / "run_demo.py")],
+        # --ledger-dir keeps the run out of the committed ledger/: run_demo.py
+        # deletes and rewrites its ledger directory on every run.
+        [sys.executable, str(ROOT / "run_demo.py"), "--ledger-dir", str(tmp_path / "ledger")],
         capture_output=True,
         text=True,
         cwd=str(ROOT),

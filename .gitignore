@@ -6,3 +6,5 @@ keys/node-key*.pem
 **/admission-policy-data/
 **/plugin-data/
 **/demo-plugin-keys/
+# pytest's own cache; CI checks the tree is clean after the suite.
+.pytest_cache/
