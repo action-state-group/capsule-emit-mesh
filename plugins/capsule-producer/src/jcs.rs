@@ -22,6 +22,8 @@ pub enum JcsError {
     UnsafeInteger(i128),
     #[error("value is not JSON-serializable here")]
     NotSerializable,
+    #[error("a format-4 capsule must carry canonicalization_id \"jcs\"")]
+    Canonicalization,
 }
 
 /// Absent-field normalization (§2): remove members whose value is null, an empty
@@ -146,12 +148,33 @@ pub fn json_digest(v: &Value) -> Result<String, JcsError> {
     Ok(hex::encode(Sha256::digest(&bytes)))
 }
 
-/// Fields excluded from the canonical capsule form (§5.1).
+/// Fields excluded from a format-2 capsule's canonical form (the -02 rule).
 pub const CHAIN_LINKAGE_FIELDS: &[&str] = &["capsule_id", "chain"];
 
-/// Recompute `capsule_id` (§5.1): the JSON-DIGEST of the canonical capsule form.
+/// Fields excluded from a format-4 capsule's canonical form (-04/-05 §5.1):
+/// the id itself and the local-only producer envelope beside it. Everything
+/// else, `chain` and `canonicalization_id` included, is committed.
+pub const FORMAT4_EXCLUDED_FIELDS: &[&str] = &["capsule_id", "signature", "key_id"];
+
+/// Recompute `capsule_id` (§5.1). A format-4 capsule (what this producer
+/// emits, -04/-05): SHA-256 of plain RFC 8785 JCS over every member but
+/// [`FORMAT4_EXCLUDED_FIELDS`], and `canonicalization_id` must be "jcs".
+/// Anything else is read by the earlier -02 rule (JSON-DIGEST, `chain`
+/// excluded), so ledgers sealed before keep verifying.
 pub fn compute_capsule_id(capsule: &Value) -> Result<String, JcsError> {
     let obj = capsule.as_object().ok_or(JcsError::NotSerializable)?;
+    if obj.get("format_version").and_then(Value::as_str) == Some("4") {
+        if obj.get("canonicalization_id").and_then(Value::as_str) != Some("jcs") {
+            return Err(JcsError::Canonicalization);
+        }
+        let canonical: Map<String, Value> = obj
+            .iter()
+            .filter(|(k, _)| !FORMAT4_EXCLUDED_FIELDS.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let bytes = jcs(&Value::Object(canonical))?;
+        return Ok(hex::encode(Sha256::digest(&bytes)));
+    }
     let mut canonical = Map::new();
     for (k, v) in obj {
         if !CHAIN_LINKAGE_FIELDS.contains(&k.as_str()) {

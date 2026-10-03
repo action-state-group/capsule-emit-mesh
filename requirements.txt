@@ -51,6 +51,10 @@
 # failures crept in unnoticed. Raise this floor (and pyproject.toml's) when the
 # suite is re-verified against a newer release.
 capsule-emit[mcp]>=0.8.6
+# agent-action-capsule 0.6.0 is the first release whose emit() stamps
+# draft-mih-scitt-agent-action-capsule-05 (format 4); the sidecar seals through it.
+# Its verifier accepts -04 and -05.
+agent-action-capsule>=0.6.0
 scitt-cose>=0.2.2
 cbor2
 mcp<2
