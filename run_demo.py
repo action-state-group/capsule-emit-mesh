@@ -11,6 +11,7 @@ node instead of the fixture.
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import shutil
@@ -62,9 +63,18 @@ def wait_for(url: str, timeout: float = 5.0) -> None:
     raise TimeoutError(f"server at {url} did not come up in time")
 
 
-def main() -> None:
-    if LEDGER_DIR.exists():
-        shutil.rmtree(LEDGER_DIR)
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="capsule-emit-mesh end-to-end demo.")
+    parser.add_argument(
+        "--ledger-dir",
+        type=Path,
+        default=LEDGER_DIR,
+        help="where the demo writes its ledger and transcript (default: the committed ledger/ next to "
+        "this script). The directory is deleted and recreated on every run.",
+    )
+    ledger_dir: Path = parser.parse_args(argv).ledger_dir
+    if ledger_dir.exists():
+        shutil.rmtree(ledger_dir)
 
     mock_server = mock_mesh_node.ThreadingHTTPServer(("127.0.0.1", MOCK_PORT), mock_mesh_node.Handler)
     mock_thread = threading.Thread(target=mock_server.serve_forever, daemon=True)
@@ -79,7 +89,7 @@ def main() -> None:
     runtime_digest = hashlib.sha256(runtime_artifact).hexdigest()
 
     state: NodeState = default_state(
-        ledger_dir=LEDGER_DIR,
+        ledger_dir=ledger_dir,
         manifest_path=MANIFEST_PATH,
         keys_dir=KEYS_DIR,
         runtime_label="poc-fixture-backend(mock_mesh_node.py)",
@@ -189,15 +199,15 @@ def main() -> None:
     log(f"N client_nonce_source=sidecar_generated_fallback: {n_fallback}")
     log(f"all capsules verify() ok AND chain-consistent: {all_ok}")
 
-    (LEDGER_DIR / "demo-transcript.txt").write_text("\n".join(transcript_lines) + "\n")
+    (ledger_dir / "demo-transcript.txt").write_text("\n".join(transcript_lines) + "\n")
 
     sidecar_server.shutdown()
     mock_server.shutdown()
 
     if not all_ok:
         raise SystemExit("DEMO FAILED: not every capsule verified / chained correctly")
-    print("\nDemo complete. Ledger + transcript written under poc/ledger/.")
+    print(f"\nDemo complete. Ledger + transcript written under {ledger_dir}/.")
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

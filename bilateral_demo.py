@@ -19,6 +19,7 @@ derivation failing is the key test this demo exists to show.
 """
 from __future__ import annotations
 
+import argparse
 import base64
 import hashlib
 import json
@@ -436,10 +437,19 @@ def run_degraded_exchange(
     return action_capsule
 
 
-def main() -> None:
-    if BILATERAL_LEDGER_DIR.exists():
-        shutil.rmtree(BILATERAL_LEDGER_DIR)
-    BILATERAL_LEDGER_DIR.mkdir(parents=True)
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Bilateral attestation demo.")
+    parser.add_argument(
+        "--ledger-dir",
+        type=Path,
+        default=BILATERAL_LEDGER_DIR,
+        help="where the demo writes its ledger and transcript (default: bilateral-ledger/ next to "
+        "this script). The directory is deleted and recreated on every run.",
+    )
+    ledger_dir: Path = parser.parse_args(argv).ledger_dir
+    if ledger_dir.exists():
+        shutil.rmtree(ledger_dir)
+    ledger_dir.mkdir(parents=True)
 
     # Start mock node.
     mock_server = mock_mesh_node.ThreadingHTTPServer(
@@ -456,7 +466,7 @@ def main() -> None:
     ).hexdigest()
 
     state: NodeState = default_state(
-        ledger_dir=BILATERAL_LEDGER_DIR,
+        ledger_dir=ledger_dir,
         manifest_path=MANIFEST_PATH,
         keys_dir=KEYS_DIR,
         runtime_label="poc-fixture-backend(mock_mesh_node.py)",
@@ -573,10 +583,10 @@ def main() -> None:
 
     # Write artifacts before offline verification so the offline pass can
     # load the stored client ack from disk (proving the round-trip works).
-    (BILATERAL_LEDGER_DIR / "bilateral-capsule.json").write_text(
+    (ledger_dir / "bilateral-capsule.json").write_text(
         json.dumps(bilateral_capsule, sort_keys=True, indent=2)
     )
-    (BILATERAL_LEDGER_DIR / "degraded-capsule.json").write_text(
+    (ledger_dir / "degraded-capsule.json").write_text(
         json.dumps(degraded_capsule, sort_keys=True, indent=2)
     )
     ack_record = {
@@ -588,7 +598,7 @@ def main() -> None:
         "sig_b64": base64.urlsafe_b64encode(client_ack.sig).decode("ascii"),
         "public_key_pem_b64": base64.urlsafe_b64encode(client_ack.public_key_pem).decode("ascii"),
     }
-    (BILATERAL_LEDGER_DIR / "client-ack.json").write_text(json.dumps(ack_record, indent=2))
+    (ledger_dir / "client-ack.json").write_text(json.dumps(ack_record, indent=2))
 
     # -----------------------------------------------------------------------
     # Offline-verify both capsules from the ledger JSONL (not from in-memory).
@@ -606,11 +616,11 @@ def main() -> None:
     out("the verifier has in hand, not what the producer claimed.")
     out("")
     all_ok = True
-    # [mesh-ledger-store-migration] BILATERAL_LEDGER_DIR is sealed through the
+    # [mesh-ledger-store-migration] ledger_dir is sealed through the
     # real sidecar (default_state/record_capsule above), so it may now be a
     # cll.ledger.store.LedgerStore rather than a flat capsules.jsonl --
     # read_all_capsules reads either, store-aware.
-    ledger_records, _archived = read_all_capsules(BILATERAL_LEDGER_DIR)
+    ledger_records, _archived = read_all_capsules(ledger_dir)
     for line_num, cap in enumerate(ledger_records, start=1):
         result = verify_capsule(cap)
         all_ok = all_ok and result.ok
@@ -625,7 +635,7 @@ def main() -> None:
         )
 
     # Now load the stored ack and re-derive for capsule 1.
-    ack_path = BILATERAL_LEDGER_DIR / "client-ack.json"
+    ack_path = ledger_dir / "client-ack.json"
     if ack_path.exists():
         ack_rec = json.loads(ack_path.read_text())
         stored_ack = ClientAck(
@@ -652,13 +662,13 @@ def main() -> None:
     out("")
     out(f"All capsules verify offline: {all_ok}")
     out("")
-    out("Ledger and transcript written to bilateral-ledger/")
+    out(f"Ledger and transcript written to {ledger_dir}/")
     out("")
     out("To re-run: python3 bilateral_demo.py")
     out("")
 
     # Write transcript (log was appended throughout; write it now).
-    (BILATERAL_LEDGER_DIR / "bilateral-transcript.txt").write_text("\n".join(log) + "\n")
+    (ledger_dir / "bilateral-transcript.txt").write_text("\n".join(log) + "\n")
 
     sidecar_server.shutdown()
     mock_server.shutdown()
@@ -677,4 +687,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])
