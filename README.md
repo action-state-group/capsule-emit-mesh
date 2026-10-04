@@ -1,7 +1,7 @@
 # capsule-emit-mesh
 
 > **Frozen: research + test harness. The Mesh-LLM plugin now lives at
-> https://github.com/Mesh-LLM/capsule-emit-mesh-plugin**
+> https://github.com/Mesh-LLM/capsules**
 >
 > New plugin work, issues and releases go there. This repository stays as the
 > research record and as the plugin's manual pre-release gate: the test
@@ -40,8 +40,8 @@ model (step 1) alongside it.
 ## Install
 
 The Mesh-LLM plugin is released from
-[Mesh-LLM/capsule-emit-mesh-plugin](https://github.com/Mesh-LLM/capsule-emit-mesh-plugin);
-follow its [INSTALL.md](https://github.com/Mesh-LLM/capsule-emit-mesh-plugin/blob/main/INSTALL.md)
+[Mesh-LLM/capsules](https://github.com/Mesh-LLM/capsules);
+follow its [INSTALL.md](https://github.com/Mesh-LLM/capsules/blob/main/INSTALL.md)
 to download a release package for your platform, check it, and install it with
 `mesh-llm plugins install --archive`.
 
