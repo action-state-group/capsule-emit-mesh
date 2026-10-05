@@ -93,9 +93,12 @@ REASON_POLICY_DECLINE = "policy_decline"
 #: this module never imports a private symbol to get it.
 REASON_REQUEST_MALFORMED = "request_malformed"
 
-#: The new chain.relation value for the requester's own record of a refused
-#: delivery -- mirrors `twin_adjudicator.RELATION_ADJUDICATES`.
-RELATION_ADJUDICATION_ACK_REFUSED = "adjudication_ack_refused"
+#: The chain.relation for the requester's own record of a refused delivery:
+#: the registered ``follows`` (a record made after the verdict it cites,
+#: neither confirming nor superseding it). Readers find these records by their
+#: ``adjudication_ack_refused`` block, not the relation. Earlier releases wrote
+#: the unregistered ``adjudication_ack_refused``.
+RELATION_ADJUDICATION_ACK_REFUSED = "follows"
 
 
 def _now_iso() -> str:

@@ -96,7 +96,7 @@ from capsule_emit.checkpoint import leaf_count as _leaf_count_at_size
 from capsule_mesh_view import _poc_block, label_role
 from padding_record import is_padding_record
 from history_card import node_id_from_key_id
-from twin_adjudicator import RELATION_ADJUDICATES
+from twin_adjudicator import is_adjudication
 
 __all__ = [
     "SERVED_SUMMARY_SCHEMA",
@@ -373,7 +373,7 @@ def _fold_range(capsules: list[dict[str, Any]], source_log: str) -> dict[str, Se
 
 def _adjudications_received(ledger_records: list[dict[str, Any]], *, own_capsule_ids: set[str]) -> int:
     """Count of sealed adjudication capsules (``chain.relation ==
-    "adjudicates"``) naming one of this node's OWN served capsule ids as
+    "adjudicates"``, or now ``twin_adjudicator.is_adjudication``) naming one of this node's OWN served capsule ids as
     either half -- the SAME detection ``self_accountability.adjudications_summary``
     uses, kept local (not imported) to avoid a circular import
     (``capsule_accountability_tab`` -> this module -> ``self_accountability``
@@ -384,8 +384,7 @@ def _adjudications_received(ledger_records: list[dict[str, Any]], *, own_capsule
     what this node counts about its own served exchanges."""
     received = 0
     for record in ledger_records:
-        chain = record.get("chain") or {}
-        if chain.get("relation") != RELATION_ADJUDICATES:
+        if not is_adjudication(record):
             continue
         adjudication = ((record.get("model_attestation") or {}).get("compute_attestation") or {}).get("adjudication")
         if not adjudication:

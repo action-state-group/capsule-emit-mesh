@@ -27,7 +27,7 @@ Composes verbs that already exist; re-derives none of their evidence:
     capsule-emit PR #148) -- this card must not fabricate a zero for a count
     it cannot yet take.
   - **adjudications**: a tally of sealed adjudication capsules
-    (``chain.relation == "adjudicates"``, the offline adjudicator)
+    (``twin_adjudicator.is_adjudication``, the offline adjudicator)
     that name one of this node's own sealed capsule_ids as either half.
 
 Every field carries its own ``source``/``capture_method`` (or is graded
@@ -52,7 +52,7 @@ from padding_record import without_padding
 from history_card import build_history_card
 from native_log_join import SEALED_VERDICT_CLASSES, coverage_report
 from sequence_counter import verify_pair_continuity
-from twin_adjudicator import RELATION_ADJUDICATES
+from twin_adjudicator import is_adjudication
 
 __all__ = [
     "FORBIDDEN_RATING_KEYS",
@@ -276,15 +276,14 @@ def adjudications_summary(
 ) -> dict[str, Any]:
     """Adjudications row: corroborated / contradicted / inconclusive counts,
     tallied from sealed adjudication capsules
-    (``chain.relation == "adjudicates"``) that name one of this node's OWN
+    (``twin_adjudicator.is_adjudication``) that name one of this node's OWN
     sealed capsule_ids as either half -- "involving me", not every
     adjudication this node happens to hold a copy of."""
     corroborated = 0
     contradicted = 0
     inconclusive = 0
     for record in ledger_records:
-        chain = record.get("chain") or {}
-        if chain.get("relation") != RELATION_ADJUDICATES:
+        if not is_adjudication(record):
             continue
         adjudication = (
             (record.get("model_attestation") or {}).get("compute_attestation") or {}
