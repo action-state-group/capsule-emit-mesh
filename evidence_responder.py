@@ -88,6 +88,7 @@ from typing import Any
 from capsule_emit.evidence_request import Refusal
 
 from padding_record import is_padding_record
+from twin_adjudicator import is_adjudication
 from share_policy import SharePolicy
 
 #: The one derivation token this module dispatches on directly. Any other
@@ -389,8 +390,7 @@ def classify_leaf_kind(entry: dict[str, Any]) -> str:
     if is_padding_record(entry):
         # A leaf, never a record: a range answer names it for what it is.
         return "padding"
-    chain = entry.get("chain")
-    if isinstance(chain, dict) and chain.get("relation") == "adjudicates":
+    if is_adjudication(entry):
         return "adjudication"
     twin_bracket_id = (
         ((entry.get("model_attestation") or {}).get("compute_attestation") or {}).get("x-mesh-poc-v1") or {}

@@ -138,7 +138,9 @@ __all__ = [
     "REFEREE_RECORD_CITATION_UNVERIFIED",
     "REFEREE_RECORD_RESOLVED",
     "REFEREE_RECORD_UNRESOLVED",
+    "LEGACY_RELATION_ADJUDICATES",
     "RELATION_ADJUDICATES",
+    "is_adjudication",
     "SOURCE_TWIN_COMPARISON",
     "VERDICT_CONTRADICTED_PREFIX",
     "VERDICT_CORROBORATED",
@@ -166,10 +168,16 @@ __all__ = [
     "top2_logprob_margin",
 ]
 
-#: The new chain.relation value (registry-governed but open -- an
-#: unregistered chain.relation is informational, never a rejection; see
-#: agent_action_capsule.registries).
-RELATION_ADJUDICATES = "adjudicates"
+#: The chain.relation an adjudication writes: the registered non-terminal
+#: ``confirms`` (it observes the compared half; the half's open state
+#: remains), as capsule-emit's own adjudication does. What marks the capsule
+#: as an adjudication is its ``compute_attestation`` (``epistemic_type`` and
+#: the ``adjudication`` block), not the relation -- see :func:`is_adjudication`.
+RELATION_ADJUDICATES = "confirms"
+
+#: The unregistered token earlier releases wrote (the AAC registry lists it as
+#: a legacy alias of ``confirms``). Read by :func:`is_adjudication`, never written.
+LEGACY_RELATION_ADJUDICATES = "adjudicates"
 
 SOURCE_TWIN_COMPARISON = "twin_comparison"
 CAPTURE_METHOD_DETERMINISTIC_REPLAY = "deterministic_replay"
@@ -188,6 +196,27 @@ VERDICT_NOT_COMPARABLE = "not_comparable"
 #: convention: the adjudication capsule as a whole is
 #: this node's own judgment over the two halves + referee citation.
 EPISTEMIC_TYPE_ADJUDICATION = "adjudication"
+
+
+def is_adjudication(record: Any) -> bool:
+    """Whether a ledger record is an adjudication capsule (a twin or a
+    moderation-twin adjudication): its ``compute_attestation`` carries
+    ``epistemic_type: adjudication`` and an ``adjudication`` block, or it is a
+    record from an earlier release with the legacy ``chain.relation ==
+    "adjudicates"``. The relation alone no longer marks one: adjudications now
+    write the registered ``confirms``, which other records write too."""
+    if not isinstance(record, dict):
+        return False
+    chain = record.get("chain")
+    if isinstance(chain, dict) and chain.get("relation") == LEGACY_RELATION_ADJUDICATES:
+        return True
+    model_attestation = record.get("model_attestation")
+    ca = model_attestation.get("compute_attestation") if isinstance(model_attestation, dict) else None
+    return (
+        isinstance(ca, dict)
+        and ca.get("epistemic_type") == EPISTEMIC_TYPE_ADJUDICATION
+        and isinstance(ca.get("adjudication"), dict)
+    )
 #: A referee-capsule citation inside `adjudication.references` (see
 #: `adjudicate()`) is this node's own OBSERVATION that the referee answered
 #: with a given capsule -- it asserts nothing about the referee's serving
