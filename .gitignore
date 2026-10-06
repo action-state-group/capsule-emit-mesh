@@ -8,3 +8,7 @@ keys/node-key*.pem
 **/demo-plugin-keys/
 # pytest's own cache; CI checks the tree is clean after the suite.
 .pytest_cache/
+
+# Local secrets: never commit an env file.
+.env
+.env.*
