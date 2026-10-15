@@ -245,6 +245,10 @@ def fetch_peer_history(
         return failed(f"the checkpoint lines do not fold into a history card: {exc}")
 
     props = card.properties
+    if props.continuity != "unbroken" or not props.unforked:
+        # build_history_card reports a link that fails its proof in the card,
+        # not by raising: such a chain is not verified history.
+        return failed(f"the peer's checkpoint chain does not verify: {props.continuity}")
     history_summary: dict[str, Any] = {
         "checkpoint_count": card.checkpoint_count,
         "witnessed": card.witnessed,

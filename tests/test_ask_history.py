@@ -447,7 +447,7 @@ def test_signed_envelope_with_malformed_bundles_is_read_not_raised():
     assert ah.verified_bundles(reply) == []
 
 
-def _signed_checkpoints_reply(body: dict) -> ah.Exchange:
+def _signed_checkpoints_reply(body: dict, *, anchor: str = "ab" * 32) -> ah.Exchange:
     from agent_action_capsule.canonical import jcs
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
@@ -462,7 +462,7 @@ def _signed_checkpoints_reply(body: dict) -> ah.Exchange:
 
     request_bytes = json.dumps(ah.build_request(er.Subject("checkpoints"))).encode()
     envelope = er.sign_envelope(
-        request_bytes, er.Subject("checkpoints"), "ab" * 32, jcs(body), signer=_Signer(), issued_at="2026-10-15T00:00:00Z"
+        request_bytes, er.Subject("checkpoints"), anchor, jcs(body), signer=_Signer(), issued_at="2026-10-15T00:00:00Z"
     )
     return ah.Exchange(er.request_digest(request_bytes), envelope.encode("json"))
 
@@ -474,3 +474,24 @@ def test_malformed_checkpoints_answer_is_a_runtime_error_for_the_default_pull(ch
         ah._recent_records_request(lambda _request: exchange, "x")
     _lines, problems = ah.answer_checkpoints(ah.read_reply(exchange))
     assert problems
+
+
+def test_default_pull_sizes_the_window_from_the_signed_anchor(node_state):
+    """A door that shrinks the unsigned mmr_size beside its real anchor
+    statement cannot move the stranger's window."""
+    import hashlib
+
+    _seal_and_checkpoint(node_state, 1)
+    _seal_and_checkpoint(node_state, 2)
+    lines = [json.loads(x) for x in (node_state.ledger_dir / "checkpoints.jsonl").read_text().splitlines() if x]
+    assert len(lines) == 2
+    real_size = lines[-1]["mmr_size"]
+    shrunk = [lines[0], {**lines[-1], "mmr_size": 1}]
+    anchor = hashlib.sha256(bytes.fromhex(lines[-1]["checkpoint_cose"])).hexdigest()
+    exchange = _signed_checkpoints_reply({"checkpoints": shrunk}, anchor=anchor)
+    request = ah._recent_records_request(lambda _request: exchange, "x")
+    from cll.checkpoint.core import leaf_count
+
+    last = leaf_count(real_size) - 1
+    assert request["subject"] == {"range": [max(0, last - ah.DEFAULT_PULL_RECORDS + 1), last]}
+    assert request["coverage"] == {"expected_pin": anchor}

@@ -251,6 +251,22 @@ def test_fetch_peer_history_refuses_a_forged_genesis() -> None:
         server.shutdown()
 
 
+def test_fetch_peer_history_refuses_a_chain_whose_later_link_fails() -> None:
+    """A verified genesis followed by a line whose statement does not prove
+    it (here, the genesis statement again) is not verified history, even
+    when the envelope's anchor names that last statement."""
+    assert len(_DEMO_CHECKPOINTS) > 1
+    broken = [*_DEMO_CHECKPOINTS[:-1], {**_DEMO_CHECKPOINTS[-1], "checkpoint_cose": _DEMO_CHECKPOINTS[0]["checkpoint_cose"]}]
+    anchor = hashlib.sha256(bytes.fromhex(broken[-1]["checkpoint_cose"])).hexdigest()
+    server, base_url = _start_mock_server(checkpoint_lines=broken, anchor=anchor)
+    try:
+        result = fetch_peer_history(base_url, timeout_seconds=5, peer_id="test-peer")
+        assert result["status"] == "failed"
+        assert "does not verify" in result["reason"]
+    finally:
+        server.shutdown()
+
+
 def test_fetch_peer_history_refuses_lines_that_do_not_end_at_the_anchor() -> None:
     server, base_url = _start_mock_server(checkpoint_lines=_DEMO_CHECKPOINTS, anchor="cd" * 32)
     try:

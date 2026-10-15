@@ -577,23 +577,27 @@ def _recent_records_request(post: Post, node_id: str) -> dict[str, Any]:
     """A request for the last :data:`DEFAULT_PULL_RECORDS` records under the
     peer's freshest anchor, pinned to it: the anchor and the log size come
     from a ``checkpoints`` answer, which a door serves whatever the log's
-    length. Raises ``RuntimeError`` when that answer is a refusal or does not
-    check out."""
+    length. The size is read from the anchor's own verified statement, never
+    from the unsigned JSON line beside it, so a door cannot move the window.
+    Raises ``RuntimeError`` when that answer is a refusal or does not check
+    out."""
     from cll.checkpoint.core import leaf_count
+    from cll.checkpoint.cose_wire import verify_checkpoint_cose_offline
 
     reply = read_reply(post(build_request(er.Subject("checkpoints"))))
     if reply.refusal is not None:
         raise RuntimeError(f"could not read {node_id}'s checkpoints: refused {reply.refusal.reason}")
     lines, problems = answer_checkpoints(reply)
     problems = [*reply.errors, *problems]
-    if not problems and not (type(lines[-1].get("mmr_size")) is int and lines[-1]["mmr_size"] >= 0):
-        problems.append("the last checkpoint has no mmr_size")
+    anchor = None
+    if not problems:
+        # answer_checkpoints has checked that this statement is the anchor.
+        anchor = verify_checkpoint_cose_offline(bytes.fromhex(lines[-1]["checkpoint_cose"]))
+        if not anchor.ok:
+            problems.append("the anchor's COSE statement does not verify")
     if problems:
         raise RuntimeError(f"{node_id}'s checkpoints answer does not check out: {'; '.join(problems)}")
-    try:
-        size = leaf_count(lines[-1]["mmr_size"])
-    except ValueError as exc:  # not an MMR size
-        raise RuntimeError(f"{node_id}'s checkpoints answer does not check out: {exc}") from None
+    size = leaf_count(anchor.decoded.mmr_size)
     if size == 0:
         raise RuntimeError(f"{node_id}'s log is empty")
     first = max(0, size - DEFAULT_PULL_RECORDS)
