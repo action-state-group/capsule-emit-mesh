@@ -181,6 +181,17 @@ class TestEndToEnd:
         reply = ah.read_reply(ah.post_evidence_request(base_url, _record(cids[0], expected_pin=anchor)))
         assert reply.ok and reply.envelope.anchor_digest == anchor
 
+    def test_min_freshness_time_reports_the_anchors_time(self, peer):
+        base_url, state = peer
+        cids = _seal_and_checkpoint(state, 1)
+        req = _record(cids[0], min_freshness="2000-01-01T00:00:00Z")
+        reply = ah.read_reply(ah.post_evidence_request(base_url, req))
+        assert reply.ok, reply.errors
+        freshness = reply.envelope.freshness
+        assert isinstance(freshness, str) and freshness.endswith("Z") and "." not in freshness
+        late = ah.read_reply(ah.post_evidence_request(base_url, _record(cids[0], min_freshness="2999-01-01T00:00:00Z")))
+        assert late.refusal is not None and late.refusal.reason == "coverage_unsatisfiable"
+
     def test_unheld_pin_is_a_signed_coverage_refusal(self, peer):
         base_url, state = peer
         cids = _seal_and_checkpoint(state, 1)
@@ -365,15 +376,26 @@ class TestMeshCarrier:
 
 class TestReadReply:
     def test_unreadable_reply(self):
-        reply = ah.read_reply(ah.Exchange("00" * 32, {"bundles": []}))
+        reply = ah.read_reply(ah.Exchange("00" * 32, b'{"bundles": []}'))
         assert not reply.ok and reply.envelope is None and reply.refusal is None
 
     def test_forged_refusal(self):
         forged = {"request_digest": "00" * 32, "reason": "no_such_subject", "issued_at": "2026-10-15T00:00:00Z",
                   "key_id": "ab" * 32, "sig": "cd" * 64}
-        reply = ah.read_reply(ah.Exchange("00" * 32, forged))
+        reply = ah.read_reply(ah.Exchange("00" * 32, json.dumps(forged).encode()))
         assert not reply.ok
         assert "the refusal's signature does not verify" in reply.errors
+
+    def test_duplicate_member_is_not_a_reply(self, peer):
+        """The reply is read as carried: a duplicate member, which a decoded
+        dict would collapse, makes it not well formed."""
+        base_url, state = peer
+        cids = _seal_and_checkpoint(state, 1)
+        exchange = ah.post_evidence_request(base_url, _record(cids[0]))
+        duplicated = exchange.reply[:-1] + b',"issued_at":"2026-10-15T00:00:00Z"}'
+        reply = ah.read_reply(ah.Exchange(exchange.request_digest, duplicated))
+        assert not reply.ok and reply.envelope is None
+        assert "duplicate" in reply.errors[0]
 
     def test_bundle_not_under_the_anchor_is_left_out(self, peer):
         base_url, state = peer
@@ -405,7 +427,7 @@ def test_signed_envelope_with_malformed_bundles_is_read_not_raised():
         request_bytes, er.Subject("full_history"), "ab" * 32, jcs({"bundles": [None, {"v": 1}]}),
         signer=_Signer(), issued_at="2026-10-15T00:00:00Z",
     )
-    reply = ah.read_reply(ah.Exchange(er.request_digest(request_bytes), json.loads(envelope.encode("json"))))
+    reply = ah.read_reply(ah.Exchange(er.request_digest(request_bytes), envelope.encode("json")))
     assert reply.ok
     bundles, problems = ah.artifact_bundles(reply)
     assert bundles == [] and len(problems) == 2

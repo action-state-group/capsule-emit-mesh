@@ -389,3 +389,27 @@ def test_records_that_do_not_reproduce_the_anchor_root_are_refused(node_state):
     store.index_of = {r["capsule_id"]: i for i, r in enumerate(store.records)}
     result = er.answer(_record_request(caps[0]["capsule_id"]), store=store, signer=_Signer(node_state))
     assert isinstance(result, er.Refusal) and result.reason == "coverage_unsatisfiable"
+
+
+def test_a_ledger_line_without_a_capsule_id_is_refused_not_raised(node_state):
+    caps = _sealed(node_state, 2)
+    store = MeshEvidenceStore(node_state.ledger_dir)
+    store.records[1] = {**store.records[1], "capsule_id": "not hex"}
+    result = er.answer(_record_request(caps[0]["capsule_id"]), store=store, signer=_Signer(node_state))
+    assert isinstance(result, er.Refusal) and result.reason == "coverage_unsatisfiable"
+
+
+def test_served_summary_is_pinned_to_the_latest_anchor_not_the_last_line(node_state):
+    """A checkpoint persisted after the latest anchor without its statement
+    must not make that anchor stale for served_summary/1."""
+    _sealed(node_state, 1)
+    _sealed(node_state, 1)
+    path = node_state.ledger_dir / "checkpoints.jsonl"
+    lines = [json.loads(x) for x in path.read_text().splitlines() if x]
+    del lines[-1]["checkpoint_cose"]
+    path.write_text("".join(json.dumps(line, sort_keys=True) + "\n" for line in lines))
+    latest = MeshEvidenceStore(node_state.ledger_dir).anchors()[-1].digest
+    result = handle_evidence_request(
+        node_state, _request({"full_history": None}, {"expected_pin": latest}, derivation="served_summary/1")
+    )
+    assert isinstance(result, er.Envelope), result

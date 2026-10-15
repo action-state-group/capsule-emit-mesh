@@ -56,10 +56,9 @@ import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from agent_action_capsule import evidence_request as er
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-
-from agent_action_capsule import evidence_request as er
 
 from evidence_responder import augment_evidence_answer_dict
 from moderation_decision import MODERATION_SUBJECT_KEY
@@ -207,6 +206,12 @@ def answer_redress_request(
     `NOT_FOUND` (no decision exists for this digest), or `WITHHELD` (a
     decision exists but the requester is not its bound principal -- the
     "non-subject asking for the same digest" case).
+
+    Refusals are signed -00 refusals (``agent_action_capsule
+    .evidence_request.sign_refusal``), so ``request_digest`` must be the
+    request's SHA-256 as 64 lowercase hex and ``issued_at`` an RFC 3339 UTC
+    time; anything else raises ``ValueError`` rather than sign a
+    non-conforming refusal.
     """
     if req.subject_kind != SUBJECT_KIND_MESSAGE_DIGEST:
         return _refuse(REASON_REQUEST_MALFORMED, signer=signer, request_digest=request_digest, issued_at=issued_at)

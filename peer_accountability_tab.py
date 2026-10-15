@@ -78,7 +78,12 @@ from typing import Any
 
 import assurance_map
 from capsule_accountability_tab import STATE_FAILED, STATE_VERIFIED, cross_party_grade
-from capsule_exchange_tab import digest_match_grade, exchange_id_for, half_by_role, records_for_exchange
+from capsule_exchange_tab import (
+    digest_match_grade,
+    exchange_id_for,
+    half_by_role,
+    records_for_exchange,
+)
 from capsule_mesh_view import _poc_block, label_counterparty, label_role
 from history_card import HistoryCard, build_history_card
 
@@ -490,11 +495,10 @@ def peer_history_cell(card: HistoryCard, checkpoint_lines: list[dict[str, Any]],
         status = peer_fetch_result.get("status")
         if status == "verified":
             hs = peer_fetch_result.get("history_summary", {})
-            nb = hs.get("verified_bundles", "?")
             nc = hs.get("checkpoint_count", "?")
             return {
                 "state": CELL_VERIFIED,
-                "text": f"{nb} bundle(s) verified, {nc} checkpoint(s) (their count)",
+                "text": f"{nc} checkpoint(s) (their count), continuity={hs.get('continuity', '?')}",
                 "fetch_source": "peer_evidence_client",
                 "history_summary": hs,
                 "mine_for_reference": card,
@@ -532,6 +536,7 @@ def _own_served_summary_value(
     cell as ``mine_for_reference``, same as ``peer_history_cell`` does for
     the history chain."""
     from capsule_emit.checkpoint import CheckpointRecord
+
     from served_summary import build_served_summary
 
     latest_checkpoint = CheckpointRecord.from_dict(checkpoint_lines[-1]) if checkpoint_lines else None

@@ -133,7 +133,7 @@ def _refuse(request_digest: str, reason: str, *, state: Any, issued_at: str) -> 
 def handle_delivery(state: Any, body: bytes, *, now: str | None = None) -> dict[str, Any]:
     """Handle one ``POST /evidence/deliver`` body against ``state``'s own
     ledger -- duck-typed like ``evidence_server.EvidenceServerState``
-    (``ledger_path`` + ``signing_key_path``, nothing else).
+    (``ledger_dir`` + ``signing_key_path``, nothing else).
 
     Returns ``{"status": "received"}`` or a signed refusal dict (``Refusal
     .to_dict()`` plus an additive fabric ``status``, see ``_refuse``) --

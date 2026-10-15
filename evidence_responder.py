@@ -393,8 +393,13 @@ class MeshEvidenceStore:
             if prior is None:
                 raise er.Decline(er.REASON_COVERAGE_UNSATISFIABLE, "the anchor's predecessor checkpoint is missing")
         store = MemoryNodeStore()
-        for record in self.records[:covered]:
-            mmr_core.add_leaf(store, mmr_core.leaf_hash(bytes.fromhex(record["capsule_id"])))
+        try:
+            for record in self.records[:covered]:
+                mmr_core.add_leaf(store, mmr_core.leaf_hash(bytes.fromhex(record["capsule_id"])))
+        except (KeyError, TypeError, ValueError, AttributeError):
+            # A ledger line without a hex capsule_id commits to nothing this
+            # store can rebuild: no record under this anchor can be proven.
+            raise er.Decline(er.REASON_COVERAGE_UNSATISFIABLE, "a ledger line has no capsule_id") from None
         if store.size() != cp.mmr_size or (
             mmr_core.root_from_peaks([store.node(p) for p in mmr_core.peaks(cp.mmr_size)]).hex() != cp.root
         ):
@@ -418,7 +423,9 @@ class MeshEvidenceStore:
     def _served_summary(self, at: _Checkpoint) -> dict[str, Any]:
         from served_summary import answer_served_summary_request
 
-        lines = [cp.line for cp in self.checkpoints]
+        # Up to the latest anchor: a checkpoint persisted after it without
+        # its statement is no anchor, and must not make the latest one stale.
+        lines = [cp.line for cp in self.checkpoints if cp.anchor is not None]
         result = answer_served_summary_request(
             capsule_records=self.records,
             checkpoint_lines=lines,

@@ -178,22 +178,23 @@ def fetch_peer_history(
 ) -> dict[str, Any]:
     """Fetch and verify a peer's checkpoint history via their evidence door.
 
-    Asks for the peer's full_history, verifies the signed reply and each
-    returned bundle offline, and builds a history summary from the verified
-    bundles' checkpoint fields.
+    Asks for the peer's ``checkpoints`` (served whatever the log's length),
+    verifies the signed reply, and folds the checkpoint lines into a history
+    card (``history_card.build_history_card``), which re-verifies the chain.
 
     Returns one of:
-      {"status": "verified", "history_summary": {...}, "bundle_count": N, ...}
+      {"status": "verified", "history_summary": {...}, ...}
       {"status": "refused", "reason": "...", "signed": bool}
       {"status": "no_answer", "transport": "http", "timeout_seconds": N, ...}
       {"status": "failed", "reason": "...", ...}
     """
     from agent_action_capsule.evidence_request import Subject
 
-    from ask_history import build_request, verified_bundles
+    from ask_history import build_request
+    from history_card import build_history_card
 
-    request_map = build_request(Subject("full_history"))
-    derivation_label = "full_history"
+    request_map = build_request(Subject("checkpoints"))
+    derivation_label = "checkpoints"
     log_entry: dict[str, Any] = {
         "ts": _now_iso(),
         "peer_id": peer_id,
@@ -201,6 +202,13 @@ def fetch_peer_history(
         "transport": "http",
         "timeout_seconds": timeout_seconds,
     }
+
+    def failed(reason: str) -> dict[str, Any]:
+        log_entry["status"] = "failed"
+        log_entry["reason"] = reason
+        _append_send_log(ledger_dir, log_entry)
+        return {"status": "failed", "reason": reason}
+
     try:
         reply = _ask(peer_base_url, request_map, timeout=timeout_seconds)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -223,58 +231,31 @@ def fetch_peer_history(
         return {"status": "refused", "reason": reason, "signed": reply.ok}
 
     if not reply.ok:
-        reason = f"reply does not verify: {'; '.join(reply.errors)}"
-        log_entry["status"] = "failed"
-        log_entry["reason"] = reason
-        _append_send_log(ledger_dir, log_entry)
-        return {"status": "failed", "reason": reason}
+        return failed(f"reply does not verify: {'; '.join(reply.errors)}")
 
-    raw_bundles = reply.body.get("bundles") if isinstance(reply.body, dict) else None
-    if not raw_bundles:
-        log_entry["status"] = "no_answer"
-        log_entry["reason"] = "peer returned no bundles"
-        _append_send_log(ledger_dir, log_entry)
-        return {
-            "status": "no_answer",
-            "transport": "http",
-            "timeout_seconds": timeout_seconds,
-            "reason": "peer returned no bundles",
-        }
+    body = reply.body if isinstance(reply.body, dict) else {}
+    lines = body.get("checkpoints")
+    if not isinstance(lines, list) or not lines or not all(isinstance(line, dict) for line in lines):
+        return failed("the artifact carries no checkpoint lines")
+    try:
+        card = build_history_card(node_id=peer_id, log_id=str(body.get("evidence_stream", "")), checkpoint_lines=lines)
+    except (KeyError, TypeError, ValueError) as exc:
+        return failed(f"the checkpoint lines do not fold into a history card: {exc}")
 
-    verified = verified_bundles(reply)
-    verified_count = len(verified)
-    failed_count = len(raw_bundles) - verified_count
-    checkpoint_lines: list[dict[str, Any]] = []
-    for bundle in verified:
-        cp_dict = bundle.checkpoint.to_dict()
-        if cp_dict not in checkpoint_lines:
-            checkpoint_lines.append(cp_dict)
-    if verified_count == 0:
-        log_entry["status"] = "failed"
-        log_entry["reason"] = f"0/{len(raw_bundles)} bundles verified offline"
-        _append_send_log(ledger_dir, log_entry)
-        return {
-            "status": "failed",
-            "reason": f"0/{len(raw_bundles)} bundles passed offline verification",
-            "bundle_count": len(raw_bundles),
-            "failed_verification": failed_count,
-        }
-
+    props = card.properties
     history_summary: dict[str, Any] = {
-        "verified_bundles": verified_count,
-        "total_bundles": len(raw_bundles),
-        "failed_verification": failed_count,
-        "checkpoint_count": len(checkpoint_lines),
+        "checkpoint_count": card.checkpoint_count,
+        "witnessed": card.witnessed,
+        "continuity": props.continuity,
+        "unforked": props.unforked,
+        "latest_checkpoint": lines[-1],
+        "anchor": reply.envelope.anchor_digest,
     }
-    if checkpoint_lines:
-        history_summary["latest_checkpoint"] = checkpoint_lines[-1]
-
     log_entry["status"] = "verified"
     _append_send_log(ledger_dir, log_entry)
     return {
         "status": "verified",
         "history_summary": history_summary,
-        "bundle_count": verified_count,
         "timeout_seconds": timeout_seconds,
     }
 

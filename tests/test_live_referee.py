@@ -264,7 +264,7 @@ def _door(payload: dict, *, expect_nonce: str | None = None):
         if expect_nonce is not None:
             assert request_map == {"subject": {"correlation": expect_nonce}, "coverage": {"min_freshness": 0}}
         request_bytes = json.dumps(request_map).encode("utf-8")
-        return Exchange(er.request_digest(request_bytes), _signed_reply(request_bytes, payload))
+        return Exchange(er.request_digest(request_bytes), json.dumps(_signed_reply(request_bytes, payload)).encode())
 
     return _post
 

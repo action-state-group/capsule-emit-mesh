@@ -126,7 +126,15 @@ def make_evidence_handler(state: EvidenceServerState):
             request_bytes = self.rfile.read(length) if length else b""
 
             if path == "evidence-request":
-                result = handle_evidence_request(state, request_bytes)
+                try:
+                    result = handle_evidence_request(state, request_bytes)
+                except Exception as exc:  # noqa: BLE001 -- a broken local ledger, never the request
+                    # Every request gets a signed answer except when this
+                    # node's own ledger or checkpoints cannot be read; that is
+                    # a server failure, reported as one rather than a dropped
+                    # connection.
+                    self._write_json(500, {"error": "ledger_unreadable", "detail": type(exc).__name__})
+                    return
                 self._write_json(200, reply_to_wire(result))
                 return
 
@@ -170,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         help="this node's ledger directory -- a cll.ledger.store.LedgerStore if migrated "
         "([mesh-ledger-store-migration]), else a legacy flat capsules.jsonl -- e.g. this "
         "sidecar's own ledger_dir, or the Rust plugin's <data_dir>/ledger for the live serving "
-        "path (auto-bridged if a sibling checkpoints.jsonl is present)",
+        "path (its sibling checkpoints.jsonl is read, never written)",
     )
     parser.add_argument(
         "--node-key",

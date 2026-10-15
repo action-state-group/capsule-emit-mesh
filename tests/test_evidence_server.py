@@ -236,6 +236,16 @@ class TestSelfCheckpointedLedgerOverHTTP:
         assert text == "capsule-evidence-server: ready\n"
 
 
+class TestUnreadableLedger:
+    def test_a_corrupt_checkpoints_file_is_a_500_not_a_dropped_connection(self, running_server):
+        server, state = running_server
+        cids = _seal_and_checkpoint(state, 1)
+        (state.ledger_dir / "checkpoints.jsonl").write_text("{not json\n")
+        status, body = server.post("/evidence-request", _rec(cids[0]))
+        assert status == 500
+        assert body["error"] == "ledger_unreadable"
+
+
 class TestServerWithNoLedgerAtAll:
     def test_missing_ledger_dir_refuses_never_500(self, tmp_path):
         # Point straight at a ledger_dir that was never created -- the

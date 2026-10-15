@@ -61,8 +61,9 @@ itself won't hold (a declined record never reaches ``X``'s own chain -- see
 ``adjudication_delivery.seal_adjudication_ack_refused``), with no new trusted
 party. ``peer`` is ``X``'s own evidence door; ``--x-node-id`` is ``X``'s
 stable identity (the correlation identifier a reference is asked about);
-``--x-range`` names which of ``X``'s records to pull (all of them, under the
-freshest anchor, when omitted); ``--peer-map`` is a local JSON ``{node_id:
+``--x-range`` names which of ``X``'s records to pull (when omitted, its last
+:data:`DEFAULT_PULL_RECORDS`, under its freshest anchor: a door serves at most
+that many records in one answer); ``--peer-map`` is a local JSON ``{node_id:
 base_url}`` address book for reaching each sampled counterparty's door
 (plumbing, not a trust party).
 
@@ -129,6 +130,7 @@ __all__ = [
     "render_refusal",
     "run_references",
     "sample_reference_candidates",
+    "verified_bundles",
     "witnessed_seed",
 ]
 
@@ -146,6 +148,11 @@ _COUNTERPARTY_NAMING_KEYS = frozenset({"requesting_party", "served_by_node_id", 
 
 #: Default sample size for `references` -- k=3, per [mesh-ask-the-references].
 DEFAULT_REFERENCE_K = 3
+
+#: How many of X's most recent records `references` pulls when no range is
+#: given: the most a Mesh door serves in one answer
+#: (``evidence_responder.MAX_ANSWER_RECORDS``).
+DEFAULT_PULL_RECORDS = 200
 
 
 def build_request(
@@ -172,10 +179,12 @@ def build_request(
 @dataclass(frozen=True)
 class Exchange:
     """One request sent and its reply: ``request_digest`` is the SHA-256 of
-    the request bytes as sent (-00 §4.2), ``reply`` the reply's JSON."""
+    the request bytes as sent (-00 §4.2), ``reply`` the reply's octets in the
+    JSON binding, as carried (never re-serialized, so a duplicate member
+    stays visible to :func:`read_reply`)."""
 
     request_digest: str
-    reply: dict[str, Any]
+    reply: bytes
 
 
 #: A transport: sends a request map and returns the :class:`Exchange`.
@@ -188,7 +197,7 @@ def post_evidence_request(peer_base_url: str, request_map: dict[str, Any], *, ti
     url = peer_base_url.rstrip("/") + "/evidence-request"
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return Exchange(er.request_digest(body), json.loads(resp.read()))
+        return Exchange(er.request_digest(body), resp.read())
 
 
 def post_mesh_evidence_request(
@@ -213,13 +222,16 @@ def post_mesh_evidence_request(
     url = f"{local_host_api.rstrip('/')}/api/plugins/{plugin_name}/tools/mesh_evidence_request"
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=30) as resp:
-        result = json.loads(resp.read())
+        raw = resp.read()
+    result = json.loads(raw)
     if not isinstance(result, dict):
         raise TypeError("the mesh carrier's answer is not a JSON object")
     if isinstance(result.get("answer"), dict) and er.is_digest(result.get("request_digest")):
-        return Exchange(result["request_digest"], result["answer"])
+        # The plugin already decoded the peer's reply into its own answer:
+        # these are its octets, re-encoded.
+        return Exchange(result["request_digest"], json.dumps(result["answer"]).encode("utf-8"))
     sent = json.dumps(request_map, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    return Exchange(er.request_digest(sent), result)
+    return Exchange(er.request_digest(sent), raw)
 
 
 @dataclass(frozen=True)
@@ -244,7 +256,7 @@ def read_reply(exchange: Exchange, *, responder_key: str | None = None, trust: T
     raises for any reply."""
     errors: list[str] = []
     try:
-        parsed = er.parse_reply(json.dumps(exchange.reply).encode("utf-8"), "json")
+        parsed = er.parse_reply(exchange.reply, "json")
     except (er.VerificationError, TypeError, ValueError) as exc:
         return Reply(ok=False, errors=(f"not a reply: {exc}",))
 
@@ -514,6 +526,27 @@ def _post_for(peer: str, *, via: str, local_host_api: str, local_plugin_name: st
     return functools.partial(post_evidence_request, peer)
 
 
+def _recent_records_request(post: Post, node_id: str) -> dict[str, Any]:
+    """A request for the last :data:`DEFAULT_PULL_RECORDS` records under the
+    peer's freshest anchor, pinned to it: the anchor and the log size come
+    from a ``checkpoints`` answer, which a door serves whatever the log's
+    length. Raises ``RuntimeError`` when that answer is a refusal or does not
+    check out."""
+    from cll.checkpoint.core import leaf_count
+
+    reply = read_reply(post(build_request(er.Subject("checkpoints"))))
+    if reply.refusal is not None:
+        raise RuntimeError(f"could not read {node_id}'s checkpoints: refused {reply.refusal.reason}")
+    lines = reply.body.get("checkpoints") if reply.ok and isinstance(reply.body, dict) else None
+    if not lines or not isinstance(lines[-1], dict) or not isinstance(lines[-1].get("mmr_size"), int):
+        raise RuntimeError(f"{node_id}'s checkpoints answer does not check out: {'; '.join(reply.errors)}")
+    size = leaf_count(lines[-1]["mmr_size"])
+    if size == 0:
+        raise RuntimeError(f"{node_id}'s log is empty")
+    first = max(0, size - DEFAULT_PULL_RECORDS)
+    return build_request(er.Subject("range", (first, size - 1)), expected_pin=reply.envelope.anchor_digest)
+
+
 def run_references(
     x_peer: str,
     *,
@@ -535,8 +568,11 @@ def run_references(
     outcome.
     """
     x_post = _post_for(x_peer, via=via, local_host_api=local_host_api, local_plugin_name=local_plugin_name)
-    x_subject = er.Subject("range", x_range) if x_range is not None else er.Subject("full_history")
-    x_reply = read_reply(x_post(build_request(x_subject)))
+    if x_range is not None:
+        x_request = build_request(er.Subject("range", x_range))
+    else:
+        x_request = _recent_records_request(x_post, x_node_id)
+    x_reply = read_reply(x_post(x_request))
     if x_reply.refusal is not None:
         raise RuntimeError(f"could not pull {x_node_id}'s own records: refused {x_reply.refusal.reason}")
     if not x_reply.ok:
@@ -815,7 +851,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--x-range", nargs=2, type=int, metavar=("A", "B"), default=None,
-        help="--subject references only: which of X's records to pull (default: all of them)",
+        help="--subject references only: which of X's records to pull (default: its last 200)",
     )
     parser.add_argument(
         "--peer-map",

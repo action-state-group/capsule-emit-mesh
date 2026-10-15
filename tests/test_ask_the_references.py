@@ -377,15 +377,16 @@ def test_classify_receipt_only_attributes_owner_naming_verdicts_to_x():
 
 class TestReferencesEndToEnd:
     def test_stranger_gets_m4s_verdict_and_held_refusal_about_gcp(self, tmp_path, stub_witness):
-        gcp_state, m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path, ts_url=stub_witness)
+        gcp_state, m4_state, _gcp_cids = _build_gcp_caught_by_m4(tmp_path, ts_url=stub_witness)
 
         gcp_server, gcp_thread, gcp_url = _run_server(gcp_state)
         m4_server, m4_thread, m4_url = _run_server(m4_state)
         try:
+            # No range: X's last records under its freshest anchor, located
+            # through a checkpoints answer.
             result = ah.run_references(
                 gcp_url,
                 x_node_id="gcp",
-                x_range=(0, len(gcp_cids) - 1),
                 peer_map={"m4": m4_url},
                 k=3,
             )
@@ -427,6 +428,18 @@ class TestReferencesEndToEnd:
         rendered = ah.render_references_result(result)
         assert "REFERENCES x=gcp" in rendered
         assert "ack_refusals_about_x=1" in rendered
+
+    def test_default_pull_is_the_last_records_a_door_serves(self, tmp_path, stub_witness, monkeypatch):
+        gcp_state, _m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path, ts_url=stub_witness)
+        monkeypatch.setattr(ah, "DEFAULT_PULL_RECORDS", 1)
+        gcp_server, gcp_thread, gcp_url = _run_server(gcp_state)
+        try:
+            result = ah.run_references(gcp_url, x_node_id="gcp", peer_map={}, k=0)
+        finally:
+            gcp_server.shutdown()
+            gcp_thread.join(timeout=5)
+        assert len(gcp_cids) > 1
+        assert result.continuity["gcp::m4"]["records_checked"] == 1
 
     def test_gcp_never_holds_the_verdict_itself(self, tmp_path, stub_witness):
         """The point of the whole mechanism: GCP's OWN chain never carries

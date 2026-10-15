@@ -12,8 +12,11 @@ that a fabricated count appears as "verified".
 from __future__ import annotations
 
 import json
+import os
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -22,10 +25,13 @@ from agent_action_capsule.canonical import jcs
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-import sys
-import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from peer_accountability_tab import (
+    CELL_PENDING,
+    CELL_VERIFIED,
+    build_peers_payload,
+)
 from peer_evidence_client import (
     PEER_FETCH_ENABLED,
     PeerFetchResult,
@@ -33,12 +39,6 @@ from peer_evidence_client import (
     fetch_peer_history,
     fetch_served_summary,
 )
-from peer_accountability_tab import (
-    CELL_PENDING,
-    CELL_VERIFIED,
-    build_peers_payload,
-)
-
 
 # ---------------------------------------------------------------------------
 # Mock HTTP server
@@ -100,8 +100,10 @@ class _MockPeerHandler(BaseHTTPRequestHandler):
             # A signed envelope around a valid served summary
             self._send_json(200, _envelope(body_raw, {"anchor": _ANCHOR, "served_summary": _VALID_SERVED_SUMMARY}))
         else:
-            # No derivation (the history path): a signed envelope with no bundles
-            self._send_json(200, _envelope(body_raw, {"anchor": _ANCHOR, "bundles": []}))
+            # The history path asks for checkpoints: answer with the
+            # committed demo ledger's real checkpoint lines, or none.
+            lines = _DEMO_CHECKPOINTS if self.server.with_checkpoints else []  # type: ignore[attr-defined]
+            self._send_json(200, _envelope(body_raw, {"anchor": _ANCHOR, "checkpoints": lines}))
 
     def _send_json(self, status: int, data: dict[str, Any]) -> None:
         body = json.dumps(data).encode("utf-8")
@@ -112,9 +114,19 @@ class _MockPeerHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def _start_mock_server() -> tuple[HTTPServer, str]:
+_DEMO_CHECKPOINTS = [
+    json.loads(line)
+    for line in (Path(__file__).resolve().parent.parent / "ledger-checkpoint-demo" / "checkpoints.jsonl")
+    .read_text()
+    .splitlines()
+    if line.strip()
+]
+
+
+def _start_mock_server(*, with_checkpoints: bool = False) -> tuple[HTTPServer, str]:
     """Start a mock peer server on a random loopback port."""
     server = HTTPServer(("127.0.0.1", 0), _MockPeerHandler)
+    server.with_checkpoints = with_checkpoints
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -193,13 +205,26 @@ def test_fetch_served_summary_refused() -> None:
         server.shutdown()
 
 
-def test_fetch_peer_history_no_bundles() -> None:
+def test_fetch_peer_history_no_checkpoints_fails() -> None:
     server, base_url = _start_mock_server()
     try:
         result = fetch_peer_history(base_url, timeout_seconds=5, peer_id="test-peer")
-        # Mock server returns empty bundles for non-served-summary requests
-        assert result["status"] == "no_answer"
-        assert result["reason"] == "peer returned no bundles"
+        assert result["status"] == "failed"
+        assert result["reason"] == "the artifact carries no checkpoint lines"
+    finally:
+        server.shutdown()
+
+
+def test_fetch_peer_history_folds_the_peers_checkpoints() -> None:
+    server, base_url = _start_mock_server(with_checkpoints=True)
+    try:
+        result = fetch_peer_history(base_url, timeout_seconds=5, peer_id="test-peer")
+        assert result["status"] == "verified", result
+        summary = result["history_summary"]
+        assert summary["checkpoint_count"] == len(_DEMO_CHECKPOINTS)
+        assert summary["latest_checkpoint"] == _DEMO_CHECKPOINTS[-1]
+        assert summary["anchor"] == _ANCHOR
+        assert summary["continuity"] == "unbroken"
     finally:
         server.shutdown()
 
