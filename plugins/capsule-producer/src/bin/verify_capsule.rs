@@ -1,18 +1,20 @@
-//! Offline verification CLI (task item 5: "the x-mesh-poc-v1 field mapping +
-//! offline verification command"). No network access -- verifies a single
-//! capsule + COSE_Sign1 statement against a public key, optionally checking
+//! Offline verification CLI. No network access: verifies a single capsule +
+//! COSE_Sign1 statement against a public key, optionally checking
 //! chain-parent membership against a local ledger directory.
 //!
 //! Usage:
 //!   verify_capsule <capsule.json> <statement.cose> <pubkey.pem> [ledger_dir]
 //!
-//! Prints one JSON line (same field names as
-//! `tests/scripts/verify_rust_capsule.py`'s oracle output, so the two are
-//! diffable) and exits 0 iff the capsule verifies.
+//! Prints one JSON line and exits 0 iff the capsule verifies.
+//!
+//! This is capsule-emit's own `verify_capsule` (capsule-emit 0.0.8
+//! `src/bin/verify_capsule.rs`), built here so `tests/verify_cli.rs` runs it
+//! over this plugin's capsules. All of the verification is
+//! `capsule_emit::verify::verify_offline`.
 
-use capsule_producer::keys::load_verifying_key_pem;
-use capsule_producer::ledger::Ledger;
-use capsule_producer::verify::verify_offline;
+use capsule_emit::keys::load_verifying_key_pem;
+use capsule_emit::ledger::Ledger;
+use capsule_emit::verify::verify_offline;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -62,7 +64,7 @@ fn run(
         Err(e) => return json!({"ok": false, "error": format!("read pubkey: {e}")}),
     };
 
-    let capsule: Value = match serde_json::from_slice(&capsule_bytes) {
+    let capsule = match capsule_emit::jcs::decode_record(&capsule_bytes) {
         Ok(v) => v,
         Err(e) => return json!({"ok": false, "error": format!("parse capsule JSON: {e}")}),
     };
@@ -93,6 +95,7 @@ fn run(
         "capsule_id_ok": report.capsule_id_ok,
         "cose_ok": report.cose_ok,
         "payload_matches_capsule": report.payload_matches_capsule,
+        "subject_matches_capsule_id": report.subject_matches_capsule_id,
         "chain_ok": report.chain_ok,
         "capsule_id": report.capsule_id,
         "findings": report.findings,

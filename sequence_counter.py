@@ -5,7 +5,7 @@
 `prev_seq` for the pair it was sealed under, so a verifier can later check
 that pair's stream for gaps (missing records) or regressions (a `seq` that
 repeats or goes backward) WITHOUT trusting anything this node did not itself
-sign. Mirrors ``capsule_producer::sequence`` (Rust) field-for-field so a
+sign. Mirrors ``capsule_emit::sequence`` (Rust, used by the plugin) field-for-field so a
 verifier never needs to special-case which language sealed a given capsule.
 
 ``SequenceCounterStore`` is a WRITE-SIDE convenience cache, not the source of

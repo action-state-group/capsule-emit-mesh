@@ -1026,8 +1026,7 @@ docs/TWIN-REFEREE-SELECTION.md  independence-first select_twin/select_referee: t
 # Path 1 — native Rust plugin (primary)
 plugins/admission-policy/       mesh-llm-plugin: Envelope-wire admission + lifecycle-hook capsule emission
 plugins/admission-policy/src/checkpoint_cadence.rs   in-process checkpoint cadence, on by default (local only), see docs/CHECKPOINT-BY-DEFAULT.md
-plugins/capsule-producer/       Rust AAC producer: JCS + COSE_Sign1 + chain + ledger + anchor + verify
-plugins/capsule-producer/src/checkpoint.rs           MMR + signed checkpoint + opt-in witness over the plugin's own ledger (cll crate)
+plugins/capsule-producer/       Mesh-specific capsule members (x-mesh-poc-v1) + runtime/TEE attestation, on capsule-emit (crates.io)
 
 # Path 2 — Python sidecar (alternative)
 capsule_sidecar.py              reverse-proxy observer: proxy + emit + sign + chain (+ SSE + bilateral eval)

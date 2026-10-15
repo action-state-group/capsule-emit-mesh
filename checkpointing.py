@@ -30,7 +30,7 @@ here through its public interface, never forked).
 **Two single-writer logs, each independently checkpointed.** Per the mesh build
 plan §4 A2/A3 (rev 3, LOCKED): a mesh node keeps two separate append-only
 `capsules.jsonl` logs on disk -- the Python sidecar's own, and the Rust
-plugin's (`plugins/capsule-producer/src/ledger.rs`) -- each with exactly one
+plugin's (capsule-emit's Rust `capsule_emit::ledger`) -- each with exactly one
 writer. This module never becomes a second writer into the Rust-owned ledger:
 `capsule_emit`'s own default checkpoint wiring (`push()`/`maybe_checkpoint()`)
 persists each checkpoint's stamp back INTO the ledger it covers, which is

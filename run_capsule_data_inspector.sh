@@ -46,7 +46,6 @@
 #     admission-policy-plugin.
 #   - python3 + `pip install -r requirements.txt` (this repo) for the
 #     checkpoint step + the pretty-printer.
-#   - openssl (ships with macOS) -- see "key format workaround" below.
 #
 # Usage:
 #   ./run_capsule_data_inspector.sh --mesh-llm-dir <path-to-mesh-llm-checkout> \
@@ -244,22 +243,12 @@ echo "sealed. capsule_id=$("$PYTHON_BIN" -c "import json; print(json.load(open('
 
 echo "== [4/5] checkpointing the plugin's ledger (self-checkpointed, no network) =="
 
-# Key-format workaround: capsule-producer (Rust, ed25519-dalek's pkcs8
-# encoder) writes node-key.pem as an RFC 5958 v2 OneAsymmetricKey with the
-# public key embedded. Python's `cryptography` (as used by checkpointing.py)
-# only accepts the plain v1/PKCS8 form and raises "ASN.1 parsing error: extra
-# data" on the v2 form -- verified directly (2026-08-29), openssl parses the
-# original fine, so this is a cryptography-library strictness gap, not a
-# malformed key. Re-encoding through `openssl pkey` normalizes to v1/PKCS8
-# (drops the optional embedded public key) without touching the key material.
-NORM_KEYS="$RUN_DIR/keys-normalized"
-mkdir -p "$NORM_KEYS"
-openssl pkey -in "$RUN_DIR/capsule-data/keys/node-key.pem" -out "$NORM_KEYS/node-key.pem"
-cp "$RUN_DIR/capsule-data/keys/node-key.pub.pem" "$NORM_KEYS/node-key.pub.pem"
-
+# The plugin's node key (capsule_emit::keys) is plain PKCS8 v1, which
+# Python's `cryptography` loads as-is: checkpoint with the same key that
+# signed the capsules.
 CHECKPOINT_LOG="$RUN_DIR/checkpoint-status.txt"
 "$PYTHON_BIN" "$REPO_DIR/checkpoint_ledger.py" \
-  --ledger-dir "$RUN_DIR/capsule-data/ledger" --keys-dir "$NORM_KEYS" \
+  --ledger-dir "$RUN_DIR/capsule-data/ledger" --keys-dir "$RUN_DIR/capsule-data/keys" \
   --log-id capsule-data-inspector-onemac > "$CHECKPOINT_LOG" 2>&1 || {
     echo "FAIL: checkpoint_ledger.py failed:" >&2
     cat "$CHECKPOINT_LOG" >&2
