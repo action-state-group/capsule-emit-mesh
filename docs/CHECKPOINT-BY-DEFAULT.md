@@ -175,4 +175,4 @@ keeps using `checkpoint_daemon.py` regardless.
 | Sidecar hooks (per-capsule MMR fold) | `capsule_sidecar.py` (`--checkpoint-config`, `--plugin-checkpoint-config`, `--plugin-ledger-dir`) |
 | Config schema | `checkpoint.example.toml` |
 | Tests | `tests/test_checkpoint_daemon.py`, `tests/test_checkpointing.py` |
-| **Path 1 native Rust cadence (on by default, local only, see above)** | `plugins/capsule-producer/src/checkpoint.rs` (`CheckpointState`), `plugins/admission-policy/src/checkpoint_cadence.rs` (the tokio task + `ADMISSION_POLICY_CHECKPOINT_CADENCE*` env vars) |
+| **Path 1 native Rust cadence (on by default, local only, see above)** | capsule-emit's `capsule_emit::checkpoint::CheckpointState` (crates.io), `plugins/admission-policy/src/checkpoint_cadence.rs` (the tokio task + `ADMISSION_POLICY_CHECKPOINT_CADENCE*` env vars) |

@@ -13,7 +13,7 @@
 //!   LABELED  — accepted but named honestly so a verifier sees the degradation.
 //!   RESIDUAL — succeeds; the rung has no handle. Closing rung named inline.
 
-use capsule_producer::keys::KeyPair;
+use capsule_emit::keys::KeyPair;
 use capsule_producer::runtime_attest::{measure_path, MeasurementClass};
 
 /// ATTACK 9 — PRISTINE-COPY SWAP (the self-measurement residual).

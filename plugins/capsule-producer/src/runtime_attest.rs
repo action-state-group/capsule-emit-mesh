@@ -64,7 +64,7 @@
 //! all, the rung records nothing: [`measure_self`] returns `None` and the
 //! capsule carries the honest empty `binary_attestation` evidence slot.
 
-use crate::keys::{key_id_of, KeyPair};
+use capsule_emit::keys::{key_id_of, KeyPair};
 use ed25519_dalek::Signer;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};

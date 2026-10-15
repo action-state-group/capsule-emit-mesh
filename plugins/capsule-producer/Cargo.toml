@@ -1,9 +1,9 @@
 [package]
 name = "capsule-producer"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "Emit a chained, ledgered, optionally-anchored Agent Action Capsule + COSE_Sign1 signed statement stream in Rust, cross-checked against the Python/scitt-cose reference and the Go COSE verifier."
+description = "The Mesh-specific parts of producing Agent Action Capsules (the x-mesh-poc-v1 extension, runtime and TEE attestation) on top of capsule-emit."
 publish = false
 
 [lib]
@@ -11,21 +11,16 @@ name = "capsule_producer"
 path = "src/lib.rs"
 
 [dependencies]
-cll = { git = "https://github.com/action-state-group/checkpointed-local-log", tag = "rust-cll-v0.2.0" }
-serde = { version = "1", features = ["derive"] }
+# Sealing, signing, the ledger, checkpoints and offline verification. Its
+# `checkpointed-local-log` is the only CLL in the lock.
+capsule-emit = "0.0.8"
 serde_json = { version = "1", features = ["preserve_order"] }
-coset = "0.4"
-ed25519-dalek = { version = "2", features = ["pkcs8", "pem", "rand_core"] }
-rand_core = { version = "0.6", features = ["getrandom"] }
+ed25519-dalek = "2"
 sha2 = "0.10"
 hex = "0.4"
-pkcs8 = { version = "0.10", features = ["pem"] }
-spki = { version = "0.7", features = ["pem"] }
 anyhow = "1"
-thiserror = "1"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
-ureq = { version = "2", features = ["json"] }
 base64 = "0.22"
+thiserror = "1"
 # rung 3c (tee_measured): TD quote cert-chain (x509-cert/der) and signature
 # (p256 = attestation key / PCK certs, p384 = Intel Trust Authority ES384 JWTs)
 # verification. No network client added here — verification is purely local
@@ -38,5 +33,6 @@ ecdsa = { version = "0.16", features = ["der"] }
 
 [dev-dependencies]
 tempfile = "3"
+rand_core = { version = "0.6", features = ["getrandom"] }
 rcgen = "0.13"
 rustls-pki-types = "1"

@@ -9,7 +9,10 @@
 //!
 //! Determinism: the Ed25519 signing key is derived from a fixed seed (SHA-256
 //! of a constant label) rather than `KeyPair::generate()`'s OS RNG, and every
-//! capsule field (timestamps, digests, nonces) is a fixed constant. Because
+//! capsule field (timestamps, digests, nonces) is a fixed constant. That
+//! includes each record's `store_nonce`, which a real producer draws from the
+//! OS CSPRNG (`capsule_emit::capsule::fresh_store_nonce`); a demo fixture's
+//! nonce is public by construction, so it hides nothing. Because
 //! COSE_Sign1 here is Ed25519 (deterministic per RFC 8032) over a deterministic
 //! payload, re-running the producer to a fresh directory yields byte-identical
 //! `capsules.jsonl` and `.cose` files. This mirrors how the conformance tests
@@ -22,12 +25,11 @@
 //!   2. `check_policy` — the policy check that follows it
 //!   3. `confirm`      — the confirmation that follows the check
 
-use capsule_producer::capsule::{
-    payload_bytes, seal, CapsuleInput, ChainLink, MeshPocV1, ServingProvenance, TokenUsage,
-};
-use capsule_producer::cose::{build_signed_statement, SignedStatementInput};
-use capsule_producer::keys::KeyPair;
-use capsule_producer::ledger::Ledger;
+use capsule_emit::capsule::{payload_bytes, seal, CapsuleInput, ChainLink};
+use capsule_emit::cose::{build_signed_statement, SignedStatementInput};
+use capsule_emit::keys::KeyPair;
+use capsule_emit::ledger::Ledger;
+use capsule_producer::mesh_poc::{self, MeshPocV1, ServingProvenance, TokenUsage};
 use ed25519_dalek::SigningKey;
 use serde_json::{json, Map};
 use sha2::{Digest, Sha256};
@@ -114,90 +116,103 @@ fn demo_steps() -> [Step; 3] {
 /// Build the fixed `CapsuleInput` for one demo step. All digest/nonce fields are
 /// deterministic constants so the sealed capsule is reproducible.
 fn step_input(step: &Step, chain: Option<ChainLink>) -> CapsuleInput {
-    let mut generation_parameters = Map::new();
-    generation_parameters.insert("temperature".into(), json!("0.7"));
+    let mesh_poc = step_mesh_poc(step);
     CapsuleInput {
         action_id: format!("mesh-poc/demo3/{}", step.name),
         action_type: step.action_type.to_string(),
         operator: "capsule-emit-mesh-demo3".to_string(),
-        developer: "capsule-producer/0.2.0".to_string(),
+        developer: capsule_producer::DEVELOPER.to_string(),
         timestamp: step.timestamp.to_string(),
         domain: Some("action".to_string()),
         provenance: Some("collector".to_string()),
         model_id: "hermes-2-pro-mistral-7b".to_string(),
         provider: "mesh-llm".to_string(),
         agent_input_digest: "a".repeat(64),
-        agent_output_digest: "b".repeat(64),
+        agent_output_digest: Some("b".repeat(64)),
         tool_calls_digest: None,
         reasoning_digest: None,
         host_binding: None,
         runtime: serde_json::json!({"name": "rust-demo3", "runtime_digest": "0".repeat(64), "measurement_class": "self_measured"}),
-        mesh_poc: MeshPocV1 {
-            client_nonce: step.nonce_char.to_string().repeat(32),
-            client_nonce_source: "client_supplied".to_string(),
-            // SHA-256 of the model NAME only — truthfully NOT weights/package.
-            model_name_digest: hex::encode(Sha256::digest("hermes-2-pro-mistral-7b".as_bytes())),
-            serving_provenance: ServingProvenance {
-                // Single-node demo: served-by == the demo node itself.
-                served_by_node_id: "capsule-emit-mesh-demo3-node".to_string(),
-                // Deterministic demo, no host envelope -- no dispatch_path
-                // signal exists on this path (mirrors emit_for_exchange).
-                dispatch_path: None,
-                requesting_party: "capsule-emit-mesh-demo3-client".to_string(),
-                exchange_id: step.exchange_id.to_string(),
-                // This deterministic demo ledger is generated without a live
-                // host feeding the serving-provenance block, so quantization,
-                // hardware, and model-identity stay honest defaults
-                // (`unknown`/`null`) — never fabricated. A real host run fills
-                // them from the openai.exchange.v1 terminal event.
-                quantization: "unknown".to_string(),
-                hardware_gpu: None,
-                hardware_vram_bytes: None,
-                hardware_device: None,
-                hardware_is_soc: None,
-                hostname: None,
-                architecture: None,
-                context_length: None,
-                parameter_size: None,
-                layer_count: None,
-                model_identity_hash: None,
-                weights_digest: None,
-                model_canonical_ref: None,
-                model_revision: None,
-                usage: Some(TokenUsage {
-                    prompt_tokens: step.prompt_tokens,
-                    completion_tokens: step.completion_tokens,
-                    total_tokens: step.prompt_tokens + step.completion_tokens,
-                }),
-                // Deterministic 3-step demo, single counterparty throughout --
-                // a real monotone seq per step, computed by hand here since
-                // this binary predates SequenceCounterStore and stays a fixed,
-                // reproducible fixture generator.
-                seq: step.seq,
-                prev_seq: if step.seq > 1 { Some(step.seq - 1) } else { None },
-                peer_capsule_id: None,
-                peer_capsule_id_provenance: None,
-                // Deterministic demo, no host envelope -- never twinned.
-                twin_bracket_id: None,
-            },
-            // Single-node demo: this node always serves its own steps.
-            role: "served".to_string(),
-            observation_point: None,
-            generation_parameters,
-            latency_ms: "42.0".to_string(),
-            binary_attestation: None,
-            tee_attestation: None,
-        },
+        compute_attestation_extensions: mesh_poc::extensions(&mesh_poc, "hermes-2-pro-mistral-7b"),
         effect_status: "confirmed".to_string(),
         effect_type: step.effect_type.to_string(),
-        effect_request_digest: "a".repeat(64),
-        effect_response_digest: "b".repeat(64),
+        effect_request_digest: Some("a".repeat(64)),
+        effect_response_digest: Some("b".repeat(64)),
         effect_attestation: "gate_executed".to_string(),
         disposition_decision: step.disposition_decision.to_string(),
         disposition_approver: "policy".to_string(),
         disposition_human_disposed: false,
         disposition_verdict_class: step.disposition_verdict_class.to_string(),
         chain,
+        store_nonce: hex::encode(Sha256::digest(
+            format!("{KEY_SEED_LABEL}/store-nonce/{}", step.name).as_bytes(),
+        )),
+    }
+}
+
+/// The step's `x-mesh-poc-v1` members.
+fn step_mesh_poc(step: &Step) -> MeshPocV1 {
+    let mut generation_parameters = Map::new();
+    generation_parameters.insert("temperature".into(), json!("0.7"));
+    MeshPocV1 {
+        client_nonce: step.nonce_char.to_string().repeat(32),
+        client_nonce_source: "client_supplied".to_string(),
+        // SHA-256 of the model NAME only — truthfully NOT weights/package.
+        model_name_digest: hex::encode(Sha256::digest("hermes-2-pro-mistral-7b".as_bytes())),
+        serving_provenance: ServingProvenance {
+            // Single-node demo: served-by == the demo node itself.
+            served_by_node_id: "capsule-emit-mesh-demo3-node".to_string(),
+            // Deterministic demo, no host envelope -- no dispatch_path
+            // signal exists on this path (mirrors emit_for_exchange).
+            dispatch_path: None,
+            requesting_party: "capsule-emit-mesh-demo3-client".to_string(),
+            exchange_id: step.exchange_id.to_string(),
+            // This deterministic demo ledger is generated without a live
+            // host feeding the serving-provenance block, so quantization,
+            // hardware, and model-identity stay honest defaults
+            // (`unknown`/`null`) — never fabricated. A real host run fills
+            // them from the openai.exchange.v1 terminal event.
+            quantization: "unknown".to_string(),
+            hardware_gpu: None,
+            hardware_vram_bytes: None,
+            hardware_device: None,
+            hardware_is_soc: None,
+            hostname: None,
+            architecture: None,
+            context_length: None,
+            parameter_size: None,
+            layer_count: None,
+            model_identity_hash: None,
+            weights_digest: None,
+            model_canonical_ref: None,
+            model_revision: None,
+            usage: Some(TokenUsage {
+                prompt_tokens: step.prompt_tokens,
+                completion_tokens: step.completion_tokens,
+                total_tokens: step.prompt_tokens + step.completion_tokens,
+            }),
+            // Deterministic 3-step demo, single counterparty throughout --
+            // a real monotone seq per step, computed by hand here since
+            // this binary predates SequenceCounterStore and stays a fixed,
+            // reproducible fixture generator.
+            seq: step.seq,
+            prev_seq: if step.seq > 1 {
+                Some(step.seq - 1)
+            } else {
+                None
+            },
+            peer_capsule_id: None,
+            peer_capsule_id_provenance: None,
+            // Deterministic demo, no host envelope -- never twinned.
+            twin_bracket_id: None,
+        },
+        // Single-node demo: this node always serves its own steps.
+        role: "served".to_string(),
+        observation_point: None,
+        generation_parameters,
+        latency_ms: "42.0".to_string(),
+        binary_attestation: None,
+        tee_attestation: None,
     }
 }
 
@@ -223,7 +238,10 @@ fn main() -> ExitCode {
         Ok(capsule_ids) => {
             println!("wrote demo ledger to: {}", out_dir.display());
             println!("  capsules.jsonl + signed-statements/<capsule_id>.cose");
-            println!("sealed {} capsules (chain head -> tail):", capsule_ids.len());
+            println!(
+                "sealed {} capsules (chain head -> tail):",
+                capsule_ids.len()
+            );
             for (i, id) in capsule_ids.iter().enumerate() {
                 println!("  [{i}] {id}");
             }

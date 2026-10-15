@@ -14,6 +14,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "capsule-emit",
  "capsule-producer",
  "ed25519-dalek",
  "hex",
@@ -27,6 +28,18 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "agent-action-capsule"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae4e0ef1d721fb9b09e2780ec35182b58609e0f324e8200bcba48bc1db98ef74"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -183,20 +196,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
-name = "capsule-producer"
-version = "0.2.0"
+name = "capsule-emit"
+version = "0.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edc47ccbbe080ed338f3c677d8e93f9ff74078824d18268deaa9a331c116eb15"
 dependencies = [
+ "agent-action-capsule",
  "anyhow",
  "base64 0.22.1",
+ "checkpointed-local-log",
  "chrono",
- "cll",
  "coset",
- "der",
- "ecdsa",
  "ed25519-dalek",
  "hex",
- "p256",
- "p384",
  "pkcs8",
  "rand_core 0.6.4",
  "serde",
@@ -205,6 +217,24 @@ dependencies = [
  "spki",
  "thiserror 1.0.69",
  "ureq",
+]
+
+[[package]]
+name = "capsule-producer"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "capsule-emit",
+ "der",
+ "ecdsa",
+ "ed25519-dalek",
+ "hex",
+ "p256",
+ "p384",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
  "x509-cert",
 ]
 
@@ -239,6 +269,24 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
  "rand_core 0.10.1",
+]
+
+[[package]]
+name = "checkpointed-local-log"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e0849196938de287c059d1f53874c76cc6583051e4ab7327bedb0f658ffd9d2"
+dependencies = [
+ "base64 0.22.1",
+ "coset",
+ "ed25519-dalek",
+ "hex",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "ureq",
 ]
 
 [[package]]
@@ -278,22 +326,6 @@ checksum = "57663b653d948a338bfb3eeba9bb2fd5fcfaecb9e199e87e1eda4d9e8b240fd9"
 dependencies = [
  "ciborium-io",
  "half",
-]
-
-[[package]]
-name = "cll"
-version = "0.1.0"
-source = "git+https://github.com/action-state-group/checkpointed-local-log?tag=rust-cll-v0.2.0#88e99d405241aee790f6795fda612527679114ba"
-dependencies = [
- "base64 0.22.1",
- "coset",
- "ed25519-dalek",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 1.0.69",
- "ureq",
 ]
 
 [[package]]

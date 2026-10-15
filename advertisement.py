@@ -6,7 +6,7 @@ A mesh node ADVERTISES what it can serve -- model id/name, quantization, a
 hardware class (GPU string, VRAM, SoC flag). That advertisement is a
 self-attested CLAIM, never evidence: §10 Rule 3 -- "an advertised model name
 ... is a claim. The record says which it holds." The ``serving_provenance``
-block on a sealed capsule (``plugins/capsule-producer/src/capsule.rs`` /
+block on a sealed capsule (``plugins/capsule-producer/src/mesh_poc.rs`` /
 ``capsule_sidecar.build_capsule``) proves what ACTUALLY ran.
 
 Reconciling the two is the "after" half of C1 (§2.4): given (advertisement,

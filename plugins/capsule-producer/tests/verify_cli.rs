@@ -5,18 +5,16 @@
 //! actually exercises the CLI wiring -- argument parsing, file I/O, JSON
 //! output shape, exit codes -- not just the library call underneath it.
 
-use capsule_producer::capsule::{
-    seal, CapsuleInput, ChainLink, MeshPocV1, ServingProvenance, TokenUsage,
-};
-use capsule_producer::cose::{build_signed_statement, SignedStatementInput};
-use capsule_producer::keys::KeyPair;
-use capsule_producer::ledger::Ledger;
+use capsule_emit::capsule::{fresh_store_nonce, payload_bytes, seal, CapsuleInput, ChainLink};
+use capsule_emit::cose::{build_signed_statement, SignedStatementInput};
+use capsule_emit::keys::KeyPair;
+use capsule_emit::ledger::Ledger;
+use capsule_producer::mesh_poc::{self, MeshPocV1, ServingProvenance, TokenUsage};
 use serde_json::Value;
 use std::process::Command;
 
 fn sample_input(seed: &str, chain: Option<ChainLink>) -> CapsuleInput {
-    let mut generation_parameters = serde_json::Map::new();
-    generation_parameters.insert("temperature".into(), serde_json::json!("0.7"));
+    let mesh = sample_mesh_poc(seed);
     CapsuleInput {
         action_id: format!("mesh-poc/verify-cli-test/{seed}"),
         action_type: "decide".to_string(),
@@ -28,62 +26,69 @@ fn sample_input(seed: &str, chain: Option<ChainLink>) -> CapsuleInput {
         model_id: "m".to_string(),
         provider: "p".to_string(),
         agent_input_digest: "a".repeat(64),
-        agent_output_digest: "b".repeat(64),
+        agent_output_digest: Some("b".repeat(64)),
         tool_calls_digest: None,
         reasoning_digest: None,
         host_binding: None,
         runtime: serde_json::json!({"name": "runtime"}),
-        mesh_poc: MeshPocV1 {
-            client_nonce: seed.repeat(32).chars().take(32).collect(),
-            client_nonce_source: "client_supplied".to_string(),
-            model_name_digest: "d".repeat(64),
-            serving_provenance: ServingProvenance {
-                served_by_node_id: "verify-cli-node".to_string(),
-                dispatch_path: None,
-                requesting_party: "verify-cli-client".to_string(),
-                exchange_id: "verify-cli-exchange".to_string(),
-                quantization: "unknown".to_string(),
-                hardware_gpu: None,
-                hardware_vram_bytes: None,
-                hardware_device: None,
-                hardware_is_soc: None,
-                hostname: None,
-                architecture: None,
-                context_length: None,
-                parameter_size: None,
-                layer_count: None,
-                model_identity_hash: None,
-                weights_digest: None,
-                model_canonical_ref: None,
-                model_revision: None,
-                usage: Some(TokenUsage {
-                    prompt_tokens: 7,
-                    completion_tokens: 9,
-                    total_tokens: 16,
-                }),
-                seq: 1,
-                prev_seq: None,
-                peer_capsule_id: None,
-                peer_capsule_id_provenance: None,
-                twin_bracket_id: None,
-            },
-            role: "served".to_string(),
-            observation_point: None,
-            generation_parameters,
-            latency_ms: "1.0".to_string(),
-            binary_attestation: None,
-            tee_attestation: None,
-        },
+        compute_attestation_extensions: mesh_poc::extensions(&mesh, "m"),
         effect_status: "confirmed".to_string(),
         effect_type: "inference_completion".to_string(),
-        effect_request_digest: "a".repeat(64),
-        effect_response_digest: "b".repeat(64),
+        effect_request_digest: Some("a".repeat(64)),
+        effect_response_digest: Some("b".repeat(64)),
         effect_attestation: "gate_executed".to_string(),
         disposition_decision: "accept".to_string(),
         disposition_approver: "policy".to_string(),
         disposition_human_disposed: false,
         disposition_verdict_class: "executed".to_string(),
         chain,
+        store_nonce: fresh_store_nonce(),
+    }
+}
+
+fn sample_mesh_poc(seed: &str) -> MeshPocV1 {
+    let mut generation_parameters = serde_json::Map::new();
+    generation_parameters.insert("temperature".into(), serde_json::json!("0.7"));
+    MeshPocV1 {
+        client_nonce: seed.repeat(32).chars().take(32).collect(),
+        client_nonce_source: "client_supplied".to_string(),
+        model_name_digest: "d".repeat(64),
+        serving_provenance: ServingProvenance {
+            served_by_node_id: "verify-cli-node".to_string(),
+            dispatch_path: None,
+            requesting_party: "verify-cli-client".to_string(),
+            exchange_id: "verify-cli-exchange".to_string(),
+            quantization: "unknown".to_string(),
+            hardware_gpu: None,
+            hardware_vram_bytes: None,
+            hardware_device: None,
+            hardware_is_soc: None,
+            hostname: None,
+            architecture: None,
+            context_length: None,
+            parameter_size: None,
+            layer_count: None,
+            model_identity_hash: None,
+            weights_digest: None,
+            model_canonical_ref: None,
+            model_revision: None,
+            usage: Some(TokenUsage {
+                prompt_tokens: 7,
+                completion_tokens: 9,
+                total_tokens: 16,
+            }),
+            seq: 1,
+            prev_seq: None,
+            peer_capsule_id: None,
+            peer_capsule_id_provenance: None,
+            twin_bracket_id: None,
+        },
+        role: "served".to_string(),
+        observation_point: None,
+        generation_parameters,
+        latency_ms: "1.0".to_string(),
+        binary_attestation: None,
+        tee_attestation: None,
     }
 }
 
@@ -103,7 +108,7 @@ fn cli_verifies_a_genuine_chained_ledgered_capsule() {
 
     let c1 = seal(&sample_input("1", None)).unwrap();
     let c1_id = c1["capsule_id"].as_str().unwrap().to_string();
-    let p1 = capsule_producer::capsule::payload_bytes(&c1);
+    let p1 = payload_bytes(&c1);
     let s1 = build_signed_statement(
         &SignedStatementInput {
             payload: &p1,
@@ -124,7 +129,7 @@ fn cli_verifies_a_genuine_chained_ledgered_capsule() {
     ))
     .unwrap();
     let c2_id = c2["capsule_id"].as_str().unwrap().to_string();
-    let p2 = capsule_producer::capsule::payload_bytes(&c2);
+    let p2 = payload_bytes(&c2);
     let s2 = build_signed_statement(
         &SignedStatementInput {
             payload: &p2,
@@ -175,7 +180,7 @@ fn cli_rejects_tampered_statement_and_reports_nonzero_exit() {
 
     let c1 = seal(&sample_input("1", None)).unwrap();
     let c1_id = c1["capsule_id"].as_str().unwrap().to_string();
-    let p1 = capsule_producer::capsule::payload_bytes(&c1);
+    let p1 = payload_bytes(&c1);
     let mut s1 = build_signed_statement(
         &SignedStatementInput {
             payload: &p1,

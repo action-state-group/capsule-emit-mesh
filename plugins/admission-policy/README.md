@@ -71,7 +71,7 @@ pieces with zero lines combining any two of them:
 `allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_lifecycle_event`
 drives a real chat-completion exchange through the real host and asserts
 both wiring points, offline-verifies the resulting capsule
-(`capsule_producer::verify::verify_offline`), and adversarially mutates the
+(`capsule_emit::verify::verify_offline`), and adversarially mutates the
 signature and the observed response digest to confirm both are caught.
 `real_host_ledger_cross_language_verifies_against_python_scitt_cose_reference`
 re-verifies the same real-host-produced ledger against the Python

@@ -33,7 +33,7 @@
 
 #![cfg(target_os = "macos")]
 
-use capsule_producer::keys::KeyPair;
+use capsule_emit::keys::KeyPair;
 use capsule_producer::runtime_attest::{measure_self, MeasurementClass};
 
 /// ATTACK 17 — DECOY ATTEMPT UNDER `os_measured` (the rung-2 attack-9 move,
