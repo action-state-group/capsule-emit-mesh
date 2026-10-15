@@ -69,9 +69,9 @@ except Exception:  # pragma: no cover - only when capsule-emit isn't installed
 # the three real outcomes -- WITNESSED (verifies, pinned TS), UNVERIFIED
 # (structurally a receipt, but the issuing TS isn't pinned so identity can't
 # be confirmed offline), INVALID (fails -- forged, tampered, or copied from a
-# different checkpoint). This is fully offline for the default witness
-# (DEFAULT_TS_URL auto-pins to its known public key); no network call is made
-# by this viewer.
+# different checkpoint). This is fully offline for the default witness, whose
+# key witness_pin.default_witness_pin supplies; no network call is made by
+# this viewer.
 try:
     from capsule_emit.checkpoint import (
         CheckpointRecord,
@@ -79,6 +79,7 @@ try:
         WitnessRecord,
         verify_witness_stamp_tristate,
     )
+    from witness_pin import default_witness_pin
 except Exception:  # pragma: no cover - only when capsule-emit isn't installed
     CheckpointRecord = None  # type: ignore[assignment]
     StampVerdict = None  # type: ignore[assignment]
@@ -1245,9 +1246,8 @@ def verify_witness_checkpoint(witness_checkpoint: dict[str, Any] | None) -> tupl
     is checkpoint-bound (``entry_hash`` matches this checkpoint's own digest
     -- rejects a receipt copied from a different checkpoint) AND its COSE
     signature verifies under the pinned witness key (the default witness's
-    key is baked into ``capsule_emit.checkpoint`` -- fully offline, no
-    network call here). Returns ``(StampVerdict.INVALID, errors)`` for a
-    receipt that is present but does NOT verify -- a tampered root, a forged
+    key, from ``witness_pin`` -- fully offline, no network call here).
+    Returns ``(StampVerdict.INVALID, errors)`` for a receipt that is present but does NOT verify -- a tampered root, a forged
     or mismatched entry_hash, a corrupt receipt -- so a bad receipt in the
     bundle can never read the same as no receipt at all, and never green.
     Returns ``(StampVerdict.UNVERIFIED, errors)`` for a structurally valid
@@ -1264,7 +1264,9 @@ def verify_witness_checkpoint(witness_checkpoint: dict[str, Any] | None) -> tupl
         witness_record = WitnessRecord.from_dict(witnesses[0])
     except Exception as exc:  # noqa: BLE001 - malformed bundle data, never raise
         return StampVerdict.INVALID, [f"witness checkpoint/receipt could not be parsed: {exc}"]
-    return verify_witness_stamp_tristate(cp, witness_record)
+    return verify_witness_stamp_tristate(
+        cp, witness_record, ts_pubkey_pem=default_witness_pin(witness_record.ts_url)
+    )
 
 
 def _witness_summary(
