@@ -34,6 +34,7 @@ actually received. Covered here:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import urllib.error
@@ -41,10 +42,15 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+from agent_action_capsule import evidence_request as er
+from agent_action_capsule.canonical import jcs
 from agent_action_capsule.contracts import Disposition, EffectRecord
 from agent_action_capsule.emit import emit
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-import live_referee as lr
+import ask_history as ah
+from ask_history import Exchange
 from capsule_sidecar import digest_json
 from live_referee import (
     RefereeCallError,
@@ -165,7 +171,7 @@ class _FakeEvidenceDoor:
     """A local HTTP server standing in for the referee node's E15
     `/evidence-request` door -- captures the request map it received and
     answers with a canned `{"bundles": [...]}` or `{"reason": ...}`
-    payload."""
+    payload, signed as a -00 envelope or refusal."""
 
     def __init__(self, *, payload: dict):
         self.last_request_map: dict = {}
@@ -180,7 +186,7 @@ class _FakeEvidenceDoor:
                 length = int(self.headers.get("Content-Length", 0))
                 raw = self.rfile.read(length)
                 outer.last_request_map = json.loads(raw) if raw else {}
-                body = json.dumps(payload_).encode("utf-8")
+                body = json.dumps(_signed_reply(raw, payload_)).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -199,25 +205,73 @@ class _FakeEvidenceDoor:
 
 
 class _FakeBundle:
-    """Stand-in for `capsule_emit.bundle.Bundle` -- carries only the
-    `.receipt` attribute `resolve_referee_record` actually reads. Used
-    with monkeypatched `live_referee.Bundle`/`live_referee.verify_bundle`
-    so these tests never need to fabricate a genuinely MMR/checkpoint/
-    witness-verifiable bundle (a real one needs a live Transparency
-    Service stub -- see `tests/test_ask_the_references.py` -- disproportionate
-    for what this module's own resolution logic needs to prove)."""
+    """Stand-in for `capsule_emit.bundle.Bundle` -- carries the `.receipt`
+    `resolve_referee_record` reads and the `checkpoint_cose` that binds it to
+    the envelope's anchor. Used with monkeypatched `ask_history.Bundle`/
+    `ask_history.verify_bundle` so these tests never need to fabricate a
+    genuinely MMR/checkpoint/witness-verifiable bundle (a real one needs a
+    live Transparency Service stub -- see `tests/test_ask_the_references.py`
+    -- disproportionate for what this module's own resolution logic needs to
+    prove). The envelope around it is real and signed."""
 
     def __init__(self, receipt: dict):
         self.receipt = receipt
+        self.capsule_id = receipt.get("capsule_id")
+        self.checkpoint_cose = _FAKE_ANCHOR_STATEMENT
 
     @classmethod
     def from_dict(cls, d: dict) -> _FakeBundle:
         return cls(d["receipt"])
 
 
+_FAKE_ANCHOR_STATEMENT = b"a stand-in checkpoint statement"
+_FAKE_ANCHOR = hashlib.sha256(_FAKE_ANCHOR_STATEMENT).hexdigest()
+
+
+class _DoorSigner:
+    def __init__(self) -> None:
+        self._key = Ed25519PrivateKey.generate()
+        self.key_id = self._key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
+
+    def sign(self, body: bytes) -> tuple[str, str]:
+        return self._key.sign(body).hex(), self.key_id
+
+
+_DOOR_SIGNER = _DoorSigner()
+
+
+def _signed_reply(request_bytes: bytes, payload: dict) -> dict:
+    """The door's reply to ``request_bytes``: a signed envelope around
+    ``{"bundles": ...}`` under the fake anchor, or a signed refusal for
+    ``{"reason": ...}``."""
+    if "reason" in payload:
+        refusal = er.sign_refusal(
+            er.request_digest(request_bytes), payload["reason"], signer=_DOOR_SIGNER, issued_at="2026-10-15T00:00:00Z"
+        )
+        return refusal.to_dict()
+    request = er.parse_request(request_bytes)
+    artifact = jcs({"anchor": _FAKE_ANCHOR, "bundles": payload["bundles"], "subject": request.subject.to_wire()})
+    envelope = er.sign_envelope(
+        request_bytes, request.subject, _FAKE_ANCHOR, artifact, signer=_DOOR_SIGNER, issued_at="2026-10-15T00:00:00Z"
+    )
+    return json.loads(envelope.encode("json"))
+
+
+def _door(payload: dict, *, expect_nonce: str | None = None):
+    """A ``post`` callable answering every request with ``payload``, signed."""
+
+    def _post(request_map: dict) -> Exchange:
+        if expect_nonce is not None:
+            assert request_map == {"subject": {"correlation": expect_nonce}, "coverage": {"min_freshness": 0}}
+        request_bytes = json.dumps(request_map).encode("utf-8")
+        return Exchange(er.request_digest(request_bytes), _signed_reply(request_bytes, payload))
+
+    return _post
+
+
 def _patch_bundle_verification(monkeypatch: pytest.MonkeyPatch, *, verify_ok: bool = True) -> None:
-    monkeypatch.setattr(lr, "Bundle", _FakeBundle)
-    monkeypatch.setattr(lr, "verify_bundle", lambda b: (verify_ok, [] if verify_ok else ["mutated"]))
+    monkeypatch.setattr(ah, "Bundle", _FakeBundle)
+    monkeypatch.setattr(ah, "verify_bundle", lambda b: (verify_ok, [] if verify_ok else ["mutated"]))
 
 
 def test_live_referee_sends_mesh_target_header_and_agreed_prefix():
@@ -487,7 +541,7 @@ def test_live_referee_resolves_capsule_id_via_nonce_correlation(monkeypatch):
         node.close()
         door.close()
 
-    assert door.last_request_map["subject"] == {"kind": "correlation", "by": "nonce", "value": "live-nonce-1"}
+    assert door.last_request_map["subject"] == {"correlation": "live-nonce-1"}
     assert result.referee_record_status == REFEREE_RECORD_RESOLVED
     assert result.capsule_id == "referee-cap-live"
     assert result.referee_record_nonce == "live-nonce-1"
@@ -542,10 +596,7 @@ def test_resolve_referee_record_door_unreachable_is_unresolved():
 
 
 def test_resolve_referee_record_door_refusal_is_unresolved():
-    def _post(request_map):
-        assert request_map == {"subject": {"kind": "correlation", "by": "nonce", "value": "nonce-3"}, "coverage": {}}
-        return {"reason": "no_such_record", "request_digest": "x" * 64, "issued_at": "t", "key_id": "k", "sig": "s"}
-
+    _post = _door({"reason": "no_such_subject"}, expect_nonce="nonce-3")
     result = resolve_referee_record("nonce-3", expected_response_digest="digest-a", post=_post)
     assert result.status == REFEREE_RECORD_UNRESOLVED
 
@@ -553,9 +604,10 @@ def test_resolve_referee_record_door_refusal_is_unresolved():
 def test_resolve_referee_record_resolves_and_verifies_matching_bundle(monkeypatch):
     _patch_bundle_verification(monkeypatch, verify_ok=True)
 
-    def _post(request_map):
-        assert request_map["subject"]["value"] == "nonce-4"
-        return {"bundles": [{"receipt": {"capsule_id": "referee-cap-1", "effect": {"response_digest": "digest-match"}}}]}
+    _post = _door(
+        {"bundles": [{"receipt": {"capsule_id": "referee-cap-1", "effect": {"response_digest": "digest-match"}}}]},
+        expect_nonce="nonce-4",
+    )
 
     result = resolve_referee_record("nonce-4", expected_response_digest="digest-match", post=_post)
     assert result.status == REFEREE_RECORD_RESOLVED
@@ -568,8 +620,9 @@ def test_resolve_referee_record_mutant_different_capsule_is_citation_unverified(
     different declared response digest) -- never cited as verified."""
     _patch_bundle_verification(monkeypatch, verify_ok=True)
 
-    def _post(_request_map):
-        return {"bundles": [{"receipt": {"capsule_id": "some-other-capsule", "effect": {"response_digest": "digest-of-a-different-response"}}}]}
+    _post = _door(
+        {"bundles": [{"receipt": {"capsule_id": "some-other-capsule", "effect": {"response_digest": "digest-of-a-different-response"}}}]}
+    )
 
     result = resolve_referee_record("nonce-5", expected_response_digest="digest-actually-received", post=_post)
     assert result.status == REFEREE_RECORD_CITATION_UNVERIFIED
@@ -579,8 +632,7 @@ def test_resolve_referee_record_mutant_different_capsule_is_citation_unverified(
 def test_resolve_referee_record_failed_offline_verify_is_citation_unverified(monkeypatch):
     _patch_bundle_verification(monkeypatch, verify_ok=False)
 
-    def _post(_request_map):
-        return {"bundles": [{"receipt": {"capsule_id": "referee-cap-2", "effect": {"response_digest": "digest-match"}}}]}
+    _post = _door({"bundles": [{"receipt": {"capsule_id": "referee-cap-2", "effect": {"response_digest": "digest-match"}}}]})
 
     result = resolve_referee_record("nonce-6", expected_response_digest="digest-match", post=_post)
     assert result.status == REFEREE_RECORD_CITATION_UNVERIFIED

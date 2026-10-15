@@ -51,13 +51,12 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _post_json(url: str, body: dict[str, Any], *, timeout: int) -> dict[str, Any]:
-    raw = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=raw, headers={"Content-Type": "application/json"}, method="POST"
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read())
+def _ask(peer_base_url: str, request_map: dict[str, Any], *, timeout: int) -> Any:
+    """Send ``request_map`` to the peer's door and check the reply offline
+    (``ask_history.read_reply``): signature, request binding, digests."""
+    from ask_history import post_evidence_request, read_reply
+
+    return read_reply(post_evidence_request(peer_base_url, request_map, timeout=timeout))
 
 
 def _append_send_log(ledger_dir: Path | None, entry: dict[str, Any]) -> None:
@@ -87,12 +86,15 @@ def fetch_served_summary(
       {"status": "failed", "reason": "..."}
     NEVER fabricates a count or status.
     """
-    url = peer_base_url.rstrip("/") + "/evidence-request"
-    request_map: dict[str, Any] = {
-        "subject": {"kind": "range", "selector": "all"},
-        "coverage": {},
-        "derivation": _SERVED_SUMMARY_DERIVATION,
-    }
+    from agent_action_capsule.evidence_request import Subject
+
+    from ask_history import build_request
+
+    # served_summary/1 is a static export: a mesh door serves it only under
+    # an expected_pin naming its latest anchor, and refuses this
+    # min_freshness request policy_declined. That refusal is reported as
+    # such, never as an absence.
+    request_map = build_request(Subject("full_history"), derivation=_SERVED_SUMMARY_DERIVATION)
     log_entry: dict[str, Any] = {
         "ts": _now_iso(),
         "peer_id": peer_id,
@@ -101,7 +103,7 @@ def fetch_served_summary(
         "timeout_seconds": timeout_seconds,
     }
     try:
-        response = _post_json(url, request_map, timeout=timeout_seconds)
+        reply = _ask(peer_base_url, request_map, timeout=timeout_seconds)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         reason = f"unreachable: {type(exc).__name__}"
         log_entry["status"] = "no_answer"
@@ -114,15 +116,21 @@ def fetch_served_summary(
             "reason": reason,
         }
 
-    if "reason" in response and "served_summary" not in response:
-        reason = str(response.get("reason", "no reason given"))
-        signed = bool(response.get("sig"))
+    if reply.refusal is not None:
+        reason = reply.refusal.reason
         log_entry["status"] = "refused"
         log_entry["reason"] = reason
         _append_send_log(ledger_dir, log_entry)
-        return {"status": "refused", "reason": reason, "signed": signed}
+        return {"status": "refused", "reason": reason, "signed": reply.ok}
 
-    served_summary = response.get("served_summary")
+    if not reply.ok:
+        reason = f"reply does not verify: {'; '.join(reply.errors)}"
+        log_entry["status"] = "failed"
+        log_entry["reason"] = reason
+        _append_send_log(ledger_dir, log_entry)
+        return {"status": "failed", "reason": reason}
+
+    served_summary = reply.body.get("served_summary") if isinstance(reply.body, dict) else None
     if not isinstance(served_summary, dict):
         log_entry["status"] = "failed"
         log_entry["reason"] = "no served_summary in response"
@@ -155,8 +163,8 @@ def fetch_served_summary(
         "schema": schema,
         "timeout_seconds": timeout_seconds,
         "verification_note": (
-            "structural shape verified (schema tag + required fields present); "
-            "recompute+match requires peer raw capsule records (out-of-scope)"
+            "signed envelope verified; structural shape verified (schema tag + required "
+            "fields present); recompute+match requires peer raw capsule records (out-of-scope)"
         ),
     }
 
@@ -170,8 +178,9 @@ def fetch_peer_history(
 ) -> dict[str, Any]:
     """Fetch and verify a peer's checkpoint history via their evidence door.
 
-    Posts a range/all request, verifies each returned bundle offline,
-    and builds a history summary from the verified bundles' checkpoint fields.
+    Asks for the peer's full_history, verifies the signed reply and each
+    returned bundle offline, and builds a history summary from the verified
+    bundles' checkpoint fields.
 
     Returns one of:
       {"status": "verified", "history_summary": {...}, "bundle_count": N, ...}
@@ -179,12 +188,12 @@ def fetch_peer_history(
       {"status": "no_answer", "transport": "http", "timeout_seconds": N, ...}
       {"status": "failed", "reason": "...", ...}
     """
-    url = peer_base_url.rstrip("/") + "/evidence-request"
-    request_map: dict[str, Any] = {
-        "subject": {"kind": "range", "selector": "all"},
-        "coverage": {},
-    }
-    derivation_label = "range/checkpoints"
+    from agent_action_capsule.evidence_request import Subject
+
+    from ask_history import build_request, verified_bundles
+
+    request_map = build_request(Subject("full_history"))
+    derivation_label = "full_history"
     log_entry: dict[str, Any] = {
         "ts": _now_iso(),
         "peer_id": peer_id,
@@ -193,7 +202,7 @@ def fetch_peer_history(
         "timeout_seconds": timeout_seconds,
     }
     try:
-        response = _post_json(url, request_map, timeout=timeout_seconds)
+        reply = _ask(peer_base_url, request_map, timeout=timeout_seconds)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         reason = f"unreachable: {type(exc).__name__}"
         log_entry["status"] = "no_answer"
@@ -206,15 +215,21 @@ def fetch_peer_history(
             "reason": reason,
         }
 
-    if "reason" in response and "bundles" not in response:
-        reason = str(response.get("reason", "no reason given"))
-        signed = bool(response.get("sig"))
+    if reply.refusal is not None:
+        reason = reply.refusal.reason
         log_entry["status"] = "refused"
         log_entry["reason"] = reason
         _append_send_log(ledger_dir, log_entry)
-        return {"status": "refused", "reason": reason, "signed": signed}
+        return {"status": "refused", "reason": reason, "signed": reply.ok}
 
-    raw_bundles = response.get("bundles", [])
+    if not reply.ok:
+        reason = f"reply does not verify: {'; '.join(reply.errors)}"
+        log_entry["status"] = "failed"
+        log_entry["reason"] = reason
+        _append_send_log(ledger_dir, log_entry)
+        return {"status": "failed", "reason": reason}
+
+    raw_bundles = reply.body.get("bundles") if isinstance(reply.body, dict) else None
     if not raw_bundles:
         log_entry["status"] = "no_answer"
         log_entry["reason"] = "peer returned no bundles"
@@ -226,40 +241,14 @@ def fetch_peer_history(
             "reason": "peer returned no bundles",
         }
 
-    # Attempt offline bundle verification.
-    try:
-        from capsule_emit.bundle import Bundle, verify_bundle
-        bundle_verify_available = True
-    except ImportError:
-        bundle_verify_available = False
-
-    verified_count = 0
-    failed_count = 0
+    verified = verified_bundles(reply)
+    verified_count = len(verified)
+    failed_count = len(raw_bundles) - verified_count
     checkpoint_lines: list[dict[str, Any]] = []
-    for bd in raw_bundles:
-        if bundle_verify_available:
-            try:
-                bundle = Bundle.from_dict(bd)
-                ok, _errors = verify_bundle(bundle)
-            except Exception:
-                failed_count += 1
-                continue
-            if not ok:
-                failed_count += 1
-                continue
-            verified_count += 1
-            cp = getattr(bundle, "checkpoint", None)
-            if cp is not None:
-                cp_dict = cp.to_dict() if hasattr(cp, "to_dict") else {}
-                if cp_dict:
-                    checkpoint_lines.append(cp_dict)
-        else:
-            # capsule_emit not available; accept the bundle but note it.
-            verified_count += 1
-            cp = bd.get("checkpoint")
-            if isinstance(cp, dict):
-                checkpoint_lines.append(cp)
-
+    for bundle in verified:
+        cp_dict = bundle.checkpoint.to_dict()
+        if cp_dict not in checkpoint_lines:
+            checkpoint_lines.append(cp_dict)
     if verified_count == 0:
         log_entry["status"] = "failed"
         log_entry["reason"] = f"0/{len(raw_bundles)} bundles verified offline"
@@ -321,7 +310,6 @@ def fetch_verdicts_about_peer(
         result = run_references(
             peer_base_url,
             x_node_id=peer_node_id,
-            x_selector="all",
             peer_map=peer_map or {},
             k=k,
         )

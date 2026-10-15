@@ -17,6 +17,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
 import pytest
+from agent_action_capsule import evidence_request as er
+from agent_action_capsule.canonical import jcs
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 import sys
 import os
@@ -48,10 +52,32 @@ _VALID_SERVED_SUMMARY = {
     "witness_bounded": True,
 }
 
-_REFUSAL_RESPONSE = {
-    "reason": "not authorized",
-    "sig": "mock-sig",
-}
+class _MockSigner:
+    def __init__(self) -> None:
+        self._key = Ed25519PrivateKey.generate()
+        self.key_id = self._key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
+
+    def sign(self, body: bytes) -> tuple[str, str]:
+        return self._key.sign(body).hex(), self.key_id
+
+
+_SIGNER = _MockSigner()
+_ANCHOR = "ab" * 32
+_ISSUED_AT = "2026-10-15T00:00:00Z"
+
+
+def _envelope(request_bytes: bytes, body: dict[str, Any]) -> dict[str, Any]:
+    """A signed -00 envelope answering ``request_bytes`` with ``body``."""
+    request = er.parse_request(request_bytes)
+    envelope = er.sign_envelope(
+        request_bytes, request.subject, _ANCHOR, jcs(body), signer=_SIGNER, issued_at=_ISSUED_AT,
+        derivation=request.derivation,
+    )
+    return json.loads(envelope.encode("json"))
+
+
+def _refusal(request_bytes: bytes, reason: str) -> dict[str, Any]:
+    return er.sign_refusal(er.request_digest(request_bytes), reason, signer=_SIGNER, issued_at=_ISSUED_AT).to_dict()
 
 
 class _MockPeerHandler(BaseHTTPRequestHandler):
@@ -71,16 +97,11 @@ class _MockPeerHandler(BaseHTTPRequestHandler):
         derivation = body.get("derivation", "")
 
         if derivation == "served_summary/1":
-            # Return a valid served_summary response
-            resp = {"served_summary": _VALID_SERVED_SUMMARY}
-            self._send_json(200, resp)
-        elif derivation == "refuse-me":
-            # Return a refusal
-            self._send_json(200, _REFUSAL_RESPONSE)
+            # A signed envelope around a valid served summary
+            self._send_json(200, _envelope(body_raw, {"anchor": _ANCHOR, "served_summary": _VALID_SERVED_SUMMARY}))
         else:
-            # No derivation / range request -> return empty bundles (history path)
-            resp = {"bundles": []}
-            self._send_json(200, resp)
+            # No derivation (the history path): a signed envelope with no bundles
+            self._send_json(200, _envelope(body_raw, {"anchor": _ANCHOR, "bundles": []}))
 
     def _send_json(self, status: int, data: dict[str, Any]) -> None:
         body = json.dumps(data).encode("utf-8")
@@ -150,8 +171,7 @@ def test_fetch_served_summary_refused() -> None:
                 pass
             def do_POST(self) -> None:
                 length = int(self.headers.get("Content-Length", 0))
-                self.rfile.read(length)
-                resp = json.dumps({"reason": "policy: not authorized", "sig": "mock"}).encode()
+                resp = json.dumps(_refusal(self.rfile.read(length), "policy_declined")).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(resp)))
@@ -311,3 +331,29 @@ def test_peer_no_url_stays_pending() -> None:
     served = peer_row["served"]
     assert history["state"] == CELL_PENDING, f"expected pending history for no-url peer, got: {history}"
     assert served["state"] == CELL_PENDING, f"expected pending served for no-url peer, got: {served}"
+
+
+def test_fetch_served_summary_unsigned_reply_fails() -> None:
+    """A reply that is not a signed envelope or refusal is never verified."""
+
+    class _UnsignedHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: Any) -> None:
+            pass
+
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            resp = json.dumps({"served_summary": _VALID_SERVED_SUMMARY}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+
+    server = HTTPServer(("127.0.0.1", 0), _UnsignedHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        result = fetch_served_summary(f"http://127.0.0.1:{server.server_address[1]}", timeout_seconds=5)
+        assert result["status"] == "failed"
+        assert "neither an envelope nor a refusal" in result["reason"]
+    finally:
+        server.shutdown()

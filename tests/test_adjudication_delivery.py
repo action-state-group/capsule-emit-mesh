@@ -6,7 +6,7 @@ Acceptance / mutants that must flip (inbox item):
   - corroborated twin -> both providers' chains show it delivered
     (`{"status": "received"}`, folded into the recipient's own ledger).
   - contradicted verdict, cited party is the contradicted owner -> that
-    party's chain shows NOTHING (refused, `policy_decline`, never
+    party's chain shows NOTHING (refused, `policy_declined`, never
     `received()`d); the refusal itself is signed and offline-verifiable so
     the requester can hold it (`seal_adjudication_ack_refused`).
   - a delivery whose citations don't include the recipient's own half ->
@@ -34,12 +34,12 @@ if "model_identity" not in sys.modules:
 import pytest
 from agent_action_capsule.contracts import Disposition, EffectRecord
 from agent_action_capsule.emit import emit
-from capsule_emit.evidence_request import verify_refusal_offline
+from agent_action_capsule.evidence_request import verify_refusal_offline
 from capsule_emit.ledger import read_ledger
 
 import evidence_server as es
 from adjudication_delivery import (
-    REASON_POLICY_DECLINE,
+    REASON_POLICY_DECLINED,
     REASON_REQUEST_MALFORMED,
     RELATION_ADJUDICATION_ACK_REFUSED,
     deliver_adjudication,
@@ -128,7 +128,7 @@ def test_corroborated_delivery_is_received_and_folded_into_ledger(tmp_path):
     assert adjudication["capsule_id"] in ledger_ids
 
 
-def test_contradicted_verdict_naming_recipient_refuses_policy_decline(tmp_path):
+def test_contradicted_verdict_naming_recipient_refuses_policy_declined(tmp_path):
     from twin_adjudicator import AdjudicationHalf
 
     cap_a, disc_a = _make_served_half("hello world", owner_id="owner-a")
@@ -152,7 +152,7 @@ def test_contradicted_verdict_naming_recipient_refuses_policy_decline(tmp_path):
     body = json.dumps(adjudication).encode("utf-8")
     result = handle_delivery(state, body)
 
-    assert result["reason"] == REASON_POLICY_DECLINE
+    assert result["reason"] == REASON_POLICY_DECLINED
     assert "sig" in result and "key_id" in result
     # GCP's chain shows nothing -- the ledger is byte-identical to before.
     assert ledger_path.read_bytes() == before
@@ -213,7 +213,7 @@ def test_malformed_body_refuses_never_raises(tmp_path):
 
 
 def test_refusal_verifies_offline(tmp_path):
-    from capsule_emit.evidence_request import Refusal
+    from agent_action_capsule.evidence_request import Refusal
 
     key_path = _keys(tmp_path)
     ledger_path = tmp_path / "ledger" / "capsules.jsonl"
@@ -244,14 +244,14 @@ def test_ack_refused_capsule_cites_the_original_verdict(tmp_path):
     _seed_ledger(ledger_path, cap_b)
     state = _state(ledger_path, key_path)
     refusal = handle_delivery(state, json.dumps(adjudication).encode("utf-8"))
-    assert refusal["reason"] == REASON_POLICY_DECLINE
+    assert refusal["reason"] == REASON_POLICY_DECLINED
 
     ack_refused = seal_adjudication_ack_refused(adjudication, refusal, operator="test-org", developer="referee@v1")
     assert ack_refused["chain"]["relation"] == RELATION_ADJUDICATION_ACK_REFUSED
     assert ack_refused["chain"]["parent_capsule_id"] == adjudication["capsule_id"]
     block = ack_refused["model_attestation"]["compute_attestation"]["adjudication_ack_refused"]
     assert block["adjudication_capsule_id"] == adjudication["capsule_id"]
-    assert block["refusal"]["reason"] == REASON_POLICY_DECLINE
+    assert block["refusal"]["reason"] == REASON_POLICY_DECLINED
 
 
 # ---------------------------------------------------------------------------

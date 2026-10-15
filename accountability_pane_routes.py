@@ -11,7 +11,7 @@ already build and render as static HTML
 ``capsule_exchange_tab.build_exchange_list_payload``/``build_exchange_view``
 / Pane C) -- this module derives nothing a second time, it only reads this
 node's own ledger fresh on every call (same "never cache" discipline as
-``evidence_server._merged_evidence_view``/``capsule_sidecar._handle_finder``)
+``evidence_responder.MeshEvidenceStore``/``capsule_sidecar._handle_finder``)
 and hands the records to those existing builders.
 
 Local-only tranche: own ledger, own join-card/history, verified peer

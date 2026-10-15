@@ -17,8 +17,8 @@ What this file proves, offline:
     whole capsule, ``compute_attestation`` included. Removing the block and
     recomputing gives back the baseline ``capsule_id`` exactly.
   * The evidence door (``POST /evidence-request``) answers a record carrying
-    the block the same way it answers one without: an artifact whose bundle
-    verifies offline and serves the record byte-for-byte as logged, the same
+    the block the same way it answers one without: a signed envelope whose
+    bundle verifies offline and serves the record byte-for-byte as logged, the same
     signed refusals, caller invariance across nonces, and tamper detection.
   * Twin adjudication with an injected third-node referee reaches the same
     outcome (verdict, divergence index, prefix digest, margin, referee calls)
@@ -42,6 +42,7 @@ if "model_identity" not in sys.modules:
     sys.modules["model_identity"].model_package_digest = lambda m: ""
 
 import pytest
+from agent_action_capsule import evidence_request as er
 from agent_action_capsule import verify as verify_capsule
 from agent_action_capsule.canonical import jcs
 from agent_action_capsule.contracts import Disposition, EffectRecord
@@ -216,11 +217,17 @@ class _Door:
         self._thread.join(timeout=5)
 
     def ask(self, capsule_id: str, **extra) -> dict:
-        body = json.dumps({"subject": {"kind": "record", "capsule_id": capsule_id}, "coverage": {}, **extra}).encode()
+        """The artifact JSON of the door's verified envelope, or the refusal."""
+        body = json.dumps({"subject": {"record": capsule_id}, "coverage": {"min_freshness": 0}, **extra}).encode()
         req = urllib.request.Request(f"{self.base_url}/evidence-request", data=body, method="POST")
         with urllib.request.urlopen(req, timeout=5) as resp:
             assert resp.status == 200
-            return json.loads(resp.read())
+            reply = er.parse_reply(resp.read())
+        if isinstance(reply, er.Refusal):
+            return reply.to_dict()
+        reply.verify()
+        assert reply.request_digest == er.request_digest(body)
+        return json.loads(reply.artifact)
 
 
 @pytest.fixture
@@ -240,7 +247,7 @@ def test_door_serves_the_carrying_record_as_logged_and_it_verifies(door, shape):
     server, logged = door
     answer = server.ask(logged[shape]["capsule_id"])
 
-    assert answer["subject_kind"] == "record"
+    assert answer["subject"] == {"record": logged[shape]["capsule_id"]}
     (served,) = answer["bundles"]
     assert served["capsule_id"] == logged[shape]["capsule_id"]
     assert jcs(served["receipt"]) == jcs(logged[shape])
@@ -281,7 +288,7 @@ def test_door_detects_tampering_with_the_new_block(door, shape):
 
 def test_door_refusals_unchanged(door):
     server, _logged = door
-    assert server.ask("ff" * 32)["reason"] == "no_such_record"
+    assert server.ask("ff" * 32)["reason"] == "no_such_subject"
 
 
 # ---------------------------------------------------------------------------

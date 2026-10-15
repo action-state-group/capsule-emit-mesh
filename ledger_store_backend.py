@@ -69,7 +69,6 @@ __all__ = [
     "as_ledger_dir",
     "import_flat_ledger_once",
     "is_store_ledger",
-    "materialize_flat_view",
     "open_ledger_store",
     "open_log_source_for_checkpointing",
     "read_all_capsules",
@@ -409,95 +408,6 @@ def read_all_capsules(ledger_dir: Path) -> tuple[list[dict[str, Any]], list[dict
     """
     records, archived, _next_after_seq = read_capsules_page(ledger_dir)
     return records, archived
-
-
-def synthesize_checkpoint_stamp_lines(ledger_dir: Path) -> list[str]:
-    """One ``capsule_emit.ledger.CHECKPOINT_STAMP_KIND`` JSON line per
-    persisted checkpoint in ``ledger_dir/checkpoints.jsonl`` (``[]`` if that
-    sibling file doesn't exist) -- the shape ``capsule_emit.witness.
-    _persist_checkpoint_stamp`` writes for a self-checkpointed ledger.
-
-    This repo's own checkpointing (``checkpointing.CheckpointState``, either
-    over a flat ledger or this migration's ``LedgerStore``) deliberately
-    keeps every checkpoint in that SIBLING file, out-of-band from the
-    capsule stream -- see ``checkpointing.py``'s module docstring for why
-    (the Rust plugin's strict ``Ledger::open()`` replay would break if a
-    checkpoint-stamp line were interleaved into ``capsules.jsonl``).
-    ``capsule_emit.bundle.bundle()`` (what ``evidence_request.answer()``
-    dispatches to) only ever recognizes a checkpoint that arrives IN-BAND,
-    though -- so a caller handing capsule-emit a flat view of this repo's
-    ledger (:func:`materialize_flat_view`, ``evidence_server.
-    _merged_evidence_view``) must fold these in after the real capsule
-    lines, in checkpoint order, never interleaved before the leaves each
-    one covers (which would shift every later leaf's ``seq`` and invalidate
-    inclusion proofs the checkpoint never covered).
-    """
-    checkpoints_path = ledger_dir / "checkpoints.jsonl"
-    if not checkpoints_path.exists():
-        return []
-
-    from capsule_emit.checkpoint import CheckpointRecord
-    from capsule_emit.ledger import CHECKPOINT_STAMP_KIND
-
-    stamp_lines: list[str] = []
-    for raw in checkpoints_path.read_text(encoding="utf-8").splitlines():
-        raw = raw.strip()
-        if not raw:
-            continue
-        cp_line = json.loads(raw)
-        checkpoint_cose_hex = cp_line.pop("checkpoint_cose", None)
-        cp = CheckpointRecord.from_dict(cp_line)
-        stamp_entry: dict[str, Any] = {
-            "kind": CHECKPOINT_STAMP_KIND,
-            "v": 1,
-            "capsule_id": cp.entry_digest(),
-            "checkpoint": cp.to_dict(),
-        }
-        if checkpoint_cose_hex is not None:
-            stamp_entry["checkpoint_cose"] = checkpoint_cose_hex
-        stamp_lines.append(json.dumps(stamp_entry, sort_keys=True))
-    return stamp_lines
-
-
-def materialize_flat_view(ledger_dir: Path) -> Path:
-    """A flat JSONL file path holding every capsule in ``ledger_dir``, in
-    append order, PLUS one synthesized in-band checkpoint-stamp line per
-    entry in the sibling ``checkpoints.jsonl`` (see
-    :func:`synthesize_checkpoint_stamp_lines`) -- for handing to a
-    ``capsule_emit`` function that only understands a flat, self-
-    checkpointed file (``read_ledger``, ``evidence_request.answer``,
-    ``signing.resolve_signer``), without capsule-emit itself needing to
-    learn this repo's store layout or its out-of-band checkpoint
-    convention.
-
-    Fast path: an already-flat ledger dir with no checkpoints.jsonl has
-    nothing to bridge, so this returns the real ``capsules.jsonl`` path
-    unchanged (no copy) -- matching pre-migration behavior exactly for a
-    node that never adopted either the store or checkpointing. Otherwise a
-    FRESH scratch tempfile, never cached (mirrors ``evidence_server.
-    _merged_evidence_view``'s own "re-derive every call" discipline) -- the
-    real ledger (store or flat) is never mutated. Archived segments are
-    silently excluded from the flat view (the caller only ever gets what's
-    actually mounted); a caller that needs to know about the gap should
-    call :func:`read_all_capsules` directly instead.
-    """
-    ledger_dir = as_ledger_dir(ledger_dir)
-    stamp_lines = synthesize_checkpoint_stamp_lines(ledger_dir)
-    if not is_store_ledger(ledger_dir) and not stamp_lines:
-        return ledger_dir / _LEGACY_FLAT_FILENAME
-
-    records, _archived = read_all_capsules(ledger_dir)
-
-    import tempfile
-
-    fd, tmp_name = tempfile.mkstemp(prefix="ledger-flat-view-", suffix=".jsonl")
-    tmp_path = Path(tmp_name)
-    with open(fd, "w", encoding="utf-8") as fh:
-        for record in records:
-            fh.write(json.dumps(record, separators=(",", ":")) + "\n")
-        for stamp_line in stamp_lines:
-            fh.write(stamp_line + "\n")
-    return tmp_path
 
 
 def append_capsule(ledger_dir: Path, capsule: dict[str, Any]) -> None:

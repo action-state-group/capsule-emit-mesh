@@ -22,14 +22,13 @@ Route: ``POST /evidence/deliver``
             this node ever sealed). Refused BEFORE this node's ledger is
             ever touched -- it never ``received()``s a verdict about
             someone else.
-          * ``policy_decline`` -- citations resolve fine (this node's own
+          * ``policy_declined`` -- citations resolve fine (this node's own
             half IS cited), but this node's own policy declines to hold a
-            verdict that names it as the contradicted party. A NEW reason,
-            scoped to this delivery protocol only -- not one of E14's own
-            closed ``capsule_emit.evidence_request.REFUSAL_REASONS`` (this
-            is a different responder with its own decline vocabulary); it
-            reuses that module's ``Refusal`` shape verbatim so it verifies
-            offline the same way.
+            verdict that names it as the contradicted party.
+        Both are registered -00 reasons, signed as -00 refusals
+        (``agent_action_capsule.evidence_request.sign_refusal``), so a
+        delivery refusal verifies offline exactly as an evidence-request
+        refusal does.
 
 Requester side (`deliver_adjudication`) is the one POST above. On a
 refusal, the caller -- not this module, see `seal_adjudication_ack_refused`
@@ -53,7 +52,7 @@ with no rework here, once E17b/E17c wire them.
 convention) -- NOT the richer, nested `x-mesh-poc-v1.owner.owner_id` block
 `capsule_sidecar.build_capsule` actually seals in production today. Wiring
 that reconciliation is E6/E17a's gap, not this module's; when `owner_id` is
-absent (`None`), `policy_decline` is simply never reached -- honest
+absent (`None`), `policy_declined` is simply never reached -- honest
 absence, never a fabricated verdict.
 """
 from __future__ import annotations
@@ -65,9 +64,9 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
+from agent_action_capsule import evidence_request as er
 from agent_action_capsule.emit import emit
 from agent_action_capsule.verify import verify as verify_capsule
-from capsule_emit.evidence_request import Refusal
 from capsule_emit.signing import resolve_signer
 
 from evidence_responder import status_for_refusal_reason
@@ -75,7 +74,7 @@ from ledger_store_backend import append_capsule, read_all_capsules
 
 __all__ = [
     "EVIDENCE_DELIVER_PATH",
-    "REASON_POLICY_DECLINE",
+    "REASON_POLICY_DECLINED",
     "REASON_REQUEST_MALFORMED",
     "RELATION_ADJUDICATION_ACK_REFUSED",
     "deliver_adjudication",
@@ -85,12 +84,9 @@ __all__ = [
 
 EVIDENCE_DELIVER_PATH = "/evidence/deliver"
 
-#: NEW reason, scoped to this delivery protocol only -- see module docstring.
-REASON_POLICY_DECLINE = "policy_decline"
-#: Reused verbatim from `capsule_emit.evidence_request.REASON_REQUEST_MALFORMED`
-#: (same meaning: the request itself doesn't check out) -- named locally so
-#: this module never imports a private symbol to get it.
-REASON_REQUEST_MALFORMED = "request_malformed"
+#: The registered -00 reasons this door refuses with (see module docstring).
+REASON_POLICY_DECLINED = er.REASON_POLICY_DECLINED
+REASON_REQUEST_MALFORMED = er.REASON_REQUEST_MALFORMED
 
 #: The chain.relation for the requester's own record of a refused delivery:
 #: the registered ``follows`` (a record made after the verdict it cites,
@@ -124,13 +120,10 @@ def _owner_id(capsule: dict[str, Any]) -> str | None:
 def _refuse(request_digest: str, reason: str, *, state: Any, issued_at: str) -> dict[str, Any]:
     """Sign a refusal and return its wire dict, with the fabric's additive
     `status` (`[mesh-fabric-vocab-alignment]`) layered on beside `reason` --
-    `WITHHELD` for `policy_decline`, absent for `request_malformed` (see
+    `WITHHELD` for `policy_declined`, absent for `request_malformed` (see
     `evidence_responder.status_for_refusal_reason`'s own docstring)."""
     signer = resolve_signer(str(state.ledger_dir), key_path=state.signing_key_path)
-    stub = Refusal(request_digest=request_digest, reason=reason, issued_at=issued_at, key_id="", sig="")
-    sig, key_id = signer.sign(stub.signing_body())
-    refusal = Refusal(request_digest=request_digest, reason=reason, issued_at=issued_at, key_id=key_id, sig=sig)
-    d = refusal.to_dict()
+    d = er.sign_refusal(request_digest, reason, signer=signer, issued_at=issued_at).to_dict()
     status = status_for_refusal_reason(reason)
     if status is not None:
         d["status"] = status
@@ -178,7 +171,7 @@ def handle_delivery(state: Any, body: bytes, *, now: str | None = None) -> dict[
     own_owner_id = _owner_id(own_half)
     verdict = _adjudication_block(capsule).get("verdict")
     if own_owner_id and verdict == f"contradicted:{own_owner_id}":
-        return _refuse(request_digest, REASON_POLICY_DECLINE, state=state, issued_at=issued_at)
+        return _refuse(request_digest, REASON_POLICY_DECLINED, state=state, issued_at=issued_at)
 
     append_capsule(state.ledger_dir, capsule)
     return {"status": "received"}
@@ -207,7 +200,7 @@ def seal_adjudication_ack_refused(
     """Seal the record the REQUESTER holds when a cited party refuses
     delivery -- citing the original verdict (``prior_capsule_id``) so the
     requester's own chain shows the decline even where the judged node's
-    chain shows nothing (mutant: a ``policy_decline``'d ``contradicted``
+    chain shows nothing (mutant: a ``policy_declined`` ``contradicted``
     twin -- the contradicted party's own chain never carries it; this
     capsule is where it lives instead, discoverable later by a
     ``correlation`` evidence-request subject naming this requester's
@@ -216,13 +209,12 @@ def seal_adjudication_ack_refused(
     ``counterparty_ref`` names that declining counterparty explicitly --
     the ``contradicted:<owner_id>`` suffix of the original verdict, parsed
     back out once here rather than making every caller re-parse it. Without
-    this field a ``correlation{by: counterparty, value: <owner_id>}`` ask
-    of the REQUESTER's own door has nothing to match against
-    (``capsule_emit.evidence_request``'s ``counterparty`` alias set is
-    ``{counterparty_ref}`` plus its own separate scan for a nested
+    this field a ``{"correlation": <owner_id>}`` ask of the REQUESTER's own
+    door has nothing to match against (``evidence_responder
+    .carries_correlation`` matches ``counterparty_ref`` plus a nested
     ``adjudication.verdict`` -- this block is named
     ``adjudication_ack_refused``, not ``adjudication``, so that second path
-    never sees it either); this is what makes the docstring's own
+    never sees it); this is what makes the docstring's own
     "discoverable later" claim actually true. `None` when the original
     verdict was not a ``contradicted:<owner_id>`` shape (never fabricated).
     """

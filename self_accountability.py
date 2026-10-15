@@ -22,10 +22,9 @@ Composes verbs that already exist; re-derives none of their evidence:
     ``twin_adjudicator.AdjudicationHalf``) -- never fabricated here.
   - **shared**: cards/bundles served and refusals issued, via
     [mesh-e14-evidence-responder]. **Honestly absent today**: the responder
-    depends on ``capsule_emit.evidence_request``, an upstream ``capsule-emit``
-    module that has not merged (capsule-emit-mesh PR #83 is CI-red pending
-    capsule-emit PR #148) -- this card must not fabricate a zero for a count
-    it cannot yet take.
+    (``evidence_responder.py``) answers requests, but nothing persists a
+    served/refused count for this card to tally -- this card must not
+    fabricate a zero for a count it cannot yet take.
   - **adjudications**: a tally of sealed adjudication capsules
     (``twin_adjudicator.is_adjudication``, [mesh-e17a-offline-adjudicator])
     that name one of this node's own sealed capsule_ids as either half.
