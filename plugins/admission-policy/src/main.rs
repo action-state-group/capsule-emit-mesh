@@ -17,8 +17,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use capsule_emit::{CapsuleState, HostProvenance, ObservedHostExchange};
-use capsule_producer::capsule::TokenUsage;
+use crate::capsule_emit::{CapsuleState, HostProvenance, ObservedHostExchange};
+use capsule_producer::mesh_poc::TokenUsage;
 use decision::Decision;
 use lifecycle_channel::{
     peer_capsule_id_for_seal, HostServingProvenance, MirrorUsage, ObservedLifecycleEvents,
@@ -226,7 +226,7 @@ async fn chat_completions(
                 .latest_provenance_for_model(&model)
                 .map(host_provenance_from);
 
-            match state.capsules.emit_for_exchange(&capsule_emit::ExchangeRecord {
+            match state.capsules.emit_for_exchange(&crate::capsule_emit::ExchangeRecord {
                 model: &model,
                 client_nonce: client_nonce.as_deref(),
                 request_bytes: &body,

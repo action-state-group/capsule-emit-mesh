@@ -1,5 +1,5 @@
 //! The plugin's own checkpoint cadence: a tokio background task that runs
-//! `capsule_producer::checkpoint::CheckpointState` over this node's ledger,
+//! `capsule_emit::checkpoint::CheckpointState` over this node's ledger,
 //! replacing `checkpoint_daemon.py` once a node cuts over.
 //!
 //! **On by default, local-only (`[mesh-plugin-release-checkpoint-default-flip]`,
@@ -24,8 +24,10 @@
 //! signal, exactly the shape `checkpoint_daemon.py`'s own `run_daemon`
 //! background loop has.
 
-use capsule_producer::anchor::AnchorClient;
-use capsule_producer::checkpoint::{CheckpointCadenceConfig, CheckpointRecord, CheckpointState};
+use ::capsule_emit::anchor::AnchorClient;
+use ::capsule_emit::checkpoint::{
+    CheckpointCadenceConfig, CheckpointRecord, CheckpointState, CheckpointStateError,
+};
 use ed25519_dalek::SigningKey;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -63,7 +65,13 @@ fn is_enabled_for(raw: Option<&str>) -> bool {
 }
 
 fn config_from_env() -> CheckpointCadenceConfig {
-    let mut cfg = CheckpointCadenceConfig::default();
+    let mut cfg = CheckpointCadenceConfig {
+        // No padding records: the sidecar and viewers that read this ledger
+        // (`capsule_sidecar.py` `plugin_ledger_dir`) do not know them yet.
+        // No padding sink is attached either, so this states what happens.
+        pad_bucket: 0,
+        ..CheckpointCadenceConfig::default()
+    };
     if let Ok(v) = std::env::var(ENV_INTERVAL_SECONDS) {
         if let Ok(n) = v.parse::<u64>() {
             cfg.cadence_seconds = n;
@@ -155,7 +163,9 @@ pub fn spawn(
 
     let latest_head = LatestHead::default();
     let latest_head_for_task = latest_head.clone();
-    let anchor = AnchorClient::default();
+    // capsule-emit registers with each configured witness URL through its
+    // own client; the `AnchorClient` its checkpoint calls take is unused.
+    let anchor = AnchorClient::new(String::new());
 
     tokio::spawn(async move {
         if let Some(cp) = report_checkpoint(state.reconnect(&signer, &anchor), "startup reconnect")
@@ -196,7 +206,7 @@ pub fn spawn(
 }
 
 fn report_checkpoint(
-    result: Result<Option<CheckpointRecord>, capsule_producer::checkpoint::CheckpointStateError>,
+    result: Result<Option<CheckpointRecord>, CheckpointStateError>,
     phase: &str,
 ) -> Option<CheckpointRecord> {
     match result {

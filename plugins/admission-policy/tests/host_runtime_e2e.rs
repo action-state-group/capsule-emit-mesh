@@ -838,12 +838,12 @@ async fn allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_
     let keys_dir = host.capsule_data_dir().join("keys");
     let pubkey_pem = std::fs::read_to_string(keys_dir.join("node-key.pub.pem"))
         .expect("plugin persisted its public key");
-    let verifying_key = capsule_producer::keys::load_verifying_key_pem(&pubkey_pem)
+    let verifying_key = capsule_emit::keys::load_verifying_key_pem(&pubkey_pem)
         .expect("parse persisted public key");
 
     let ledger_dir = host.capsule_data_dir().join("ledger");
     let (ledger, report) =
-        capsule_producer::ledger::Ledger::open(&ledger_dir).expect("reopen plugin's ledger");
+        capsule_emit::ledger::Ledger::open(&ledger_dir).expect("reopen plugin's ledger");
     assert!(
         report.valid_entries >= 1,
         "ledger must contain the emitted capsule"
@@ -853,7 +853,7 @@ async fn allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_
         .expect("ledger lookup")
         .expect("capsule_id from the HTTP response must be in the ledger");
 
-    let verify_report = capsule_producer::verify::verify_offline(
+    let verify_report = capsule_emit::verify::verify_offline(
         &entry.capsule,
         &entry.signed_statement,
         &verifying_key,
@@ -894,7 +894,7 @@ async fn allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_
     let mut tampered_statement = entry.signed_statement.clone();
     let last = tampered_statement.len() - 1;
     tampered_statement[last] ^= 0xFF;
-    let tampered_report = capsule_producer::verify::verify_offline(
+    let tampered_report = capsule_emit::verify::verify_offline(
         &entry.capsule,
         &tampered_statement,
         &verifying_key,
@@ -910,7 +910,7 @@ async fn allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_
     let mut mutated_capsule = entry.capsule.clone();
     mutated_capsule["model_attestation"]["compute_attestation"]["agent_output_digest"] =
         serde_json::json!("f".repeat(64));
-    let mutated_id = capsule_producer::jcs::compute_capsule_id(&mutated_capsule)
+    let mutated_id = capsule_emit::jcs::compute_capsule_id(&mutated_capsule)
         .expect("recompute digest over mutated capsule");
     assert_ne!(
         mutated_id, capsule_id,
@@ -919,7 +919,7 @@ async fn allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_
 }
 
 /// Cross-language proof for the same real-host-produced ledger as above:
-/// independent of `capsule_producer::verify::verify_offline` (Rust
+/// independent of `capsule_emit::verify::verify_offline` (Rust
 /// re-verifying its own output), run the actual Python `scitt-cose` +
 /// `agent_action_capsule.verify` reference AND (when `AAC_GO_VERIFY_DIR` is
 /// also set) `scitt-cose-go-verify` -- two different implementations in two
@@ -928,14 +928,16 @@ async fn allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_
 /// through the real host produced, and confirm both also say the chain and
 /// every COSE_Sign1 statement are byte-exact and valid.
 ///
-/// Gated on `AAC_PYTHON` (same opt-in shape as
-/// `capsule-producer/tests/chain_ledger_conformance.rs` /
-/// `cross_language_conformance.rs`) so it degrades to a skip, not a failure,
-/// when the reference implementation isn't on this machine. Point it at a
-/// `python3` whose `PYTHONPATH` resolves `scitt_cose` to the
-/// `action-state-group/scitt-cose` `main` checkout (0.2.2) and
+/// Gated on `AAC_PYTHON` and `AAC_VERIFY_LEDGER_SCRIPT` (same opt-in shape
+/// as capsule-emit's `tests/chain_ledger_conformance.rs`) so it degrades to a
+/// skip, not a failure, when the reference implementation isn't on this
+/// machine. The script is capsule-emit's own ledger oracle,
+/// `rust/capsule-emit/tests/scripts/verify_rust_ledger.py`. Point
+/// `AAC_PYTHON` at a `python3` whose `PYTHONPATH` resolves `scitt_cose` to
+/// the `action-state-group/scitt-cose` `main` checkout (0.2.2) and
 /// `agent_action_capsule` to `agent-action-capsule/python` — e.g.:
 ///   AAC_PYTHON=python3 \
+///   AAC_VERIFY_LEDGER_SCRIPT=/path/to/capsule-emit/rust/capsule-emit/tests/scripts/verify_rust_ledger.py \
 ///   PYTHONPATH=/path/to/scitt-cose:/path/to/agent-action-capsule/python \
 ///   AAC_GO_VERIFY_DIR=/path/to/scitt-cose/scitt-cose-go-verify \
 ///     cargo test --test host_runtime_e2e --ignored --test-threads=1 \
@@ -945,6 +947,10 @@ async fn allowed_exchange_emits_a_signed_chained_ledgered_capsule_and_publishes_
 async fn real_host_ledger_cross_language_verifies_against_python_scitt_cose_reference() {
     let Ok(python) = std::env::var("AAC_PYTHON") else {
         eprintln!("AAC_PYTHON not set; skipping cross-language check (see module docs)");
+        return;
+    };
+    let Ok(verify_script) = std::env::var("AAC_VERIFY_LEDGER_SCRIPT") else {
+        eprintln!("AAC_VERIFY_LEDGER_SCRIPT not set; skipping cross-language check (see module docs)");
         return;
     };
 
@@ -973,11 +979,9 @@ async fn real_host_ledger_cross_language_verifies_against_python_scitt_cose_refe
         "plugin must have persisted its public key"
     );
 
-    let verify_script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../capsule-producer/tests/scripts/verify_rust_ledger.py");
     assert!(
-        verify_script.is_file(),
-        "expected capsule-producer's own cross-language oracle at {verify_script:?}"
+        std::path::Path::new(&verify_script).is_file(),
+        "expected capsule-emit's cross-language ledger oracle at {verify_script:?}"
     );
 
     let output = std::process::Command::new(&python)
@@ -1002,7 +1006,7 @@ async fn real_host_ledger_cross_language_verifies_against_python_scitt_cose_refe
 
     // Second, independent language: `scitt-cose-go-verify` (veraison/go-cose)
     // re-verifies the first capsule's own signed statement -- same idiom as
-    // `capsule-producer/tests/cross_language_conformance.rs`'s
+    // capsule-emit's `tests/cross_language_conformance.rs`'s
     // `run_go_verifier`. Optional: only the Python check above is required
     // for this test to mean something; this is additional, not a substitute.
     if let Ok(go_verify_dir) = std::env::var("AAC_GO_VERIFY_DIR") {

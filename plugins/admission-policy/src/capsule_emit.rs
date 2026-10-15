@@ -12,15 +12,16 @@
 //! implementations. Mutating the actual content still changes `capsule_id`.
 
 use crate::lifecycle_channel::{dispatch_path_wire_value, role_for_dispatch_path, DispatchPath};
-use capsule_producer::capsule::{
-    seal, CapsuleInput, ChainLink, HostBinding, MeshPocV1, ServingProvenance, TokenUsage,
+use ::capsule_emit::capsule::{
+    fresh_store_nonce, payload_bytes, seal, CapsuleInput, ChainLink, HostBinding,
 };
-use capsule_producer::cose::{build_signed_statement, SignedStatementInput};
-use capsule_producer::jcs;
-use capsule_producer::keys::{self, KeyPair};
-use capsule_producer::ledger::Ledger;
-use capsule_producer::sequence::SequenceCounterStore;
-use capsule_producer::timestamp::utc_now_iso8601;
+use ::capsule_emit::cose::{build_signed_statement, SignedStatementInput};
+use ::capsule_emit::jcs;
+use ::capsule_emit::keys::{self, KeyPair};
+use ::capsule_emit::ledger::Ledger;
+use ::capsule_emit::sequence::SequenceCounterStore;
+use ::capsule_emit::timestamp::utc_now_iso8601;
+use capsule_producer::mesh_poc::{self, MeshPocV1, ServingProvenance, TokenUsage};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -132,11 +133,21 @@ fn python_repr_f64(f: f64) -> String {
     }
 }
 
+/// Parse a request/response body the way the reference does. capsule-emit
+/// builds serde_json with `arbitrary_precision`, under which a plain
+/// `serde_json::from_slice` reads the object
+/// `{"$serde_json::private::Number": "1"}` as the number `1`, so two
+/// different bodies would get one digest. AAC's strict decoder keeps it an
+/// object.
+fn decode_body(bytes: &[u8]) -> Result<Value, jcs::DecodeError> {
+    jcs::decode_record(bytes)
+}
+
 /// The canonical JSON-DIGEST of a request/response body: parse as JSON,
 /// stringify floats, then `jcs::json_digest`. See the module docs for why
 /// this replaces a raw hash of the wire bytes.
 fn canonical_body_digest(bytes: &[u8]) -> anyhow::Result<String> {
-    let value: Value = serde_json::from_slice(bytes)?;
+    let value = decode_body(bytes)?;
     Ok(jcs::json_digest(&stringify_floats(value))?)
 }
 
@@ -147,7 +158,7 @@ fn canonical_body_digest(bytes: &[u8]) -> anyhow::Result<String> {
 /// is the only honest source of usage the plugin has: the counts come from the
 /// response the host actually produced, not from anything this plugin invents.
 fn parse_usage(response_bytes: &[u8]) -> Option<TokenUsage> {
-    let value: Value = serde_json::from_slice(response_bytes).ok()?;
+    let value = decode_body(response_bytes).ok()?;
     let usage = value.get("usage")?;
     let prompt_tokens = usage.get("prompt_tokens")?.as_u64()?;
     let completion_tokens = usage.get("completion_tokens")?.as_u64()?;
@@ -199,7 +210,7 @@ const GENERATION_PARAM_KEYS: &[&str] = &[
 /// A non-JSON or non-object body yields an empty map (no params claimed).
 fn parse_generation_parameters(request_bytes: &[u8]) -> Map<String, Value> {
     let mut out = Map::new();
-    let Ok(Value::Object(request)) = serde_json::from_slice::<Value>(request_bytes) else {
+    let Ok(Value::Object(request)) = decode_body(request_bytes) else {
         return out;
     };
     for &key in GENERATION_PARAM_KEYS {
@@ -225,7 +236,7 @@ fn parse_generation_parameters(request_bytes: &[u8]) -> Map<String, Value> {
 /// reasoning are strings/structural JSON with no floats, so plain JCS matches
 /// the Python reference exactly.
 fn output_sub_digests(response_bytes: &[u8]) -> (Option<String>, Option<String>) {
-    let Ok(value) = serde_json::from_slice::<Value>(response_bytes) else {
+    let Ok(value) = decode_body(response_bytes) else {
         return (None, None);
     };
     let mut tool_calls: Vec<Value> = Vec::new();
@@ -341,7 +352,7 @@ pub struct CapsuleState {
     node_id: String,
     /// Per-`(self, counterparty)` monotone `seq`/`prev_seq` cache, persisted
     /// beside the ledger at `<data_dir>/sequence_counters.json` (see
-    /// `capsule_producer::sequence` for why this cache is never the source
+    /// `capsule_emit::sequence` for why this cache is never the source
     /// of truth for continuity).
     sequence_counters: Mutex<SequenceCounterStore>,
     /// This node's own mesh identity, LEARNED from observed traffic -- see
@@ -410,7 +421,7 @@ impl CapsuleState {
     /// Loads (or creates, on first run) a persistent Ed25519 signing key and
     /// opens the durable local ledger under `data_dir` -- both restart-safe,
     /// mirroring the acceptance already proven in isolation by
-    /// `mesh-rust-capsule-production-m2`'s `chain_ledger_conformance` test.
+    /// capsule-emit's `tests/chain_ledger_conformance.rs` (rust/capsule-emit).
     pub fn open(data_dir: &Path, node_id: impl Into<String>) -> anyhow::Result<Self> {
         let keys = keys::load_or_create(&data_dir.join("keys"))?;
         let (ledger, report) = Ledger::open(&data_dir.join("ledger"))?;
@@ -527,18 +538,100 @@ impl CapsuleState {
             .expect("sequence counter mutex poisoned")
             .next_seq(&self.node_id, &requesting_party_id)?;
 
+        let mesh = MeshPocV1 {
+            client_nonce: client_nonce.unwrap_or("sidecar-generated").to_string(),
+            client_nonce_source: if client_nonce.is_some() {
+                "client_supplied"
+            } else {
+                "sidecar_generated_fallback"
+            }
+            .to_string(),
+            // Renamed from the overclaiming `model_package_digest`: this is
+            // SHA-256 of the model NAME only, not the weights/package. The
+            // real package digest lives in the Python `model_identity.py`
+            // path; the live plugin only has the request's model name.
+            model_name_digest: hex_sha256(model.as_bytes()),
+            serving_provenance: ServingProvenance {
+                // Prefer the host event's serving node id; fall back to
+                // this node's LEARNED mesh identity (real domain, never
+                // the `PLUGIN_ID` plugin-type label) when the host
+                // reported none; honest "unknown" when nothing has been
+                // learned yet -- never a fabricated identity claim.
+                served_by_node_id: host.served_by_node_id.clone().unwrap_or_else(|| {
+                    self.learned_self_node_id()
+                        .unwrap_or_else(|| "unknown".to_string())
+                }),
+                // This admitted exchange came through this plugin's own
+                // `/v1` handler directly -- no host envelope, so no
+                // dispatch_path signal exists on this path at all.
+                dispatch_path: None,
+                requesting_party: requesting_party_id.clone(),
+                exchange_id: exchange_id.unwrap_or("unknown").to_string(),
+                hostname: host.hostname.clone(),
+                // Quantization from the host serving-provenance block when it
+                // carried one; else "unknown" — never guessed.
+                quantization: host
+                    .quantization
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                // Serving hardware from the host serving-provenance block.
+                // `hardware_device` stays None (host carries is_soc, not a
+                // cpu/cuda/metal device enum) — never fabricated.
+                hardware_gpu: host.gpu.clone(),
+                hardware_vram_bytes: host.vram_bytes,
+                hardware_device: None,
+                hardware_is_soc: host.is_soc,
+                // Model identity / fidelity from the host block.
+                architecture: host.architecture.clone(),
+                context_length: host.context_length,
+                parameter_size: host.parameter_size.clone(),
+                layer_count: host.layer_count,
+                model_identity_hash: host.model_identity_hash.clone(),
+                weights_digest: host.weights_digest.clone(),
+                model_canonical_ref: host.model_canonical_ref.clone(),
+                model_revision: host.model_revision.clone(),
+                // Real token counts from the response body's `usage`, if any.
+                usage,
+                seq: sequence.seq,
+                prev_seq: sequence.prev_seq,
+                // This path serves the exchange itself -- there is no
+                // peer half to name (this node IS the server), never a
+                // fabricated self-reference.
+                peer_capsule_id: None,
+                peer_capsule_id_provenance: None,
+                // This path is admitted directly by this plugin's own
+                // `/v1` handler -- there is no mesh terminal envelope to
+                // read an ambient twin bracket off of, so this is never
+                // twinned on this path.
+                twin_bracket_id: None,
+            },
+            // This exchange was admitted and served by THIS plugin's own
+            // `/v1` handler -- unambiguously "served", not a guess: there
+            // is no dispatch_path signal on this path because there is no
+            // ambiguity to resolve on it.
+            role: "served".to_string(),
+            observation_point: None,
+            generation_parameters,
+            latency_ms: format!("{latency_ms:.3}"),
+            binary_attestation,
+            // rung 3c (tee_measured) producer leg is HW-gated (Intel TDX
+            // Confidential VM only) and not wired in on this path -- honest
+            // absence, never fabricated. See `capsule_producer::tee_attest`.
+            tee_attestation: None,
+        };
+
         let input = CapsuleInput {
             action_id: format!("mesh-poc/capsule-emit-mesh-integration/{agent_input_digest}"),
             action_type: "decide".to_string(),
             operator: "capsule-emit-mesh-poc-rust".to_string(),
-            developer: "capsule-producer/0.2.0".to_string(),
+            developer: capsule_producer::DEVELOPER.to_string(),
             timestamp: utc_now_iso8601(),
             domain: Some("action".to_string()),
             provenance: Some("collector".to_string()),
             model_id: model.to_string(),
             provider: "mesh-llm".to_string(),
             agent_input_digest: agent_input_digest.clone(),
-            agent_output_digest: agent_output_digest.clone(),
+            agent_output_digest: Some(agent_output_digest.clone()),
             // OPTIONAL labeled sub-digests over the served response body; absent
             // when the model emitted none (never fabricated).
             tool_calls_digest,
@@ -552,92 +645,12 @@ impl CapsuleState {
             // (`os_measured` on macOS, else `self_measured`) when the binary
             // was measurable; the old `0*64` placeholder ONLY when it was not
             // (graceful degradation, never a fabricated hash).
-            runtime: runtime_field(&binary_attestation),
-            mesh_poc: MeshPocV1 {
-                client_nonce: client_nonce.unwrap_or("sidecar-generated").to_string(),
-                client_nonce_source: if client_nonce.is_some() {
-                    "client_supplied"
-                } else {
-                    "sidecar_generated_fallback"
-                }
-                .to_string(),
-                // Renamed from the overclaiming `model_package_digest`: this is
-                // SHA-256 of the model NAME only, not the weights/package. The
-                // real package digest lives in the Python `model_identity.py`
-                // path; the live plugin only has the request's model name.
-                model_name_digest: hex_sha256(model.as_bytes()),
-                serving_provenance: ServingProvenance {
-                    // Prefer the host event's serving node id; fall back to
-                    // this node's LEARNED mesh identity (real domain, never
-                    // the `PLUGIN_ID` plugin-type label) when the host
-                    // reported none; honest "unknown" when nothing has been
-                    // learned yet -- never a fabricated identity claim.
-                    served_by_node_id: host.served_by_node_id.clone().unwrap_or_else(|| {
-                        self.learned_self_node_id()
-                            .unwrap_or_else(|| "unknown".to_string())
-                    }),
-                    // This admitted exchange came through this plugin's own
-                    // `/v1` handler directly -- no host envelope, so no
-                    // dispatch_path signal exists on this path at all.
-                    dispatch_path: None,
-                    requesting_party: requesting_party_id.clone(),
-                    exchange_id: exchange_id.unwrap_or("unknown").to_string(),
-                    hostname: host.hostname.clone(),
-                    // Quantization from the host serving-provenance block when it
-                    // carried one; else "unknown" — never guessed.
-                    quantization: host
-                        .quantization
-                        .clone()
-                        .unwrap_or_else(|| "unknown".to_string()),
-                    // Serving hardware from the host serving-provenance block.
-                    // `hardware_device` stays None (host carries is_soc, not a
-                    // cpu/cuda/metal device enum) — never fabricated.
-                    hardware_gpu: host.gpu.clone(),
-                    hardware_vram_bytes: host.vram_bytes,
-                    hardware_device: None,
-                    hardware_is_soc: host.is_soc,
-                    // Model identity / fidelity from the host block.
-                    architecture: host.architecture.clone(),
-                    context_length: host.context_length,
-                    parameter_size: host.parameter_size.clone(),
-                    layer_count: host.layer_count,
-                    model_identity_hash: host.model_identity_hash.clone(),
-                    weights_digest: host.weights_digest.clone(),
-                    model_canonical_ref: host.model_canonical_ref.clone(),
-                    model_revision: host.model_revision.clone(),
-                    // Real token counts from the response body's `usage`, if any.
-                    usage,
-                    seq: sequence.seq,
-                    prev_seq: sequence.prev_seq,
-                    // This path serves the exchange itself -- there is no
-                    // peer half to name (this node IS the server), never a
-                    // fabricated self-reference.
-                    peer_capsule_id: None,
-                    peer_capsule_id_provenance: None,
-                    // This path is admitted directly by this plugin's own
-                    // `/v1` handler -- there is no mesh terminal envelope to
-                    // read an ambient twin bracket off of, so this is never
-                    // twinned on this path.
-                    twin_bracket_id: None,
-                },
-                // This exchange was admitted and served by THIS plugin's own
-                // `/v1` handler -- unambiguously "served", not a guess: there
-                // is no dispatch_path signal on this path because there is no
-                // ambiguity to resolve on it.
-                role: "served".to_string(),
-                observation_point: None,
-                generation_parameters,
-                latency_ms: format!("{latency_ms:.3}"),
-                binary_attestation,
-                // rung 3c (tee_measured) producer leg is HW-gated (Intel TDX
-                // Confidential VM only) and not wired in on this path -- honest
-                // absence, never fabricated. See `capsule_producer::tee_attest`.
-                tee_attestation: None,
-            },
+            runtime: runtime_field(&mesh.binary_attestation),
+            compute_attestation_extensions: mesh_poc::extensions(&mesh, model),
             effect_status: "confirmed".to_string(),
             effect_type: "inference_completion".to_string(),
-            effect_request_digest: agent_input_digest,
-            effect_response_digest: agent_output_digest,
+            effect_request_digest: Some(agent_input_digest),
+            effect_response_digest: Some(agent_output_digest),
             effect_attestation: "gate_executed".to_string(),
             disposition_decision: "accept".to_string(),
             // §5.4: disposition.approver MUST be `human` or `policy` -- the
@@ -647,6 +660,7 @@ impl CapsuleState {
             disposition_human_disposed: false,
             disposition_verdict_class: "executed".to_string(),
             chain,
+            store_nonce: fresh_store_nonce(),
         };
 
         let capsule = seal(&input)?;
@@ -654,7 +668,7 @@ impl CapsuleState {
             .as_str()
             .expect("seal() always sets capsule_id")
             .to_string();
-        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let payload = payload_bytes(&capsule);
         let statement = build_signed_statement(
             &SignedStatementInput {
                 payload: &payload,
@@ -870,7 +884,7 @@ impl CapsuleState {
         // independent reverse-direction composition binding under mesh-llm's
         // OWN construction -- not a re-derivation of `agent_input_digest`
         // above, and never presumed byte-equal to it (see
-        // `capsule_producer::capsule::HostBinding`'s INDEPENDENCE RULE). This
+        // `capsule_producer::mesh_poc::validate_host_binding`'s INDEPENDENCE RULE). This
         // is what lets the record join mesh-llm's own ops log even if a
         // future mesh-llm canonicalization change makes the two values
         // diverge: the record already carries mesh-llm's digest labeled AS
@@ -878,8 +892,8 @@ impl CapsuleState {
         // null -- when the host forwarded none.
         let host_binding = request_digest.map(|rd| HostBinding {
             digest: rd.to_string(),
-            construction: capsule_producer::capsule::MESH_LLM_REQUEST_BODY_SHA256_V1.to_string(),
-            purpose: capsule_producer::capsule::HOST_LOG_JOIN.to_string(),
+            construction: mesh_poc::MESH_LLM_REQUEST_BODY_SHA256_V1.to_string(),
+            purpose: mesh_poc::HOST_LOG_JOIN.to_string(),
         });
 
         // agent_output_digest: PREFER the host-forwarded canonical digest of the
@@ -944,18 +958,105 @@ impl CapsuleState {
             .expect("sequence counter mutex poisoned")
             .next_seq(&self.node_id, "unknown")?;
 
+        let mesh = MeshPocV1 {
+            // The host-forwarded terminal-event nonce, when present
+            // (`[mesh-requester-side-seal-on-proxy]`, 2026-09-07) -- THE JOIN
+            // KEY between a proxied exchange's two sealed halves (see
+            // `ObservedHostExchange::nonce`). A host that did not forward one
+            // (predates the forwarding, or a locally-served exchange whose
+            // client request never carried this plugin's own handler) keeps
+            // the pre-existing honest default -- never a fabricated nonce.
+            client_nonce: nonce
+                .map(str::to_string)
+                .unwrap_or_else(|| "host-served-no-nonce".to_string()),
+            client_nonce_source: if nonce.is_some() {
+                "host_forwarded_nonce"
+            } else {
+                "host_served_observed"
+            }
+            .to_string(),
+            model_name_digest: hex_sha256(model.as_bytes()),
+            serving_provenance: ServingProvenance {
+                // Fall back to this node's LEARNED mesh identity ONLY
+                // when dispatch_path itself says this node served the
+                // exchange -- for a RemoteMesh event with no
+                // served_by_node_id (bare upstream, pre-enrichment), the
+                // honest value is "unknown", never a fabricated claim
+                // that this node served an exchange it just labeled
+                // `role: "requested"`. And when this IS a served event
+                // but nothing has been learned yet (no prior enrichment
+                // observed), "unknown" is still the honest answer --
+                // never the `PLUGIN_ID` plugin-type label.
+                served_by_node_id: host.served_by_node_id.clone().unwrap_or_else(|| {
+                    if role_for_dispatch_path(dispatch_path) == "served" {
+                        learned_self.clone().unwrap_or_else(|| "unknown".to_string())
+                    } else {
+                        "unknown".to_string()
+                    }
+                }),
+                dispatch_path: Some(dispatch_path_wire_value(dispatch_path).to_string()),
+                // Requesting party is not carried on the host-served
+                // observe path -- honest "unknown", never invented.
+                requesting_party: "unknown".to_string(),
+                exchange_id: exchange_id.unwrap_or("unknown").to_string(),
+                hostname: host.hostname.clone(),
+                quantization: host
+                    .quantization
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                hardware_gpu: host.gpu.clone(),
+                hardware_vram_bytes: host.vram_bytes,
+                hardware_device: None,
+                hardware_is_soc: host.is_soc,
+                architecture: host.architecture.clone(),
+                context_length: host.context_length,
+                parameter_size: host.parameter_size.clone(),
+                layer_count: host.layer_count,
+                model_identity_hash: host.model_identity_hash.clone(),
+                weights_digest: host.weights_digest.clone(),
+                model_canonical_ref: host.model_canonical_ref.clone(),
+                model_revision: host.model_revision.clone(),
+                // The REAL token counts from the host terminal event.
+                usage,
+                seq: sequence.seq,
+                prev_seq: sequence.prev_seq,
+                // The peer's self-asserted capsule id for its own half of
+                // this exchange, forwarded verbatim off the host's
+                // RemoteMesh terminal envelope -- present only on the
+                // requester side (see `ObservedHostExchange::
+                // peer_capsule_id` doc), never fabricated when absent.
+                peer_capsule_id: peer_capsule_id.map(str::to_string),
+                peer_capsule_id_provenance: peer_capsule_id_provenance.map(str::to_string),
+                // Forwarded verbatim off the terminal envelope -- this
+                // plugin never mints or derives one. `None` on every
+                // exchange that wasn't ambiently twinned.
+                twin_bracket_id: twin_bracket_id.map(str::to_string),
+            },
+            role,
+            observation_point,
+            generation_parameters,
+            // Latency is not carried on the observe path (the plugin did not
+            // time the host's own dispatch) -- honest zero-marker, not faked.
+            latency_ms: "0.000".to_string(),
+            binary_attestation,
+            // rung 3c (tee_measured) producer leg is HW-gated (Intel TDX
+            // Confidential VM only) and not wired in on this path -- honest
+            // absence, never fabricated. See `capsule_producer::tee_attest`.
+            tee_attestation: None,
+        };
+
         let input = CapsuleInput {
             action_id: format!("mesh-poc/capsule-emit-mesh-host-served/{agent_input_digest}"),
             action_type: "decide".to_string(),
             operator: "capsule-emit-mesh-poc-rust".to_string(),
-            developer: "capsule-producer/0.2.0".to_string(),
+            developer: capsule_producer::DEVELOPER.to_string(),
             timestamp: utc_now_iso8601(),
             domain: Some("action".to_string()),
             provenance: Some("collector".to_string()),
             model_id: model.to_string(),
             provider: "mesh-llm".to_string(),
             agent_input_digest: agent_input_digest.clone(),
-            agent_output_digest: agent_output_digest.clone(),
+            agent_output_digest: Some(agent_output_digest.clone()),
             // The REAL labeled sub-digests the host forwarded off the response
             // body -- OPTIONAL, absent when the model emitted none (never
             // fabricated). This is where the real `tool_calls_digest` lands.
@@ -966,103 +1067,21 @@ impl CapsuleState {
             // host serving runtime (see the note above) -- labeled as such in the
             // runtime name. Real self-measured hash when measurable; `0*64`
             // placeholder only on graceful degradation.
-            runtime: observer_runtime_field(&binary_attestation),
-            mesh_poc: MeshPocV1 {
-                // The host-forwarded terminal-event nonce, when present
-                // (`[mesh-requester-side-seal-on-proxy]`, 2026-09-07) -- THE JOIN
-                // KEY between a proxied exchange's two sealed halves (see
-                // `ObservedHostExchange::nonce`). A host that did not forward one
-                // (predates the forwarding, or a locally-served exchange whose
-                // client request never carried this plugin's own handler) keeps
-                // the pre-existing honest default -- never a fabricated nonce.
-                client_nonce: nonce
-                    .map(str::to_string)
-                    .unwrap_or_else(|| "host-served-no-nonce".to_string()),
-                client_nonce_source: if nonce.is_some() {
-                    "host_forwarded_nonce"
-                } else {
-                    "host_served_observed"
-                }
-                .to_string(),
-                model_name_digest: hex_sha256(model.as_bytes()),
-                serving_provenance: ServingProvenance {
-                    // Fall back to this node's LEARNED mesh identity ONLY
-                    // when dispatch_path itself says this node served the
-                    // exchange -- for a RemoteMesh event with no
-                    // served_by_node_id (bare upstream, pre-enrichment), the
-                    // honest value is "unknown", never a fabricated claim
-                    // that this node served an exchange it just labeled
-                    // `role: "requested"`. And when this IS a served event
-                    // but nothing has been learned yet (no prior enrichment
-                    // observed), "unknown" is still the honest answer --
-                    // never the `PLUGIN_ID` plugin-type label.
-                    served_by_node_id: host.served_by_node_id.clone().unwrap_or_else(|| {
-                        if role_for_dispatch_path(dispatch_path) == "served" {
-                            learned_self.clone().unwrap_or_else(|| "unknown".to_string())
-                        } else {
-                            "unknown".to_string()
-                        }
-                    }),
-                    dispatch_path: Some(dispatch_path_wire_value(dispatch_path).to_string()),
-                    // Requesting party is not carried on the host-served
-                    // observe path -- honest "unknown", never invented.
-                    requesting_party: "unknown".to_string(),
-                    exchange_id: exchange_id.unwrap_or("unknown").to_string(),
-                    hostname: host.hostname.clone(),
-                    quantization: host
-                        .quantization
-                        .clone()
-                        .unwrap_or_else(|| "unknown".to_string()),
-                    hardware_gpu: host.gpu.clone(),
-                    hardware_vram_bytes: host.vram_bytes,
-                    hardware_device: None,
-                    hardware_is_soc: host.is_soc,
-                    architecture: host.architecture.clone(),
-                    context_length: host.context_length,
-                    parameter_size: host.parameter_size.clone(),
-                    layer_count: host.layer_count,
-                    model_identity_hash: host.model_identity_hash.clone(),
-                    weights_digest: host.weights_digest.clone(),
-                    model_canonical_ref: host.model_canonical_ref.clone(),
-                    model_revision: host.model_revision.clone(),
-                    // The REAL token counts from the host terminal event.
-                    usage,
-                    seq: sequence.seq,
-                    prev_seq: sequence.prev_seq,
-                    // The peer's self-asserted capsule id for its own half of
-                    // this exchange, forwarded verbatim off the host's
-                    // RemoteMesh terminal envelope -- present only on the
-                    // requester side (see `ObservedHostExchange::
-                    // peer_capsule_id` doc), never fabricated when absent.
-                    peer_capsule_id: peer_capsule_id.map(str::to_string),
-                    peer_capsule_id_provenance: peer_capsule_id_provenance.map(str::to_string),
-                    // Forwarded verbatim off the terminal envelope -- this
-                    // plugin never mints or derives one. `None` on every
-                    // exchange that wasn't ambiently twinned.
-                    twin_bracket_id: twin_bracket_id.map(str::to_string),
-                },
-                role,
-                observation_point,
-                generation_parameters,
-                // Latency is not carried on the observe path (the plugin did not
-                // time the host's own dispatch) -- honest zero-marker, not faked.
-                latency_ms: "0.000".to_string(),
-                binary_attestation,
-                // rung 3c (tee_measured) producer leg is HW-gated (Intel TDX
-                // Confidential VM only) and not wired in on this path -- honest
-                // absence, never fabricated. See `capsule_producer::tee_attest`.
-                tee_attestation: None,
-            },
+            runtime: observer_runtime_field(&mesh.binary_attestation),
+            compute_attestation_extensions: mesh_poc::extensions(&mesh, model),
             effect_status: "confirmed".to_string(),
             effect_type: "inference_completion".to_string(),
-            effect_request_digest: agent_input_digest,
-            effect_response_digest: agent_output_digest,
+            // Only a real request digest: absent, never the
+            // `unknown-request:` sentinel `agent_input_digest` falls back to.
+            effect_request_digest: request_digest.map(str::to_string),
+            effect_response_digest: Some(agent_output_digest),
             effect_attestation: "host_served_observed".to_string(),
             disposition_decision: "accept".to_string(),
             disposition_approver: "policy".to_string(),
             disposition_human_disposed: false,
             disposition_verdict_class: "executed".to_string(),
             chain,
+            store_nonce: fresh_store_nonce(),
         };
 
         let capsule = seal(&input)?;
@@ -1070,7 +1089,7 @@ impl CapsuleState {
             .as_str()
             .expect("seal() always sets capsule_id")
             .to_string();
-        let payload = capsule_producer::capsule::payload_bytes(&capsule);
+        let payload = payload_bytes(&capsule);
         let statement = build_signed_statement(
             &SignedStatementInput {
                 payload: &payload,
@@ -1092,6 +1111,23 @@ impl CapsuleState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Under capsule-emit's `arbitrary_precision` serde_json, a plain
+    /// `from_slice` reads this reserved-name object as the number 1. The
+    /// body digest must still tell the two bodies apart.
+    #[test]
+    fn number_token_member_is_not_read_as_a_number() {
+        let number = br#"{"seed":1}"#;
+        let object = br#"{"seed":{"$serde_json::private::Number":"1"}}"#;
+        assert_ne!(
+            canonical_body_digest(number).unwrap(),
+            canonical_body_digest(object).unwrap()
+        );
+        assert_eq!(
+            parse_generation_parameters(object)["seed"],
+            json!({"$serde_json::private::Number": "1"})
+        );
+    }
 
     /// PARITY PIN: `output_sub_digests` over the REAL SETI@Home / web_search
     /// response computes a `tool_calls_digest` byte-for-byte identical to the
@@ -1256,7 +1292,7 @@ mod tests {
             // byte-compare the capsule.json against the COSE payload.
             std::fs::write(
                 export.join("SEALED-with-generation-params.json"),
-                capsule_producer::capsule::payload_bytes(&emitted.capsule),
+                payload_bytes(&emitted.capsule),
             )
             .expect("write capsule");
             let cose_src = dir
@@ -1347,18 +1383,18 @@ mod tests {
         );
         assert_eq!(
             ca["host_binding"]["construction"],
-            capsule_producer::capsule::MESH_LLM_REQUEST_BODY_SHA256_V1
+            mesh_poc::MESH_LLM_REQUEST_BODY_SHA256_V1
         );
         assert_eq!(
             ca["host_binding"]["purpose"],
-            capsule_producer::capsule::HOST_LOG_JOIN
+            mesh_poc::HOST_LOG_JOIN
         );
         // Both are the SAME value here (this rig forwards one digest for
         // both), but structurally they are two independent claims: the
         // capsule carries them under two different keys, and the sealed
         // capsule validates structurally without comparing the two.
         assert_eq!(ca["agent_input_digest"], ca["host_binding"]["digest"]);
-        assert!(capsule_producer::capsule::validate_host_binding(&emitted.capsule).is_ok());
+        assert!(mesh_poc::validate_host_binding(&emitted.capsule).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1393,7 +1429,7 @@ mod tests {
             ca.get("host_binding").is_none(),
             "no host-forwarded digest -> host_binding must be absent, not null"
         );
-        assert!(capsule_producer::capsule::validate_host_binding(&emitted.capsule).is_ok());
+        assert!(mesh_poc::validate_host_binding(&emitted.capsule).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2554,7 +2590,7 @@ mod tests {
             .lookup(&peer_emitted.capsule_id)
             .expect("lookup ok")
             .expect("peer capsule in ledger");
-        let peer_report = capsule_producer::verify::verify_offline(
+        let peer_report = ::capsule_emit::verify::verify_offline(
             &peer_entry.capsule,
             &peer_entry.signed_statement,
             &peer_vk,
@@ -2573,7 +2609,7 @@ mod tests {
             .lookup(&router_emitted.capsule_id)
             .expect("lookup ok")
             .expect("router capsule in ledger");
-        let router_report = capsule_producer::verify::verify_offline(
+        let router_report = ::capsule_emit::verify::verify_offline(
             &router_entry.capsule,
             &router_entry.signed_statement,
             &router_vk,
