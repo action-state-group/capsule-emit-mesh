@@ -133,11 +133,21 @@ fn python_repr_f64(f: f64) -> String {
     }
 }
 
+/// Parse a request/response body the way the reference does. capsule-emit
+/// builds serde_json with `arbitrary_precision`, under which a plain
+/// `serde_json::from_slice` reads the object
+/// `{"$serde_json::private::Number": "1"}` as the number `1`, so two
+/// different bodies would get one digest. AAC's strict decoder keeps it an
+/// object.
+fn decode_body(bytes: &[u8]) -> Result<Value, jcs::DecodeError> {
+    jcs::decode_record(bytes)
+}
+
 /// The canonical JSON-DIGEST of a request/response body: parse as JSON,
 /// stringify floats, then `jcs::json_digest`. See the module docs for why
 /// this replaces a raw hash of the wire bytes.
 fn canonical_body_digest(bytes: &[u8]) -> anyhow::Result<String> {
-    let value: Value = serde_json::from_slice(bytes)?;
+    let value = decode_body(bytes)?;
     Ok(jcs::json_digest(&stringify_floats(value))?)
 }
 
@@ -148,7 +158,7 @@ fn canonical_body_digest(bytes: &[u8]) -> anyhow::Result<String> {
 /// is the only honest source of usage the plugin has: the counts come from the
 /// response the host actually produced, not from anything this plugin invents.
 fn parse_usage(response_bytes: &[u8]) -> Option<TokenUsage> {
-    let value: Value = serde_json::from_slice(response_bytes).ok()?;
+    let value = decode_body(response_bytes).ok()?;
     let usage = value.get("usage")?;
     let prompt_tokens = usage.get("prompt_tokens")?.as_u64()?;
     let completion_tokens = usage.get("completion_tokens")?.as_u64()?;
@@ -200,7 +210,7 @@ const GENERATION_PARAM_KEYS: &[&str] = &[
 /// A non-JSON or non-object body yields an empty map (no params claimed).
 fn parse_generation_parameters(request_bytes: &[u8]) -> Map<String, Value> {
     let mut out = Map::new();
-    let Ok(Value::Object(request)) = serde_json::from_slice::<Value>(request_bytes) else {
+    let Ok(Value::Object(request)) = decode_body(request_bytes) else {
         return out;
     };
     for &key in GENERATION_PARAM_KEYS {
@@ -226,7 +236,7 @@ fn parse_generation_parameters(request_bytes: &[u8]) -> Map<String, Value> {
 /// reasoning are strings/structural JSON with no floats, so plain JCS matches
 /// the Python reference exactly.
 fn output_sub_digests(response_bytes: &[u8]) -> (Option<String>, Option<String>) {
-    let Ok(value) = serde_json::from_slice::<Value>(response_bytes) else {
+    let Ok(value) = decode_body(response_bytes) else {
         return (None, None);
     };
     let mut tool_calls: Vec<Value> = Vec::new();
@@ -411,7 +421,7 @@ impl CapsuleState {
     /// Loads (or creates, on first run) a persistent Ed25519 signing key and
     /// opens the durable local ledger under `data_dir` -- both restart-safe,
     /// mirroring the acceptance already proven in isolation by
-    /// `mesh-rust-capsule-production-m2`'s `chain_ledger_conformance` test.
+    /// capsule-emit's `tests/chain_ledger_conformance.rs` (rust/capsule-emit).
     pub fn open(data_dir: &Path, node_id: impl Into<String>) -> anyhow::Result<Self> {
         let keys = keys::load_or_create(&data_dir.join("keys"))?;
         let (ledger, report) = Ledger::open(&data_dir.join("ledger"))?;
@@ -1101,6 +1111,23 @@ impl CapsuleState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Under capsule-emit's `arbitrary_precision` serde_json, a plain
+    /// `from_slice` reads this reserved-name object as the number 1. The
+    /// body digest must still tell the two bodies apart.
+    #[test]
+    fn number_token_member_is_not_read_as_a_number() {
+        let number = br#"{"seed":1}"#;
+        let object = br#"{"seed":{"$serde_json::private::Number":"1"}}"#;
+        assert_ne!(
+            canonical_body_digest(number).unwrap(),
+            canonical_body_digest(object).unwrap()
+        );
+        assert_eq!(
+            parse_generation_parameters(object)["seed"],
+            json!({"$serde_json::private::Number": "1"})
+        );
+    }
 
     /// PARITY PIN: `output_sub_digests` over the REAL SETI@Home / web_search
     /// response computes a `tool_calls_digest` byte-for-byte identical to the
