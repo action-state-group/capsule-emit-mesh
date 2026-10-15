@@ -154,3 +154,52 @@ def test_rotation_and_archival_never_raises_and_labels_the_gap(tmp_path: Path) -
     records_after_mount, archived_after_mount = read_all_capsules(ledger_dir)
     assert archived_after_mount == []
     assert records_after_mount == capsules
+
+
+def test_segments_rotated_under_cll_before_0_6_still_read(tmp_path: Path) -> None:
+    """checkpointed-local-log 0.6 changed the manifest's range_proof shape
+    (inclusion_from/inclusion_to became from_index/to_index/witness), so a
+    store rotated under the old pin carries manifests SegmentManifest.from_dict
+    can no longer parse. The readers use only the scalar fields, which every
+    release writes the same way."""
+    from cll.checkpoint.index import MmrLedger
+    from cll.ledger.segments import MmrCheckpointer
+
+    ledger_dir = tmp_path / "rotated-before-0.6"
+    store = open_ledger_store(ledger_dir, log_id="old-pin")
+    store._max_segment_bytes = 200
+
+    class _FixedSigner:
+        key_id = "00" * 32
+
+        def sign(self, digest_hex: str) -> str:
+            return "00" * 64
+
+    store.set_checkpointer(MmrCheckpointer(mmr=MmrLedger(store), signer=_FixedSigner(), log_id="old-pin"))
+    capsules = [{"capsule_id": f"{i:064x}", "n": i, "payload": "x" * 40} for i in range(30)]
+    for cap in capsules:
+        store.append(cap)
+    closed = [s for s in store.list_segments() if s.manifest is not None]
+    assert closed
+    store.unmount_segment(closed[0].name)
+    store.close()
+
+    # Rewrite every manifest's range_proof the way CLL 0.2 wrote it.
+    for path in ledger_dir.rglob("*.json"):
+        data = json.loads(path.read_text())
+        proof = data.get("range_proof") if isinstance(data, dict) else None
+        if not isinstance(proof, dict) or "from_index" not in proof:
+            continue
+        inclusion = {"leaf_index": 0, "mmr_size": proof["size"], "path": []}
+        data["range_proof"] = {
+            "from_seq": proof["from_seq"],
+            "to_seq": proof["to_seq"],
+            "size": proof["size"],
+            "inclusion_from": inclusion,
+            "inclusion_to": inclusion,
+        }
+        path.write_text(json.dumps(data))
+
+    records, archived = read_all_capsules(ledger_dir)
+    assert len(records) + sum(a["record_count"] for a in archived) == len(capsules)
+    assert [a["segment"] for a in archived] == [closed[0].name]

@@ -55,10 +55,10 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from cll.ledger.segments import SegmentManifest
 from cll.ledger.store import LedgerStore
 
 __all__ = [
@@ -101,6 +101,35 @@ CORRELATION_FIELDS: tuple[str, ...] = ("exchange_id", "capsule_id", "nonce", "co
 ARCHIVED_SEGMENT_KIND = "archived_segment"
 
 _LEGACY_FLAT_FILENAME = "capsules.jsonl"
+
+
+@dataclass(frozen=True)
+class _SegmentBounds:
+    """The scalar fields of a closed segment's manifest that the readers use.
+
+    Read straight from the manifest JSON rather than through
+    ``SegmentManifest.from_dict``: these keys are the same in every
+    checkpointed-local-log release, while the manifest's ``range_proof``
+    changed shape in 0.6 (``inclusion_from``/``inclusion_to`` became
+    ``from_index``/``to_index``/``witness``), so ``from_dict`` cannot read a
+    segment rotated under an earlier release."""
+
+    first_seq: int
+    last_seq: int
+    first_ts: str | None
+    last_ts: str | None
+    record_count: int
+
+    @classmethod
+    def read(cls, path: Path) -> "_SegmentBounds":
+        d = json.loads(path.read_text())
+        return cls(
+            first_seq=int(d["first_seq"]),
+            last_seq=int(d["last_seq"]),
+            first_ts=d.get("first_ts"),
+            last_ts=d.get("last_ts"),
+            record_count=int(d["record_count"]),
+        )
 
 
 def as_ledger_dir(path: Path) -> Path:
@@ -278,7 +307,7 @@ def _read_store_page(
             if fetch_cap is not None and len(pairs) >= fetch_cap:
                 break
             if seg.manifest is not None:
-                manifest = SegmentManifest.from_dict(json.loads((ledger_dir / seg.manifest).read_text()))
+                manifest = _SegmentBounds.read(ledger_dir / seg.manifest)
                 next_seq = manifest.last_seq + 1
                 if manifest.last_seq <= after_seq:
                     continue  # entirely before the requested window -- not a gap, just not asked for
