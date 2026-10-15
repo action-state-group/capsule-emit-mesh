@@ -385,3 +385,28 @@ class TestReadReply:
                          body=reply.body)
         bundles, problems = ah.artifact_bundles(other)
         assert bundles == [] and "not proven under the envelope's anchor" in problems[0]
+
+
+def test_signed_envelope_with_malformed_bundles_is_read_not_raised():
+    from agent_action_capsule.canonical import jcs
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    class _Signer:
+        def __init__(self) -> None:
+            self._key = Ed25519PrivateKey.generate()
+            self.key_id = self._key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
+
+        def sign(self, body: bytes) -> tuple[str, str]:
+            return self._key.sign(body).hex(), self.key_id
+
+    request_bytes = json.dumps(ah.build_request(er.Subject("full_history"))).encode()
+    envelope = er.sign_envelope(
+        request_bytes, er.Subject("full_history"), "ab" * 32, jcs({"bundles": [None, {"v": 1}]}),
+        signer=_Signer(), issued_at="2026-10-15T00:00:00Z",
+    )
+    reply = ah.read_reply(ah.Exchange(er.request_digest(request_bytes), json.loads(envelope.encode("json"))))
+    assert reply.ok
+    bundles, problems = ah.artifact_bundles(reply)
+    assert bundles == [] and len(problems) == 2
+    assert ah.verified_bundles(reply) == []

@@ -17,7 +17,8 @@ statement (``checkpoint_cose``) is an anchor, identified by the SHA-256 of
 that statement, as the evidencebook responders identify theirs. A
 requester pins one with ``coverage.expected_pin``, or asks for
 ``min_freshness`` (a log size or a time) and gets the freshest that meets
-it. A checkpoint without a statement is no anchor.
+it. A checkpoint without a statement is no anchor, but stays a link in the
+chain (a predecessor, and a line of a ``checkpoints`` answer).
 
 **Subjects.** A record is named by its ``capsule_id``, the digest its MMR
 leaf commits. ``range`` is ``[a, b]`` over 0-based leaf positions.
@@ -270,7 +271,9 @@ def _read_checkpoint_lines(ledger_dir: Path) -> list[dict[str, Any]]:
 class _Checkpoint:
     line: dict[str, Any]
     record: Any  # cll.checkpoint.CheckpointRecord
-    anchor: er.Anchor
+    #: ``None`` for a checkpoint persisted without its COSE statement: still
+    #: a link in the chain, but no anchor.
+    anchor: er.Anchor | None
 
 
 class MeshEvidenceStore:
@@ -279,27 +282,27 @@ class MeshEvidenceStore:
     so an answer is a function of the ledger as it stood)."""
 
     def __init__(self, ledger_dir: Path):
-        from cll.checkpoint.emit import CheckpointRecord
         from cll.checkpoint.core import leaf_count
+        from cll.checkpoint.emit import CheckpointRecord
 
         from ledger_store_backend import as_ledger_dir, read_all_capsules
 
         self.ledger_dir = as_ledger_dir(Path(ledger_dir))
-        self.records, _archived = read_all_capsules(self.ledger_dir)
+        self.records, self.archived = read_all_capsules(self.ledger_dir)
         self.index_of: dict[str, int] = {}
         for i, record in enumerate(self.records):
             self.index_of.setdefault(record.get("capsule_id"), i)
         self.checkpoints: list[_Checkpoint] = []
         for line in _read_checkpoint_lines(self.ledger_dir):
-            cose_hex = line.get("checkpoint_cose")
-            if not cose_hex:
-                continue
             record = CheckpointRecord.from_dict({k: v for k, v in line.items() if k != "checkpoint_cose"})
-            anchor = er.Anchor(
-                digest=hashlib.sha256(bytes.fromhex(cose_hex)).hexdigest(),
-                size=leaf_count(record.mmr_size),
-                issued_at=record.timestamp,
-            )
+            cose_hex = line.get("checkpoint_cose")
+            anchor = None
+            if cose_hex:
+                anchor = er.Anchor(
+                    digest=hashlib.sha256(bytes.fromhex(cose_hex)).hexdigest(),
+                    size=leaf_count(record.mmr_size),
+                    issued_at=record.timestamp,
+                )
             self.checkpoints.append(_Checkpoint(line, record, anchor))
 
     # -- the EvidenceStore questions --
@@ -317,7 +320,7 @@ class MeshEvidenceStore:
         return True
 
     def anchors(self) -> Sequence[er.Anchor]:
-        return [cp.anchor for cp in self.checkpoints]
+        return [cp.anchor for cp in self.checkpoints if cp.anchor is not None]
 
     def derivation_forms(self, derivation: str) -> Collection[str] | None:
         if derivation == SERVED_SUMMARY_DERIVATION_TOKEN:
@@ -347,7 +350,7 @@ class MeshEvidenceStore:
     # -- building --
 
     def _checkpoint_for(self, anchor: er.Anchor | None) -> _Checkpoint:
-        found = next((cp for cp in self.checkpoints if anchor is not None and cp.anchor == anchor), None)
+        found = next((cp for cp in self.checkpoints if cp.anchor is not None and cp.anchor == anchor), None)
         if found is None:
             # resolve() resolves only to anchors() or to an exchange half,
             # and this store holds no exchange subjects.
@@ -374,16 +377,16 @@ class MeshEvidenceStore:
         """One bundle per record at ``indices``, each under ``at`` itself:
         ``cll.checkpoint.bundle.bundle`` proves a record under the first
         checkpoint covering it, and -00 serves under the resolved anchor."""
-        from cll.checkpoint.bundle import Bundle
         from cll.checkpoint import core as mmr_core
+        from cll.checkpoint.bundle import Bundle
         from cll.checkpoint.store import MemoryNodeStore
 
         cp = at.record
         covered = at.anchor.size
-        if len(self.records) < covered:
-            # Records under the anchor are archived (an unmounted segment):
-            # nothing can be proven until they are mounted again.
-            raise er.Decline(er.REASON_COVERAGE_UNSATISFIABLE, "records under the anchor are not mounted")
+        if self.archived or len(self.records) < covered:
+            # An unmounted segment: positions in self.records are no longer
+            # log positions, so nothing is proven until it is mounted again.
+            raise er.Decline(er.REASON_COVERAGE_UNSATISFIABLE, "records of this log are not mounted")
         prior = None
         if cp.prev_size > 0:
             prior = next((c.record for c in self.checkpoints if c.record.mmr_size == cp.prev_size), None)
@@ -392,7 +395,9 @@ class MeshEvidenceStore:
         store = MemoryNodeStore()
         for record in self.records[:covered]:
             mmr_core.add_leaf(store, mmr_core.leaf_hash(bytes.fromhex(record["capsule_id"])))
-        if store.size() != cp.mmr_size:
+        if store.size() != cp.mmr_size or (
+            mmr_core.root_from_peaks([store.node(p) for p in mmr_core.peaks(cp.mmr_size)]).hex() != cp.root
+        ):
             raise er.Decline(er.REASON_COVERAGE_UNSATISFIABLE, "the ledger does not reproduce the anchor")
         consistency = mmr_core.consistency_proof(store, prior.mmr_size, cp.mmr_size) if prior is not None else None
         return [

@@ -296,7 +296,7 @@ def artifact_bundles(reply: Reply) -> tuple[list[Bundle], list[str]]:
     for i, bd in enumerate(body["bundles"]):
         try:
             b = Bundle.from_dict(bd)
-        except (KeyError, TypeError, ValueError) as exc:
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
             problems.append(f"bundle {i} is not a bundle: {exc}")
             continue
         if b.checkpoint_cose is None or hashlib.sha256(b.checkpoint_cose).hexdigest() != anchor:

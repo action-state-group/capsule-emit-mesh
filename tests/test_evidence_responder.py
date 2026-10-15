@@ -340,3 +340,52 @@ def test_coverage_descriptor_never_claims_capture_coverage_on_a_unilateral_range
     with pytest.raises(ValueError):
         _validate_coverage_descriptor("correlation", ["corroboration"])
     _validate_coverage_descriptor("range", ["record_inclusion", "range_completeness"])
+
+
+class _Signer:
+    def __init__(self, node_state) -> None:
+        from evidence_responder import node_signer
+
+        self._signer = node_signer(node_state)
+        self.key_id = self._signer.key_id
+
+    def sign(self, body: bytes) -> tuple[str, str]:
+        return self._signer.sign(body)
+
+
+def test_a_checkpoint_without_its_statement_stays_a_link_in_the_chain(node_state):
+    """A checkpoint persisted JSON-only (its COSE serialization failed) is no
+    anchor, but its successor still proves records against it and a
+    checkpoints answer still lists it."""
+    _sealed(node_state, 1)
+    later = _sealed(node_state, 1)
+    path = node_state.ledger_dir / "checkpoints.jsonl"
+    lines = [json.loads(x) for x in path.read_text().splitlines() if x]
+    del lines[0]["checkpoint_cose"]
+    path.write_text("".join(json.dumps(line, sort_keys=True) + "\n" for line in lines))
+
+    store = MeshEvidenceStore(node_state.ledger_dir)
+    assert len(store.anchors()) == 1
+    result = handle_evidence_request(node_state, _record_request(later[0]["capsule_id"]))
+    assert isinstance(result, er.Envelope), result
+    (bundle,) = [Bundle.from_dict(b) for b in _body(result)["bundles"]]
+    assert bundle.prior_checkpoint is not None and verify_bundle(bundle)[0]
+    chain = handle_evidence_request(node_state, _request({"checkpoints": None}))
+    assert _body(chain)["checkpoints"] == lines
+
+
+def test_an_unmounted_segment_refuses_rather_than_shift_positions(node_state):
+    caps = _sealed(node_state, 2)
+    store = MeshEvidenceStore(node_state.ledger_dir)
+    store.archived = [{"kind": "archived_segment", "first_seq": 1, "last_seq": 1}]
+    result = er.answer(_record_request(caps[1]["capsule_id"]), store=store, signer=_Signer(node_state))
+    assert isinstance(result, er.Refusal) and result.reason == "coverage_unsatisfiable"
+
+
+def test_records_that_do_not_reproduce_the_anchor_root_are_refused(node_state):
+    caps = _sealed(node_state, 2)
+    store = MeshEvidenceStore(node_state.ledger_dir)
+    store.records = list(reversed(store.records))  # same size, another root
+    store.index_of = {r["capsule_id"]: i for i, r in enumerate(store.records)}
+    result = er.answer(_record_request(caps[0]["capsule_id"]), store=store, signer=_Signer(node_state))
+    assert isinstance(result, er.Refusal) and result.reason == "coverage_unsatisfiable"
