@@ -179,8 +179,10 @@ def fetch_peer_history(
     """Fetch and verify a peer's checkpoint history via their evidence door.
 
     Asks for the peer's ``checkpoints`` (served whatever the log's length),
-    verifies the signed reply, and folds the checkpoint lines into a history
-    card (``history_card.build_history_card``), which re-verifies the chain.
+    verifies the signed reply, checks that the lines start with a verified
+    statement and end at the envelope's anchor (``ask_history
+    .answer_checkpoints``), and folds them into a history card
+    (``history_card.build_history_card``), which re-verifies every link.
 
     Returns one of:
       {"status": "verified", "history_summary": {...}, ...}
@@ -190,7 +192,7 @@ def fetch_peer_history(
     """
     from agent_action_capsule.evidence_request import Subject
 
-    from ask_history import build_request
+    from ask_history import answer_checkpoints, build_request
     from history_card import build_history_card
 
     request_map = build_request(Subject("checkpoints"))
@@ -234,9 +236,9 @@ def fetch_peer_history(
         return failed(f"reply does not verify: {'; '.join(reply.errors)}")
 
     body = reply.body if isinstance(reply.body, dict) else {}
-    lines = body.get("checkpoints")
-    if not isinstance(lines, list) or not lines or not all(isinstance(line, dict) for line in lines):
-        return failed("the artifact carries no checkpoint lines")
+    lines, problems = answer_checkpoints(reply)
+    if problems:
+        return failed("; ".join(problems))
     try:
         card = build_history_card(node_id=peer_id, log_id=str(body.get("evidence_stream", "")), checkpoint_lines=lines)
     except (KeyError, TypeError, ValueError) as exc:

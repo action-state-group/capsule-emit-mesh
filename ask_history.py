@@ -117,6 +117,7 @@ __all__ = [
     "ReferencesResult",
     "Reply",
     "WitnessedSeed",
+    "answer_checkpoints",
     "artifact_bundles",
     "build_request",
     "candidates_digest",
@@ -200,6 +201,15 @@ def post_evidence_request(peer_base_url: str, request_map: dict[str, Any], *, ti
         return Exchange(er.request_digest(body), resp.read())
 
 
+def _no_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError(f"a duplicate member {key!r}")
+        out[key] = value
+    return out
+
+
 def post_mesh_evidence_request(
     local_host_api: str, plugin_name: str, peer_id: str, request_map: dict[str, Any]
 ) -> Exchange:
@@ -223,7 +233,7 @@ def post_mesh_evidence_request(
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=30) as resp:
         raw = resp.read()
-    result = json.loads(raw)
+    result = json.loads(raw, object_pairs_hook=_no_duplicate_members)
     if not isinstance(result, dict):
         raise TypeError("the mesh carrier's answer is not a JSON object")
     if isinstance(result.get("answer"), dict) and er.is_digest(result.get("request_digest")):
@@ -316,6 +326,43 @@ def artifact_bundles(reply: Reply) -> tuple[list[Bundle], list[str]]:
             continue
         bundles.append(b)
     return bundles, problems
+
+
+def answer_checkpoints(reply: Reply) -> tuple[list[dict[str, Any]], list[str]]:
+    """The checkpoint lines of a ``checkpoints`` artifact (see
+    ``evidence_responder.py``), and the problems that keep them from being
+    trusted. ``history_card.build_history_card`` proves each link after the
+    first; this checks what it does not: that the first line's COSE statement
+    verifies and is the line it sits on (it starts the log, with no
+    predecessor to prove it), and that the last line's statement is the
+    envelope's anchor. Lines that are not a non-empty list of maps are no
+    lines at all."""
+    body = reply.body if isinstance(reply.body, dict) else {}
+    lines = body.get("checkpoints")
+    if not isinstance(lines, list) or not lines or not all(isinstance(line, dict) for line in lines):
+        return [], ["the artifact carries no checkpoint lines"]
+    from cll.checkpoint.cose_wire import verify_checkpoint_cose_offline
+
+    def statement(line: dict[str, Any]) -> bytes | None:
+        try:
+            return bytes.fromhex(line["checkpoint_cose"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    problems: list[str] = []
+    first = statement(lines[0])
+    checked = verify_checkpoint_cose_offline(first) if first is not None else None
+    if checked is None or not checked.ok:
+        problems.append("the first checkpoint's COSE statement is missing or does not verify")
+    elif (checked.decoded.prev_size, checked.decoded.mmr_size, checked.decoded.root) != (
+        0, lines[0].get("mmr_size"), lines[0].get("root"),
+    ):
+        problems.append("the first checkpoint's COSE statement is not the line it sits on, or does not start the log")
+    last = statement(lines[-1])
+    anchor = reply.envelope.anchor_digest if reply.envelope is not None else None
+    if last is None or hashlib.sha256(last).hexdigest() != anchor:
+        problems.append("the last checkpoint is not the envelope's anchor")
+    return lines, problems
 
 
 def verified_bundles(reply: Reply) -> list[Bundle]:
@@ -537,10 +584,16 @@ def _recent_records_request(post: Post, node_id: str) -> dict[str, Any]:
     reply = read_reply(post(build_request(er.Subject("checkpoints"))))
     if reply.refusal is not None:
         raise RuntimeError(f"could not read {node_id}'s checkpoints: refused {reply.refusal.reason}")
-    lines = reply.body.get("checkpoints") if reply.ok and isinstance(reply.body, dict) else None
-    if not lines or not isinstance(lines[-1], dict) or not isinstance(lines[-1].get("mmr_size"), int):
-        raise RuntimeError(f"{node_id}'s checkpoints answer does not check out: {'; '.join(reply.errors)}")
-    size = leaf_count(lines[-1]["mmr_size"])
+    lines, problems = answer_checkpoints(reply)
+    problems = [*reply.errors, *problems]
+    if not problems and not (type(lines[-1].get("mmr_size")) is int and lines[-1]["mmr_size"] >= 0):
+        problems.append("the last checkpoint has no mmr_size")
+    if problems:
+        raise RuntimeError(f"{node_id}'s checkpoints answer does not check out: {'; '.join(problems)}")
+    try:
+        size = leaf_count(lines[-1]["mmr_size"])
+    except ValueError as exc:  # not an MMR size
+        raise RuntimeError(f"{node_id}'s checkpoints answer does not check out: {exc}") from None
     if size == 0:
         raise RuntimeError(f"{node_id}'s log is empty")
     first = max(0, size - DEFAULT_PULL_RECORDS)
@@ -737,11 +790,12 @@ def render_refusal(reply: Reply) -> str:
     return "\n".join(lines)
 
 
-def _checkpoints_lines(body: dict[str, Any], *, node_id: str) -> list[str]:
-    lines_in = body.get("checkpoints")
-    if not isinstance(lines_in, list) or not lines_in:
-        return ["  the artifact carries no checkpoints"]
-    out = [f"  checkpoints={len(lines_in)}"]
+def _checkpoints_lines(reply: Reply, *, node_id: str) -> list[str]:
+    body = reply.body if isinstance(reply.body, dict) else {}
+    lines_in, problems = answer_checkpoints(reply)
+    if not lines_in:
+        return [f"  {problems[0]}"]
+    out = [f"  checkpoints={len(lines_in)}", *(f"    {p}" for p in problems)]
     try:
         card = build_history_card(node_id=node_id, log_id=body.get("evidence_stream", ""), checkpoint_lines=lines_in)
     except (KeyError, TypeError, ValueError) as exc:  # lines that do not fold are reported, not raised
@@ -773,7 +827,7 @@ def render_artifact(reply: Reply, *, node_id: str, tamper_check: bool = False) -
     if envelope.derivation is not None:
         lines.append(f"  derivation={envelope.derivation} members={sorted(body)}")
     elif "checkpoints" in body:
-        lines.extend(_checkpoints_lines(body, node_id=node_id))
+        lines.extend(_checkpoints_lines(reply, node_id=node_id))
     elif "bundles" in body:
         bundles, problems = artifact_bundles(reply)
         lines.append(f"  bundles={len(body['bundles'])}")

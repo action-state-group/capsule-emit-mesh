@@ -290,7 +290,10 @@ class _MeshToolCallHandler(http.server.BaseHTTPRequestHandler):
         request_bytes = json.dumps(request).encode("utf-8")
         result = handle_evidence_request(self.server.state, request_bytes)  # type: ignore[attr-defined]
         answer = {"answer": reply_to_wire(result), "request_digest": er.request_digest(request_bytes)}
-        self._write(200, json.dumps(answer).encode())
+        body = json.dumps(answer).encode()
+        if self.server.duplicate_in_answer:  # type: ignore[attr-defined]
+            body = body.replace(b'"answer": {', b'"answer": {"sig": "00", ', 1)
+        self._write(200, body)
 
     def _write(self, status: int, body: bytes) -> None:
         self.send_response(status)
@@ -317,6 +320,7 @@ class TestMeshCarrier:
         server.calls = []
         server.unreachable_peer_id = "ff" * 32
         server.passthrough = False
+        server.duplicate_in_answer = False
         port = server.server_address[1]
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -332,6 +336,15 @@ class TestMeshCarrier:
         assert server.calls == [{"peer_id": "aa" * 32, "request": req}]
         # The digest is of the bytes the plugin sent, requester_id included.
         assert ah.read_reply(exchange).ok
+
+    def test_wrapped_answer_with_a_duplicate_member_is_refused(self, mesh_host):
+        """The capsules plugin's wrapper is decoded with duplicates refused,
+        so a duplicate inside its answer is not collapsed away."""
+        local_host_api, server, state = mesh_host
+        server.duplicate_in_answer = True
+        cids = _seal_and_checkpoint(state, 1)
+        with pytest.raises(ValueError, match="duplicate"):
+            ah.post_mesh_evidence_request(local_host_api, "admission-policy", "aa" * 32, _record(cids[0]))
 
     def test_passthrough_carrier_binds_the_request_it_forwarded(self, mesh_host):
         """This repo's admission-policy plugin returns the peer's reply as
@@ -432,3 +445,32 @@ def test_signed_envelope_with_malformed_bundles_is_read_not_raised():
     bundles, problems = ah.artifact_bundles(reply)
     assert bundles == [] and len(problems) == 2
     assert ah.verified_bundles(reply) == []
+
+
+def _signed_checkpoints_reply(body: dict) -> ah.Exchange:
+    from agent_action_capsule.canonical import jcs
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    key = Ed25519PrivateKey.generate()
+
+    class _Signer:
+        key_id = key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
+
+        def sign(self, data: bytes) -> tuple[str, str]:
+            return key.sign(data).hex(), self.key_id
+
+    request_bytes = json.dumps(ah.build_request(er.Subject("checkpoints"))).encode()
+    envelope = er.sign_envelope(
+        request_bytes, er.Subject("checkpoints"), "ab" * 32, jcs(body), signer=_Signer(), issued_at="2026-10-15T00:00:00Z"
+    )
+    return ah.Exchange(er.request_digest(request_bytes), envelope.encode("json"))
+
+
+@pytest.mark.parametrize("checkpoints", [{"unexpected": {}}, [], ["not a map"], [{"mmr_size": 3}]])
+def test_malformed_checkpoints_answer_is_a_runtime_error_for_the_default_pull(checkpoints):
+    exchange = _signed_checkpoints_reply({"checkpoints": checkpoints})
+    with pytest.raises(RuntimeError, match="does not check out"):
+        ah._recent_records_request(lambda _request: exchange, "x")
+    _lines, problems = ah.answer_checkpoints(ah.read_reply(exchange))
+    assert problems

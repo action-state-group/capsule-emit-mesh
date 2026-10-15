@@ -11,6 +11,7 @@ that a fabricated count appears as "verified".
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -66,11 +67,11 @@ _ANCHOR = "ab" * 32
 _ISSUED_AT = "2026-10-15T00:00:00Z"
 
 
-def _envelope(request_bytes: bytes, body: dict[str, Any]) -> dict[str, Any]:
+def _envelope(request_bytes: bytes, body: dict[str, Any], *, anchor: str = _ANCHOR) -> dict[str, Any]:
     """A signed -00 envelope answering ``request_bytes`` with ``body``."""
     request = er.parse_request(request_bytes)
     envelope = er.sign_envelope(
-        request_bytes, request.subject, _ANCHOR, jcs(body), signer=_SIGNER, issued_at=_ISSUED_AT,
+        request_bytes, request.subject, anchor, jcs(body), signer=_SIGNER, issued_at=_ISSUED_AT,
         derivation=request.derivation,
     )
     return json.loads(envelope.encode("json"))
@@ -102,8 +103,9 @@ class _MockPeerHandler(BaseHTTPRequestHandler):
         else:
             # The history path asks for checkpoints: answer with the
             # committed demo ledger's real checkpoint lines, or none.
-            lines = _DEMO_CHECKPOINTS if self.server.with_checkpoints else []  # type: ignore[attr-defined]
-            self._send_json(200, _envelope(body_raw, {"anchor": _ANCHOR, "checkpoints": lines}))
+            lines = self.server.checkpoint_lines  # type: ignore[attr-defined]
+            anchor = self.server.anchor  # type: ignore[attr-defined]
+            self._send_json(200, _envelope(body_raw, {"anchor": anchor, "checkpoints": lines}, anchor=anchor))
 
     def _send_json(self, status: int, data: dict[str, Any]) -> None:
         body = json.dumps(data).encode("utf-8")
@@ -123,10 +125,16 @@ _DEMO_CHECKPOINTS = [
 ]
 
 
-def _start_mock_server(*, with_checkpoints: bool = False) -> tuple[HTTPServer, str]:
+_DEMO_ANCHOR = hashlib.sha256(bytes.fromhex(_DEMO_CHECKPOINTS[-1]["checkpoint_cose"])).hexdigest()
+
+
+def _start_mock_server(
+    *, checkpoint_lines: list[dict[str, Any]] | None = None, anchor: str = _DEMO_ANCHOR
+) -> tuple[HTTPServer, str]:
     """Start a mock peer server on a random loopback port."""
     server = HTTPServer(("127.0.0.1", 0), _MockPeerHandler)
-    server.with_checkpoints = with_checkpoints
+    server.checkpoint_lines = checkpoint_lines or []
+    server.anchor = anchor
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -216,15 +224,39 @@ def test_fetch_peer_history_no_checkpoints_fails() -> None:
 
 
 def test_fetch_peer_history_folds_the_peers_checkpoints() -> None:
-    server, base_url = _start_mock_server(with_checkpoints=True)
+    server, base_url = _start_mock_server(checkpoint_lines=_DEMO_CHECKPOINTS)
     try:
         result = fetch_peer_history(base_url, timeout_seconds=5, peer_id="test-peer")
         assert result["status"] == "verified", result
         summary = result["history_summary"]
         assert summary["checkpoint_count"] == len(_DEMO_CHECKPOINTS)
         assert summary["latest_checkpoint"] == _DEMO_CHECKPOINTS[-1]
-        assert summary["anchor"] == _ANCHOR
+        assert summary["anchor"] == _DEMO_ANCHOR
         assert summary["continuity"] == "unbroken"
+    finally:
+        server.shutdown()
+
+
+def test_fetch_peer_history_refuses_a_forged_genesis() -> None:
+    """A signed envelope around a first checkpoint whose statement is not its
+    own (here, the last line's) is never folded into a verified card."""
+    forged = [{**_DEMO_CHECKPOINTS[0], "checkpoint_cose": _DEMO_CHECKPOINTS[-1]["checkpoint_cose"]}]
+    forged_anchor = hashlib.sha256(bytes.fromhex(forged[-1]["checkpoint_cose"])).hexdigest()
+    server, base_url = _start_mock_server(checkpoint_lines=forged, anchor=forged_anchor)
+    try:
+        result = fetch_peer_history(base_url, timeout_seconds=5, peer_id="test-peer")
+        assert result["status"] == "failed"
+        assert "first checkpoint" in result["reason"]
+    finally:
+        server.shutdown()
+
+
+def test_fetch_peer_history_refuses_lines_that_do_not_end_at_the_anchor() -> None:
+    server, base_url = _start_mock_server(checkpoint_lines=_DEMO_CHECKPOINTS, anchor="cd" * 32)
+    try:
+        result = fetch_peer_history(base_url, timeout_seconds=5, peer_id="test-peer")
+        assert result["status"] == "failed"
+        assert "not the envelope's anchor" in result["reason"]
     finally:
         server.shutdown()
 
