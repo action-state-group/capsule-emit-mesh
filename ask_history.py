@@ -119,6 +119,7 @@ from typing import Any
 from agent_action_capsule.canonical import jcs
 from capsule_emit.bundle import Bundle, verify_bundle
 from capsule_emit.checkpoint import StampVerdict, verify_witness_stamp_tristate
+from cll.checkpoint import emit as _checkpoint_emit
 from capsule_emit.evidence_request import Refusal, verify_refusal_offline
 
 from history_card import build_history_card, with_references
@@ -330,6 +331,17 @@ class WitnessedSeed:
         }
 
 
+def _default_witness_pin(ts_url: str) -> bytes | None:
+    """The default witness's public key when ``ts_url`` is the default
+    witness, else ``None``. checkpointed-local-log before 0.5 applied this
+    pin itself; from 0.5 it trusts only the keys a caller passes, so Mesh
+    passes the same pin explicitly and grades stamps exactly as before. Read
+    at call time, so a test that repoints the default witness is honored."""
+    if ts_url == _checkpoint_emit.DEFAULT_TS_URL:
+        return _checkpoint_emit.DEFAULT_TS_PUBLIC_KEY_PEM
+    return None
+
+
 def witnessed_seed(bundles: list[Bundle]) -> WitnessedSeed | None:
     """The latest (largest ``mmr_size``) checkpoint among ``X``'s own
     VERIFIED bundles' ``checkpoint``/``prior_checkpoint`` whose witness
@@ -346,7 +358,9 @@ def witnessed_seed(bundles: list[Bundle]) -> WitnessedSeed | None:
             if cp is None or (best is not None and cp.mmr_size <= best.mmr_size):
                 continue
             for w in cp.witnesses or []:
-                verdict, _stamp_errors = verify_witness_stamp_tristate(cp, w)
+                verdict, _stamp_errors = verify_witness_stamp_tristate(
+                    cp, w, ts_pubkey_pem=_default_witness_pin(w.ts_url)
+                )
                 if verdict is StampVerdict.WITNESSED:
                     best = WitnessedSeed(root=cp.root, log_id=cp.log_id, mmr_size=cp.mmr_size, ts_url=w.ts_url)
                     break

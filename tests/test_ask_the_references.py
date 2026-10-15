@@ -592,3 +592,15 @@ class TestPruneMutant:
         # case (still "unbroken") -- gaps_detected is what actually moves.
         assert pruned_pair["continuity"] == "unbroken"
         assert pruned_pair["gaps_detected"] == 1
+
+
+def test_only_the_default_witness_is_pinned(monkeypatch):
+    """checkpointed-local-log 0.5+ trusts only caller-supplied witness keys;
+    ask_history pins the default witness itself, as cll did before, and no
+    other witness."""
+    import ask_history
+
+    monkeypatch.setattr(checkpoint_emit_mod, "DEFAULT_TS_URL", "https://witness.example")
+    monkeypatch.setattr(checkpoint_emit_mod, "DEFAULT_TS_PUBLIC_KEY_PEM", TEST_TS_PUBLIC_KEY_PEM)
+    assert ask_history._default_witness_pin("https://witness.example") == TEST_TS_PUBLIC_KEY_PEM
+    assert ask_history._default_witness_pin("https://other.example") is None
