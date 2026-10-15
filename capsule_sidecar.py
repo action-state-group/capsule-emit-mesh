@@ -2309,7 +2309,7 @@ def make_handler(state: NodeState, upstream_base: str, *, pane_dashboard_origin:
             """[mesh-ui-ledger-finder] The Accountability page's Finder,
             served fresh from this node's own ledger on every request (same
             "re-derive every call, never cache" discipline as
-            ``evidence_server._merged_evidence_view`` -- see
+            ``evidence_responder.MeshEvidenceStore`` -- see
             ``ledger_store_backend``'s module docstring).
 
             ``ledger_finder`` is imported HERE, lazily, not at module level:

@@ -137,25 +137,31 @@ from another node. This puts an HTTP door in front of it.
 capsule-evidence-server --ledger-dir ./ledger --node-key ./keys/node-key.pem --listen-port 8091
 ```
 
-`--ledger-dir` also accepts the Rust plugin's own `<data_dir>/ledger` directly — if it carries a
-sibling `checkpoints.jsonl` (the shape `capsule_sidecar.py --plugin-ledger-dir` checkpoints that
-log into, read-only), the server bridges it automatically so `answer()` can see the checkpoint;
-see `evidence_server.py`'s module docstring for exactly what that bridge does and does not prove.
+`--ledger-dir` also accepts the Rust plugin's own `<data_dir>/ledger` directly: the server reads
+its records and the sibling `checkpoints.jsonl` (the shape `capsule_sidecar.py --plugin-ledger-dir`
+checkpoints that log into, read-only) and never writes there; see `evidence_server.py`'s module
+docstring for what an answer does and does not prove.
 
-From a peer, ask it and verify the answer offline:
+From a peer, ask it and verify the answer offline. Requests follow
+draft-mih-agent-evidence-request-00; a range is 0-based log positions:
 
 ```
-python3 ask_history.py http://<peer>:8091 --subject range --selector <cid1>..<cid2>
 python3 ask_history.py http://<peer>:8091 --subject record --capsule-id <cid>
+python3 ask_history.py http://<peer>:8091 --subject range --range 0 9
+python3 ask_history.py http://<peer>:8091 --subject full_history
+python3 ask_history.py http://<peer>:8091 --subject checkpoints
 ```
 
-Each returned bundle is verified with `capsule_emit.bundle.verify_bundle` — the pure, offline
-per-bundle check this artifact shape calls for, never `stranger_verify_bundle.py`'s ledger-DIR
-verify (that one needs a full copy of a ledger directory, which this route never hands out) —
-and a small history card (`continuity`/`history_depth`/`unforked`) is folded from the bundle's
-own checkpoint fields via `history_card.build_history_card`. An unknown record or a checkpoint
-pin mismatch comes back as a *signed* refusal (`no_such_record` / `coverage_unsatisfiable`),
-verified offline against the peer's own key — never a bare 404.
+Every answer is either an artifact in the interop profile's signed envelope or a signed refusal.
+`ask_history.py` checks the envelope's signature and digests and that it answers the request sent
+(add `--responder-key <hex>` to also require the peer's key), then checks each bundle in the
+artifact with `capsule_emit.bundle.verify_bundle` and that it is proven under the anchor checkpoint
+the envelope names. A small history card (`continuity`/`history_depth`/`unforked`) is folded from
+the bundle's own checkpoint fields via `history_card.build_history_card`. By default the peer
+answers under its freshest checkpoint; `--expected-pin <digest>` (the SHA-256 of a checkpoint's
+COSE statement) pins one. An unknown record or an unheld pin comes back as a *signed* refusal
+(`no_such_subject` / `coverage_unsatisfiable`), verified offline against the peer's own key —
+never a bare 404.
 
 **Honest limitation:** a bundle-tier answer proves LOG integrity (inclusion, checkpoint
 signature/consistency) but never a Rust-producer capsule's own detached signed statement

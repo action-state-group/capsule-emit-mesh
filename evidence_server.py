@@ -1,98 +1,62 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""E15 -- an HTTP door on the E14 evidence responder.
+"""E15 -- an HTTP door on this node's evidence responder.
 
-``evidence_responder.handle_evidence_request`` reaches ``capsule_emit.
-evidence_request.answer()`` against one node's ledger + node key (E14,
-capsule-emit#148; wired to a real ``NodeState`` in #83) -- but nothing can
-REACH it from another node yet. This module is entirely ours: it puts
-``POST /evidence-request`` in front of the SAME responder, unchanged, so a
-peer can ask for a ``record``/``range`` and get back exactly what
-``answer()`` returns -- an ``Artifact`` or a signed ``Refusal`` -- never a
-new artifact shape, never beyond the bundle tier (never ``disclose()``).
+``evidence_responder.handle_evidence_request`` answers a
+``draft-mih-agent-evidence-request-00`` request from one node's ledger and
+node key. This module puts ``POST /evidence-request`` in front of it, so a
+peer can ask and get back a signed artifact envelope (the interop profile's,
+§6.2) or a signed refusal.
 
 STANDALONE by design ([mesh-e15-evidence-http-route], Lane B): its own
 module importing ``evidence_responder``, never wired into
-``capsule_sidecar.py``'s own request handling -- every Batch-1 item touches
-that file, so this stays out of the merge-order queue and runs against
-whichever ledger + node key a node names on the command line, sidecar
-running or not.
+``capsule_sidecar.py``'s own request handling, so it runs against whichever
+ledger + node key a node names on the command line, sidecar running or not.
 
 State this module needs from a node is exactly what
 ``evidence_responder.handle_evidence_request`` reads off its ``state``
-argument -- ``ledger_path`` and ``signing_key_path`` -- and nothing else
+argument -- ``ledger_dir`` and ``signing_key_path`` -- and nothing else
 (no manifest, no runtime label, no advertisement). See
 ``EvidenceServerState``, deliberately lighter than
 ``capsule_sidecar.NodeState`` for that reason: this server answers evidence
 requests, it never seals a capsule.
 
-**The plugin-ledger bridge (Step 0 finding).** The live serving path on a
-mesh node is the Rust plugin, which owns ``<data_dir>/ledger/capsules.jsonl``
-+ ``signed-statements/`` -- ``capsule_sidecar.py``'s ``NodeState.
-plugin_checkpoint`` wiring ([mesh-plugin-cll-consume] A2/A3) then
-checkpoints that log READ-ONLY, into a SIBLING ``checkpoints.jsonl``
-(``checkpointing.CheckpointState`` never becomes a second writer into a
-ledger it does not own). ``capsule_emit.bundle.bundle()`` (what ``answer()``
-dispatches to) only ever recognizes a checkpoint that arrives as an IN-BAND
-``checkpoint_stamp``-kind leaf inside the SAME file it is bundling from
-(``capsule_emit.witness.push()``'s convention, for a self-checkpointed
-ledger) -- so pointed straight at the plugin's ``capsules.jsonl``, every
-request refuses ``coverage_unsatisfiable``/``no_such_record``, even for a
-record long since checkpointed, because ``bundle()`` can never see a
-checkpoint that lives in a sibling file.
+**The plugin's ledger.** The live serving path on a mesh node is the Rust
+plugin, which owns ``<data_dir>/ledger/capsules.jsonl`` +
+``signed-statements/``; ``capsule_sidecar.py``'s ``NodeState
+.plugin_checkpoint`` wiring checkpoints that log READ-ONLY into a SIBLING
+``checkpoints.jsonl``. The responder reads the records and that sibling file
+itself (``evidence_responder.MeshEvidenceStore``) and never writes into the
+plugin's directory, preserving the "two single-writer logs" invariant.
 
-``_merged_evidence_view`` closes that gap, in-repo, without touching
-``capsule-emit`` or the Rust plugin: given a ledger dir carrying a sibling
-``checkpoints.jsonl``, it materializes a scratch JSONL file = the ledger's
-own lines, unchanged, plus one synthesized ``checkpoint_stamp`` entry per
-persisted checkpoint line, in the EXACT shape ``capsule_emit.witness.
-_persist_checkpoint_stamp`` writes for a self-checkpointed ledger --
-appended in checkpoint order, after the leaves each covers (never
-interleaved before them, which would shift every later leaf's ``seq`` and
-invalidate inclusion proofs the checkpoint never covered). An append-only
-history tree's root at size S is a pure function of its first
-``leaf_count(S)`` leaves, independent of anything appended after -- so a
-trailing synthesized stamp reproduces the SAME root ``bundle()`` re-derives,
-and the checkpoint's own signature/COSE-wire proof (computed once, for
-real, by ``checkpointing.CheckpointState`` against the plugin's actual
-bytes) verifies unchanged. Regenerated fresh on every request (never
-cached, matching ``bundle()``'s own "re-derive from the ledger every call"
-discipline) into a fresh ``tempfile`` -- never written back into the
-plugin's own directory, preserving the "two single-writer logs" invariant.
-
-**Known, honest scope limit this bridge does NOT close** (documented, not
-hidden): ``capsule_emit.bundle.verify_bundle()``'s step-1 check expects a
-capsule's OWN self-attested ``signature``/``key_id`` embedded inline --
-that is this repo's PYTHON producer's convention (``capsule_emit.seal()``).
-The Rust plugin instead signs a DETACHED COSE_Sign1 Signed Statement per
-capsule (``signed-statements/<capsule_id>.cose``, verified today by
-``stranger_verify_bundle.py``'s ``_transparent_check`` against a COPY of
-the ledger dir) -- and a bundle-tier ``Artifact`` never carries that
-detached statement (only the COVERING CHECKPOINT's own COSE wire form,
-``Bundle.checkpoint_cose``). So for a Rust-produced capsule, a bundle-tier
-answer proves LOG integrity (inclusion, non-tamper-since-checkpoint, the
-checkpoint's own signature) but does NOT prove the individual capsule's OWN
-producer signature -- that provenance question is out of the bundle tier's
-reach entirely, not a bug in this bridge. ``ask_history.py`` reports this
+**Known scope limit** (documented, not hidden): ``capsule_emit.bundle
+.verify_bundle()``'s step-1 check expects a capsule's OWN self-attested
+``signature``/``key_id`` embedded inline -- this repo's PYTHON producer's
+convention (``capsule_emit.seal()``). The Rust plugin instead signs a
+DETACHED COSE_Sign1 Signed Statement per capsule
+(``signed-statements/<capsule_id>.cose``), which an artifact's bundles do
+not carry (only the anchor checkpoint's own COSE statement). So for a
+Rust-produced capsule a bundle proves LOG integrity (inclusion,
+non-tamper-since-checkpoint, the checkpoint's own signature) but not the
+capsule's own producer signature. ``ask_history.py`` reports this
 distinction rather than rounding a log-integrity pass up to a full verify.
 
 Route:
     POST /evidence-request
-        body = the E14 request map (JSON: ``{subject, coverage?,
-               derivation?, deadline?, nonce?}``).
-        200 + the ``Artifact``/``Refusal`` JSON exactly as
-            ``answer()``/``.to_dict()`` returns it -- a refusal is a SIGNED
-            answer, not an HTTP-level decline, so it is 200 too;
-            distinguish by the presence of ``bundles`` (Artifact) vs
-            ``reason`` (Refusal). A missing/empty ledger resolves to a
-            signed ``no_such_record`` refusal INSIDE ``answer()`` itself --
-            never a 500.
+        body = a -00 request (JSON: ``{subject, coverage, derivation?,
+               deadline?, nonce?, route?}``).
+        200 + the envelope or refusal in the JSON binding, with the
+            fabric's additive ``status`` (``evidence_responder
+            .reply_to_wire``) -- a refusal is a SIGNED answer, not an
+            HTTP-level decline, so it is 200 too; an envelope carries
+            ``artifact_digest``, a refusal ``reason``. A missing or empty
+            ledger resolves to a signed refusal, never a 500.
     POST /evidence/deliver
         [mesh-adjudication-delivery-ack] -- body = a sealed twin-adjudication
         capsule's own canonical JSON bytes (opaque at this layer; see
         ``adjudication_delivery.py`` for the full contract). 200 +
         ``{"status": "received"}`` or a signed ``Refusal``
-        (``request_malformed`` / ``policy_decline``) -- same
+        (``request_malformed`` / ``policy_declined``) -- same
         signed-answer-always discipline as ``/evidence-request``, and the
         SAME ledger + node key ``EvidenceServerState`` already names; this
         route never opens a second ledger.
@@ -114,7 +78,7 @@ from pathlib import Path
 from typing import Any
 
 from adjudication_delivery import handle_delivery
-from evidence_responder import augment_evidence_answer_dict, handle_evidence_request
+from evidence_responder import handle_evidence_request, reply_to_wire
 
 __all__ = [
     "EvidenceServerState",
@@ -142,21 +106,6 @@ class EvidenceServerState:
     signing_key_path: Path
 
 
-def _merged_evidence_view(ledger_dir: Path) -> Path:
-    """Return the path ``answer()``/``bundle()`` should actually read for
-    ``ledger_dir`` -- delegates entirely to ``ledger_store_backend.
-    materialize_flat_view``, which is store-aware (this sidecar's own
-    ledger may now be a ``cll.ledger.store.LedgerStore``) and folds in the
-    same synthesized in-band ``checkpoint_stamp`` entries this function used
-    to build by hand for the plugin-ledger read-only-checkpointed shape (see
-    module docstring) -- one bridging implementation for both cases now.
-    Never mutates ``ledger_dir``.
-    """
-    from ledger_store_backend import materialize_flat_view
-
-    return materialize_flat_view(ledger_dir)
-
-
 def make_evidence_handler(state: EvidenceServerState):
     """Build a BaseHTTPRequestHandler class closing over one node's state."""
 
@@ -177,17 +126,16 @@ def make_evidence_handler(state: EvidenceServerState):
             request_bytes = self.rfile.read(length) if length else b""
 
             if path == "evidence-request":
-                # [mesh-ledger-store-migration] handle_evidence_request's
-                # own generic path now does this bridging itself (see
-                # evidence_responder.py), so this door hands it state
-                # unchanged rather than pre-building a merged view.
-                result = handle_evidence_request(state, request_bytes)
-                # [mesh-served-summary-derivation] a served_summary/1 success
-                # is already a plain dict (no .to_dict()); an Artifact/Refusal
-                # is not. augment_evidence_answer_dict is additive-only either
-                # way (a no-op on a shape it does not recognize).
-                result_dict = result.to_dict() if hasattr(result, "to_dict") else result
-                self._write_json(200, augment_evidence_answer_dict(result_dict))
+                try:
+                    result = handle_evidence_request(state, request_bytes)
+                except Exception as exc:  # noqa: BLE001 -- a broken local ledger, never the request
+                    # Every request gets a signed answer except when this
+                    # node's own ledger or checkpoints cannot be read; that is
+                    # a server failure, reported as one rather than a dropped
+                    # connection.
+                    self._write_json(500, {"error": "ledger_unreadable", "detail": type(exc).__name__})
+                    return
+                self._write_json(200, reply_to_wire(result))
                 return
 
             if path == "evidence/deliver":
@@ -230,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         help="this node's ledger directory -- a cll.ledger.store.LedgerStore if migrated "
         "([mesh-ledger-store-migration]), else a legacy flat capsules.jsonl -- e.g. this "
         "sidecar's own ledger_dir, or the Rust plugin's <data_dir>/ledger for the live serving "
-        "path (auto-bridged if a sibling checkpoints.jsonl is present)",
+        "path (its sibling checkpoints.jsonl is read, never written)",
     )
     parser.add_argument(
         "--node-key",

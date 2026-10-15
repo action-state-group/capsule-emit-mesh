@@ -11,17 +11,28 @@ that a fabricated count appears as "verified".
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Any
 
 import pytest
+from agent_action_capsule import evidence_request as er
+from agent_action_capsule.canonical import jcs
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-import sys
-import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from peer_accountability_tab import (
+    CELL_PENDING,
+    CELL_VERIFIED,
+    build_peers_payload,
+)
 from peer_evidence_client import (
     PEER_FETCH_ENABLED,
     PeerFetchResult,
@@ -29,12 +40,6 @@ from peer_evidence_client import (
     fetch_peer_history,
     fetch_served_summary,
 )
-from peer_accountability_tab import (
-    CELL_PENDING,
-    CELL_VERIFIED,
-    build_peers_payload,
-)
-
 
 # ---------------------------------------------------------------------------
 # Mock HTTP server
@@ -48,10 +53,32 @@ _VALID_SERVED_SUMMARY = {
     "witness_bounded": True,
 }
 
-_REFUSAL_RESPONSE = {
-    "reason": "not authorized",
-    "sig": "mock-sig",
-}
+class _MockSigner:
+    def __init__(self) -> None:
+        self._key = Ed25519PrivateKey.generate()
+        self.key_id = self._key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
+
+    def sign(self, body: bytes) -> tuple[str, str]:
+        return self._key.sign(body).hex(), self.key_id
+
+
+_SIGNER = _MockSigner()
+_ANCHOR = "ab" * 32
+_ISSUED_AT = "2026-10-15T00:00:00Z"
+
+
+def _envelope(request_bytes: bytes, body: dict[str, Any], *, anchor: str = _ANCHOR) -> dict[str, Any]:
+    """A signed -00 envelope answering ``request_bytes`` with ``body``."""
+    request = er.parse_request(request_bytes)
+    envelope = er.sign_envelope(
+        request_bytes, request.subject, anchor, jcs(body), signer=_SIGNER, issued_at=_ISSUED_AT,
+        derivation=request.derivation,
+    )
+    return json.loads(envelope.encode("json"))
+
+
+def _refusal(request_bytes: bytes, reason: str) -> dict[str, Any]:
+    return er.sign_refusal(er.request_digest(request_bytes), reason, signer=_SIGNER, issued_at=_ISSUED_AT).to_dict()
 
 
 class _MockPeerHandler(BaseHTTPRequestHandler):
@@ -71,16 +98,14 @@ class _MockPeerHandler(BaseHTTPRequestHandler):
         derivation = body.get("derivation", "")
 
         if derivation == "served_summary/1":
-            # Return a valid served_summary response
-            resp = {"served_summary": _VALID_SERVED_SUMMARY}
-            self._send_json(200, resp)
-        elif derivation == "refuse-me":
-            # Return a refusal
-            self._send_json(200, _REFUSAL_RESPONSE)
+            # A signed envelope around a valid served summary
+            self._send_json(200, _envelope(body_raw, {"anchor": _ANCHOR, "served_summary": _VALID_SERVED_SUMMARY}))
         else:
-            # No derivation / range request -> return empty bundles (history path)
-            resp = {"bundles": []}
-            self._send_json(200, resp)
+            # The history path asks for checkpoints: answer with the
+            # committed demo ledger's real checkpoint lines, or none.
+            lines = self.server.checkpoint_lines  # type: ignore[attr-defined]
+            anchor = self.server.anchor  # type: ignore[attr-defined]
+            self._send_json(200, _envelope(body_raw, {"anchor": anchor, "checkpoints": lines}, anchor=anchor))
 
     def _send_json(self, status: int, data: dict[str, Any]) -> None:
         body = json.dumps(data).encode("utf-8")
@@ -91,9 +116,25 @@ class _MockPeerHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def _start_mock_server() -> tuple[HTTPServer, str]:
+_DEMO_CHECKPOINTS = [
+    json.loads(line)
+    for line in (Path(__file__).resolve().parent.parent / "ledger-checkpoint-demo" / "checkpoints.jsonl")
+    .read_text()
+    .splitlines()
+    if line.strip()
+]
+
+
+_DEMO_ANCHOR = hashlib.sha256(bytes.fromhex(_DEMO_CHECKPOINTS[-1]["checkpoint_cose"])).hexdigest()
+
+
+def _start_mock_server(
+    *, checkpoint_lines: list[dict[str, Any]] | None = None, anchor: str = _DEMO_ANCHOR
+) -> tuple[HTTPServer, str]:
     """Start a mock peer server on a random loopback port."""
     server = HTTPServer(("127.0.0.1", 0), _MockPeerHandler)
+    server.checkpoint_lines = checkpoint_lines or []
+    server.anchor = anchor
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -150,8 +191,7 @@ def test_fetch_served_summary_refused() -> None:
                 pass
             def do_POST(self) -> None:
                 length = int(self.headers.get("Content-Length", 0))
-                self.rfile.read(length)
-                resp = json.dumps({"reason": "policy: not authorized", "sig": "mock"}).encode()
+                resp = json.dumps(_refusal(self.rfile.read(length), "policy_declined")).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(resp)))
@@ -173,13 +213,66 @@ def test_fetch_served_summary_refused() -> None:
         server.shutdown()
 
 
-def test_fetch_peer_history_no_bundles() -> None:
+def test_fetch_peer_history_no_checkpoints_fails() -> None:
     server, base_url = _start_mock_server()
     try:
         result = fetch_peer_history(base_url, timeout_seconds=5, peer_id="test-peer")
-        # Mock server returns empty bundles for non-served-summary requests
-        assert result["status"] == "no_answer"
-        assert result["reason"] == "peer returned no bundles"
+        assert result["status"] == "failed"
+        assert result["reason"] == "the artifact carries no checkpoint lines"
+    finally:
+        server.shutdown()
+
+
+def test_fetch_peer_history_folds_the_peers_checkpoints() -> None:
+    server, base_url = _start_mock_server(checkpoint_lines=_DEMO_CHECKPOINTS)
+    try:
+        result = fetch_peer_history(base_url, timeout_seconds=5, peer_id="test-peer")
+        assert result["status"] == "verified", result
+        summary = result["history_summary"]
+        assert summary["checkpoint_count"] == len(_DEMO_CHECKPOINTS)
+        assert summary["latest_checkpoint"] == _DEMO_CHECKPOINTS[-1]
+        assert summary["anchor"] == _DEMO_ANCHOR
+        assert summary["continuity"] == "unbroken"
+    finally:
+        server.shutdown()
+
+
+def test_fetch_peer_history_refuses_a_forged_genesis() -> None:
+    """A signed envelope around a first checkpoint whose statement is not its
+    own (here, the last line's) is never folded into a verified card."""
+    forged = [{**_DEMO_CHECKPOINTS[0], "checkpoint_cose": _DEMO_CHECKPOINTS[-1]["checkpoint_cose"]}]
+    forged_anchor = hashlib.sha256(bytes.fromhex(forged[-1]["checkpoint_cose"])).hexdigest()
+    server, base_url = _start_mock_server(checkpoint_lines=forged, anchor=forged_anchor)
+    try:
+        result = fetch_peer_history(base_url, timeout_seconds=5, peer_id="test-peer")
+        assert result["status"] == "failed"
+        assert "first checkpoint" in result["reason"]
+    finally:
+        server.shutdown()
+
+
+def test_fetch_peer_history_refuses_a_chain_whose_later_link_fails() -> None:
+    """A verified genesis followed by a line whose statement does not prove
+    it (here, the genesis statement again) is not verified history, even
+    when the envelope's anchor names that last statement."""
+    assert len(_DEMO_CHECKPOINTS) > 1
+    broken = [*_DEMO_CHECKPOINTS[:-1], {**_DEMO_CHECKPOINTS[-1], "checkpoint_cose": _DEMO_CHECKPOINTS[0]["checkpoint_cose"]}]
+    anchor = hashlib.sha256(bytes.fromhex(broken[-1]["checkpoint_cose"])).hexdigest()
+    server, base_url = _start_mock_server(checkpoint_lines=broken, anchor=anchor)
+    try:
+        result = fetch_peer_history(base_url, timeout_seconds=5, peer_id="test-peer")
+        assert result["status"] == "failed"
+        assert "does not verify" in result["reason"]
+    finally:
+        server.shutdown()
+
+
+def test_fetch_peer_history_refuses_lines_that_do_not_end_at_the_anchor() -> None:
+    server, base_url = _start_mock_server(checkpoint_lines=_DEMO_CHECKPOINTS, anchor="cd" * 32)
+    try:
+        result = fetch_peer_history(base_url, timeout_seconds=5, peer_id="test-peer")
+        assert result["status"] == "failed"
+        assert "not the envelope's anchor" in result["reason"]
     finally:
         server.shutdown()
 
@@ -311,3 +404,29 @@ def test_peer_no_url_stays_pending() -> None:
     served = peer_row["served"]
     assert history["state"] == CELL_PENDING, f"expected pending history for no-url peer, got: {history}"
     assert served["state"] == CELL_PENDING, f"expected pending served for no-url peer, got: {served}"
+
+
+def test_fetch_served_summary_unsigned_reply_fails() -> None:
+    """A reply that is not a signed envelope or refusal is never verified."""
+
+    class _UnsignedHandler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: Any) -> None:
+            pass
+
+        def do_POST(self) -> None:
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            resp = json.dumps({"served_summary": _VALID_SERVED_SUMMARY}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+
+    server = HTTPServer(("127.0.0.1", 0), _UnsignedHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        result = fetch_served_summary(f"http://127.0.0.1:{server.server_address[1]}", timeout_seconds=5)
+        assert result["status"] == "failed"
+        assert "neither an envelope nor a refusal" in result["reason"]
+    finally:
+        server.shutdown()

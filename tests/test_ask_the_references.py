@@ -5,10 +5,10 @@ itself won't hold, with no new trusted party.
 
 Rehearsal step 7 shape: GCP served M4 (an ordinary exchange, recorded on
 GCP's own chain); M4 adjudicated GCP `contradicted:gcp`; GCP refused to
-hold that verdict on its own chain (`policy_decline`); M4 sealed the
+hold that verdict on its own chain (`policy_declined`); M4 sealed the
 refusal as its own record instead. Stranger M3 discovers "m4" as one of
 GCP's own counterparties from GCP's own (honest) exchange record, samples
-it, asks M4's door `correlation{by: counterparty, value: gcp}`, and gets
+it, asks M4's door `{"correlation": "gcp"}`, and gets
 back BOTH the verdict and the held refusal -- neither of which GCP's own
 chain carries.
 
@@ -258,7 +258,7 @@ def _build_gcp_caught_by_m4(tmp_path, *, prune_seq_1: bool = False, ts_url: str 
     from adjudication_delivery import handle_delivery
 
     refusal_dict = handle_delivery(gcp_door_state, json.dumps(adjudication).encode("utf-8"))
-    assert refusal_dict["reason"] == "policy_decline"
+    assert refusal_dict["reason"] == "policy_declined"
 
     ack_refused = seal_adjudication_ack_refused(adjudication, refusal_dict, operator="test-org", developer="referee@v1")
 
@@ -377,15 +377,16 @@ def test_classify_receipt_only_attributes_owner_naming_verdicts_to_x():
 
 class TestReferencesEndToEnd:
     def test_stranger_gets_m4s_verdict_and_held_refusal_about_gcp(self, tmp_path, stub_witness):
-        gcp_state, m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path, ts_url=stub_witness)
+        gcp_state, m4_state, _gcp_cids = _build_gcp_caught_by_m4(tmp_path, ts_url=stub_witness)
 
         gcp_server, gcp_thread, gcp_url = _run_server(gcp_state)
         m4_server, m4_thread, m4_url = _run_server(m4_state)
         try:
+            # No range: X's last records under its freshest anchor, located
+            # through a checkpoints answer.
             result = ah.run_references(
                 gcp_url,
                 x_node_id="gcp",
-                x_selector=f"{gcp_cids[0]}..{gcp_cids[-1]}",
                 peer_map={"m4": m4_url},
                 k=3,
             )
@@ -428,6 +429,18 @@ class TestReferencesEndToEnd:
         assert "REFERENCES x=gcp" in rendered
         assert "ack_refusals_about_x=1" in rendered
 
+    def test_default_pull_is_the_last_records_a_door_serves(self, tmp_path, stub_witness, monkeypatch):
+        gcp_state, _m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path, ts_url=stub_witness)
+        monkeypatch.setattr(ah, "DEFAULT_PULL_RECORDS", 1)
+        gcp_server, gcp_thread, gcp_url = _run_server(gcp_state)
+        try:
+            result = ah.run_references(gcp_url, x_node_id="gcp", peer_map={}, k=0)
+        finally:
+            gcp_server.shutdown()
+            gcp_thread.join(timeout=5)
+        assert len(gcp_cids) > 1
+        assert result.continuity["gcp::m4"]["records_checked"] == 1
+
     def test_gcp_never_holds_the_verdict_itself(self, tmp_path, stub_witness):
         """The point of the whole mechanism: GCP's OWN chain never carries
         the contradicted verdict or the ack-refused record -- only M4's
@@ -449,7 +462,7 @@ class TestReferencesEndToEnd:
             result = ah.run_references(
                 gcp_url,
                 x_node_id="gcp",
-                x_selector=f"{gcp_cids[0]}..{gcp_cids[-1]}",
+                x_range=(0, len(gcp_cids) - 1),
                 peer_map={},  # m4's address deliberately not supplied
                 k=3,
             )
@@ -482,7 +495,7 @@ class TestReferencesEndToEnd:
             result = ah.run_references(
                 gcp_url,
                 x_node_id="gcp",
-                x_selector=f"{gcp_cids[0]}..{gcp_cids[-1]}",
+                x_range=(0, len(gcp_cids) - 1),
                 peer_map={"m4": m4_url},
                 k=3,
             )
@@ -507,7 +520,7 @@ class TestReferencesEndToEnd:
             result = ah.run_references(
                 gcp_url,
                 x_node_id="gcp",
-                x_selector=f"{gcp_cids[0]}..{gcp_cids[-1]}",
+                x_range=(0, len(gcp_cids) - 1),
                 peer_map={"m4": "http://127.0.0.1:9"},
                 k=3,
             )
@@ -534,7 +547,6 @@ class TestReferencesEndToEnd:
                 ah.run_references(
                     f"http://127.0.0.1:{port}",
                     x_node_id="gcp",
-                    x_selector="aa..bb",
                     peer_map={},
                     k=3,
                 )
@@ -565,14 +577,14 @@ class TestPruneMutant:
             baseline_result = ah.run_references(
                 baseline_url,
                 x_node_id="gcp",
-                x_selector=f"{baseline_cids[0]}..{baseline_cids[-1]}",
+                x_range=(0, len(baseline_cids) - 1),
                 peer_map={},
                 k=0,
             )
             pruned_result = ah.run_references(
                 pruned_url,
                 x_node_id="gcp",
-                x_selector=f"{pruned_cids[0]}..{pruned_cids[-1]}",
+                x_range=(0, len(pruned_cids) - 1),
                 peer_map={},
                 k=0,
             )

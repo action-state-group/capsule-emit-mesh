@@ -27,7 +27,7 @@ from moderation_decision import (
     seal_moderation_decision,
 )
 from moderation_evidence_door import (
-    REASON_POLICY_DECLINE,
+    REASON_POLICY_DECLINED,
     SUBJECT_KIND_MESSAGE_DIGEST,
     RedressRequest,
     answer_redress_request,
@@ -159,7 +159,7 @@ def test_ten_decisions_two_twinned_one_human_refereed_one_appealed() -> None:
         requester_signature=appeal_sig,
     )
     appeal_answer = answer_redress_request(
-        ledger, appeal_req, signer=signer, request_digest="appeal-1", issued_at="2026-09-22T00:00:00Z"
+        ledger, appeal_req, signer=signer, request_digest="13b5775a147fffe74398ad7e477bed7d74d64b53bac91b10139799b00a6fe296", issued_at="2026-09-22T00:00:00Z"
     ).to_wire()
     assert appeal_answer["status"] == "SATISFIED"
     bundle = appeal_answer["bundles"][0]
@@ -184,10 +184,10 @@ def test_ten_decisions_two_twinned_one_human_refereed_one_appealed() -> None:
         requester_signature=stranger_sig,
     )
     stranger_answer = answer_redress_request(
-        ledger, stranger_req, signer=signer, request_digest="appeal-2", issued_at="2026-09-22T00:00:01Z"
+        ledger, stranger_req, signer=signer, request_digest="a99b4c9ed8792fcedfabd89299afab94edab8f3d5cc9eebc5deb6b822477469b", issued_at="2026-09-22T00:00:01Z"
     ).to_wire()
     assert stranger_answer["status"] == "WITHHELD"
-    assert stranger_answer["reason"] == REASON_POLICY_DECLINE
+    assert stranger_answer["reason"] == REASON_POLICY_DECLINED
     assert "bundles" not in stranger_answer
 
     # -- The statement of reasons regenerates byte-identical from the bundle
@@ -198,7 +198,7 @@ def test_ten_decisions_two_twinned_one_human_refereed_one_appealed() -> None:
     # the SAME statement bytes too -- "from the records alone" holds across
     # independently-issued requests, not just repeated calls on one object.
     appeal_answer_2 = answer_redress_request(
-        ledger, appeal_req, signer=signer, request_digest="appeal-3", issued_at="2026-09-22T00:00:02Z"
+        ledger, appeal_req, signer=signer, request_digest="08521f45365c6cd8bff00b1760d7f9c002f19115f27af288e5ab6f209a49fd74", issued_at="2026-09-22T00:00:02Z"
     ).to_wire()
     bundle_2 = appeal_answer_2["bundles"][0]
     assert statement_of_reasons_bytes(bundle_2) == first_regen

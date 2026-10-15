@@ -97,9 +97,16 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from capsule_emit.bundle import Bundle, verify_bundle
+from agent_action_capsule import evidence_request as er
 
-from ask_history import post_evidence_request, post_mesh_evidence_request
+from ask_history import (
+    Exchange,
+    build_request,
+    post_evidence_request,
+    post_mesh_evidence_request,
+    read_reply,
+    verified_bundles,
+)
 from capsule_sidecar import CLIENT_NONCE_HEADER, digest_json
 from twin_adjudicator import (
     REFEREE_RECORD_CITATION_UNVERIFIED,
@@ -154,21 +161,11 @@ class RefereeRecordResolution:
     capsule_id: str | None = None
 
 
-def _referee_nonce_correlation_request(nonce: str) -> dict[str, Any]:
-    """The E15 request map for `correlation{by: "nonce", value: nonce}` --
-    same shape `ask_history.py`'s own (private) `_build_request_map` emits
-    for a correlation subject; built directly here rather than reaching
-    into that module's private helper (same precedent `ask_history.py`
-    itself cites for not reaching into `capsule_emit.evidence_request`'s
-    own private `_iter_values_by_key`)."""
-    return {"subject": {"kind": "correlation", "by": "nonce", "value": nonce}, "coverage": {}}
-
-
 def resolve_referee_record(
     nonce: str,
     *,
     expected_response_digest: str,
-    post: Callable[[dict[str, Any]], dict[str, Any]] | None,
+    post: Callable[[dict[str, Any]], Exchange] | None,
 ) -> RefereeRecordResolution:
     """Resolve the referee node's OWN sealed half for *nonce* via its
     evidence door and verify it OFFLINE before ever trusting it.
@@ -176,10 +173,10 @@ def resolve_referee_record(
     *post* is an already-bound transport -- `functools.partial(
     post_evidence_request, evidence_door_base_url)` for E15 HTTP, or
     `functools.partial(post_mesh_evidence_request, local_host_api,
-    local_plugin_name, referee_peer_id)` for the plugin mesh stream (same
-    injectable-callable shape `ask_history.fetch_all_pages(post, ...)`
-    already uses) -- or `None` when no evidence-door transport is
-    configured at all.
+    local_plugin_name, referee_peer_id)` for the plugin mesh stream -- or
+    `None` when no evidence-door transport is configured at all. It asks
+    `{"correlation": nonce}` and reads the reply with
+    `ask_history.read_reply`.
 
     *expected_response_digest* is the digest THIS module itself computed
     from the referee HTTP call's own response body (`digest_json`, the
@@ -191,8 +188,9 @@ def resolve_referee_record(
     guessed nonce from ever being cited as the referee's own.
 
     Three states, never a silent fourth (`RefereeRecordResolution.status`):
-      - `REFEREE_RECORD_RESOLVED` -- a bundle verified offline
-        (`capsule_emit.bundle.verify_bundle`) AND its own declared
+      - `REFEREE_RECORD_RESOLVED` -- the signed envelope and a bundle in it
+        verified offline (`capsule_emit.bundle.verify_bundle`, proven under
+        the envelope's anchor) AND the bundle's own declared
         `effect.response_digest` matched. `capsule_id` is that bundle's
         own capsule id (content-addressed -- "the capsule digest").
       - `REFEREE_RECORD_CITATION_UNVERIFIED` -- the door answered with at
@@ -210,26 +208,22 @@ def resolve_referee_record(
         return RefereeRecordResolution(status=REFEREE_RECORD_UNRESOLVED, nonce=nonce)
 
     try:
-        payload = post(_referee_nonce_correlation_request(nonce))
-    except urllib.error.URLError:
+        reply = read_reply(post(build_request(er.Subject("correlation", nonce))))
+    except (urllib.error.URLError, TypeError, ValueError):
         return RefereeRecordResolution(status=REFEREE_RECORD_UNRESOLVED, nonce=nonce)
 
-    if "reason" in payload:
+    if reply.envelope is None:
+        # A refusal, or nothing readable: the door had nothing for this nonce.
         return RefereeRecordResolution(status=REFEREE_RECORD_UNRESOLVED, nonce=nonce)
 
-    bundles = payload.get("bundles") or []
-    for bd in bundles:
-        bundle = Bundle.from_dict(bd)
-        ok, _errors = verify_bundle(bundle)
-        if not ok:
-            continue
+    for bundle in verified_bundles(reply):
         declared = (bundle.receipt.get("effect") or {}).get("response_digest")
         if declared == expected_response_digest:
             return RefereeRecordResolution(
                 status=REFEREE_RECORD_RESOLVED, nonce=nonce, capsule_id=bundle.receipt.get("capsule_id")
             )
 
-    if bundles:
+    if not reply.ok or (isinstance(reply.body, dict) and reply.body.get("bundles")):
         # The door answered for this nonce, but nothing both verified and
         # matched -- refuse to cite, distinct from never having answered.
         return RefereeRecordResolution(status=REFEREE_RECORD_CITATION_UNVERIFIED, nonce=nonce)

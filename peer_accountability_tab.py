@@ -30,10 +30,10 @@ Composes verbs that already exist; re-derives none of their evidence:
     trust signal, purely a direction-of-exchange fact.
   - **history (theirs)**: the panes v2 design calls out that today's cell shows THIS node's own
     ``history_card.build_history_card()`` chain on every peer row -- a
-    documented shortcut, not the peer's own card. There is still no evidence
-    subject a peer's OWN history card can be fetched over (the merged
-    responder answers ``record``/``range`` only, never ``checkpoints`` /
-    ``full_history``), so this cell is now honestly ``pending`` rather than
+    documented shortcut, not the peer's own card. The evidence door now
+    answers a ``checkpoints`` subject (draft-mih-agent-evidence-request-00),
+    but this pane does not fetch a peer's checkpoints yet, so this cell is
+    honestly ``pending`` rather than
     silently mislabeling this node's chain as theirs -- see
     ``peer_history_cell`` / ``THEIRS_HISTORY_PENDING_REASON``. The real
     grading logic (``history_cell`` / ``continuity_cell`` / ``witnessed_cell``)
@@ -78,7 +78,12 @@ from typing import Any
 
 import assurance_map
 from capsule_accountability_tab import STATE_FAILED, STATE_VERIFIED, cross_party_grade
-from capsule_exchange_tab import digest_match_grade, exchange_id_for, half_by_role, records_for_exchange
+from capsule_exchange_tab import (
+    digest_match_grade,
+    exchange_id_for,
+    half_by_role,
+    records_for_exchange,
+)
 from capsule_mesh_view import _poc_block, label_counterparty, label_role
 from history_card import HistoryCard, build_history_card
 
@@ -164,16 +169,15 @@ ASKED_ABSENT_REASON = "Not yet counted — this node doesn't persist served/refu
 
 #: The rule: "History (theirs) must
 #: be THEIR card fetched via the evidence client (checkpoints subject,
-#: cached per pin)". No such subject exists yet -- the merged responder
-#: (capsule_emit.evidence_request.SUBJECT_KINDS) answers only
-#: `record`/`range`, never `checkpoints`/`full_history`. Rather than keep
+#: cached per pin)". The evidence door answers a `checkpoints` subject, but
+#: nothing on this pane fetches one from a peer yet. Rather than keep
 #: silently showing this node's OWN card as if it were the peer's (the
 #: documented shortcut the doc calls out to fix), this cell is honestly
-#: pending a peer-fetch carrier that does not exist in this repo yet.
+#: pending a peer fetch that does not exist on this pane yet.
 THEIRS_HISTORY_PENDING_REASON = (
-    "this node cannot fetch the peer's OWN history card yet: the evidence-request carrier only "
-    "answers record/range subjects, not checkpoints/full_history -- showing this node's own chain "
-    "here would misrepresent it as the peer's, so this cell is pending a peer-fetch carrier "
+    "this node does not fetch the peer's OWN history card yet: nothing on this pane asks the "
+    "peer's evidence door for its checkpoints -- showing this node's own chain here would "
+    "misrepresent it as the peer's, so this cell is pending that fetch "
     "(an open, disclosed gap -- not yet built)"
 )
 
@@ -491,11 +495,10 @@ def peer_history_cell(card: HistoryCard, checkpoint_lines: list[dict[str, Any]],
         status = peer_fetch_result.get("status")
         if status == "verified":
             hs = peer_fetch_result.get("history_summary", {})
-            nb = hs.get("verified_bundles", "?")
             nc = hs.get("checkpoint_count", "?")
             return {
                 "state": CELL_VERIFIED,
-                "text": f"{nb} bundle(s) verified, {nc} checkpoint(s) (their count)",
+                "text": f"{nc} checkpoint(s) (their count), continuity={hs.get('continuity', '?')}",
                 "fetch_source": "peer_evidence_client",
                 "history_summary": hs,
                 "mine_for_reference": card,
@@ -533,6 +536,7 @@ def _own_served_summary_value(
     cell as ``mine_for_reference``, same as ``peer_history_cell`` does for
     the history chain."""
     from capsule_emit.checkpoint import CheckpointRecord
+
     from served_summary import build_served_summary
 
     latest_checkpoint = CheckpointRecord.from_dict(checkpoint_lines[-1]) if checkpoint_lines else None

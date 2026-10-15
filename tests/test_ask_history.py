@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for ``ask_history.py`` -- the requester side of E15's HTTP
-evidence door: posts to a REAL running ``evidence_server.py``, verifies the
-response offline, renders the history card.
+"""Tests for ``ask_history.py`` -- the requester side of the -00 evidence
+request exchange: posts to a REAL running ``evidence_server.py``, checks the
+signed envelope or refusal offline, renders the history card.
 
 Uses ``CAPSULE_WITNESS=stub`` (zero-network) so this runs hermetically.
 
@@ -17,12 +17,14 @@ permanently deny those three files their stub for the rest of the process.
 """
 from __future__ import annotations
 
+import dataclasses
 import http.server
 import json
 import sys
 import tempfile
 import threading
 import types
+from typing import Any
 
 _stubbed_model_identity = "model_identity" not in sys.modules
 if _stubbed_model_identity:
@@ -31,12 +33,13 @@ if _stubbed_model_identity:
     sys.modules["model_identity"].model_package_digest = lambda m: ""
 
 import pytest
+from agent_action_capsule import evidence_request as er
 from capsule_emit import seal, witness
 
 import ask_history as ah
 import capsule_sidecar as cs
 import evidence_server as es
-from evidence_responder import handle_evidence_request
+from evidence_responder import handle_evidence_request, reply_to_wire
 
 
 @pytest.fixture(autouse=True)
@@ -114,53 +117,127 @@ def peer(node_state):
     thread.join(timeout=5)
 
 
+def _record(cid: str, **coverage) -> dict:
+    return ah.build_request(er.Subject("record", cid), **coverage)
+
+
+def _anchor_of(state) -> str:
+    """The digest of the latest anchor the node holds: its checkpoint's COSE
+    statement, hashed."""
+    import hashlib
+
+    lines = [json.loads(line) for line in (state.ledger_dir / "checkpoints.jsonl").read_text().splitlines() if line]
+    return hashlib.sha256(bytes.fromhex(lines[-1]["checkpoint_cose"])).hexdigest()
+
+
+class TestBuildRequest:
+    def test_default_coverage_is_min_freshness_zero(self):
+        assert ah.build_request(er.Subject("full_history")) == {
+            "subject": {"full_history": None},
+            "coverage": {"min_freshness": 0},
+        }
+
+    def test_expected_pin_and_options(self):
+        req = ah.build_request(
+            er.Subject("range", (0, 4)), expected_pin="ab" * 32, derivation="served_summary/1", nonce="n1"
+        )
+        assert req == {
+            "subject": {"range": [0, 4]},
+            "coverage": {"expected_pin": "ab" * 32},
+            "derivation": "served_summary/1",
+            "nonce": "n1",
+        }
+        er.parse_request(json.dumps(req).encode())  # a well-formed -00 request
+
+    def test_both_coverage_members_is_an_error(self):
+        with pytest.raises(ValueError):
+            ah.build_request(er.Subject("full_history"), expected_pin="ab" * 32, min_freshness=1)
+
+
 class TestEndToEnd:
     def test_record_request_verifies_and_renders_history_card(self, peer):
         base_url, state = peer
         cids = _seal_and_checkpoint(state, 1)
-        req = ah._build_request_map(
-            subject_kind="record", capsule_id=cids[0], selector=None,
-            expected_pin_root=None, expected_pin_mmr_size=None, nonce=None,
-        )
-        payload = ah.post_evidence_request(base_url, req)
-        assert "bundles" in payload
-        rendered = ah.render_artifact(payload, node_id="m4")
-        assert "ARTIFACT" in rendered
+        reply = ah.read_reply(ah.post_evidence_request(base_url, _record(cids[0])))
+        assert reply.ok, reply.errors
+        assert reply.envelope is not None and reply.envelope.anchor_digest == _anchor_of(state)
+        rendered = ah.render_artifact(reply, node_id="m4")
+        assert "ARTIFACT subject=record" in rendered
+        assert "verify_bundle.ok=True" in rendered
         assert "history card" in rendered
         assert "continuity=" in rendered
 
     def test_range_request_multiple_bundles(self, peer):
         base_url, state = peer
-        cids = _seal_and_checkpoint(state, 3)
-        req = ah._build_request_map(
-            subject_kind="range", capsule_id=None, selector=f"{cids[0]}..{cids[-1]}",
-            expected_pin_root=None, expected_pin_mmr_size=None, nonce=None,
-        )
-        payload = ah.post_evidence_request(base_url, req)
-        assert len(payload["bundles"]) == 3
+        _seal_and_checkpoint(state, 3)
+        reply = ah.read_reply(ah.post_evidence_request(base_url, ah.build_request(er.Subject("range", (0, 2)))))
+        assert reply.ok, reply.errors
+        assert len(ah.verified_bundles(reply)) == 3
+
+    def test_expected_pin_serves_under_that_anchor(self, peer):
+        base_url, state = peer
+        cids = _seal_and_checkpoint(state, 1)
+        anchor = _anchor_of(state)
+        reply = ah.read_reply(ah.post_evidence_request(base_url, _record(cids[0], expected_pin=anchor)))
+        assert reply.ok and reply.envelope.anchor_digest == anchor
+
+    def test_min_freshness_time_reports_the_anchors_time(self, peer):
+        base_url, state = peer
+        cids = _seal_and_checkpoint(state, 1)
+        req = _record(cids[0], min_freshness="2000-01-01T00:00:00Z")
+        reply = ah.read_reply(ah.post_evidence_request(base_url, req))
+        assert reply.ok, reply.errors
+        freshness = reply.envelope.freshness
+        assert isinstance(freshness, str) and freshness.endswith("Z") and "." not in freshness
+        late = ah.read_reply(ah.post_evidence_request(base_url, _record(cids[0], min_freshness="2999-01-01T00:00:00Z")))
+        assert late.refusal is not None and late.refusal.reason == "coverage_unsatisfiable"
+
+    def test_unheld_pin_is_a_signed_coverage_refusal(self, peer):
+        base_url, state = peer
+        cids = _seal_and_checkpoint(state, 1)
+        reply = ah.read_reply(ah.post_evidence_request(base_url, _record(cids[0], expected_pin="ab" * 32)))
+        assert reply.ok and reply.refusal.reason == "coverage_unsatisfiable"
 
     def test_unknown_record_renders_signed_refusal(self, peer):
-        base_url, _state = peer
-        req = ah._build_request_map(
-            subject_kind="record", capsule_id="ff" * 32, selector=None,
-            expected_pin_root=None, expected_pin_mmr_size=None, nonce=None,
-        )
-        payload = ah.post_evidence_request(base_url, req)
-        assert "reason" in payload
-        rendered = ah.render_refusal(payload)
-        assert "REFUSAL reason=no_such_record" in rendered
-        assert "signature verifies offline: True" in rendered
+        base_url, state = peer
+        _seal_and_checkpoint(state, 1)
+        reply = ah.read_reply(ah.post_evidence_request(base_url, _record("ff" * 32)))
+        assert reply.refusal is not None
+        rendered = ah.render_refusal(reply)
+        assert "REFUSAL reason=no_such_subject" in rendered
+        assert "signed, conformant and answering this request: True" in rendered
+
+    def test_reply_to_another_request_is_flagged(self, peer):
+        base_url, state = peer
+        cids = _seal_and_checkpoint(state, 1)
+        exchange = ah.post_evidence_request(base_url, _record(cids[0]))
+        reply = ah.read_reply(ah.Exchange("00" * 32, exchange.reply))
+        assert not reply.ok
+        assert "the envelope answers another request" in reply.errors
+
+    def test_pinned_responder_key(self, peer):
+        base_url, state = peer
+        cids = _seal_and_checkpoint(state, 1)
+        exchange = ah.post_evidence_request(base_url, _record(cids[0]))
+        responder = ah.read_reply(exchange).envelope.responder
+        assert ah.read_reply(exchange, responder_key=responder).ok
+        assert not ah.read_reply(exchange, responder_key="ab" * 32).ok
 
     def test_tamper_check_detects_a_flipped_byte(self, peer):
         base_url, state = peer
         cids = _seal_and_checkpoint(state, 1)
-        req = ah._build_request_map(
-            subject_kind="record", capsule_id=cids[0], selector=None,
-            expected_pin_root=None, expected_pin_mmr_size=None, nonce=None,
-        )
-        payload = ah.post_evidence_request(base_url, req)
-        rendered = ah.render_artifact(payload, node_id="m4", tamper_check=True)
+        reply = ah.read_reply(ah.post_evidence_request(base_url, _record(cids[0])))
+        rendered = ah.render_artifact(reply, node_id="m4", tamper_check=True)
+        assert "envelope verifies=False (expected False)" in rendered
         assert "verify.ok=False (expected False)" in rendered
+
+    def test_checkpoints_subject_renders_the_chain(self, peer):
+        base_url, state = peer
+        _seal_and_checkpoint(state, 2)
+        reply = ah.read_reply(ah.post_evidence_request(base_url, ah.build_request(er.Subject("checkpoints"))))
+        assert reply.ok, reply.errors
+        rendered = ah.render_artifact(reply, node_id="m4")
+        assert "checkpoints=" in rendered and "history card:" in rendered
 
     def test_main_cli_smoke(self, peer, capsys):
         base_url, state = peer
@@ -170,7 +247,7 @@ class TestEndToEnd:
         out = capsys.readouterr().out
         assert "ARTIFACT" in out
 
-    def test_main_cli_requires_selector_for_range(self, peer):
+    def test_main_cli_requires_range_for_range(self, peer):
         base_url, _state = peer
         with pytest.raises(SystemExit):
             ah.main([base_url, "--subject", "range"])
@@ -178,14 +255,13 @@ class TestEndToEnd:
 
 class _MeshToolCallHandler(http.server.BaseHTTPRequestHandler):
     """Stands in for mesh-llm's ``POST /api/plugins/<name>/tools/<tool>``
-    route driving the Rust admission-policy plugin's ``mesh_evidence_request``
-    tool (``mesh_evidence_bridge::handle_mesh_evidence_request``): unwraps the
-    SAME ``{"peer_id", "request"}`` arguments shape the real handler parses,
-    then answers with the REAL ``evidence_responder.handle_evidence_request``
-    against a REAL ledger -- exactly what the Rust bridge's proxy-to-
-    ``evidence_server.py`` does, minus the Rust process itself. Proves
-    ``ask_history.py``'s mesh-carrier URL/body wiring against the real
-    request/response shape without needing a compiled plugin binary.
+    route driving the Mesh-LLM plugin's ``mesh_evidence_request`` tool
+    (``mesh_evidence_bridge::handle_mesh_evidence_request``): unwraps the
+    ``{"peer_id", "request"}`` arguments, adds a ``requester_id`` and
+    re-serializes the request as the plugin does, answers with the REAL
+    ``evidence_responder.handle_evidence_request`` against a REAL ledger, and
+    reports ``{"answer", "request_digest"}`` for the bytes it sent. Proves
+    ``ask_history.py``'s mesh-carrier wiring without a compiled plugin.
     """
 
     server_version = "fake-mesh-llm-host/0.1"
@@ -203,9 +279,21 @@ class _MeshToolCallHandler(http.server.BaseHTTPRequestHandler):
             self._write(502, json.dumps({"error": "peer does not answer evidence requests"}).encode())
             return
 
-        request_bytes = json.dumps(arguments["request"]).encode("utf-8")
+        if self.server.passthrough:  # type: ignore[attr-defined]
+            # This repo's admission-policy plugin: serde_json::to_vec of the
+            # request as given, and the peer's reply returned as is.
+            request_bytes = json.dumps(arguments["request"], separators=(",", ":")).encode("utf-8")
+            result = handle_evidence_request(self.server.state, request_bytes)  # type: ignore[attr-defined]
+            self._write(200, json.dumps(reply_to_wire(result)).encode())
+            return
+        request = {**arguments["request"], "requester_id": "local-node"}
+        request_bytes = json.dumps(request).encode("utf-8")
         result = handle_evidence_request(self.server.state, request_bytes)  # type: ignore[attr-defined]
-        self._write(200, json.dumps(result.to_dict()).encode())
+        answer = {"answer": reply_to_wire(result), "request_digest": er.request_digest(request_bytes)}
+        body = json.dumps(answer).encode()
+        if self.server.duplicate_in_answer:  # type: ignore[attr-defined]
+            body = body.replace(b'"answer": {', b'"answer": {"sig": "00", ', 1)
+        self._write(200, body)
 
     def _write(self, status: int, body: bytes) -> None:
         self.send_response(status)
@@ -219,7 +307,7 @@ class _MeshToolCallHandler(http.server.BaseHTTPRequestHandler):
 
 
 class TestMeshCarrier:
-    """``--via mesh`` -- the plugin-mesh-stream carrier, ask #5's build."""
+    """``--via mesh`` -- the plugin-mesh-stream carrier."""
 
     @pytest.fixture
     def mesh_host(self, node_state):
@@ -231,6 +319,8 @@ class TestMeshCarrier:
         server.state = state
         server.calls = []
         server.unreachable_peer_id = "ff" * 32
+        server.passthrough = False
+        server.duplicate_in_answer = False
         port = server.server_address[1]
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -241,13 +331,31 @@ class TestMeshCarrier:
     def test_post_mesh_evidence_request_wraps_peer_id_and_request(self, mesh_host):
         local_host_api, server, state = mesh_host
         cids = _seal_and_checkpoint(state, 1)
-        req = ah._build_request_map(
-            subject_kind="record", capsule_id=cids[0], selector=None,
-            expected_pin_root=None, expected_pin_mmr_size=None, nonce=None,
-        )
-        payload = ah.post_mesh_evidence_request(local_host_api, "admission-policy", "aa" * 32, req)
-        assert "bundles" in payload
+        req = _record(cids[0])
+        exchange = ah.post_mesh_evidence_request(local_host_api, "admission-policy", "aa" * 32, req)
         assert server.calls == [{"peer_id": "aa" * 32, "request": req}]
+        # The digest is of the bytes the plugin sent, requester_id included.
+        assert ah.read_reply(exchange).ok
+
+    def test_wrapped_answer_with_a_duplicate_member_is_refused(self, mesh_host):
+        """The capsules plugin's wrapper is decoded with duplicates refused,
+        so a duplicate inside its answer is not collapsed away."""
+        local_host_api, server, state = mesh_host
+        server.duplicate_in_answer = True
+        cids = _seal_and_checkpoint(state, 1)
+        with pytest.raises(ValueError, match="duplicate"):
+            ah.post_mesh_evidence_request(local_host_api, "admission-policy", "aa" * 32, _record(cids[0]))
+
+    def test_passthrough_carrier_binds_the_request_it_forwarded(self, mesh_host):
+        """This repo's admission-policy plugin returns the peer's reply as
+        is: the digest is of the compact JSON it sent."""
+        local_host_api, server, state = mesh_host
+        server.passthrough = True
+        cids = _seal_and_checkpoint(state, 1)
+        exchange = ah.post_mesh_evidence_request(local_host_api, "admission-policy", "aa" * 32, _record(cids[0]))
+        reply = ah.read_reply(exchange)
+        assert reply.ok, reply.errors
+        assert reply.envelope is not None
 
     def test_main_cli_via_mesh_renders_artifact(self, mesh_host, capsys):
         local_host_api, _server, state = mesh_host
@@ -262,92 +370,128 @@ class TestMeshCarrier:
     def test_main_cli_via_mesh_reports_a_peer_that_never_answers(self, mesh_host, capsys):
         local_host_api, server, _state = mesh_host
         rc = ah.main([
-            server.unreachable_peer_id, "--subject", "range", "--selector", "a" * 64 + ".." + "b" * 64,
+            server.unreachable_peer_id, "--subject", "range", "--range", "0", "1",
             "--via", "mesh", "--local-host-api", local_host_api,
         ])
         assert rc == 1
         assert "failed" in capsys.readouterr().err
 
     def test_via_mesh_tamper_check_detects_a_flipped_byte(self, mesh_host):
-        """Mutant proof for the mesh carrier: tamper a COPY of the response
-        the (stubbed) plugin-mesh-stream carrier delivered, in memory, and
-        confirm offline verify flags it -- the SAME discriminating
-        `verify_bundle` the direct-HTTP path uses
-        (`test_tamper_check_detects_a_flipped_byte`), proving verify's
-        tamper-detection is carrier-independent: it inspects the bytes that
-        arrived, never how they arrived.
-        """
+        """Tamper detection is carrier-independent: it inspects the reply
+        that arrived, never how it arrived."""
         local_host_api, _server, state = mesh_host
         cids = _seal_and_checkpoint(state, 1)
-        req = ah._build_request_map(
-            subject_kind="record", capsule_id=cids[0], selector=None,
-            expected_pin_root=None, expected_pin_mmr_size=None, nonce=None,
-        )
-        payload = ah.post_mesh_evidence_request(local_host_api, "admission-policy", "aa" * 32, req)
-        rendered = ah.render_artifact(payload, node_id="m4", tamper_check=True)
+        exchange = ah.post_mesh_evidence_request(local_host_api, "admission-policy", "aa" * 32, _record(cids[0]))
+        rendered = ah.render_artifact(ah.read_reply(exchange), node_id="m4", tamper_check=True)
+        assert "envelope verifies=False (expected False)" in rendered
         assert "verify.ok=False (expected False)" in rendered
 
 
-class TestFetchAllPages:
-    """Unit tests for ``fetch_all_pages`` against a FAKE door -- the real
-    ``evidence_server.py`` in this repo still talks to a capsule-emit
-    release that predates paging (see ``evidence_responder.py``'s note), so
-    the client-side pagination-following logic is exercised standalone
-    here rather than end to end. Once a node's capsule-emit floor carries
-    the door-side cap+page fix, these same semantics apply over the wire
-    unchanged -- ``fetch_all_pages`` only ever reads ``next_page_token``
-    off whatever payload it is handed."""
+class TestReadReply:
+    def test_unreadable_reply(self):
+        reply = ah.read_reply(ah.Exchange("00" * 32, b'{"bundles": []}'))
+        assert not reply.ok and reply.envelope is None and reply.refusal is None
 
-    def _paging_door(self, pages: list[list[str]]):
-        """A fake ``post`` callable serving ``pages`` (each a list of
-        capsule ids) round by round, keyed off the request's ``page.token``
-        (``"0"``, ``"1"``, ... -- absent token means page 0)."""
+    def test_forged_refusal(self):
+        forged = {"request_digest": "00" * 32, "reason": "no_such_subject", "issued_at": "2026-10-15T00:00:00Z",
+                  "key_id": "ab" * 32, "sig": "cd" * 64}
+        reply = ah.read_reply(ah.Exchange("00" * 32, json.dumps(forged).encode()))
+        assert not reply.ok
+        assert "the refusal's signature does not verify" in reply.errors
 
-        def post(request_map: dict) -> dict:
-            token = request_map.get("page", {}).get("token", "0")
-            index = int(token)
-            ids = pages[index]
-            body = {
-                "v": 1,
-                "subject_kind": "range",
-                "bundles": [{"capsule_id": cid} for cid in ids],
-            }
-            if index + 1 < len(pages):
-                body["next_page_token"] = str(index + 1)
-            return body
+    def test_duplicate_member_is_not_a_reply(self, peer):
+        """The reply is read as carried: a duplicate member, which a decoded
+        dict would collapse, makes it not well formed."""
+        base_url, state = peer
+        cids = _seal_and_checkpoint(state, 1)
+        exchange = ah.post_evidence_request(base_url, _record(cids[0]))
+        duplicated = exchange.reply[:-1] + b',"issued_at":"2026-10-15T00:00:00Z"}'
+        reply = ah.read_reply(ah.Exchange(exchange.request_digest, duplicated))
+        assert not reply.ok and reply.envelope is None
+        assert "duplicate" in reply.errors[0]
 
-        return post
+    def test_bundle_not_under_the_anchor_is_left_out(self, peer):
+        base_url, state = peer
+        cids = _seal_and_checkpoint(state, 1)
+        reply = ah.read_reply(ah.post_evidence_request(base_url, _record(cids[0])))
+        moved = ah.Reply(ok=True, errors=(), envelope=reply.envelope, body={**reply.body, "anchor": "x"})
+        assert len(ah.verified_bundles(moved)) == 1
+        other = ah.Reply(ok=True, errors=(), envelope=dataclasses.replace(reply.envelope, anchor_digest="ab" * 32),
+                         body=reply.body)
+        bundles, problems = ah.artifact_bundles(other)
+        assert bundles == [] and "not proven under the envelope's anchor" in problems[0]
 
-    def test_follows_next_page_token_until_absent(self):
-        post = self._paging_door([["a", "b"], ["c", "d"], ["e"]])
-        merged = ah.fetch_all_pages(post, {"subject": {"kind": "range", "selector": "a..e"}, "coverage": {}})
-        assert [b["capsule_id"] for b in merged["bundles"]] == ["a", "b", "c", "d", "e"]
-        assert "next_page_token" not in merged
 
-    def test_single_page_door_runs_once(self):
-        calls = []
+def test_signed_envelope_with_malformed_bundles_is_read_not_raised():
+    from agent_action_capsule.canonical import jcs
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-        def post(request_map: dict) -> dict:
-            calls.append(request_map)
-            return {"v": 1, "subject_kind": "record", "bundles": [{"capsule_id": "a"}]}
+    class _Signer:
+        def __init__(self) -> None:
+            self._key = Ed25519PrivateKey.generate()
+            self.key_id = self._key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
 
-        merged = ah.fetch_all_pages(post, {"subject": {"kind": "record", "capsule_id": "a"}, "coverage": {}})
-        assert len(calls) == 1
-        assert [b["capsule_id"] for b in merged["bundles"]] == ["a"]
+        def sign(self, body: bytes) -> tuple[str, str]:
+            return self._key.sign(body).hex(), self.key_id
 
-    def test_refusal_never_pages(self):
-        def post(request_map: dict) -> dict:
-            return {"request_digest": "d", "reason": "no_such_record", "issued_at": "t", "key_id": "k", "sig": "s"}
+    request_bytes = json.dumps(ah.build_request(er.Subject("full_history"))).encode()
+    envelope = er.sign_envelope(
+        request_bytes, er.Subject("full_history"), "ab" * 32, jcs({"bundles": [None, {"v": 1}]}),
+        signer=_Signer(), issued_at="2026-10-15T00:00:00Z",
+    )
+    reply = ah.read_reply(ah.Exchange(er.request_digest(request_bytes), envelope.encode("json")))
+    assert reply.ok
+    bundles, problems = ah.artifact_bundles(reply)
+    assert bundles == [] and len(problems) == 2
+    assert ah.verified_bundles(reply) == []
 
-        merged = ah.fetch_all_pages(post, {"subject": {"kind": "record", "capsule_id": "ff"}, "coverage": {}})
-        assert merged["reason"] == "no_such_record"
 
-    def test_max_pages_guards_against_a_runaway_token(self):
-        def post(request_map: dict) -> dict:
-            # Always claims more is coming -- the pathological door.
-            return {"v": 1, "subject_kind": "range", "bundles": [], "next_page_token": "0"}
+def _signed_checkpoints_reply(body: dict, *, anchor: str = "ab" * 32) -> ah.Exchange:
+    from agent_action_capsule.canonical import jcs
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-        with pytest.raises(RuntimeError, match="max-pages"):
-            ah.fetch_all_pages(
-                post, {"subject": {"kind": "range", "selector": "a..z"}, "coverage": {}}, max_pages=3
-            )
+    key = Ed25519PrivateKey.generate()
+
+    class _Signer:
+        key_id = key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
+
+        def sign(self, data: bytes) -> tuple[str, str]:
+            return key.sign(data).hex(), self.key_id
+
+    request_bytes = json.dumps(ah.build_request(er.Subject("checkpoints"))).encode()
+    envelope = er.sign_envelope(
+        request_bytes, er.Subject("checkpoints"), anchor, jcs(body), signer=_Signer(), issued_at="2026-10-15T00:00:00Z"
+    )
+    return ah.Exchange(er.request_digest(request_bytes), envelope.encode("json"))
+
+
+@pytest.mark.parametrize("checkpoints", [{"unexpected": {}}, [], ["not a map"], [{"mmr_size": 3}]])
+def test_malformed_checkpoints_answer_is_a_runtime_error_for_the_default_pull(checkpoints):
+    exchange = _signed_checkpoints_reply({"checkpoints": checkpoints})
+    with pytest.raises(RuntimeError, match="does not check out"):
+        ah._recent_records_request(lambda _request: exchange, "x")
+    _lines, problems = ah.answer_checkpoints(ah.read_reply(exchange))
+    assert problems
+
+
+def test_default_pull_sizes_the_window_from_the_signed_anchor(node_state):
+    """A door that shrinks the unsigned mmr_size beside its real anchor
+    statement cannot move the stranger's window."""
+    import hashlib
+
+    _seal_and_checkpoint(node_state, 1)
+    _seal_and_checkpoint(node_state, 2)
+    lines = [json.loads(x) for x in (node_state.ledger_dir / "checkpoints.jsonl").read_text().splitlines() if x]
+    assert len(lines) == 2
+    real_size = lines[-1]["mmr_size"]
+    shrunk = [lines[0], {**lines[-1], "mmr_size": 1}]
+    anchor = hashlib.sha256(bytes.fromhex(lines[-1]["checkpoint_cose"])).hexdigest()
+    exchange = _signed_checkpoints_reply({"checkpoints": shrunk}, anchor=anchor)
+    request = ah._recent_records_request(lambda _request: exchange, "x")
+    from cll.checkpoint.core import leaf_count
+
+    last = leaf_count(real_size) - 1
+    assert request["subject"] == {"range": [max(0, last - ah.DEFAULT_PULL_RECORDS + 1), last]}
+    assert request["coverage"] == {"expected_pin": anchor}

@@ -9,8 +9,8 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from moderation_decision import DECISION_REMOVE, ModerationDecision, PolicyRef, SubjectRef, seal_moderation_decision
 from moderation_evidence_door import (
-    REASON_NO_SUCH_RECORD,
-    REASON_POLICY_DECLINE,
+    REASON_NO_SUCH_SUBJECT,
+    REASON_POLICY_DECLINED,
     REASON_REQUEST_MALFORMED,
     SUBJECT_KIND_MESSAGE_DIGEST,
     RedressRequest,
@@ -68,7 +68,7 @@ def test_subject_gets_satisfied_bundle() -> None:
     req = _signed_request(author_key, principal_ref)
 
     answer = answer_redress_request(
-        [decision_cap], req, signer=FakeSigner(), request_digest="r1", issued_at="2026-09-22T00:00:00Z"
+        [decision_cap], req, signer=FakeSigner(), request_digest="82f3e9c695dc6b8d1b11818d5701919e286de8d47f7c3eb3100c485f79e57828", issued_at="2026-09-22T00:00:00Z"
     )
     wire = answer.to_wire()
     assert wire["status"] == "SATISFIED"
@@ -88,11 +88,11 @@ def test_non_subject_with_a_different_valid_identity_is_withheld() -> None:
     req = _signed_request(stranger_key, stranger_principal_ref)
 
     answer = answer_redress_request(
-        [decision_cap], req, signer=FakeSigner(), request_digest="r2", issued_at="2026-09-22T00:00:00Z"
+        [decision_cap], req, signer=FakeSigner(), request_digest="db77fd01af957221a4989b64b3770a83a3c56068405b9f0e9408feae57fd17e4", issued_at="2026-09-22T00:00:00Z"
     )
     wire = answer.to_wire()
     assert wire["status"] == "WITHHELD"
-    assert wire["reason"] == REASON_POLICY_DECLINE
+    assert wire["reason"] == REASON_POLICY_DECLINED
     assert "bundles" not in wire
 
 
@@ -116,7 +116,7 @@ def test_forged_signature_claiming_the_real_subject_is_withheld() -> None:
     )
 
     answer = answer_redress_request(
-        [decision_cap], req, signer=FakeSigner(), request_digest="r3", issued_at="2026-09-22T00:00:00Z"
+        [decision_cap], req, signer=FakeSigner(), request_digest="e49d63b2a8a78f048bafc4b4590029603a5a4165ee8bf98af15d62f24cd83479", issued_at="2026-09-22T00:00:00Z"
     )
     wire = answer.to_wire()
     assert wire["status"] == "WITHHELD"
@@ -128,10 +128,10 @@ def test_no_decision_for_digest_is_not_found() -> None:
     other_digest = hashlib.sha256(b"a different message entirely").hexdigest()
     req = _signed_request(author_key, principal_ref, message_digest=other_digest)
 
-    answer = answer_redress_request([], req, signer=FakeSigner(), request_digest="r4", issued_at="2026-09-22T00:00:00Z")
+    answer = answer_redress_request([], req, signer=FakeSigner(), request_digest="a2ec8adac7fd24b4b7a8edd89d06990579f6123f5724a14b47ee4bddfb2ba572", issued_at="2026-09-22T00:00:00Z")
     wire = answer.to_wire()
     assert wire["status"] == "NOT_FOUND"
-    assert wire["reason"] == REASON_NO_SUCH_RECORD
+    assert wire["reason"] == REASON_NO_SUCH_SUBJECT
 
 
 def test_decision_with_no_bound_principal_never_satisfies() -> None:
@@ -144,7 +144,7 @@ def test_decision_with_no_bound_principal_never_satisfies() -> None:
     req = _signed_request(author_key, principal_ref)
 
     answer = answer_redress_request(
-        [decision_cap], req, signer=FakeSigner(), request_digest="r5", issued_at="2026-09-22T00:00:00Z"
+        [decision_cap], req, signer=FakeSigner(), request_digest="5eb242aeb68552862913d602cff36deb4cafc18a46cfdea393b4bc1c6917a669", issued_at="2026-09-22T00:00:00Z"
     )
     assert answer.to_wire()["status"] == "WITHHELD"
 
@@ -169,7 +169,7 @@ def test_per_user_history_subject_kind_is_refused_by_construction() -> None:
     )
 
     answer = answer_redress_request(
-        [decision_cap], req, signer=FakeSigner(), request_digest="r6", issued_at="2026-09-22T00:00:00Z"
+        [decision_cap], req, signer=FakeSigner(), request_digest="25f1c790f16f423d2f942b70378ed075972ab0affbf3f35f12e015c13f29406f", issued_at="2026-09-22T00:00:00Z"
     )
     wire = answer.to_wire()
     assert wire["reason"] == REASON_REQUEST_MALFORMED

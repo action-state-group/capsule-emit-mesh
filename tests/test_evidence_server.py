@@ -1,18 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for E15 -- ``evidence_server.py``'s ``POST /evidence-request`` door
-and its plugin-ledger bridge (``_merged_evidence_view``).
+"""Tests for E15 -- ``evidence_server.py``'s ``POST /evidence-request`` door,
+answering -00 requests with a signed envelope or refusal.
 
 Two ledger shapes are exercised, matching the two callers named in
 [mesh-e15-evidence-http-route]:
 
-  * a SELF-checkpointed ledger (``capsule_sidecar.NodeState``'s own log,
-    checkpointed in-band via ``capsule_emit.witness.push()``) -- the
-    straightforward case, ``answer()`` unchanged;
-  * a PLUGIN-shaped ledger (capsules written directly, checkpointed
-    read-only via ``checkpointing.CheckpointState`` into a SIBLING
-    ``checkpoints.jsonl`` -- the exact shape ``capsule_sidecar.NodeState.
-    plugin_checkpoint`` uses for the Rust plugin's live ledger) -- the
-    Step 0 finding this module's ``_merged_evidence_view`` bridges.
+  * the sidecar's own ``LedgerStore``, checkpointed into its sibling
+    ``checkpoints.jsonl``;
+  * a PLUGIN-shaped ledger (a flat ``capsules.jsonl`` written directly,
+    checkpointed read-only via ``checkpointing.CheckpointState`` into a
+    SIBLING ``checkpoints.jsonl`` -- the shape ``capsule_sidecar.NodeState.
+    plugin_checkpoint`` uses for the Rust plugin's live ledger).
 
 Uses ``CAPSULE_WITNESS=stub`` (zero-network) so this runs hermetically.
 
@@ -35,6 +33,7 @@ if "model_identity" not in sys.modules:
     sys.modules["model_identity"].model_package_digest = lambda m: ""
 
 import pytest
+from agent_action_capsule import evidence_request as er
 from capsule_emit import seal, witness
 from capsule_emit.bundle import Bundle, verify_bundle
 from cll.checkpoint import CheckpointConfig
@@ -105,6 +104,18 @@ def _seal_and_checkpoint(state, n: int) -> list[str]:
     return [c["capsule_id"] for c in caps]
 
 
+def _rec(capsule_id: str, **members) -> dict:
+    return {"subject": {"record": capsule_id}, "coverage": {"min_freshness": 0}, **members}
+
+
+def _artifact(body: dict) -> dict:
+    """The artifact JSON of an envelope reply, after checking the envelope."""
+    envelope = er.parse_reply(json.dumps(body).encode())
+    assert isinstance(envelope, er.Envelope), f"expected an envelope, got: {body}"
+    envelope.verify()
+    return json.loads(envelope.artifact)
+
+
 class _RunningServer:
     def __init__(self, state: es.EvidenceServerState):
         self.server = es.run_evidence_server(host="127.0.0.1", port=0, state=state)
@@ -146,18 +157,21 @@ class TestSelfCheckpointedLedgerOverHTTP:
     def test_record_request_returns_artifact_200(self, running_server):
         server, state = running_server
         cids = _seal_and_checkpoint(state, 2)
-        status, body = server.post("/evidence-request", {"subject": {"kind": "record", "capsule_id": cids[0]}, "coverage": {}})
+        status, body = server.post("/evidence-request", _rec(cids[0]))
         assert status == 200
-        assert body["subject_kind"] == "record"
-        assert len(body["bundles"]) == 1
-        assert body["bundles"][0]["capsule_id"] == cids[0]
+        assert body["subject"] == {"record": cids[0]}
+        assert body["status"] == "SATISFIED"
+        bundles = _artifact(body)["bundles"]
+        assert len(bundles) == 1
+        assert bundles[0]["capsule_id"] == cids[0]
 
-    def test_unknown_capsule_id_refuses_no_such_record_never_500(self, running_server):
+    def test_unknown_capsule_id_refuses_no_such_subject_never_500(self, running_server):
         server, _state = running_server
-        status, body = server.post("/evidence-request", {"subject": {"kind": "record", "capsule_id": "ff" * 32}, "coverage": {}})
+        status, body = server.post("/evidence-request", _rec("ff" * 32))
         assert status == 200  # a signed refusal, not an HTTP-level error
-        assert body["reason"] == "no_such_record"
-        assert "sig" in body and "key_id" in body
+        assert body["reason"] == "no_such_subject"
+        assert body["status"] == "NOT_FOUND"
+        assert er.check_refusal(body).conformant
 
     def test_malformed_body_refuses_request_malformed(self, running_server):
         server, _state = running_server
@@ -174,10 +188,7 @@ class TestSelfCheckpointedLedgerOverHTTP:
         cids = _seal_and_checkpoint(state, 1)
         status, body = server.post(
             "/evidence-request",
-            {
-                "subject": {"kind": "record", "capsule_id": cids[0]},
-                "coverage": {"expected_pin": {"root": "0" * 64, "mmr_size": 999}},
-            },
+            {"subject": {"record": cids[0]}, "coverage": {"expected_pin": "0" * 64}},
         )
         assert status == 200
         assert body["reason"] == "coverage_unsatisfiable"
@@ -193,18 +204,20 @@ class TestSelfCheckpointedLedgerOverHTTP:
         server, state = running_server
         cids = _seal_and_checkpoint(state, 1)
         _s1, body_a = server.post(
-            "/evidence-request", {"subject": {"kind": "record", "capsule_id": cids[0]}, "coverage": {}, "nonce": "a"}
+            "/evidence-request", _rec(cids[0], nonce="a")
         )
         _s2, body_b = server.post(
-            "/evidence-request", {"subject": {"kind": "record", "capsule_id": cids[0]}, "coverage": {}, "nonce": "b"}
+            "/evidence-request", _rec(cids[0], nonce="b")
         )
-        assert json.dumps(body_a, sort_keys=True) == json.dumps(body_b, sort_keys=True)
+        # Same artifact; only the request digest (and the signature over it) differs.
+        assert body_a["artifact"] == body_b["artifact"]
+        assert body_a["request_digest"] != body_b["request_digest"]
 
     def test_returned_bundle_tamper_detected(self, running_server):
         server, state = running_server
         cids = _seal_and_checkpoint(state, 1)
-        _status, body = server.post("/evidence-request", {"subject": {"kind": "record", "capsule_id": cids[0]}, "coverage": {}})
-        tampered = json.loads(json.dumps(body["bundles"][0]))
+        _status, body = server.post("/evidence-request", _rec(cids[0]))
+        tampered = _artifact(body)["bundles"][0]
         tampered["receipt"] = {**tampered["receipt"], "capsule_id": "0" * 64}
         ok, _errors = verify_bundle(Bundle.from_dict(tampered))
         assert ok is False
@@ -223,6 +236,16 @@ class TestSelfCheckpointedLedgerOverHTTP:
         assert text == "capsule-evidence-server: ready\n"
 
 
+class TestUnreadableLedger:
+    def test_a_corrupt_checkpoints_file_is_a_500_not_a_dropped_connection(self, running_server):
+        server, state = running_server
+        cids = _seal_and_checkpoint(state, 1)
+        (state.ledger_dir / "checkpoints.jsonl").write_text("{not json\n")
+        status, body = server.post("/evidence-request", _rec(cids[0]))
+        assert status == 500
+        assert body["error"] == "ledger_unreadable"
+
+
 class TestServerWithNoLedgerAtAll:
     def test_missing_ledger_dir_refuses_never_500(self, tmp_path):
         # Point straight at a ledger_dir that was never created -- the
@@ -238,18 +261,19 @@ class TestServerWithNoLedgerAtAll:
         )
         server = _RunningServer(state)
         try:
-            status, body = server.post("/evidence-request", {"subject": {"kind": "record", "capsule_id": "ab" * 32}, "coverage": {}})
+            status, body = server.post("/evidence-request", _rec("ab" * 32))
             assert status == 200
-            assert body["reason"] == "no_such_record"
+            assert body["reason"] == "no_such_subject"
         finally:
             server.close()
 
 
-class TestPluginLedgerBridge:
+class TestPluginShapedLedger:
     """[mesh-e15-evidence-http-route] Step 0's finding: a ledger checkpointed
     READ-ONLY via ``checkpointing.CheckpointState`` into a sibling
     ``checkpoints.jsonl`` (the Rust-plugin shape) is invisible to
-    ``bundle()`` unless bridged -- ``_merged_evidence_view`` does that."""
+    ``capsule_emit.bundle.bundle()``, which only reads in-band checkpoint
+    stamps. The responder reads the sibling file itself."""
 
     def _plugin_shaped_ledger(self, tmp_path, stub_witness):
         ledger_dir = tmp_path / "plugin-ledger"
@@ -276,27 +300,26 @@ class TestPluginLedgerBridge:
         return ledger_dir, key_path, [c["capsule_id"] for c in caps]
 
     def test_unbridged_ledger_path_would_never_see_the_checkpoint(self, tmp_path, stub_witness):
-        # Establishes the FAILURE this bridge fixes: bundle() against the
-        # RAW ledger path (no bridge) never finds a checkpoint at all.
+        # Why the responder reads checkpoints.jsonl itself: bundle() against
+        # the raw ledger path never finds a checkpoint at all.
         ledger_dir, _key_path, cids = self._plugin_shaped_ledger(tmp_path, stub_witness)
         from capsule_emit.bundle import BundleError, bundle
 
         with pytest.raises(BundleError):
             bundle(ledger_dir / "capsules.jsonl", cids[0])
 
-    def test_bridged_request_over_http_returns_artifact(self, tmp_path, stub_witness):
+    def test_plugin_shaped_request_over_http_returns_artifact(self, tmp_path, stub_witness):
         ledger_dir, key_path, cids = self._plugin_shaped_ledger(tmp_path, stub_witness)
         state = es.EvidenceServerState(ledger_dir=ledger_dir, ledger_path=ledger_dir / "capsules.jsonl", signing_key_path=key_path)
         server = _RunningServer(state)
         try:
-            status, body = server.post("/evidence-request", {"subject": {"kind": "record", "capsule_id": cids[0]}, "coverage": {}})
+            status, body = server.post("/evidence-request", _rec(cids[0]))
         finally:
             server.close()
         assert status == 200
-        assert "bundles" in body, f"expected an Artifact, got a refusal: {body}"
-        assert body["bundles"][0]["capsule_id"] == cids[0]
+        assert _artifact(body)["bundles"][0]["capsule_id"] == cids[0]
 
-    def test_bridge_never_writes_into_the_plugin_ledger_dir(self, tmp_path, stub_witness):
+    def test_door_never_writes_into_the_plugin_ledger_dir(self, tmp_path, stub_witness):
         ledger_dir, key_path, cids = self._plugin_shaped_ledger(tmp_path, stub_witness)
         before_capsules = (ledger_dir / "capsules.jsonl").read_bytes()
         before_entries = sorted(p.name for p in ledger_dir.iterdir())
@@ -304,8 +327,8 @@ class TestPluginLedgerBridge:
         state = es.EvidenceServerState(ledger_dir=ledger_dir, ledger_path=ledger_dir / "capsules.jsonl", signing_key_path=key_path)
         server = _RunningServer(state)
         try:
-            server.post("/evidence-request", {"subject": {"kind": "record", "capsule_id": cids[0]}, "coverage": {}})
-            server.post("/evidence-request", {"subject": {"kind": "record", "capsule_id": cids[1]}, "coverage": {}})
+            server.post("/evidence-request", _rec(cids[0]))
+            server.post("/evidence-request", _rec(cids[1]))
         finally:
             server.close()
 
@@ -325,8 +348,8 @@ class TestPluginLedgerBridge:
         state = es.EvidenceServerState(ledger_dir=ledger_dir, ledger_path=ledger_dir / "capsules.jsonl", signing_key_path=key_path)
         server = _RunningServer(state)
         try:
-            status, body = server.post("/evidence-request", {"subject": {"kind": "record", "capsule_id": cap["capsule_id"]}, "coverage": {}})
+            status, body = server.post("/evidence-request", _rec(cap["capsule_id"]))
         finally:
             server.close()
         assert status == 200
-        assert body["reason"] in ("no_such_record", "coverage_unsatisfiable")
+        assert body["reason"] == "coverage_unsatisfiable"

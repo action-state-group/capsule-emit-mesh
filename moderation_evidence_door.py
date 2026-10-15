@@ -6,10 +6,10 @@ The redress flow: "why was my message removed?" -> an Evidence Request
 record, the policy version, the adjudication if any, with
 ``SATISFIED``/``NOT_FOUND``/``WITHHELD`` honesty. Reuses
 ``evidence_responder.py``'s ``STATUS_*``/``augment_evidence_answer_dict``
-wire vocabulary directly -- this door's own success/refusal dicts are shaped
-exactly like ``capsule_emit.evidence_request.answer()``'s own
-(``{"bundles": [...]}`` / ``{"reason": ...}``) so the SAME wire-status
-mapping applies without reimplementing it.
+wire vocabulary directly: a success is ``{"bundles": [...]}`` and a refusal
+is a signed -00 refusal (``agent_action_capsule.evidence_request
+.sign_refusal``), so the SAME wire-status mapping applies without
+reimplementing it.
 
 **Not the E14/E15 generic responder.** That module's own docstring is
 explicit: it "has no requester-identity parameter at all" -- by design, for
@@ -56,6 +56,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from agent_action_capsule import evidence_request as er
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
@@ -65,8 +66,8 @@ from moderation_twin import find_adjudication_for_decision
 
 __all__ = [
     "SUBJECT_KIND_MESSAGE_DIGEST",
-    "REASON_NO_SUCH_RECORD",
-    "REASON_POLICY_DECLINE",
+    "REASON_NO_SUCH_SUBJECT",
+    "REASON_POLICY_DECLINED",
     "REASON_REQUEST_MALFORMED",
     "Signer",
     "RedressRequest",
@@ -80,12 +81,12 @@ __all__ = [
 #: "Refused by construction" note.
 SUBJECT_KIND_MESSAGE_DIGEST = "message_digest"
 
-#: Refusal reasons -- the SAME strings `evidence_responder.
-#: status_for_refusal_reason` already maps to NOT_FOUND/WITHHELD, so this
-#: door's refusals wire-serialize identically to the generic responder's.
-REASON_NO_SUCH_RECORD = "no_such_record"
-REASON_POLICY_DECLINE = "policy_decline"
-REASON_REQUEST_MALFORMED = "request_malformed"
+#: Refusal reasons -- registered -00 tokens that `evidence_responder.
+#: status_for_refusal_reason` maps to NOT_FOUND/WITHHELD, so this door's
+#: refusals wire-serialize identically to the generic responder's.
+REASON_NO_SUCH_SUBJECT = er.REASON_NO_SUCH_SUBJECT
+REASON_POLICY_DECLINED = er.REASON_POLICY_DECLINED
+REASON_REQUEST_MALFORMED = er.REASON_REQUEST_MALFORMED
 
 
 class Signer(Protocol):
@@ -175,8 +176,7 @@ def _find_citing(ledger: list[dict[str, Any]], capsule_id: str | None) -> dict[s
 @dataclass(frozen=True)
 class RedressAnswer:
     """A pre-wire-status answer -- shaped exactly like
-    `capsule_emit.evidence_request.answer()`'s own return contract
-    (`{"bundles": [...]}` / `{"reason": ...}`) so
+    the generic door's wire (`{"bundles": [...]}` / a signed refusal) so
     `evidence_responder.augment_evidence_answer_dict` applies unchanged."""
 
     payload: dict[str, Any]
@@ -186,11 +186,7 @@ class RedressAnswer:
 
 
 def _refuse(reason: str, *, signer: Signer, request_digest: str, issued_at: str) -> RedressAnswer:
-    from capsule_emit.evidence_request import Refusal
-
-    stub = Refusal(request_digest=request_digest, reason=reason, issued_at=issued_at, key_id="", sig="")
-    sig, key_id = signer.sign(stub.signing_body())
-    refusal = Refusal(request_digest=request_digest, reason=reason, issued_at=issued_at, key_id=key_id, sig=sig)
+    refusal = er.sign_refusal(request_digest, reason, signer=signer, issued_at=issued_at)
     return RedressAnswer(payload=refusal.to_dict())
 
 
@@ -210,20 +206,26 @@ def answer_redress_request(
     `NOT_FOUND` (no decision exists for this digest), or `WITHHELD` (a
     decision exists but the requester is not its bound principal -- the
     "non-subject asking for the same digest" case).
+
+    Refusals are signed -00 refusals (``agent_action_capsule
+    .evidence_request.sign_refusal``), so ``request_digest`` must be the
+    request's SHA-256 as 64 lowercase hex and ``issued_at`` an RFC 3339 UTC
+    time; anything else raises ``ValueError`` rather than sign a
+    non-conforming refusal.
     """
     if req.subject_kind != SUBJECT_KIND_MESSAGE_DIGEST:
         return _refuse(REASON_REQUEST_MALFORMED, signer=signer, request_digest=request_digest, issued_at=issued_at)
 
     decisions = _find_decisions_for_digest(ledger, req.message_digest)
     if not decisions:
-        return _refuse(REASON_NO_SUCH_RECORD, signer=signer, request_digest=request_digest, issued_at=issued_at)
+        return _refuse(REASON_NO_SUCH_SUBJECT, signer=signer, request_digest=request_digest, issued_at=issued_at)
 
     if not _requester_controls_claimed_identity(req):
-        return _refuse(REASON_POLICY_DECLINE, signer=signer, request_digest=request_digest, issued_at=issued_at)
+        return _refuse(REASON_POLICY_DECLINED, signer=signer, request_digest=request_digest, issued_at=issued_at)
 
     bound_principal_ref = _moderation_block(decisions[0]).get("subject_ref", {}).get("principal_ref")
     if bound_principal_ref is None or bound_principal_ref != req.requester_principal_ref:
-        return _refuse(REASON_POLICY_DECLINE, signer=signer, request_digest=request_digest, issued_at=issued_at)
+        return _refuse(REASON_POLICY_DECLINED, signer=signer, request_digest=request_digest, issued_at=issued_at)
 
     bundles = []
     for decision_capsule in decisions:
