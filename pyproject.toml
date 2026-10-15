@@ -53,6 +53,7 @@ py-modules = [
     "evidence_responder",
     "evidence_server",
     "ask_history",
+    "witness_pin",
     "history_card",
     "join_card",
     "advertisement",

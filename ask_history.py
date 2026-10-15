@@ -123,6 +123,7 @@ from capsule_emit.evidence_request import Refusal, verify_refusal_offline
 
 from history_card import build_history_card, with_references
 from sequence_counter import verify_pair_continuity
+from witness_pin import default_witness_pin
 
 __all__ = [
     "DEFAULT_REFERENCE_K",
@@ -346,7 +347,9 @@ def witnessed_seed(bundles: list[Bundle]) -> WitnessedSeed | None:
             if cp is None or (best is not None and cp.mmr_size <= best.mmr_size):
                 continue
             for w in cp.witnesses or []:
-                verdict, _stamp_errors = verify_witness_stamp_tristate(cp, w)
+                verdict, _stamp_errors = verify_witness_stamp_tristate(
+                    cp, w, ts_pubkey_pem=default_witness_pin(w.ts_url)
+                )
                 if verdict is StampVerdict.WITNESSED:
                     best = WitnessedSeed(root=cp.root, log_id=cp.log_id, mmr_size=cp.mmr_size, ts_url=w.ts_url)
                     break

@@ -592,3 +592,4 @@ class TestPruneMutant:
         # case (still "unbroken") -- gaps_detected is what actually moves.
         assert pruned_pair["continuity"] == "unbroken"
         assert pruned_pair["gaps_detected"] == 1
+
