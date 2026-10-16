@@ -25,11 +25,11 @@ actually received. Covered here:
   - no evidence-door transport configured -> `REFEREE_RECORD_UNRESOLVED`,
     cited by nonce alone, never a raise and never silently dropped
   - the door unreachable / refuses -> `REFEREE_RECORD_UNRESOLVED`
-  - a genuinely matching, offline-verified bundle -> `REFEREE_RECORD_RESOLVED`,
+  - a genuinely matching, offline-verified record -> `REFEREE_RECORD_RESOLVED`,
     `capsule_id` set
   - mutant: the door hands back a DIFFERENT capsule for the same nonce
     (digest mismatch) -> `REFEREE_RECORD_CITATION_UNVERIFIED`, never cited
-  - a bundle that fails offline verification -> `REFEREE_RECORD_CITATION_UNVERIFIED`
+  - a record that fails offline verification -> `REFEREE_RECORD_CITATION_UNVERIFIED`
   - `live_referee()` wired end to end against a real fake evidence door
 """
 from __future__ import annotations
@@ -170,7 +170,7 @@ class _FakeRefereeNode:
 class _FakeEvidenceDoor:
     """A local HTTP server standing in for the referee node's E15
     `/evidence-request` door -- captures the request map it received and
-    answers with a canned `{"bundles": [...]}` or `{"reason": ...}`
+    answers with a canned `{"records": [...]}` or `{"reason": ...}`
     payload, signed as a -00 envelope or refusal."""
 
     def __init__(self, *, payload: dict):
@@ -204,28 +204,26 @@ class _FakeEvidenceDoor:
         self._thread.join(timeout=5)
 
 
-class _FakeBundle:
-    """Stand-in for `capsule_emit.bundle.Bundle` -- carries the `.receipt`
-    `resolve_referee_record` reads and the `checkpoint_cose` that binds it to
-    the envelope's anchor. Used with monkeypatched `ask_history.Bundle`/
-    `ask_history.verify_bundle` so these tests never need to fabricate a
-    genuinely MMR/checkpoint/witness-verifiable bundle (a real one needs a
-    live Transparency Service stub -- see `tests/test_ask_the_references.py`
-    -- disproportionate for what this module's own resolution logic needs to
-    prove). The envelope around it is real and signed."""
-
-    def __init__(self, receipt: dict):
-        self.receipt = receipt
-        self.capsule_id = receipt.get("capsule_id")
-        self.checkpoint_cose = _FAKE_ANCHOR_STATEMENT
-
-    @classmethod
-    def from_dict(cls, d: dict) -> _FakeBundle:
-        return cls(d["receipt"])
-
-
 _FAKE_ANCHOR_STATEMENT = b"a stand-in checkpoint statement"
 _FAKE_ANCHOR = hashlib.sha256(_FAKE_ANCHOR_STATEMENT).hexdigest()
+
+
+def _fake_served_records(verify_ok: bool):
+    """Stand-in for `ask_history.served_records`: reads the records as sent,
+    proven or not as told. These tests never fabricate a genuinely
+    MMR/checkpoint-verifiable answer (`tests/test_ask_history.py` and
+    `tests/test_evidence_responder.py` prove the real checks); what is
+    proved here is this module's own resolution logic. The envelope around
+    the records is real and signed."""
+
+    def served(reply):
+        records = [
+            ah.ServedRecord(leaf_index=r["leaf_index"], capsule_id=r["digest"], receipt=json.loads(bytes.fromhex(r["body"])))
+            for r in (reply.body or {}).get("records", [])
+        ]
+        return (records, None, []) if verify_ok else ([], None, ["mutated"])
+
+    return served
 
 
 class _DoorSigner:
@@ -242,15 +240,19 @@ _DOOR_SIGNER = _DoorSigner()
 
 def _signed_reply(request_bytes: bytes, payload: dict) -> dict:
     """The door's reply to ``request_bytes``: a signed envelope around
-    ``{"bundles": ...}`` under the fake anchor, or a signed refusal for
-    ``{"reason": ...}``."""
+    ``{"records": ...}`` (each record its ledger line) under the fake
+    anchor, or a signed refusal for ``{"reason": ...}``."""
     if "reason" in payload:
         refusal = er.sign_refusal(
             er.request_digest(request_bytes), payload["reason"], signer=_DOOR_SIGNER, issued_at="2026-10-15T00:00:00Z"
         )
         return refusal.to_dict()
     request = er.parse_request(request_bytes)
-    artifact = jcs({"anchor": _FAKE_ANCHOR, "bundles": payload["bundles"], "subject": request.subject.to_wire()})
+    records = [
+        {"body": jcs(line).hex(), "digest": line["capsule_id"], "leaf_index": i} for i, line in enumerate(payload["records"])
+    ]
+    artifact = jcs({"anchor": _FAKE_ANCHOR, "evidence_stream": "referee-log", "records": records,
+                    "subject": request.subject.to_wire()})
     envelope = er.sign_envelope(
         request_bytes, request.subject, _FAKE_ANCHOR, artifact, signer=_DOOR_SIGNER, issued_at="2026-10-15T00:00:00Z"
     )
@@ -269,9 +271,8 @@ def _door(payload: dict, *, expect_nonce: str | None = None):
     return _post
 
 
-def _patch_bundle_verification(monkeypatch: pytest.MonkeyPatch, *, verify_ok: bool = True) -> None:
-    monkeypatch.setattr(ah, "Bundle", _FakeBundle)
-    monkeypatch.setattr(ah, "verify_bundle", lambda b: (verify_ok, [] if verify_ok else ["mutated"]))
+def _patch_record_verification(monkeypatch: pytest.MonkeyPatch, *, verify_ok: bool = True) -> None:
+    monkeypatch.setattr(ah, "served_records", _fake_served_records(verify_ok))
 
 
 def test_live_referee_sends_mesh_target_header_and_agreed_prefix():
@@ -521,7 +522,7 @@ def test_live_referee_resolves_capsule_id_via_nonce_correlation(monkeypatch):
     carries the nonce, the door is asked `correlation{by: "nonce", ...}`
     for it, and a matching, offline-verified record resolves
     `RefereeResult.capsule_id`."""
-    _patch_bundle_verification(monkeypatch, verify_ok=True)
+    _patch_record_verification(monkeypatch, verify_ok=True)
     half_a = _half("the quick brown fox jumps", owner_id="owner-a")
     half_b = _half("the quick brown wolf jumps", owner_id="owner-b")
     comparison = compare_transcripts(half_a.response_text, half_b.response_text)
@@ -529,7 +530,7 @@ def test_live_referee_resolves_capsule_id_via_nonce_correlation(monkeypatch):
     expected_digest = digest_json({"choices": [{"message": {"role": "assistant", "content": "fox"}}]})
     node = _FakeRefereeNode(response_text="fox")
     door = _FakeEvidenceDoor(
-        payload={"bundles": [{"receipt": {"capsule_id": "referee-cap-live", "effect": {"response_digest": expected_digest}}}]}
+        payload={"records": [{"capsule_id": "referee-cap-live", "effect": {"response_digest": expected_digest}}]}
     )
     try:
         result = live_referee(
@@ -552,7 +553,7 @@ def test_live_referee_mutant_door_returns_different_capsule_is_citation_unverifi
     level: the evidence door answers the SAME nonce with a record for an
     unrelated response -- must never be cited as the referee's own
     capsule."""
-    _patch_bundle_verification(monkeypatch, verify_ok=True)
+    _patch_record_verification(monkeypatch, verify_ok=True)
     half_a = _half("the quick brown fox jumps", owner_id="owner-a")
     half_b = _half("the quick brown wolf jumps", owner_id="owner-b")
     comparison = compare_transcripts(half_a.response_text, half_b.response_text)
@@ -560,8 +561,8 @@ def test_live_referee_mutant_door_returns_different_capsule_is_citation_unverifi
     node = _FakeRefereeNode(response_text="fox")
     door = _FakeEvidenceDoor(
         payload={
-            "bundles": [
-                {"receipt": {"capsule_id": "someone-elses-capsule", "effect": {"response_digest": "digest-of-a-different-response"}}}
+            "records": [
+                {"capsule_id": "someone-elses-capsule", "effect": {"response_digest": "digest-of-a-different-response"}}
             ]
         }
     )
@@ -601,11 +602,11 @@ def test_resolve_referee_record_door_refusal_is_unresolved():
     assert result.status == REFEREE_RECORD_UNRESOLVED
 
 
-def test_resolve_referee_record_resolves_and_verifies_matching_bundle(monkeypatch):
-    _patch_bundle_verification(monkeypatch, verify_ok=True)
+def test_resolve_referee_record_resolves_and_verifies_matching_record(monkeypatch):
+    _patch_record_verification(monkeypatch, verify_ok=True)
 
     _post = _door(
-        {"bundles": [{"receipt": {"capsule_id": "referee-cap-1", "effect": {"response_digest": "digest-match"}}}]},
+        {"records": [{"capsule_id": "referee-cap-1", "effect": {"response_digest": "digest-match"}}]},
         expect_nonce="nonce-4",
     )
 
@@ -618,10 +619,10 @@ def test_resolve_referee_record_mutant_different_capsule_is_citation_unverified(
     """[mesh-referee-capsule-citation] mutant: the door hands back a
     record for the right nonce, but it's someone else's capsule (a
     different declared response digest) -- never cited as verified."""
-    _patch_bundle_verification(monkeypatch, verify_ok=True)
+    _patch_record_verification(monkeypatch, verify_ok=True)
 
     _post = _door(
-        {"bundles": [{"receipt": {"capsule_id": "some-other-capsule", "effect": {"response_digest": "digest-of-a-different-response"}}}]}
+        {"records": [{"capsule_id": "some-other-capsule", "effect": {"response_digest": "digest-of-a-different-response"}}]}
     )
 
     result = resolve_referee_record("nonce-5", expected_response_digest="digest-actually-received", post=_post)
@@ -630,9 +631,9 @@ def test_resolve_referee_record_mutant_different_capsule_is_citation_unverified(
 
 
 def test_resolve_referee_record_failed_offline_verify_is_citation_unverified(monkeypatch):
-    _patch_bundle_verification(monkeypatch, verify_ok=False)
+    _patch_record_verification(monkeypatch, verify_ok=False)
 
-    _post = _door({"bundles": [{"receipt": {"capsule_id": "referee-cap-2", "effect": {"response_digest": "digest-match"}}}]})
+    _post = _door({"records": [{"capsule_id": "referee-cap-2", "effect": {"response_digest": "digest-match"}}]})
 
     result = resolve_referee_record("nonce-6", expected_response_digest="digest-match", post=_post)
     assert result.status == REFEREE_RECORD_CITATION_UNVERIFIED

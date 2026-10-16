@@ -18,7 +18,7 @@ What this file proves, offline:
     recomputing gives back the baseline ``capsule_id`` exactly.
   * The evidence door (``POST /evidence-request``) answers a record carrying
     the block the same way it answers one without: a signed envelope whose
-    bundle verifies offline and serves the record byte-for-byte as logged, the same
+    record is proven offline under its anchor and is the record byte-for-byte as logged, the same
     signed refusals, caller invariance across nonces, and tamper detection.
   * Twin adjudication with an injected third-node referee reaches the same
     outcome (verdict, divergence index, prefix digest, margin, referee calls)
@@ -30,6 +30,7 @@ distinct node. Here the referee is injected, as in ``test_twin_adjudicator.py``.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import sys
 import threading
@@ -47,12 +48,12 @@ from agent_action_capsule import verify as verify_capsule
 from agent_action_capsule.canonical import jcs
 from agent_action_capsule.contracts import Disposition, EffectRecord
 from agent_action_capsule.emit import emit
-from capsule_emit.bundle import Bundle, verify_bundle
 from capsule_emit.canonicalization import compute_capsule_id
 from capsule_emit.ledger import append_to_ledger
 from capsule_emit.signing import resolve_signer, sign_producer_envelope
 from cll.checkpoint import CheckpointConfig
 
+import ask_history as ah
 import evidence_server as es
 from capsule_sidecar import NODE_KEY_FILENAME, digest_json, load_or_create_signing_key
 from checkpointing import CheckpointState, Ed25519Signer, JsonlLogSource
@@ -216,18 +217,20 @@ class _Door:
         self.server.shutdown()
         self._thread.join(timeout=5)
 
+    def ask_reply(self, capsule_id: str, **extra) -> ah.Reply:
+        """The door's reply, read and checked by the requester."""
+        request = {"subject": {"record": capsule_id}, "coverage": {"min_freshness": 0}, **extra}
+        reply = ah.read_reply(ah.post_evidence_request(self.base_url, request))
+        assert reply.ok, reply.errors
+        return reply
+
     def ask(self, capsule_id: str, **extra) -> dict:
-        """The artifact JSON of the door's verified envelope, or the refusal."""
-        body = json.dumps({"subject": {"record": capsule_id}, "coverage": {"min_freshness": 0}, **extra}).encode()
-        req = urllib.request.Request(f"{self.base_url}/evidence-request", data=body, method="POST")
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            assert resp.status == 200
-            reply = er.parse_reply(resp.read())
-        if isinstance(reply, er.Refusal):
-            return reply.to_dict()
-        reply.verify()
-        assert reply.request_digest == er.request_digest(body)
-        return json.loads(reply.artifact)
+        """The artifact JSON of the door's verified envelope (the record's
+        ledger line), or the refusal."""
+        reply = self.ask_reply(capsule_id, **extra)
+        if reply.refusal is not None:
+            return reply.refusal.to_dict()
+        return json.loads(reply.envelope.artifact)
 
 
 @pytest.fixture
@@ -245,14 +248,13 @@ def door(tmp_path, stub_witness):
 @pytest.mark.parametrize("shape", sorted(BUZZ_BLOCKS))
 def test_door_serves_the_carrying_record_as_logged_and_it_verifies(door, shape):
     server, logged = door
-    answer = server.ask(logged[shape]["capsule_id"])
+    reply = server.ask_reply(logged[shape]["capsule_id"])
 
-    assert answer["subject"] == {"record": logged[shape]["capsule_id"]}
-    (served,) = answer["bundles"]
-    assert served["capsule_id"] == logged[shape]["capsule_id"]
-    assert jcs(served["receipt"]) == jcs(logged[shape])
-    ok, errors = verify_bundle(Bundle.from_dict(served))
-    assert ok, errors
+    assert reply.envelope.subject.to_wire() == {"record": logged[shape]["capsule_id"]}
+    assert reply.envelope.artifact == jcs(logged[shape])
+    records, _anchor, problems = ah.served_records(reply)
+    assert not problems, problems
+    assert [r.capsule_id for r in records] == [logged[shape]["capsule_id"]]
 
 
 @pytest.mark.parametrize("shape", sorted(BUZZ_BLOCKS))
@@ -261,11 +263,7 @@ def test_door_answer_matches_the_baseline_answer_on_existing_fields(door, shape)
     base_answer = server.ask(logged["baseline"]["capsule_id"])
     carrying_answer = server.ask(logged[shape]["capsule_id"])
 
-    assert sorted(carrying_answer) == sorted(base_answer)
-    assert sorted(carrying_answer["bundles"][0]) == sorted(base_answer["bundles"][0])
-    assert jcs(_without_new_block(carrying_answer["bundles"][0]["receipt"])) == jcs(
-        _without_new_block(base_answer["bundles"][0]["receipt"])
-    )
+    assert jcs(_without_new_block(carrying_answer)) == jcs(_without_new_block(base_answer))
 
 
 @pytest.mark.parametrize("shape", sorted(BUZZ_BLOCKS))
@@ -279,11 +277,12 @@ def test_door_caller_invariance_holds_for_the_carrying_record(door, shape):
 @pytest.mark.parametrize("shape", sorted(BUZZ_BLOCKS))
 def test_door_detects_tampering_with_the_new_block(door, shape):
     server, logged = door
-    served = server.ask(logged[shape]["capsule_id"])["bundles"][0]
-    tampered = copy.deepcopy(served)
-    tampered["receipt"]["model_attestation"]["compute_attestation"][NEW_BLOCK_KEY]["semantic_digest"] = "0" * 64
-    ok, _errors = verify_bundle(Bundle.from_dict(tampered))
-    assert ok is False
+    reply = server.ask_reply(logged[shape]["capsule_id"])
+    tampered = json.loads(reply.envelope.artifact)
+    tampered["model_attestation"]["compute_attestation"][NEW_BLOCK_KEY]["semantic_digest"] = "0" * 64
+    forged = dataclasses.replace(reply, envelope=dataclasses.replace(reply.envelope, artifact=jcs(tampered)))
+    records, _anchor, problems = ah.served_records(forged)
+    assert records == [] and problems == ["the artifact is not the record the subject names"]
 
 
 def test_door_refusals_unchanged(door):

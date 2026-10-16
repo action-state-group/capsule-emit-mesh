@@ -154,16 +154,19 @@ python3 ask_history.py http://<peer>:8091 --subject checkpoints
 
 Every answer is either an artifact in the interop profile's signed envelope or a signed refusal.
 `ask_history.py` checks the envelope's signature and digests and that it answers the request sent
-(add `--responder-key <hex>` to also require the peer's key), then checks each bundle in the
-artifact with `capsule_emit.bundle.verify_bundle` and that it is proven under the anchor checkpoint
-the envelope names. A small history card (`continuity`/`history_depth`/`unforked`) is folded from
-the bundle's own checkpoint fields via `history_card.build_history_card`. By default the peer
+(add `--responder-key <hex>` to also require the peer's key), then checks each record against
+the anchor checkpoint the envelope names, as the Mesh-LLM capsules plugin and evidencebook do:
+the checkpoint statement is the peer's own, the record is the one its digest names, and its
+inclusion proof reaches the checkpoint's peaks. Answers carry the same artifact forms those
+responders serve, so `ask_history.py` reads theirs and they read this door's. A `checkpoints`
+answer folds into a small history card (`continuity`/`history_depth`/`unforked`) via
+`history_card.build_history_card`. By default the peer
 answers under its freshest checkpoint; `--expected-pin <digest>` (the SHA-256 of a checkpoint's
 COSE statement) pins one. An unknown record or an unheld pin comes back as a *signed* refusal
 (`no_such_subject` / `coverage_unsatisfiable`), verified offline against the peer's own key —
 never a bare 404.
 
-**Honest limitation:** a bundle-tier answer proves LOG integrity (inclusion, checkpoint
+**Honest limitation:** an answer proves LOG integrity (inclusion, checkpoint
 signature/consistency) but never a Rust-producer capsule's own detached signed statement
 (`signed-statements/<capsule_id>.cose` is not carried in this artifact shape) — `ask_history.py`
 labels that gap rather than rounding a log-integrity pass up to a full verify. This is the

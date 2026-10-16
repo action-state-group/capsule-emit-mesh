@@ -66,9 +66,12 @@ capsule-emit[mcp]>=0.10
 # agent_action_capsule.evidence_request: evidence_responder.py answers with its
 # answer() and signs the interop profile's envelope (sign_envelope), and
 # ask_history.py reads replies with parse_reply / Envelope.verify /
-# check_cll_material. Those APIs ship in 0.8.1, the floor here;
-# capsule_emit.evidence_request (the pre-00 profile) is no longer imported.
-agent-action-capsule>=0.8.1
+# check_cll_material. Those APIs ship in 0.8.1; capsule_emit.evidence_request
+# (the pre-00 profile) is no longer imported.
+# Floor 0.9.0: the responder encodes its Checkpointed Local Log material
+# (encode_cll_inclusion_proof, encode_cll_consistency_proof), which AAC
+# Python ships from 0.9.0 (agent-action-capsule#282).
+agent-action-capsule>=0.9.0
 scitt-cose>=0.2.2
 cbor2
 mcp<2

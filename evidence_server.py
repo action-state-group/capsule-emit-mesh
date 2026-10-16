@@ -29,15 +29,14 @@ plugin, which owns ``<data_dir>/ledger/capsules.jsonl`` +
 itself (``evidence_responder.MeshEvidenceStore``) and never writes into the
 plugin's directory, preserving the "two single-writer logs" invariant.
 
-**Known scope limit** (documented, not hidden): ``capsule_emit.bundle
-.verify_bundle()``'s step-1 check expects a capsule's OWN self-attested
-``signature``/``key_id`` embedded inline -- this repo's PYTHON producer's
-convention (``capsule_emit.seal()``). The Rust plugin instead signs a
-DETACHED COSE_Sign1 Signed Statement per capsule
-(``signed-statements/<capsule_id>.cose``), which an artifact's bundles do
-not carry (only the anchor checkpoint's own COSE statement). So for a
-Rust-produced capsule a bundle proves LOG integrity (inclusion,
-non-tamper-since-checkpoint, the checkpoint's own signature) but not the
+**Known scope limit** (documented, not hidden): an answer serves each
+record's ledger line and proves it in the log (its inclusion under the
+anchor checkpoint, the checkpoint's signature and consistency). A record
+this repo's PYTHON producer sealed (``capsule_emit.seal()``) carries its
+producer ``signature``/``key_id`` inline, so the line carries it too. The
+Rust plugin instead signs a DETACHED COSE_Sign1 Signed Statement per capsule
+(``signed-statements/<capsule_id>.cose``), which an answer does not carry.
+So for a Rust-produced capsule an answer proves LOG integrity but not the
 capsule's own producer signature. ``ask_history.py`` reports this
 distinction rather than rounding a log-integrity pass up to a full verify.
 
@@ -46,8 +45,8 @@ Route:
         body = a -00 request (JSON: ``{subject, coverage, derivation?,
                deadline?, nonce?, route?}``).
         200 + the envelope or refusal in the JSON binding, with the
-            fabric's additive ``status`` (``evidence_responder
-            .reply_to_wire``) -- a refusal is a SIGNED answer, not an
+            fabric's additive ``status`` and the anchor's unsigned
+            ``witness_receipts`` (``evidence_responder.answer_wire``) -- a refusal is a SIGNED answer, not an
             HTTP-level decline, so it is 200 too; an envelope carries
             ``artifact_digest``, a refusal ``reason``. A missing or empty
             ledger resolves to a signed refusal, never a 500.
@@ -78,7 +77,7 @@ from pathlib import Path
 from typing import Any
 
 from adjudication_delivery import handle_delivery
-from evidence_responder import handle_evidence_request, reply_to_wire
+from evidence_responder import answer_wire
 
 __all__ = [
     "EvidenceServerState",
@@ -127,7 +126,7 @@ def make_evidence_handler(state: EvidenceServerState):
 
             if path == "evidence-request":
                 try:
-                    result = handle_evidence_request(state, request_bytes)
+                    wire = answer_wire(state, request_bytes)
                 except Exception as exc:  # noqa: BLE001 -- a broken local ledger, never the request
                     # Every request gets a signed answer except when this
                     # node's own ledger or checkpoints cannot be read; that is
@@ -135,7 +134,7 @@ def make_evidence_handler(state: EvidenceServerState):
                     # connection.
                     self._write_json(500, {"error": "ledger_unreadable", "detail": type(exc).__name__})
                     return
-                self._write_json(200, reply_to_wire(result))
+                self._write_json(200, wire)
                 return
 
             if path == "evidence/deliver":

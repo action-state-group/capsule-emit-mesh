@@ -121,7 +121,7 @@ jobs:
       - name: Smoke — evidence_server (E15 POST /evidence-request door + plugin-ledger bridge)
         run: python -c "import evidence_server; print('ok')"
 
-      - name: Smoke — ask_history (E15 requester CLI -- offline bundle verify + history card render)
+      - name: Smoke — ask_history (E15 requester CLI -- offline answer checks + history card render)
         run: python -c "import ask_history; print('ok')"
 
       - name: Smoke — adjudication_delivery ([mesh-adjudication-delivery-ack] POST /evidence/deliver door + ack-refused sealing)

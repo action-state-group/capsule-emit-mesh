@@ -105,7 +105,7 @@ from ask_history import (
     post_evidence_request,
     post_mesh_evidence_request,
     read_reply,
-    verified_bundles,
+    verified_records,
 )
 from capsule_sidecar import CLIENT_NONCE_HEADER, digest_json
 from twin_adjudicator import (
@@ -188,13 +188,13 @@ def resolve_referee_record(
     guessed nonce from ever being cited as the referee's own.
 
     Three states, never a silent fourth (`RefereeRecordResolution.status`):
-      - `REFEREE_RECORD_RESOLVED` -- the signed envelope and a bundle in it
-        verified offline (`capsule_emit.bundle.verify_bundle`, proven under
-        the envelope's anchor) AND the bundle's own declared
-        `effect.response_digest` matched. `capsule_id` is that bundle's
+      - `REFEREE_RECORD_RESOLVED` -- the signed envelope and a record in it
+        verified offline (`ask_history.verified_records`: proven under the
+        envelope's anchor checkpoint) AND the record's own declared
+        `effect.response_digest` matched. `capsule_id` is that record's
         own capsule id (content-addressed -- "the capsule digest").
       - `REFEREE_RECORD_CITATION_UNVERIFIED` -- the door answered with at
-        least one bundle for this nonce, but none both verified AND
+        least one record for this nonce, but none both verified AND
         matched. Never cited.
       - `REFEREE_RECORD_UNRESOLVED` -- `post is None`, the door was
         unreachable, or it refused / had nothing for this nonce. Cited by
@@ -216,14 +216,12 @@ def resolve_referee_record(
         # A refusal, or nothing readable: the door had nothing for this nonce.
         return RefereeRecordResolution(status=REFEREE_RECORD_UNRESOLVED, nonce=nonce)
 
-    for bundle in verified_bundles(reply):
-        declared = (bundle.receipt.get("effect") or {}).get("response_digest")
+    for record in verified_records(reply):
+        declared = (record.receipt.get("effect") or {}).get("response_digest")
         if declared == expected_response_digest:
-            return RefereeRecordResolution(
-                status=REFEREE_RECORD_RESOLVED, nonce=nonce, capsule_id=bundle.receipt.get("capsule_id")
-            )
+            return RefereeRecordResolution(status=REFEREE_RECORD_RESOLVED, nonce=nonce, capsule_id=record.capsule_id)
 
-    if not reply.ok or (isinstance(reply.body, dict) and reply.body.get("bundles")):
+    if not reply.ok or (isinstance(reply.body, dict) and reply.body.get("records")):
         # The door answered for this nonce, but nothing both verified and
         # matched -- refuse to cite, distinct from never having answered.
         return RefereeRecordResolution(status=REFEREE_RECORD_CITATION_UNVERIFIED, nonce=nonce)

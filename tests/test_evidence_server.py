@@ -35,7 +35,6 @@ if "model_identity" not in sys.modules:
 import pytest
 from agent_action_capsule import evidence_request as er
 from capsule_emit import seal, witness
-from capsule_emit.bundle import Bundle, verify_bundle
 from cll.checkpoint import CheckpointConfig
 
 import capsule_sidecar as cs
@@ -161,9 +160,8 @@ class TestSelfCheckpointedLedgerOverHTTP:
         assert status == 200
         assert body["subject"] == {"record": cids[0]}
         assert body["status"] == "SATISFIED"
-        bundles = _artifact(body)["bundles"]
-        assert len(bundles) == 1
-        assert bundles[0]["capsule_id"] == cids[0]
+        assert _artifact(body)["capsule_id"] == cids[0]  # the record's ledger line
+        assert [v["kind"] for v in body["verification"]] == ["cll-checkpoint", "cll-inclusion-proof"]
 
     def test_unknown_capsule_id_refuses_no_such_subject_never_500(self, running_server):
         server, _state = running_server
@@ -213,14 +211,22 @@ class TestSelfCheckpointedLedgerOverHTTP:
         assert body_a["artifact"] == body_b["artifact"]
         assert body_a["request_digest"] != body_b["request_digest"]
 
-    def test_returned_bundle_tamper_detected(self, running_server):
+    def test_returned_record_tamper_detected(self, running_server):
+        import base64
+
+        import ask_history as ah
+
         server, state = running_server
         cids = _seal_and_checkpoint(state, 1)
-        _status, body = server.post("/evidence-request", _rec(cids[0]))
-        tampered = _artifact(body)["bundles"][0]
-        tampered["receipt"] = {**tampered["receipt"], "capsule_id": "0" * 64}
-        ok, _errors = verify_bundle(Bundle.from_dict(tampered))
-        assert ok is False
+        request = _rec(cids[0])
+        _status, body = server.post("/evidence-request", request)
+        line = _artifact(body)
+        line["operator"] = "someone else"
+        artifact = json.dumps(line, sort_keys=True, separators=(",", ":")).encode()
+        forged = {**body, "artifact": base64.urlsafe_b64encode(artifact).rstrip(b"=").decode()}
+        exchange = ah.Exchange(er.request_digest(json.dumps(request).encode()), json.dumps(forged).encode())
+        reply = ah.read_reply(exchange)
+        assert not reply.ok  # the signed artifact digest no longer matches
 
     def test_get_root_never_leaks_the_ledger_filesystem_path(self, running_server):
         """[adv-evidence-door-caps-and-subjects] ADV-10: GET / used to echo
@@ -317,7 +323,7 @@ class TestPluginShapedLedger:
         finally:
             server.close()
         assert status == 200
-        assert _artifact(body)["bundles"][0]["capsule_id"] == cids[0]
+        assert _artifact(body)["capsule_id"] == cids[0]
 
     def test_door_never_writes_into_the_plugin_ledger_dir(self, tmp_path, stub_witness):
         ledger_dir, key_path, cids = self._plugin_shaped_ledger(tmp_path, stub_witness)

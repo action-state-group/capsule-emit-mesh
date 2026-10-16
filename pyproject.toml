@@ -17,7 +17,10 @@ dependencies = [
     # artifact envelope (sign_envelope, parse_reply, Envelope.verify), which
     # evidence_responder.py and ask_history.py use. 0.6.0 was the first whose
     # emit() stamps draft-mih-scitt-agent-action-capsule-05 (format 4).
-    "agent-action-capsule>=0.8.1",
+    # Floor 0.9.0 (matches requirements.txt): the responder encodes its
+    # Checkpointed Local Log material with encode_cll_inclusion_proof /
+    # encode_cll_consistency_proof (agent-action-capsule#282).
+    "agent-action-capsule>=0.9.0",
     # Floor 0.10 (matches requirements.txt): the release the test suite is
     # verified against, and the first whose checkpointed-local-log bound
     # (>=0.6,<0.7) agrees with this repo's; 0.9.x caps it below 0.6, so a

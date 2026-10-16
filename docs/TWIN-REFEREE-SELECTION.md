@@ -73,7 +73,7 @@ twin/referee it will face, without diluting the independence bias.
 
 **Step 4 — optional history sanity-check.** A caller may pass
 `history_check: PeerInfo -> HistorySanityResult` (e.g. wrapping
-`ask_history.py`'s bundle-request path). A candidate whose check fails is
+`ask_history.py`'s record-request path). A candidate whose check fails is
 dropped and the next band is drawn from what remains. This module never
 performs that network round trip itself — see "What this is not" below.
 

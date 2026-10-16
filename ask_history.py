@@ -19,19 +19,39 @@ checks whatever comes back OFFLINE, from the reply alone, with
     sent -- a signed decline is the responder's act, citable offline, never
     a bare unsigned 404.
 
-The artifact of a mesh responder is ``{anchor, evidence_stream, subject,
-bundles}`` (see ``evidence_responder.py``): each bundle is checked with
-``capsule_emit.bundle.verify_bundle`` and must be proven under the anchor the
-envelope names (its ``checkpoint_cose`` hashes to the anchor digest). For a
-Rust-produced capsule a bundle proves LOG integrity (inclusion, the
-checkpoint's signature and consistency), not the capsule's own detached
-signed statement, which the bundle does not carry; the rendering says so.
+Artifacts are read in the forms evidencebook, the Mesh-LLM capsules plugin
+and this repo's door (``evidence_responder.py``) serve, and each is checked
+the way the plugin's requester checks it:
+
+  * ``record``: the record's ledger line, whose recomputed ``capsule_id`` is
+    the subject (or the ``capsule_id`` preimage itself, which the profile's
+    ``anchor_inclusion`` proves); the material is the anchor checkpoint, the
+    record's inclusion proof and, when the anchor extends an earlier
+    checkpoint, its consistency proof;
+  * ``range``, ``correlation``, ``full_history``: ``{anchor,
+    evidence_stream, records, subject}``, each record ``{body, digest,
+    leaf_index}``, its body the record its digest names, in log order and
+    under the anchor; the material is the anchor checkpoint and one
+    inclusion proof per record;
+  * ``checkpoints``: every checkpoint's COSE statement in hex, starting the
+    stream, each extending the one before it, the last the anchor.
+
+Every checkpoint statement must verify under the responder's own key and the
+anchor's must hash to the envelope's anchor. Each inclusion proof must climb
+from its own leaf position to the very peak holding that leaf. The answer
+must be for the subject, derivation and coverage asked: the pinned anchor,
+or a ``min_freshness`` the anchor attains, stated as its MMR size or time
+(:func:`check_artifact`; ``served_summary/1`` and ``history_card/1`` too).
+A record proven this way is proven in the LOG (inclusion under a checkpoint
+the responder signed); its producer's own signature is a separate question,
+which the rendering leaves open. Witness receipts ride beside the envelope
+(``witness_receipts``): each must name a checkpoint the answer carries and
+be a well-formed receipt bound to it, or the answer is no evidence; only one
+that verifies under a pinned witness key counts as WITNESSED.
 
 Also renders a small "history card" -- ``continuity``/``history_depth``/
-``unforked`` -- folded from the first bundle's ``checkpoint``/
-``prior_checkpoint``/``checkpoint_cose`` via ``history_card
-.build_history_card`` (every bundle in one answer is under the same anchor),
-or from the checkpoint lines of a ``checkpoints`` answer.
+``unforked`` -- folded from a ``checkpoints`` answer's statements via
+``history_card.build_history_card``.
 
 Usage:
     python3 ask_history.py <peer-base-url> --subject record --capsule-id <cid>
@@ -43,7 +63,7 @@ Coverage is exactly one of ``--expected-pin <anchor digest>`` (the SHA-256 of
 a checkpoint's COSE statement) and ``--min-freshness <size or RFC 3339 UTC
 time>``; the default is ``--min-freshness 0``, the freshest anchor held.
 ``--tamper-check`` proves the negative end to end: it flips one byte of the
-artifact and one field of the first bundle's receipt in memory (never
+artifact and the first served record's ``capsule_id`` in memory (never
 touching the peer) and confirms both checks then fail.
 
 ``--via mesh <peer-id>`` -- for a peer with no reachable HTTP door: the first
@@ -80,8 +100,8 @@ candidate record sets locally before any is witnessed. No witnessed
 checkpoint means no sample, never a fallback to a seed ``X`` can predict.
 The seed and its source are recorded in :attr:`ReferencesResult.selection`;
 (3) ask each sampled counterparty's door ``{"correlation": x_node_id}``;
-(4) verify every reply and every returned bundle OFFLINE before trusting
-anything in it -- an unverified bundle contributes to nothing; (5) fold
+(4) verify every reply and every returned record OFFLINE before trusting
+anything in it -- an unverified record contributes to nothing; (5) fold
 verified adjudication/ack-refusal content into tallies, and separately check
 ``X``'s OWN pulled records for per-counterparty sequence continuity
 (:func:`sequence_counter.verify_pair_continuity`). Refusals are counted as
@@ -102,11 +122,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent_action_capsule import evidence_request as er
-from agent_action_capsule.canonical import jcs
+from agent_action_capsule.canonical import LOCAL_ONLY_FIELDS, jcs
 from agent_action_capsule.interop_profile._common import FAIL, TrustPolicy
-from capsule_emit.bundle import Bundle, verify_bundle
 from capsule_emit.checkpoint import StampVerdict, verify_witness_stamp_tristate
+from cll.checkpoint.emit import CheckpointRecord, WitnessRecord
 
+from evidence_responder import KIND_CHECKPOINT, KIND_CONSISTENCY, KIND_INCLUSION, WITNESS_RECEIPTS
 from history_card import build_history_card, with_references
 from sequence_counter import verify_pair_continuity
 from witness_pin import default_witness_pin
@@ -116,11 +137,14 @@ __all__ = [
     "Exchange",
     "ReferencesResult",
     "Reply",
+    "ServedCheckpoint",
+    "ServedRecord",
     "WitnessedSeed",
     "answer_checkpoints",
-    "artifact_bundles",
     "build_request",
     "candidates_digest",
+    "check_artifact",
+    "check_derived",
     "discover_counterparties",
     "main",
     "post_evidence_request",
@@ -131,7 +155,8 @@ __all__ = [
     "render_refusal",
     "run_references",
     "sample_reference_candidates",
-    "verified_bundles",
+    "served_records",
+    "verified_records",
     "witnessed_seed",
 ]
 
@@ -182,10 +207,14 @@ class Exchange:
     """One request sent and its reply: ``request_digest`` is the SHA-256 of
     the request bytes as sent (-00 §4.2), ``reply`` the reply's octets in the
     JSON binding, as carried (never re-serialized, so a duplicate member
-    stays visible to :func:`read_reply`)."""
+    stays visible to :func:`read_reply`). ``request`` is the request map
+    asked (a carrier may add members of its own): with it the answer is
+    checked against the subject, derivation and coverage asked for, as the
+    plugin's requester checks it; without it, only against itself."""
 
     request_digest: str
     reply: bytes
+    request: dict[str, Any] | None = None
 
 
 #: A transport: sends a request map and returns the :class:`Exchange`.
@@ -198,7 +227,7 @@ def post_evidence_request(peer_base_url: str, request_map: dict[str, Any], *, ti
     url = peer_base_url.rstrip("/") + "/evidence-request"
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return Exchange(er.request_digest(body), resp.read())
+        return Exchange(er.request_digest(body), resp.read(), request_map)
 
 
 def _no_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -239,9 +268,9 @@ def post_mesh_evidence_request(
     if isinstance(result.get("answer"), dict) and er.is_digest(result.get("request_digest")):
         # The plugin already decoded the peer's reply into its own answer:
         # these are its octets, re-encoded.
-        return Exchange(result["request_digest"], json.dumps(result["answer"]).encode("utf-8"))
+        return Exchange(result["request_digest"], json.dumps(result["answer"]).encode("utf-8"), request_map)
     sent = json.dumps(request_map, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    return Exchange(er.request_digest(sent), raw)
+    return Exchange(er.request_digest(sent), raw, request_map)
 
 
 @dataclass(frozen=True)
@@ -259,6 +288,53 @@ class Reply:
     #: The profile's ``anchor_inclusion`` for Checkpointed Local Log
     #: material, when the envelope carries any.
     cll: Any = None
+    #: The reply's unsigned ``witness_receipts``: ``(checkpoint digest,
+    #: WitnessRecord)`` pairs, checked only against the checkpoints the
+    #: answer carries (:func:`served_records`, :func:`answer_checkpoints`).
+    witness_receipts: tuple[tuple[str, WitnessRecord], ...] = ()
+    #: The request asked, parsed, when the exchange carried it.
+    request: er.Request | None = None
+
+
+#: The most records, material items, checkpoints or receipts a received
+#: answer may carry before anything in it is checked, as at the plugin's
+#: requester.
+MAX_ITEMS = 10_000
+
+
+def _witness_receipts(raw: bytes) -> tuple[tuple[tuple[str, WitnessRecord], ...], list[str]]:
+    """The reply's ``witness_receipts`` member, read from the octets as
+    carried. A member that is present but malformed is an error, as at the
+    plugin's requester."""
+    try:
+        members = json.loads(raw)
+    except (UnicodeDecodeError, ValueError):
+        return (), []
+    if not isinstance(members, dict) or WITNESS_RECEIPTS not in members:
+        return (), []
+    carried = members[WITNESS_RECEIPTS]
+    if not isinstance(carried, list) or len(carried) > MAX_ITEMS:
+        return (), ["witness_receipts is not a list of at most 10000 receipts"]
+    out: list[tuple[str, WitnessRecord]] = []
+    for item in carried:
+        if not (isinstance(item, dict) and er.is_digest(item.get("checkpoint")) and _well_typed(item.get("witness"))):
+            return (), ["a witness receipt is malformed"]
+        out.append((item["checkpoint"], WitnessRecord.from_dict(item["witness"])))
+    return tuple(out), []
+
+
+def _well_typed(witness: Any) -> bool:
+    """A witness record whose members have their own types, before
+    ``WitnessRecord.from_dict`` (which coerces: ``"false"`` would read as a
+    stub) reads it, as the plugin's typed decoding requires."""
+    if not isinstance(witness, dict):
+        return False
+    texts = all(isinstance(witness.get(k), str) for k in ("ts_url", "entry_hash", "receipt_b64"))
+    sizes = all(
+        isinstance(witness.get(k), int) and not isinstance(witness.get(k), bool) and 0 <= witness[k] < 1 << 64
+        for k in ("leaf_index", "tree_size")
+    )
+    return texts and sizes and isinstance(witness.get("is_stub", False), bool)
 
 
 def read_reply(exchange: Exchange, *, responder_key: str | None = None, trust: TrustPolicy | None = None) -> Reply:
@@ -269,6 +345,12 @@ def read_reply(exchange: Exchange, *, responder_key: str | None = None, trust: T
         parsed = er.parse_reply(exchange.reply, "json")
     except (er.VerificationError, TypeError, ValueError) as exc:
         return Reply(ok=False, errors=(f"not a reply: {exc}",))
+    request = None
+    if exchange.request is not None:
+        try:
+            request = er.parse_request(json.dumps(exchange.request).encode("utf-8"))
+        except (er.RequestError, TypeError, ValueError) as exc:
+            errors.append(f"the request asked is not well formed: {exc}")
 
     if isinstance(parsed, er.Refusal):
         if not er.verify_refusal_offline(parsed):
@@ -279,7 +361,7 @@ def read_reply(exchange: Exchange, *, responder_key: str | None = None, trust: T
             errors.append("the refusal answers another request")
         if responder_key is not None and parsed.key_id != responder_key:
             errors.append("the refusal is signed by another key than the responder's")
-        return Reply(ok=not errors, errors=tuple(errors), refusal=parsed)
+        return Reply(ok=not errors, errors=tuple(errors), refusal=parsed, request=request)
 
     envelope = parsed
     try:
@@ -292,86 +374,525 @@ def read_reply(exchange: Exchange, *, responder_key: str | None = None, trust: T
         errors.append("the envelope answers another request")
     if responder_key is not None and envelope.responder != responder_key:
         errors.append("the envelope is signed by another key than the responder's")
+    if request is not None and (
+        envelope.subject.to_wire() != request.subject.to_wire() or envelope.derivation != request.derivation
+    ):
+        errors.append("the answer is not for the requested subject or derivation")
+    if len(envelope.verification) > MAX_ITEMS + 2:
+        errors.append("the answer carries too much material")
     cll = None
-    if envelope.verification:
-        cll = er.check_cll_material(envelope, trust or TrustPolicy())
+    if envelope.verification and len(envelope.verification) <= MAX_ITEMS + 2:
+        cll = er.check_cll_material(envelope, trust or _responder_log_trust(envelope))
         if cll.status == FAIL:
             errors.append(f"anchor inclusion fails: {cll.detail}")
+    receipts, receipt_errors = _witness_receipts(exchange.reply)
+    errors.extend(receipt_errors)
     try:
         body = json.loads(envelope.artifact)
     except (UnicodeDecodeError, ValueError):
         body = None
-    return Reply(ok=not errors, errors=tuple(errors), envelope=envelope, body=body, cll=cll)
+    return Reply(
+        ok=not errors, errors=tuple(errors), envelope=envelope, body=body, cll=cll, witness_receipts=receipts,
+        request=request,
+    )
 
 
-def artifact_bundles(reply: Reply) -> tuple[list[Bundle], list[str]]:
-    """The bundles of a mesh artifact (see ``evidence_responder.py``), and the
-    problems found reading them. Each must be proven under the anchor the
-    envelope names: its ``checkpoint_cose`` hashes to the anchor digest.
-    A bundle failing that is left out; ``verify_bundle`` is the caller's."""
-    body = reply.body
-    if not isinstance(body, dict) or not isinstance(body.get("bundles"), list):
-        return [], ["the artifact is not a set of bundles"]
-    anchor = reply.envelope.anchor_digest if reply.envelope is not None else None
-    bundles: list[Bundle] = []
-    problems: list[str] = []
-    for i, bd in enumerate(body["bundles"]):
+class _LogsUnderKey:
+    """Every log (any ``iss``/``sub``) whose checkpoints ``kid`` signs: the
+    ``log_keys`` of :func:`_responder_log_trust`."""
+
+    def __init__(self, kid: str):
+        self.kid = kid
+
+    def __contains__(self, entry: object) -> bool:
+        return isinstance(entry, tuple) and len(entry) == 3 and entry[2] == self.kid
+
+
+def _responder_log_trust(envelope: er.Envelope) -> TrustPolicy:
+    """The relying party's log key for the anchor checkpoint when none is
+    given: the responder's own, which signs a mesh node's (and the plugin's)
+    checkpoints, as the plugin's requester takes it."""
+    return TrustPolicy(responder_keys=frozenset({envelope.responder}), log_keys=_LogsUnderKey(envelope.responder))
+
+
+@dataclass(frozen=True)
+class ServedCheckpoint:
+    """A checkpoint an answer carries, its statement verified under the
+    responder's key: ``record`` is the JSON form it states (no
+    ``signature``: the statement's own COSE signature stands for it). Its
+    ``witnesses`` are the receipts the reply carries for it, once
+    :func:`_check_receipts` has checked them."""
+
+    digest: str
+    statement: bytes
+    record: CheckpointRecord
+    #: The statement's commitment: the MMR's peaks at ``record.mmr_size``.
+    peaks: tuple[bytes, ...]
+    prev_peaks: tuple[bytes, ...]
+    #: Leaves under it, and under its predecessor (``prev_size``).
+    covered: int
+    covered_before: int
+
+    def line(self) -> dict[str, Any]:
+        """The ``checkpoints.jsonl`` line this checkpoint is, as
+        ``history_card.build_history_card`` reads one."""
+        return {**self.record.to_dict(), "checkpoint_cose": self.statement.hex()}
+
+
+def _hashes(values: Any) -> tuple[bytes, ...]:
+    return tuple(bytes.fromhex(v) if isinstance(v, str) else bytes(v) for v in values)
+
+
+def _served_checkpoint(statement: bytes) -> tuple[ServedCheckpoint | None, str | None]:
+    """``statement`` verified (its COSE signature and its own consistency
+    claim) as a :class:`ServedCheckpoint`, and the key that signed it; or
+    ``(None, None)`` when it does not verify or its sizes are not MMR sizes."""
+    from cll.checkpoint.core import leaf_count
+    from cll.checkpoint.cose_wire import verify_checkpoint_cose_offline
+
+    checked = verify_checkpoint_cose_offline(statement)
+    if not checked.ok or checked.decoded is None:
+        return None, None
+    record = checked.decoded.to_checkpoint_record()
+    try:
+        covered, covered_before = leaf_count(record.mmr_size), leaf_count(record.prev_size)
+    except ValueError:
+        return None, None
+    served = ServedCheckpoint(
+        digest=hashlib.sha256(statement).hexdigest(),
+        statement=statement,
+        record=record,
+        peaks=_hashes(checked.decoded.new_peak_hashes),
+        prev_peaks=_hashes(checked.decoded.prev_peak_hashes),
+        covered=covered,
+        covered_before=covered_before,
+    )
+    return served, checked.decoded.key_id
+
+
+def _stated(statement: bytes, reply: Reply) -> ServedCheckpoint | None:
+    """``statement`` as a :class:`ServedCheckpoint` when it verifies and is
+    signed by the envelope's responder."""
+    served, key_id = _served_checkpoint(statement)
+    return served if served is not None and key_id == reply.envelope.responder else None
+
+
+def sha256_hex_of_hex(digest_hex: str) -> str:
+    """A witness receipt's entry hash for a checkpoint digest:
+    ``SHA-256(bytes of the digest)``."""
+    return hashlib.sha256(bytes.fromhex(digest_hex)).hexdigest()
+
+
+def _check_receipts(reply: Reply, carried: list[ServedCheckpoint]) -> list[str]:
+    """Check every receipt the reply carries against the checkpoints the
+    answer carries, as the plugin's requester does, and attach each to its
+    checkpoint. A receipt must name a carried checkpoint. A stub is kept as
+    one (it counts for nothing). Any other must be bound to its checkpoint
+    and be a structurally valid receipt for it (:attr:`StampVerdict
+    .WITNESSED` under a pinned witness key, or ``UNVERIFIED`` without one);
+    one that is not makes the answer no evidence."""
+    by_digest = {cp.digest: cp for cp in carried}
+    attached: dict[str, list[WitnessRecord]] = {d: [] for d in by_digest}
+    for digest, w in reply.witness_receipts:
+        cp = by_digest.get(digest)
+        if cp is None:
+            return ["a witness receipt names a checkpoint the answer does not carry"]
+        if not w.is_stub:
+            verdict, _errors = verify_witness_stamp_tristate(cp.record, w, ts_pubkey_pem=default_witness_pin(w.ts_url))
+            if verdict is StampVerdict.INVALID:
+                return ["a witness receipt does not cover the checkpoint it is carried on"]
+        attached[digest].append(w)
+    for digest, cp in by_digest.items():
+        cp.record.witnesses = attached[digest]
+    return []
+
+
+@dataclass(frozen=True)
+class ServedRecord:
+    """A record an answer carries, proven under its anchor checkpoint:
+    ``receipt`` is the record's ledger line, parsed."""
+
+    leaf_index: int
+    capsule_id: str
+    receipt: dict[str, Any]
+
+
+def _record_digest(body: bytes) -> str | None:
+    """The digest a record body proves: its recomputed ``capsule_id`` when
+    it is a ledger line stating that id, as the plugin's requester reads one
+    (capsule-emit's Rust ``jcs::compute_capsule_id``): SHA-256 of the RFC
+    8785 JSON of the line without ``capsule_id`` and the local-only producer
+    envelope members, whatever its format. ``None`` for a body that is not
+    such a line. Stricter than the plugin in one respect: a body with a
+    duplicate member (which the plugin's decoder reads as its last value) is
+    no record here, and the body must be UTF-8 as written."""
+    try:
+        line = json.loads(body.decode("utf-8"), object_pairs_hook=_no_duplicate_members)
+        stated = line.get("capsule_id")
+        preimage = {k: v for k, v in line.items() if k != "capsule_id" and k not in LOCAL_ONLY_FIELDS}
+        return stated if isinstance(stated, str) and hashlib.sha256(jcs(preimage)).hexdigest() == stated else None
+    except (UnicodeDecodeError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def _parsed_record(body: bytes) -> dict[str, Any] | None:
+    try:
+        value = json.loads(body)
+    except (UnicodeDecodeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _proves(proof: bytes, leaf: int, entry_hex: str, anchor: ServedCheckpoint) -> bool:
+    """``proof`` is a ``cll-inclusion-proof`` for zero-based leaf ``leaf``
+    and the entry ``entry_hex``, climbing to the very peak of ``anchor``'s
+    MMR that holds that leaf. Reaching some other peak is not enough: in a
+    three-leaf MMR the third leaf is itself a peak, so its entry with an
+    empty path would otherwise pass for the first leaf."""
+    import cbor2
+    from cll.checkpoint.core import height_at, peaks
+
+    if not 0 <= leaf < anchor.covered:
+        return False
+    try:
+        index, path = cbor2.loads(proof)
+        er.verify_cll_inclusion(list(anchor.peaks), bytes.fromhex(entry_hex), proof)
+    except (er.VerificationError, ValueError, TypeError, IndexError, KeyError, cbor2.CBORDecodeError):
+        return False
+    if index != 2 * leaf - bin(leaf).count("1"):
+        return False
+    positions = peaks(anchor.record.mmr_size)
+    k = next(i for i, p in enumerate(positions) if p >= index)
+    if len(path) != height_at(positions[k]) or len(positions) != len(anchor.peaks):
+        return False
+    root = hashlib.sha256(b"\x00" + bytes.fromhex(entry_hex)).digest()
+    i, g = index, 0
+    for sibling in path:
+        if height_at(i + 1) > g:
+            i += 1
+            root = hashlib.sha256((i + 1).to_bytes(8, "big") + sibling + root).digest()
+        else:
+            i += 2 << g
+            root = hashlib.sha256((i + 1).to_bytes(8, "big") + root + sibling).digest()
+        g += 1
+    return i == positions[k] and root == anchor.peaks[k]
+
+
+def _material(reply: Reply) -> list[tuple[str, bytes]]:
+    return list(reply.envelope.verification)
+
+
+def _check_coverage(reply: Reply, anchor: ServedCheckpoint, leaves: list[int]) -> list[str]:
+    """The coverage asked for, as the plugin's requester checks it: the
+    envelope names the anchor (or, for an ``exchange`` pinned by the
+    requester's own half, that half), a pin is the anchor itself and states
+    no freshness, and a ``min_freshness`` answer states the freshness the
+    anchor attains (its MMR size, or its time to the second) and meets it.
+    Without the request, only the anchor binding is checked."""
+    request = reply.request
+    envelope = reply.envelope
+    pin = request.coverage.expected_pin if request is not None else None
+    half_pin = request is not None and request.subject.form == "exchange" and request.subject.content == pin
+    if not half_pin and envelope.anchor_digest != anchor.digest:
+        return ["the envelope names another anchor than its checkpoint"]
+    if request is None:
+        return []
+    if pin is not None:
+        if envelope.anchor_digest != pin or envelope.freshness is not None:
+            return ["the anchor is not the pinned one"]
+    elif isinstance(request.coverage.min_freshness, int):
+        if envelope.freshness != anchor.record.mmr_size or anchor.covered < request.coverage.min_freshness:
+            return ["the anchor is not as fresh as asked"]
+    else:
+        at = anchor.record.timestamp.split(".")[0].rstrip("Z") + "Z"
         try:
-            b = Bundle.from_dict(bd)
-        except (AttributeError, KeyError, TypeError, ValueError) as exc:
-            problems.append(f"bundle {i} is not a bundle: {exc}")
-            continue
-        if b.checkpoint_cose is None or hashlib.sha256(b.checkpoint_cose).hexdigest() != anchor:
-            problems.append(f"bundle {b.capsule_id} is not proven under the envelope's anchor")
-            continue
-        bundles.append(b)
-    return bundles, problems
+            fresh_enough = er.parse_utc(at) >= er.parse_utc(request.coverage.min_freshness)
+        except (TypeError, ValueError):
+            fresh_enough = False
+        if envelope.freshness != at or not fresh_enough:
+            return ["the anchor is not as fresh as asked"]
+    # A half pinned by itself is answered under the earliest checkpoint
+    # covering the records served.
+    if half_pin and (not leaves or max(leaves) < anchor.covered_before):
+        return ["the anchor is not the earliest covering the records"]
+    return []
+
+
+def served_records(reply: Reply) -> tuple[list[ServedRecord], ServedCheckpoint | None, list[str]]:
+    """The records of a ``record``, ``range``, ``correlation``,
+    ``full_history`` or ``exchange`` answer, the anchor checkpoint they are
+    proven under, and the problems that keep them from being trusted (any
+    problem: trust none). The checks are the plugin's requester's (see the
+    module docstring)."""
+    envelope = reply.envelope
+    if envelope is None or envelope.derivation is not None:
+        return [], None, ["not a plain record answer"]
+    (form,) = envelope.subject.to_wire()
+    material = _material(reply)
+    if form == "record":
+        records, anchor, problems = _served_record(reply, material)
+    elif form in ("range", "correlation", "full_history", "exchange"):
+        records, anchor, problems = _served_set(reply, material, form)
+    else:
+        return [], None, ["not a record answer"]
+    if not problems:
+        problems = _check_coverage(reply, anchor, [r.leaf_index for r in records]) or _check_receipts(reply, [anchor])
+    return ([] if problems else records), anchor, problems
+
+
+def _served_set(reply: Reply, material: list[tuple[str, bytes]], form: str) -> tuple[list[ServedRecord], ServedCheckpoint | None, list[str]]:
+    envelope = reply.envelope
+    body = reply.body if isinstance(reply.body, dict) else {}
+    records = body.get("records")
+    if not isinstance(records, list) or not records or len(records) > MAX_ITEMS:
+        return [], None, ["the artifact carries no records, or too many"]
+    if body.get("subject") != envelope.subject.to_wire() or "derivation" in body:
+        return [], None, ["the artifact is for another subject"]
+    if [k for k, _ in material] != [KIND_CHECKPOINT] + [KIND_INCLUSION] * len(records):
+        return [], None, ["the material is not the anchor checkpoint and one inclusion proof per record"]
+    anchor, problems = _anchor(reply, material[0][1], body)
+    if anchor is None:
+        return [], None, problems
+    out: list[ServedRecord] = []
+    for i, (record, (_, proof)) in enumerate(zip(records, material[1:])):
+        try:
+            raw = bytes.fromhex(record["body"])
+            digest, leaf = record["digest"], record["leaf_index"]
+        except (KeyError, TypeError, ValueError):
+            return [], anchor, [f"record {i} is malformed"]
+        if not (er.is_digest(digest) and (hashlib.sha256(raw).hexdigest() == digest or _record_digest(raw) == digest)):
+            return [], anchor, [f"record {i}'s body is not the record its digest names"]
+        if not (isinstance(leaf, int) and not isinstance(leaf, bool) and 0 <= leaf < anchor.covered):
+            return [], anchor, [f"record {i} is not under the anchor"]
+        if out and out[-1].leaf_index >= leaf:
+            return [], anchor, ["the records are not in log order"]
+        if not _proves(proof, leaf, digest, anchor):
+            return [], anchor, [f"record {i}'s inclusion proof does not hold"]
+        parsed = _parsed_record(raw)
+        out.append(ServedRecord(leaf_index=leaf, capsule_id=digest, receipt=parsed if parsed is not None else {}))
+    # The leaves strictly increase, so a count and both ends pin them down,
+    # with nothing allocated in proportion to what the responder claims.
+    first, last, count = out[0].leaf_index, out[-1].leaf_index, len(out)
+    if form == "range":
+        a, b = envelope.subject.content
+        if (first, last, count) != (a, b, b - a + 1):
+            return [], anchor, ["the records are not the range asked for"]
+    elif form == "full_history" and (first, last, count) != (0, anchor.covered - 1, anchor.covered):
+        return [], anchor, ["the records are not the full history under the anchor"]
+    return out, anchor, []
+
+
+def _served_record(reply: Reply, material: list[tuple[str, bytes]]) -> tuple[list[ServedRecord], ServedCheckpoint | None, list[str]]:
+    import cbor2
+
+    envelope = reply.envelope
+    digest = envelope.subject.content
+    artifact = envelope.artifact
+    if envelope.artifact_digest != digest and _record_digest(artifact) != digest:
+        return [], None, ["the artifact is not the record the subject names"]
+    kinds = [k for k, _ in material]
+    if envelope.artifact_digest == digest and (reply.cll is None or reply.cll.status != "PASS"):
+        # A record that is its own octets is proven by the profile's check
+        # alone, as at the plugin's requester.
+        detail = reply.cll.detail if reply.cll is not None else "no material"
+        return [], None, [f"anchor_inclusion: {detail}"]
+    if envelope.artifact_digest == digest:
+        # A record that is its own octets: the profile's check found each
+        # kind exactly once, in whatever order; read them by kind, as the
+        # plugin's requester does.
+        order = [KIND_CHECKPOINT, KIND_INCLUSION, KIND_CONSISTENCY]
+        material = sorted(material, key=lambda item: order.index(item[0]) if item[0] in order else len(order))
+        kinds = [k for k, _ in material]
+    # A named ledger line's material comes in this order, as evidencebook
+    # (interop_cll.go cllMaterial), the plugin and this repository's door
+    # all send it.
+    if kinds not in ([KIND_CHECKPOINT, KIND_INCLUSION], [KIND_CHECKPOINT, KIND_INCLUSION, KIND_CONSISTENCY]):
+        return [], None, ["the material is not the anchor checkpoint and the record's proofs"]
+    anchor, problems = _anchor(reply, material[0][1], None)
+    if anchor is None:
+        return [], None, problems
+    try:
+        leaf = _leaf_of_node_index(cbor2.loads(material[1][1])[0])
+    except (ValueError, TypeError, IndexError, KeyError, cbor2.CBORDecodeError):
+        leaf = None
+    if leaf is None or not _proves(material[1][1], leaf, digest, anchor):
+        return [], anchor, ["the record's inclusion proof does not hold"]
+    if len(material) == 3:
+        if cbor_sizes(material[2][1]) != (anchor.record.prev_size, anchor.record.mmr_size):
+            return [], anchor, ["the anchor's consistency proof is not from its predecessor to it"]
+        try:
+            er.verify_cll_consistency(list(anchor.prev_peaks), list(anchor.peaks), material[2][1])
+        except er.VerificationError as exc:
+            return [], anchor, [f"the anchor's consistency proof does not hold: {exc}"]
+    parsed = _parsed_record(artifact)
+    return [ServedRecord(leaf_index=leaf, capsule_id=digest, receipt=parsed if parsed is not None else {})], anchor, []
+
+
+def _leaf_of_node_index(index: object) -> int | None:
+    """The zero-based leaf whose MMR node index is ``index`` (a leaf's is
+    ``2n - popcount(n)``), or ``None`` when ``index`` is no leaf's. Since
+    ``popcount(n) <= 53`` below 2^53, ``n`` lies within 27 of ``index / 2``."""
+    if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < 1 << 53:
+        return None
+    return next((n for n in range(index // 2, index // 2 + 28) if 2 * n - bin(n).count("1") == index), None)
+
+
+def _anchor(reply: Reply, statement: bytes, body: dict[str, Any] | None) -> tuple[ServedCheckpoint | None, list[str]]:
+    """The anchor checkpoint ``statement``, when it is the responder's and,
+    for an artifact map ``body``, the anchor and stream it names. That the
+    envelope names it is :func:`_check_coverage`'s."""
+    anchor = _stated(statement, reply)
+    if anchor is None:
+        return None, ["the anchor checkpoint is not the responder's, or does not verify"]
+    if body is not None and (body.get("anchor") != anchor.digest or body.get("evidence_stream") != anchor.record.log_id):
+        return None, ["the artifact names another anchor or stream than its checkpoint's"]
+    return anchor, []
+
+
+def _check_chain(reply: Reply, listed: list[ServedCheckpoint], body: dict[str, Any]) -> list[str]:
+    """A listed chain starts the stream, each checkpoint extends the one
+    before it, the last is the anchor the artifact and envelope name, and
+    every receipt carried is for one of them."""
+    first = listed[0].record
+    if first.prev_size != 0 or first.prev_root:
+        return ["the checkpoint list does not start the stream"]
+    for prev, nxt in zip(listed, listed[1:]):
+        p, n = prev.record, nxt.record
+        if n.prev_size != p.mmr_size or n.prev_root != p.root or n.log_id != p.log_id or n.mmr_size <= p.mmr_size:
+            return ["a checkpoint does not extend the one listed before it"]
+    if body.get("anchor") != listed[-1].digest or body.get("evidence_stream") != listed[-1].record.log_id:
+        return ["the artifact names another anchor or stream than its last checkpoint's"]
+    if reply.envelope.anchor_digest != listed[-1].digest:
+        return ["the last checkpoint is not the envelope's anchor"]
+    return _check_coverage(reply, listed[-1], []) or _check_receipts(reply, listed)
+
+
+def _listed(reply: Reply, items: list[Any], member: str | None) -> tuple[list[ServedCheckpoint], list[str]]:
+    listed: list[ServedCheckpoint] = []
+    for i, item in enumerate(items):
+        try:
+            statement = bytes.fromhex(item if member is None else item[member])
+        except (TypeError, ValueError, KeyError):
+            return [], [f"checkpoint {i} is malformed"]
+        cp = _stated(statement, reply)
+        if cp is None:
+            return [], [f"checkpoint {i} is not the responder's, or does not verify"]
+        listed.append(cp)
+    return listed, []
 
 
 def answer_checkpoints(reply: Reply) -> tuple[list[dict[str, Any]], list[str]]:
-    """The checkpoint lines of a ``checkpoints`` artifact (see
-    ``evidence_responder.py``), and the problems that keep them from being
-    trusted. ``history_card.build_history_card`` proves each link after the
-    first; this checks what it does not: that the first line's COSE statement
-    verifies and is the line it sits on (it starts the log, with no
-    predecessor to prove it), and that the last line's statement is the
-    envelope's anchor. Lines that are not a non-empty list of maps are no
-    lines at all."""
+    """The checkpoints of a ``checkpoints`` artifact as ``checkpoints.jsonl``
+    lines (``history_card.build_history_card`` folds them; each carries the
+    witness receipts the reply carries for it, once checked), and the
+    problems that keep them from being trusted. Every statement must verify
+    under the responder's key; the first starts the stream, each extends the
+    one before it, and the last is the anchor."""
     body = reply.body if isinstance(reply.body, dict) else {}
-    lines = body.get("checkpoints")
-    if not isinstance(lines, list) or not lines or not all(isinstance(line, dict) for line in lines):
-        return [], ["the artifact carries no checkpoint lines"]
-    from cll.checkpoint.cose_wire import verify_checkpoint_cose_offline
-
-    def statement(line: dict[str, Any]) -> bytes | None:
-        try:
-            return bytes.fromhex(line["checkpoint_cose"])
-        except (KeyError, TypeError, ValueError):
-            return None
-
-    problems: list[str] = []
-    first = statement(lines[0])
-    checked = verify_checkpoint_cose_offline(first) if first is not None else None
-    if checked is None or not checked.ok:
-        problems.append("the first checkpoint's COSE statement is missing or does not verify")
-    elif (checked.decoded.prev_size, checked.decoded.mmr_size, checked.decoded.root) != (
-        0, lines[0].get("mmr_size"), lines[0].get("root"),
-    ):
-        problems.append("the first checkpoint's COSE statement is not the line it sits on, or does not start the log")
-    last = statement(lines[-1])
-    anchor = reply.envelope.anchor_digest if reply.envelope is not None else None
-    if last is None or hashlib.sha256(last).hexdigest() != anchor:
-        problems.append("the last checkpoint is not the envelope's anchor")
-    return lines, problems
+    statements = body.get("checkpoints")
+    if reply.envelope is None or not isinstance(statements, list) or not statements or len(statements) > MAX_ITEMS:
+        return [], ["the artifact carries no checkpoints"]
+    if body.get("subject") != reply.envelope.subject.to_wire() or "derivation" in body:
+        return [], ["the artifact is for another subject"]
+    listed, problems = _listed(reply, statements, None)
+    if problems:
+        return [], problems
+    problems = _check_chain(reply, listed, body)
+    return [cp.line() for cp in listed], problems
 
 
-def verified_bundles(reply: Reply) -> list[Bundle]:
-    """The bundles of a checked reply that pass every check: the reply's own,
-    the anchor binding and ``verify_bundle``. Empty for anything else."""
+def check_derived(reply: Reply) -> list[str]:
+    """The problems with a derivation's answer, as the plugin's requester
+    checks it; a derivation it does not check is one:
+
+    * ``served_summary/1``: for ``full_history``, answered only under an
+      ``expected_pin``; the artifact names that subject and derivation, carries
+      a ``served_summary`` object, and names the anchor and stream of its one
+      material item, the anchor's ``cll-checkpoint``.
+    * ``history_card/1``: the artifact's ``history`` is a chain of the
+      responder's checkpoints from the start of the stream, each after the
+      first proven to extend the one before it, ending at the anchor.
+    """
+    envelope = reply.envelope
+    body = reply.body if isinstance(reply.body, dict) else {}
+    if envelope is None or envelope.derivation is None:
+        return ["not a derivation's answer"]
+    if body.get("subject") != envelope.subject.to_wire() or body.get("derivation") != envelope.derivation:
+        return ["the artifact is not for the requested subject or derivation"]
+    if envelope.derivation == "served_summary/1":
+        if envelope.subject.form != "full_history":
+            return ["the answer is for a derivation of another subject"]
+        if reply.request is not None and reply.request.coverage.expected_pin is None:
+            return ["a served summary is answered only under an expected_pin"]
+        if not isinstance(body.get("served_summary"), dict):
+            return ["the artifact carries no served summary"]
+        material = _material(reply)
+        if [k for k, _ in material] != [KIND_CHECKPOINT]:
+            return ["the answer carries no anchor checkpoint"]
+        anchor, problems = _anchor(reply, material[0][1], body)
+        if anchor is None:
+            return problems
+        return _check_coverage(reply, anchor, []) or _check_receipts(reply, [anchor])
+    if envelope.derivation == "history_card/1":
+        history = body.get("history")
+        if not isinstance(history, list) or not history or len(history) > MAX_ITEMS:
+            return ["the history is malformed"]
+        listed, problems = _listed(reply, history, "checkpoint")
+        if problems:
+            return problems
+        for i, (entry, cp) in enumerate(zip(history, listed)):
+            if not isinstance(entry, dict) or "consistency_from_previous" not in entry:
+                return ["a history entry's consistency proof is missing or out of place"]
+            proof = entry["consistency_from_previous"]
+            if i == 0:
+                if proof is not None:
+                    return ["a history entry's consistency proof is missing or out of place"]
+                continue
+            prev = listed[i - 1]
+            try:
+                consistency = bytes.fromhex(proof)
+                ok = cbor_sizes(consistency) == (prev.record.mmr_size, cp.record.mmr_size)
+                er.verify_cll_consistency(list(prev.peaks), list(cp.peaks), consistency)
+            except (er.VerificationError, TypeError, ValueError):
+                ok = False
+            if not ok:
+                return ["a consistency proof does not hold"]
+        return _check_chain(reply, listed, body)
+    return [f"the answer is for a derivation this client does not check ({envelope.derivation})"]
+
+
+def cbor_sizes(consistency: bytes) -> tuple[int, int] | None:
+    """The two tree sizes a ``cll-consistency-proof`` states."""
+    import cbor2
+
+    try:
+        size1, size2, _paths, _right = cbor2.loads(consistency)
+    except (ValueError, TypeError, cbor2.CBORDecodeError):
+        return None
+    return size1, size2
+
+
+def check_artifact(reply: Reply) -> list[str]:
+    """Every problem with an envelope's artifact, whatever its form: a
+    derivation (:func:`check_derived`), a checkpoint list
+    (:func:`answer_checkpoints`) or records (:func:`served_records`)."""
+    envelope = reply.envelope
+    if envelope is None:
+        return ["no envelope"]
+    if envelope.derivation is not None:
+        return check_derived(reply)
+    if envelope.subject.form == "checkpoints":
+        return answer_checkpoints(reply)[1]
+    return served_records(reply)[2]
+
+
+def verified_records(reply: Reply) -> list[ServedRecord]:
+    """The records of a checked reply when every check passes: the reply's
+    own and :func:`served_records`'. Empty for anything else."""
     if not reply.ok or reply.envelope is None:
         return []
-    bundles, _problems = artifact_bundles(reply)
-    return [b for b in bundles if verify_bundle(b)[0]]
+    records, _anchor_cp, problems = served_records(reply)
+    return [] if problems else records
 
 
 def _iter_values_by_key(obj: Any, keys: frozenset[str]) -> list[str]:
@@ -404,17 +925,17 @@ def _iter_dicts_by_key(obj: Any, key: str) -> list[dict[str, Any]]:
     return found
 
 
-def discover_counterparties(bundles: list[Bundle], *, exclude_node_id: str) -> list[str]:
-    """From ``X``'s own already-verified digest-tier bundles (each
-    ``Bundle.receipt`` is the raw ledger entry -- structural attestation
-    fields only, never a disclosed payload), collect every distinct node
-    identity ``X``'s OWN records name as a counterparty. Excludes ``X``
-    itself and the honest ``"unknown"`` marker -- never a fabricated
-    candidate. Sorted, so the result is a pure function of the bundle set.
+def discover_counterparties(records: list[ServedRecord], *, exclude_node_id: str) -> list[str]:
+    """From ``X``'s own already-verified records (each ``receipt`` is the
+    raw ledger entry -- structural attestation fields only, never a
+    disclosed payload), collect every distinct node identity ``X``'s OWN
+    records name as a counterparty. Excludes ``X`` itself and the honest
+    ``"unknown"`` marker -- never a fabricated candidate. Sorted, so the
+    result is a pure function of the record set.
     """
     found: set[str] = set()
-    for b in bundles:
-        for v in _iter_values_by_key(b.receipt, _COUNTERPARTY_NAMING_KEYS):
+    for r in records:
+        for v in _iter_values_by_key(r.receipt, _COUNTERPARTY_NAMING_KEYS):
             if v and v not in (exclude_node_id, "unknown"):
                 found.add(v)
     return sorted(found)
@@ -442,28 +963,23 @@ class WitnessedSeed:
         }
 
 
-def witnessed_seed(bundles: list[Bundle]) -> WitnessedSeed | None:
-    """The latest (largest ``mmr_size``) checkpoint among ``X``'s own
-    VERIFIED bundles' ``checkpoint``/``prior_checkpoint`` whose witness
-    receipt re-verifies as :attr:`StampVerdict.WITNESSED`. A receipt is
-    re-verified, never trusted for being present, and a producer-set
-    ``is_stub`` flag counts for nothing. ``None`` when there is no such
-    checkpoint -- the caller then draws no sample."""
+def witnessed_seed(checkpoints: list[CheckpointRecord]) -> WitnessedSeed | None:
+    """The latest (largest ``mmr_size``) of ``checkpoints`` -- each one an
+    answer carries, its statement verified under the responder's key, with
+    the receipts carried for it -- whose witness receipt re-verifies as
+    :attr:`StampVerdict.WITNESSED`. A receipt is re-verified, never trusted
+    for being present, and a producer-set ``is_stub`` flag counts for
+    nothing. ``None`` when there is no such checkpoint -- the caller then
+    draws no sample."""
     best: WitnessedSeed | None = None
-    for b in bundles:
-        ok, _errors = verify_bundle(b)
-        if not ok:
+    for cp in checkpoints:
+        if best is not None and cp.mmr_size <= best.mmr_size:
             continue
-        for cp in (b.prior_checkpoint, b.checkpoint):
-            if cp is None or (best is not None and cp.mmr_size <= best.mmr_size):
-                continue
-            for w in cp.witnesses or []:
-                verdict, _stamp_errors = verify_witness_stamp_tristate(
-                    cp, w, ts_pubkey_pem=default_witness_pin(w.ts_url)
-                )
-                if verdict is StampVerdict.WITNESSED:
-                    best = WitnessedSeed(root=cp.root, log_id=cp.log_id, mmr_size=cp.mmr_size, ts_url=w.ts_url)
-                    break
+        for w in cp.witnesses or []:
+            verdict, _stamp_errors = verify_witness_stamp_tristate(cp, w, ts_pubkey_pem=default_witness_pin(w.ts_url))
+            if verdict is StampVerdict.WITNESSED:
+                best = WitnessedSeed(root=cp.root, log_id=cp.log_id, mmr_size=cp.mmr_size, ts_url=w.ts_url)
+                break
     return best
 
 
@@ -554,10 +1070,10 @@ class ReferencesResult:
     ack_refusals_about_x: int
     continuity: dict[str, dict[str, Any]] = field(default_factory=dict)
     unreachable_references: list[str] = field(default_factory=list)
-    #: X's own history card (folded from X's pulled checkpoint fields, per
+    #: X's own history card (folded from X's ``checkpoints`` answer, per
     #: ``history_card.build_history_card``), with this result's counts
-    #: folded in via ``history_card.with_references``. ``None`` when X's
-    #: pulled range carried no bundles to fold a checkpoint from.
+    #: folded in via ``history_card.with_references``. ``None`` when that
+    #: answer could not be had (only possible with an explicit ``x_range``).
     history_card: Any = None
     #: How the sample was drawn, so anyone can recompute it:
     #: ``{"method": "seeded", "seed": WitnessedSeed.to_value(), "k",
@@ -573,35 +1089,58 @@ def _post_for(peer: str, *, via: str, local_host_api: str, local_plugin_name: st
     return functools.partial(post_evidence_request, peer)
 
 
-def _recent_records_request(post: Post, node_id: str) -> dict[str, Any]:
-    """A request for the last :data:`DEFAULT_PULL_RECORDS` records under the
-    peer's freshest anchor, pinned to it: the anchor and the log size come
-    from a ``checkpoints`` answer, which a door serves whatever the log's
-    length. The size is read from the anchor's own verified statement, never
-    from the unsigned JSON line beside it, so a door cannot move the window.
-    Raises ``RuntimeError`` when that answer is a refusal or does not check
-    out."""
-    from cll.checkpoint.core import leaf_count
-    from cll.checkpoint.cose_wire import verify_checkpoint_cose_offline
-
+def _x_checkpoints(post: Post, node_id: str) -> tuple[Reply, list[dict[str, Any]]]:
+    """``X``'s checkpoint chain, from a ``checkpoints`` answer (a door serves
+    one whatever the log's length), checked by :func:`answer_checkpoints`.
+    Raises ``RuntimeError`` when it is a refusal or does not check out."""
     reply = read_reply(post(build_request(er.Subject("checkpoints"))))
     if reply.refusal is not None:
         raise RuntimeError(f"could not read {node_id}'s checkpoints: refused {reply.refusal.reason}")
     lines, problems = answer_checkpoints(reply)
     problems = [*reply.errors, *problems]
-    anchor = None
-    if not problems:
-        # answer_checkpoints has checked that this statement is the anchor.
-        anchor = verify_checkpoint_cose_offline(bytes.fromhex(lines[-1]["checkpoint_cose"]))
-        if not anchor.ok:
-            problems.append("the anchor's COSE statement does not verify")
     if problems:
         raise RuntimeError(f"{node_id}'s checkpoints answer does not check out: {'; '.join(problems)}")
-    size = leaf_count(anchor.decoded.mmr_size)
+    return reply, lines
+
+
+def _recent_records_request(lines: list[dict[str, Any]], node_id: str) -> dict[str, Any]:
+    """A request for the last :data:`DEFAULT_PULL_RECORDS` records under the
+    latest of ``X``'s checked checkpoint ``lines`` that a witness receipt
+    verifies for (else the latest), pinned to it, so the pulled records'
+    anchor can seed the sample (:func:`witnessed_seed`). The size is the
+    anchor's own verified statement's, so a door cannot move the window."""
+    from cll.checkpoint.core import leaf_count
+
+    records = [CheckpointRecord.from_dict(line) for line in lines]
+    seeded = witnessed_seed(records)
+    at = next((line for line, r in zip(lines, records) if seeded and r.mmr_size == seeded.mmr_size), lines[-1])
+    size = leaf_count(at["mmr_size"])
     if size == 0:
         raise RuntimeError(f"{node_id}'s log is empty")
     first = max(0, size - DEFAULT_PULL_RECORDS)
-    return build_request(er.Subject("range", (first, size - 1)), expected_pin=reply.envelope.anchor_digest)
+    pin = hashlib.sha256(bytes.fromhex(at["checkpoint_cose"])).hexdigest()
+    return build_request(er.Subject("range", (first, size - 1)), expected_pin=pin)
+
+
+def _seed_checkpoints(
+    anchor: ServedCheckpoint, records: list[ServedRecord], chain: list[dict[str, Any]]
+) -> list[CheckpointRecord]:
+    """The checkpoints that may seed the sample drawn from ``records``: the
+    anchor they are proven under, and those of ``X``'s checked chain that
+    cover every one of them, when that chain runs through the anchor (so each
+    is the anchor's own ancestor or successor). A checkpoint fixed before some
+    of the records were written would let ``X`` see the seed first and then
+    write records that shape the sample."""
+    from cll.checkpoint.core import leaf_count
+
+    covering = [anchor.record]
+    statements = {hashlib.sha256(bytes.fromhex(line["checkpoint_cose"])).hexdigest() for line in chain}
+    if anchor.digest in statements:
+        needed = max(r.leaf_index for r in records) + 1
+        covering += [
+            CheckpointRecord.from_dict(line) for line in chain if leaf_count(line["mmr_size"]) >= needed
+        ]
+    return covering
 
 
 def run_references(
@@ -625,21 +1164,30 @@ def run_references(
     outcome.
     """
     x_post = _post_for(x_peer, via=via, local_host_api=local_host_api, local_plugin_name=local_plugin_name)
+    chain: list[dict[str, Any]] = []
+    log_id = ""
+    try:
+        checkpoints_reply, chain = _x_checkpoints(x_post, x_node_id)
+        log_id = checkpoints_reply.body.get("evidence_stream", "")
+    except RuntimeError:
+        if x_range is None:
+            raise
     if x_range is not None:
         x_request = build_request(er.Subject("range", x_range))
     else:
-        x_request = _recent_records_request(x_post, x_node_id)
+        x_request = _recent_records_request(chain, x_node_id)
     x_reply = read_reply(x_post(x_request))
     if x_reply.refusal is not None:
         raise RuntimeError(f"could not pull {x_node_id}'s own records: refused {x_reply.refusal.reason}")
     if not x_reply.ok:
         raise RuntimeError(f"{x_node_id}'s own reply does not check out: {'; '.join(x_reply.errors)}")
+    x_records, x_anchor, problems = served_records(x_reply)
+    if problems:
+        raise RuntimeError(f"{x_node_id}'s own records do not check out: {'; '.join(problems)}")
+    verified_x_receipts = [r.receipt for r in x_records]
 
-    x_bundles = verified_bundles(x_reply)
-    verified_x_receipts = [b.receipt for b in x_bundles]
-
-    candidates = discover_counterparties(x_bundles, exclude_node_id=x_node_id)
-    seed = witnessed_seed(x_bundles)
+    candidates = discover_counterparties(x_records, exclude_node_id=x_node_id)
+    seed = witnessed_seed(_seed_checkpoints(x_anchor, x_records, chain))
     selection: dict[str, Any] = {"k": k, "candidates_digest": candidates_digest(candidates)}
     if seed is None:
         sampled: list[str] = []
@@ -668,8 +1216,8 @@ def run_references(
         # A signed refusal (no_such_subject included) IS an answer -- counted
         # above, never inferred from either way. A reply that does not check
         # out contributes nothing.
-        for bundle in verified_bundles(read_reply(exchange)):
-            _classify_receipt_for_x(bundle.receipt, x_node_id, tally)
+        for record in verified_records(read_reply(exchange)):
+            _classify_receipt_for_x(record.receipt, x_node_id, tally)
 
     continuity_by_pair = verify_pair_continuity(verified_x_receipts)
     continuity = {
@@ -687,10 +1235,10 @@ def run_references(
         "inconclusive": tally["inconclusive"],
     }
 
-    card = _build_history_card_from_bundles(x_bundles, node_id=x_node_id)
-    if card is not None:
+    card = None
+    if chain:
         card = with_references(
-            card,
+            build_history_card(node_id=x_node_id, log_id=log_id, checkpoint_lines=chain),
             references_asked=len(sampled),
             references_answered=answered,
             adjudications_about_x=adjudications_about_x,
@@ -745,45 +1293,6 @@ def render_references_result(result: ReferencesResult) -> str:
     return "\n".join(lines)
 
 
-def _build_history_card_from_bundles(bundles: list[Bundle], *, node_id: str) -> Any:
-    """Fold a response's own ``checkpoint``/``prior_checkpoint``/
-    ``checkpoint_cose`` fields (the first bundle alone already carries the
-    covering, at-most-two-checkpoint segment -- see the module docstring)
-    into a :class:`history_card.HistoryCard`. Returns ``None`` when
-    ``bundles`` is empty -- no checkpoint fields to fold."""
-    if not bundles:
-        return None
-    b = bundles[0]
-    checkpoint_lines: list[dict[str, Any]] = []
-    since_size = 0
-    if b.prior_checkpoint is not None:
-        checkpoint_lines.append(b.prior_checkpoint.to_dict())
-        since_size = b.prior_checkpoint.mmr_size
-    current = b.checkpoint.to_dict()
-    if b.checkpoint_cose is not None:
-        current["checkpoint_cose"] = b.checkpoint_cose.hex()
-    checkpoint_lines.append(current)
-
-    return build_history_card(
-        node_id=node_id,
-        log_id=b.checkpoint.log_id,
-        checkpoint_lines=checkpoint_lines,
-        since_size=since_size,
-    )
-
-
-def _history_card_lines(bundles: list[Bundle], *, node_id: str) -> list[str]:
-    card = _build_history_card_from_bundles(bundles, node_id=node_id)
-    if card is None:
-        return []
-    props = card.properties
-    return [
-        "history card (folded from this response's own checkpoint fields):",
-        f"    continuity={props.continuity!r} history_depth={props.history_depth} unforked={props.unforked}",
-        f"    checkpoint_count={card.checkpoint_count} witnessed={card.witnessed}",
-    ]
-
-
 def render_refusal(reply: Reply) -> str:
     refusal = reply.refusal
     lines = [
@@ -812,6 +1321,27 @@ def _checkpoints_lines(reply: Reply, *, node_id: str) -> list[str]:
     return out
 
 
+def _records_lines(reply: Reply) -> tuple[list[str], list[ServedRecord]]:
+    records, anchor, problems = served_records(reply)
+    body = reply.body if isinstance(reply.body, dict) else {}
+    count = len(body.get("records") or []) if isinstance(body.get("records"), list) else (1 if records else 0)
+    out = [f"  records={len(records) if not problems else count}", *(f"    {p}" for p in problems)]
+    if anchor is not None:
+        out.append(
+            f"  anchor checkpoint: log_id={anchor.record.log_id} mmr_size={anchor.record.mmr_size} "
+            f"witness receipts bound to it={len(anchor.record.witnesses)}"
+        )
+    for r in records:
+        out.append(f"  record {r.capsule_id} (leaf {r.leaf_index}): proven under the anchor")
+    if records:
+        out.append(
+            "  NOTE: an answer proves LOG integrity (inclusion under a checkpoint the responder signed), "
+            "never a Rust-producer capsule's own detached signed-statement "
+            "(signed-statements/<capsule_id>.cose is not carried in this artifact)."
+        )
+    return out, records
+
+
 def render_artifact(reply: Reply, *, node_id: str, tamper_check: bool = False) -> str:
     envelope = reply.envelope
     (form,) = envelope.subject.to_wire()
@@ -827,26 +1357,16 @@ def render_artifact(reply: Reply, *, node_id: str, tamper_check: bool = False) -
         lines.append(f"  anchor_inclusion (Checkpointed Local Log material): {reply.cll.status}")
 
     body = reply.body if isinstance(reply.body, dict) else {}
-    bundles: list[Bundle] = []
+    records: list[ServedRecord] = []
     if envelope.derivation is not None:
         lines.append(f"  derivation={envelope.derivation} members={sorted(body)}")
-    elif "checkpoints" in body:
+        problems = check_derived(reply)
+        lines.append(f"  derivation checks: {'ok' if not problems else '; '.join(problems)}")
+    elif form == "checkpoints":
         lines.extend(_checkpoints_lines(reply, node_id=node_id))
-    elif "bundles" in body:
-        bundles, problems = artifact_bundles(reply)
-        lines.append(f"  bundles={len(body['bundles'])}")
-        lines.extend(f"    {p}" for p in problems)
-        for b in bundles:
-            ok, errors = verify_bundle(b)
-            lines.append(f"  bundle {b.capsule_id}: log-integrity verify_bundle.ok={ok}")
-            lines.extend(f"      {e}" for e in errors)
-        if bundles:
-            lines.append(
-                "  NOTE: a bundle proves LOG integrity (inclusion, checkpoint signature/consistency), "
-                "never a Rust-producer capsule's own detached signed-statement "
-                "(signed-statements/<capsule_id>.cose is not carried in this artifact)."
-            )
-        lines.extend(_history_card_lines(bundles, node_id=node_id))
+    elif form in ("record", "range", "correlation", "full_history", "exchange"):
+        record_lines, records = _records_lines(reply)
+        lines.extend(record_lines)
     else:
         lines.append(f"  an artifact of {len(envelope.artifact)} bytes in a form this client does not read")
 
@@ -860,13 +1380,20 @@ def render_artifact(reply: Reply, *, node_id: str, tamper_check: bool = False) -
         lines.append(f"tamper-check (flipped one artifact byte in memory): envelope verifies={tampered_ok} (expected False)")
         if tampered_ok:
             raise AssertionError("tamper-check FAILED to be detected -- the envelope still verifies")
-        if bundles:
-            tampered = json.loads(json.dumps(body["bundles"][0]))
-            tampered["receipt"] = {**tampered["receipt"], "capsule_id": "0" * 64}
-            bundle_ok, _errors = verify_bundle(Bundle.from_dict(tampered))
-            lines.append(f"tamper-check (flipped receipt.capsule_id in memory): verify.ok={bundle_ok} (expected False)")
-            if bundle_ok:
-                raise AssertionError("tamper-check FAILED to be detected -- verify_bundle did not flip")
+        if records:
+            # The records' checks alone, past the envelope's signature: name
+            # another record than the one proven.
+            if form == "record":
+                forged = dataclasses.replace(envelope, subject=er.Subject("record", "0" * 64))
+            else:
+                forged_body = json.loads(envelope.artifact)
+                forged_body["records"][0]["digest"] = "0" * 64
+                forged = dataclasses.replace(envelope, artifact=jcs(forged_body))
+            forged_reply = dataclasses.replace(reply, envelope=forged, body=json.loads(forged.artifact))
+            still_ok = not served_records(forged_reply)[2]
+            lines.append(f"tamper-check (renamed the first record in memory): records check={still_ok} (expected False)")
+            if still_ok:
+                raise AssertionError("tamper-check FAILED to be detected -- the renamed record still checks")
 
     return "\n".join(lines)
 
@@ -1003,6 +1530,7 @@ def main(argv: list[str] | None = None) -> int:
         print(render_refusal(reply))
     elif reply.envelope is not None:
         print(render_artifact(reply, node_id=args.node_id, tamper_check=args.tamper_check))
+        return 0 if reply.ok and not check_artifact(reply) else 1
     else:
         print(f"UNREADABLE REPLY: {'; '.join(reply.errors)}")
         return 1

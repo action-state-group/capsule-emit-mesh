@@ -14,15 +14,13 @@ chain carries.
 
 Uses a REAL, hermetic (loopback-only) stub Transparency Service --
 ``tests/_stub_receipt.py`` (copied verbatim from ``capsule-emit``'s own
-test suite, same shared-helper shape ``test_bundle.py`` uses there) mints a
-genuinely COSE-verifiable receipt, so checkpoints grade WITNESSED and
-``verify_bundle`` actually returns ``ok=True`` -- ``CAPSULE_WITNESS=stub``
-(the env-var short-circuit other tests in this repo use) deliberately mints
-a garbled, non-CBOR receipt (proving the STUB MECHANICS work, never that a
-third party saw anything), which makes ``verify_bundle`` correctly report
-``ok=False`` on EVERY stub-witnessed checkpoint -- the wrong fixture for a
-test that needs `run_references`'s own "never trust an unverified bundle"
-gate to see real passing content.
+test suite) mints a genuinely COSE-verifiable receipt, so checkpoints grade
+WITNESSED and the receipts a door carries (``witness_receipts``) seed the
+sample -- ``CAPSULE_WITNESS=stub`` (the env-var short-circuit other tests in
+this repo use) deliberately mints a garbled, non-CBOR receipt (proving the
+STUB MECHANICS work, never that a third party saw anything), which never
+re-verifies as WITNESSED -- the wrong fixture for a test that needs
+`run_references`'s own seed to see real passing content.
 """
 from __future__ import annotations
 
@@ -112,7 +110,7 @@ class _StubWitnessTSHandler(http.server.BaseHTTPRequestHandler):
 def stub_witness(monkeypatch):
     """A REAL (loopback-only) stub Transparency Service pinned as the
     process's default witness -- checkpoints built under this fixture grade
-    WITNESSED and pass `verify_bundle` in full, same as the acceptance
+    WITNESSED in full, same as the acceptance
     scenario's real mesh nodes would against a real witness."""
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _StubWitnessTSHandler)
     port = srv.server_address[1]
@@ -338,12 +336,8 @@ def test_discover_counterparties_reads_nested_and_top_level_fields():
         {"x-mesh-poc-v1": {"serving_provenance": {"served_by_node_id": "gcp", "requesting_party": "gcp"}}},
     ]
 
-    class _FakeBundle:
-        def __init__(self, receipt):
-            self.receipt = receipt
-
-    bundles = [_FakeBundle(r) for r in receipts]
-    found = ah.discover_counterparties(bundles, exclude_node_id="gcp")
+    records = [ah.ServedRecord(leaf_index=i, capsule_id="ab" * 32, receipt=r) for i, r in enumerate(receipts)]
+    found = ah.discover_counterparties(records, exclude_node_id="gcp")
     assert found == ["aws", "m4"]
 
 
@@ -476,18 +470,12 @@ class TestReferencesEndToEnd:
         assert result.adjudications_about_x == {"corroborated": 0, "contradicted": 0, "inconclusive": 0}
 
     def test_no_witnessed_checkpoint_draws_no_sample(self, tmp_path, stub_witness, monkeypatch):
-        """GCP's checkpoints carry receipts, but from a witness whose key the
-        asker has not pinned: nothing re-verifies as WITNESSED. The old code
-        sampled anyway, seeded by GCP's own node id; now nobody is asked and
-        the result says why."""
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-
+        """GCP's checkpoints carry receipts, but from a witness the asker has
+        not pinned: they are well formed (UNVERIFIED), nothing re-verifies as
+        WITNESSED. The old code sampled anyway, seeded by GCP's own node id;
+        now nobody is asked and the result says why."""
         gcp_state, m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path, ts_url=stub_witness)
-        other_key = Ed25519PrivateKey.generate().public_key().public_bytes(
-            Encoding.PEM, PublicFormat.SubjectPublicKeyInfo
-        )
-        monkeypatch.setattr(checkpoint_emit_mod, "DEFAULT_TS_PUBLIC_KEY_PEM", other_key)
+        monkeypatch.setattr(checkpoint_emit_mod, "DEFAULT_TS_URL", "https://another-witness.example")
 
         gcp_server, gcp_thread, gcp_url = _run_server(gcp_state)
         m4_server, m4_thread, m4_url = _run_server(m4_state)
@@ -510,6 +498,26 @@ class TestReferencesEndToEnd:
         assert result.selection["method"] == "not_sampled"
         assert "witnessed" in result.selection["reason"]
         assert "sample: none drawn" in ah.render_references_result(result)
+
+    def test_a_receipt_that_fails_under_the_pinned_witness_key_is_no_evidence(self, tmp_path, stub_witness, monkeypatch):
+        """A receipt claiming the pinned witness that does not verify under
+        its key: the answer carrying it is refused, as the plugin's
+        requester refuses it, never read as unwitnessed."""
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+        gcp_state, _m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path, ts_url=stub_witness)
+        other_key = Ed25519PrivateKey.generate().public_key().public_bytes(
+            Encoding.PEM, PublicFormat.SubjectPublicKeyInfo
+        )
+        monkeypatch.setattr(checkpoint_emit_mod, "DEFAULT_TS_PUBLIC_KEY_PEM", other_key)
+        gcp_server, gcp_thread, gcp_url = _run_server(gcp_state)
+        try:
+            with pytest.raises(RuntimeError, match="does not cover the checkpoint"):
+                ah.run_references(gcp_url, x_node_id="gcp", x_range=(0, len(gcp_cids) - 1), peer_map={}, k=3)
+        finally:
+            gcp_server.shutdown()
+            gcp_thread.join(timeout=5)
 
     def test_self_checkpointed_x_draws_no_sample(self, tmp_path, stub_witness):
         """X checkpoints but never registers with a witness. Its node id is

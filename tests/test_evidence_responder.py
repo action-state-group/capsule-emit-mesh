@@ -16,13 +16,15 @@ import tempfile
 
 import pytest
 from agent_action_capsule import evidence_request as er
+from agent_action_capsule.canonical import compute_capsule_id, jcs
 from capsule_emit import seal, witness
-from capsule_emit.bundle import Bundle, verify_bundle
 
+import ask_history as ah
 import capsule_sidecar as cs
 from evidence_responder import (
     MAX_ANSWER_RECORDS,
     MeshEvidenceStore,
+    answer_wire,
     augment_evidence_answer_dict,
     handle_evidence_request,
     reply_to_wire,
@@ -81,6 +83,28 @@ def _body(envelope: er.Envelope) -> dict:
     return json.loads(envelope.artifact)
 
 
+def _read(node_state, request: bytes) -> ah.Reply:
+    """The door's answer as sent, read and checked by the requester."""
+    wire = answer_wire(node_state, request)
+    return ah.read_reply(ah.Exchange(er.request_digest(request), json.dumps(wire).encode()))
+
+
+def _proven(node_state, request: bytes) -> list[ah.ServedRecord]:
+    reply = _read(node_state, request)
+    assert reply.ok, reply.errors
+    records, _anchor, problems = ah.served_records(reply)
+    assert not problems, problems
+    return records
+
+
+def _kinds(envelope: er.Envelope) -> list[str]:
+    return [kind for kind, _octets in envelope.verification]
+
+
+def _checkpoint_lines(node_state) -> list[dict]:
+    return [json.loads(x) for x in (node_state.ledger_dir / "checkpoints.jsonl").read_text().splitlines() if x]
+
+
 def _resolve_signer(state):
     from capsule_emit.signing import resolve_signer
 
@@ -126,17 +150,33 @@ def _sealed(node_state, n: int) -> list[dict]:
 
 
 def test_record_is_served_in_a_signed_envelope_under_the_node_key(node_state):
-    caps = _sealed(node_state, 2)
+    caps = _sealed(node_state, 1) + _sealed(node_state, 1)  # two checkpoints
     request = _record_request(caps[0]["capsule_id"])
     result = handle_evidence_request(node_state, request)
     assert isinstance(result, er.Envelope)
     result.verify_for(request, _node_public_hex(node_state))
-    (bundle,) = [Bundle.from_dict(b) for b in _body(result)["bundles"]]
-    assert bundle.capsule_id == caps[0]["capsule_id"]
-    assert verify_bundle(bundle)[0]
-    # proven under the anchor the envelope names, not some earlier checkpoint
-    assert hashlib.sha256(bundle.checkpoint_cose).hexdigest() == result.anchor_digest
-    assert result.freshness == 2  # min_freshness was a size: the anchor's
+    # The artifact is the record's ledger line: its recomputed capsule_id is the subject.
+    line = json.loads(result.artifact)
+    assert result.artifact == jcs(line) and compute_capsule_id(line) == caps[0]["capsule_id"] == line["capsule_id"]
+    # The anchor checkpoint, the record's inclusion proof and the anchor's
+    # consistency proof (this anchor extends the first checkpoint).
+    assert _kinds(result) == ["cll-checkpoint", "cll-inclusion-proof", "cll-consistency-proof"]
+    assert hashlib.sha256(result.verification[0][1]).hexdigest() == result.anchor_digest
+    # min_freshness was a size: the anchor's MMR size, as evidencebook states it.
+    assert result.freshness == _checkpoint_lines(node_state)[-1]["mmr_size"] == 3
+    # A profile verifier cannot prove a line that is not the committed entry.
+    reply = _read(node_state, request)
+    assert reply.ok and reply.cll.status == "NOT_CHECKED"
+    (record,) = _proven(node_state, request)
+    assert (record.capsule_id, record.leaf_index) == (caps[0]["capsule_id"], 0)
+    assert record.receipt == caps[0]
+
+
+def test_the_first_anchor_carries_no_consistency_proof(node_state):
+    caps = _sealed(node_state, 1)
+    result = handle_evidence_request(node_state, _record_request(caps[0]["capsule_id"]))
+    assert _kinds(result) == ["cll-checkpoint", "cll-inclusion-proof"]
+    assert [r.capsule_id for r in _proven(node_state, _record_request(caps[0]["capsule_id"]))] == [caps[0]["capsule_id"]]
 
 
 def test_anchors_are_the_checkpoints_cose_statements(node_state):
@@ -155,8 +195,9 @@ def test_expected_pin_serves_under_an_earlier_anchor(node_state):
     early = store.anchors()[0].digest
     result = handle_evidence_request(node_state, _request({"record": first[0]["capsule_id"]}, {"expected_pin": early}))
     assert isinstance(result, er.Envelope) and result.anchor_digest == early
-    (bundle,) = [Bundle.from_dict(b) for b in _body(result)["bundles"]]
-    assert verify_bundle(bundle)[0]
+    assert result.freshness is None
+    request = _request({"record": first[0]["capsule_id"]}, {"expected_pin": early})
+    assert [r.capsule_id for r in _proven(node_state, request)] == [first[0]["capsule_id"]]
 
 
 def test_record_after_the_pinned_anchor_is_coverage_unsatisfiable(node_state):
@@ -170,9 +211,19 @@ def test_record_after_the_pinned_anchor_is_coverage_unsatisfiable(node_state):
 def test_range_full_history_and_correlation(node_state):
     caps = _sealed(node_state, 3)
     ranged = handle_evidence_request(node_state, _request({"range": [1, 2]}))
-    assert [b["capsule_id"] for b in _body(ranged)["bundles"]] == [c["capsule_id"] for c in caps[1:]]
+    body = _body(ranged)
+    assert sorted(body) == ["anchor", "evidence_stream", "records", "subject"]
+    assert body["records"] == [
+        {"body": jcs(c).hex(), "digest": c["capsule_id"], "leaf_index": i} for i, c in enumerate(caps) if i > 0
+    ]
+    # The anchor checkpoint and one inclusion proof per record, no consistency proof.
+    assert _kinds(ranged) == ["cll-checkpoint", "cll-inclusion-proof", "cll-inclusion-proof"]
+    assert [(r.leaf_index, r.capsule_id) for r in _proven(node_state, _request({"range": [1, 2]}))] == [
+        (1, caps[1]["capsule_id"]), (2, caps[2]["capsule_id"])
+    ]
     full = handle_evidence_request(node_state, _request({"full_history": None}))
-    assert [b["capsule_id"] for b in _body(full)["bundles"]] == [c["capsule_id"] for c in caps]
+    assert [r["digest"] for r in _body(full)["records"]] == [c["capsule_id"] for c in caps]
+    assert len(_proven(node_state, _request({"full_history": None}))) == 3
     beyond = handle_evidence_request(node_state, _request({"range": [0, 3]}))
     assert isinstance(beyond, er.Refusal) and beyond.reason == "coverage_unsatisfiable"
 
@@ -194,9 +245,17 @@ def test_checkpoints_subject_serves_the_chain_up_to_the_anchor(node_state):
     _sealed(node_state, 1)
     _sealed(node_state, 1)
     result = handle_evidence_request(node_state, _request({"checkpoints": None}))
-    assert isinstance(result, er.Envelope)
-    lines = [json.loads(x) for x in (node_state.ledger_dir / "checkpoints.jsonl").read_text().splitlines() if x]
-    assert _body(result)["checkpoints"] == lines
+    assert isinstance(result, er.Envelope) and result.verification == ()
+    lines = _checkpoint_lines(node_state)
+    assert _body(result)["checkpoints"] == [line["checkpoint_cose"] for line in lines]
+    reply = _read(node_state, _request({"checkpoints": None}))
+    read, problems = ah.answer_checkpoints(reply)
+    assert reply.ok and not problems
+    # The lines the requester rebuilds are the ones the node wrote, less the
+    # checkpoint's JSON signature (its statement's own signature stands for it).
+    assert [{k: v for k, v in line.items() if k != "signature"} for line in read] == [
+        {k: v for k, v in line.items() if k not in ("signature", "witnesses")} for line in lines
+    ]
 
 
 def test_unsupported_derivation_and_exchange_subject(node_state):
@@ -355,12 +414,12 @@ class _Signer:
 
 def test_a_checkpoint_without_its_statement_stays_a_link_in_the_chain(node_state):
     """A checkpoint persisted JSON-only (its COSE serialization failed) is no
-    anchor, but its successor still proves records against it and a
-    checkpoints answer still lists it."""
+    anchor, but its successor still proves records with a consistency proof
+    from it. No checkpoint list can prove the gap, so one is refused."""
     _sealed(node_state, 1)
     later = _sealed(node_state, 1)
     path = node_state.ledger_dir / "checkpoints.jsonl"
-    lines = [json.loads(x) for x in path.read_text().splitlines() if x]
+    lines = _checkpoint_lines(node_state)
     del lines[0]["checkpoint_cose"]
     path.write_text("".join(json.dumps(line, sort_keys=True) + "\n" for line in lines))
 
@@ -368,10 +427,53 @@ def test_a_checkpoint_without_its_statement_stays_a_link_in_the_chain(node_state
     assert len(store.anchors()) == 1
     result = handle_evidence_request(node_state, _record_request(later[0]["capsule_id"]))
     assert isinstance(result, er.Envelope), result
-    (bundle,) = [Bundle.from_dict(b) for b in _body(result)["bundles"]]
-    assert bundle.prior_checkpoint is not None and verify_bundle(bundle)[0]
+    assert _kinds(result)[-1] == "cll-consistency-proof"
+    assert [r.capsule_id for r in _proven(node_state, _record_request(later[0]["capsule_id"]))] == [later[0]["capsule_id"]]
     chain = handle_evidence_request(node_state, _request({"checkpoints": None}))
-    assert _body(chain)["checkpoints"] == lines
+    assert isinstance(chain, er.Refusal) and chain.reason == "coverage_unsatisfiable"
+
+
+def test_witness_receipts_ride_beside_the_envelope_for_the_carried_checkpoints(node_state):
+    _sealed(node_state, 1)
+    caps = _sealed(node_state, 1)
+    path = node_state.ledger_dir / "checkpoints.jsonl"
+    lines = _checkpoint_lines(node_state)
+    receipts = []
+    for line in lines:
+        record = ah.CheckpointRecord.from_dict(line)
+        receipt = {"ts_url": "https://ts.example", "entry_hash": ah.sha256_hex_of_hex(record.digest()),
+                   "receipt_b64": "AA==", "leaf_index": 0, "tree_size": 1, "is_stub": True}
+        line["witnesses"] = [receipt]
+        receipts.append(receipt)
+    path.write_text("".join(json.dumps(line, sort_keys=True) + "\n" for line in lines))
+    anchors = [a.digest for a in MeshEvidenceStore(node_state.ledger_dir).anchors()]
+
+    # A record answer carries its anchor's receipts only; a checkpoints answer every listed one's.
+    record_wire = answer_wire(node_state, _record_request(caps[0]["capsule_id"]))
+    assert record_wire["witness_receipts"] == [{"checkpoint": anchors[-1], "witness": receipts[-1]}]
+    chain_wire = answer_wire(node_state, _request({"checkpoints": None}))
+    assert chain_wire["witness_receipts"] == [{"checkpoint": a, "witness": r} for a, r in zip(anchors, receipts)]
+    # Unsigned: the envelope verifies with or without them.
+    er.parse_reply(json.dumps(record_wire).encode()).verify()
+
+    reply = _read(node_state, _record_request(caps[0]["capsule_id"]))
+    _records, anchor, _problems = ah.served_records(reply)
+    assert [w.to_dict() for w in anchor.record.witnesses] == [receipts[-1]]
+    read, _ = ah.answer_checkpoints(_read(node_state, _request({"checkpoints": None})))
+    assert [line["witnesses"] for line in read] == [[r] for r in receipts]
+
+
+def test_no_witness_receipts_member_when_none_are_held(node_state):
+    caps = _sealed(node_state, 1)
+    assert "witness_receipts" not in answer_wire(node_state, _record_request(caps[0]["capsule_id"]))
+    assert "witness_receipts" not in answer_wire(node_state, _record_request("ff" * 32))
+
+
+def test_min_freshness_time_states_the_anchor_time(node_state):
+    caps = _sealed(node_state, 1)
+    result = handle_evidence_request(node_state, _request({"record": caps[0]["capsule_id"]}, {"min_freshness": "2000-01-01T00:00:00Z"}))
+    timestamp = _checkpoint_lines(node_state)[-1]["timestamp"]
+    assert result.freshness == timestamp.split(".")[0].rstrip("Z") + "Z"
 
 
 def test_an_unmounted_segment_refuses_rather_than_shift_positions(node_state):
