@@ -374,7 +374,8 @@ def _adjudications_received(ledger_records: list[dict[str, Any]], *, own_capsule
     """Count of sealed adjudication capsules (``twin_adjudicator.is_adjudication``:
     the adjudication block, or the legacy ``chain.relation == "adjudicates"``) naming one of this node's OWN served capsule ids as
     either half -- the SAME detection ``self_accountability.adjudications_summary``
-    uses, kept local (not imported) to avoid a circular import
+    uses. The count is done here rather than imported from
+    ``self_accountability``, to avoid a circular import
     (``capsule_accountability_tab`` -> this module -> ``self_accountability``
     -> ``capsule_accountability_tab``). Total only: this field is labeled
     ``self_held`` and deliberately does not break out corroborated/
