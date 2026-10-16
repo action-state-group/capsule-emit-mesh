@@ -55,7 +55,7 @@ of a would-be twin comparison — no network call is made or needed:
         Mints the one new record this module adds: an ordinary capsule
         (built with `agent_action_capsule.emit()`, the same primitive
         every other capsule in this sidecar uses — no new record type)
-        carrying `chain.relation = "adjudicates"` and a
+        carrying the registered `chain.relation = "confirms"` and a
         `compute_attestation.adjudication` block. Returns `None` when
         *outcome* has no verdict — a weights-mismatched or same-owner
         "twin" has nothing to adjudicate, so nothing is sealed.
@@ -967,8 +967,8 @@ def seal_adjudication_capsule(
 
     Built with `agent_action_capsule.emit()` -- the same primitive every
     other capsule in this sidecar uses (see `capsule_sidecar.build_capsule`)
-    -- so this is not a new record type, just a new `chain.relation` value
-    and a `compute_attestation.adjudication` block.
+    -- so this is not a new record type: a registered `chain.relation`
+    (`confirms`) and a `compute_attestation.adjudication` block.
 
     Returns `None`, sealing nothing, when *outcome* has no verdict: a
     weights-mismatched or same-owner "twin" has nothing to adjudicate (see
