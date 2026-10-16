@@ -38,8 +38,14 @@ MESH_LLM_BIN="${1:?usage: run_live_demo.sh <mesh-llm-binary> <gguf-blob-path> <m
 GGUF_PATH="${2:?missing gguf-blob-path}"
 MODEL_ID="${3:?missing model-id}"
 CAPSULE_ANCHOR="false"
+# capsule-emit 0.9.1+ has no default anchor endpoint: anchor mode with no
+# AAC_ANCHOR_URL sends nothing. Name the endpoint this script has always
+# posted to, unless the caller set another.
+ANCHOR_ENV=""
 if [[ "${4:-}" == "anchor" ]]; then
   CAPSULE_ANCHOR="true"
+  AAC_ANCHOR_URL="${AAC_ANCHOR_URL:-https://anchor.agentactioncapsule.org/v1/digest}"
+  ANCHOR_ENV="AAC_ANCHOR_URL=$AAC_ANCHOR_URL "
   echo "!!! ANCHOR MODE: this run's capsules WILL be posted to the live production transparency log. !!!"
   echo "!!! Only use this for the final call-take run, never for a rehearsal.                          !!!"
 fi
@@ -107,7 +113,7 @@ cat /tmp/mesh-goose-wire.log
 echo "--- [5/6] running the real, scripted Goose task (goose run --provider mesh) ---"
 GOOSE_PROVIDER=mesh GOOSE_MODEL="$MODEL_ID" \
 goose run --no-session --no-profile --max-turns 8 --stats \
-  --with-extension "CAPSULE_LEDGER=$LEDGER_DIR/goose-actions.jsonl CAPSULE_OPERATOR=capsule-emit-mesh-poc-demo CAPSULE_DEVELOPER=goose@v1.46.0+mesh-llm CAPSULE_ANCHOR=$CAPSULE_ANCHOR CAPSULE_MODEL_ID=$MODEL_ID python3 $ROOT/goose/server.py" \
+  --with-extension "CAPSULE_LEDGER=$LEDGER_DIR/goose-actions.jsonl CAPSULE_OPERATOR=capsule-emit-mesh-poc-demo CAPSULE_DEVELOPER=goose@v1.46.0+mesh-llm CAPSULE_ANCHOR=$CAPSULE_ANCHOR ${ANCHOR_ENV}CAPSULE_MODEL_ID=$MODEL_ID python3 $ROOT/goose/server.py" \
   -t "Call the get_node_status tool now with node_id=mesh-node-demo-1. After you receive its result, call the submit_capacity_request tool now with node_id=mesh-node-demo-1, gpu_hours=4, reason=inference_demand_spike. You must call both tools before writing any summary text." \
   | tee "$LEDGER_DIR/goose-session-transcript.txt"
 
@@ -123,12 +129,14 @@ echo
 echo "Done. Ledgers:"
 echo "  $LEDGER_DIR/capsules.jsonl"
 echo "  $LEDGER_DIR/goose-actions.jsonl"
+# capsule-emit 0.9.1+ requires the verify surface to be named.
+VERIFY_BASE_URL="${VERIFY_BASE_URL:-https://verify.agentactioncapsule.org}"
 echo "Build permalinks with:"
-echo "  capsule-emit permalink --ledger $LEDGER_DIR/capsules.jsonl --bundle --check"
-echo "  capsule-emit permalink --ledger $LEDGER_DIR/goose-actions.jsonl --bundle --check"
+echo "  capsule-emit permalink --ledger $LEDGER_DIR/capsules.jsonl --bundle --check --base-url $VERIFY_BASE_URL"
+echo "  capsule-emit permalink --ledger $LEDGER_DIR/goose-actions.jsonl --bundle --check --base-url $VERIFY_BASE_URL"
 if [[ "$CAPSULE_ANCHOR" == "true" ]]; then
   echo
-  echo "ANCHOR MODE was on: goose-actions.jsonl capsules were anchored inline."
+  echo "ANCHOR MODE was on: goose-actions.jsonl capsules were submitted inline to $AAC_ANCHOR_URL."
   echo "The sidecar itself never auto-anchors -- anchor capsules.jsonl explicitly, per id:"
   echo "  agent-action-capsule anchor submit <capsule_id>"
 else
