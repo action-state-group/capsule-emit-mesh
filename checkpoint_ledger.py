@@ -20,7 +20,7 @@ Omit --ts-url to stay self-checkpointed (Layer 2 only, no network -- the
 default, matching every other demo in this repo's "anchoring is opt-in,
 always" posture). Pass one or more --ts-url to also register with a witness
 (default target when a bare `--witness` flag is given:
-capsule_emit.checkpoint.DEFAULT_TS_URL, witness.agentactioncapsule.org).
+cll.checkpoint.emit.DEFAULT_TS_URL, witness.agentactioncapsule.org).
 
 Always emits ONE checkpoint covering everything currently in the ledger
 (the `reconnect()` semantics -- mesh architecture doc §4: an offline/never-
@@ -35,7 +35,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from capsule_emit.checkpoint import DEFAULT_TS_URL, CheckpointConfig
+from capsule_emit.checkpoint import CheckpointConfig
+from cll.checkpoint.emit import DEFAULT_TS_URL
 from checkpointing import CheckpointState, Ed25519Signer
 from ledger_store_backend import open_log_source_for_checkpointing
 

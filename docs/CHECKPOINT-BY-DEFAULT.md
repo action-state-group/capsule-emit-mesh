@@ -127,7 +127,7 @@ override it per invocation.
 The witness register endpoint is `POST {ts_url}/checkpoints` (COSE-wire only);
 the default neutral witness is
 `https://witness.agentactioncapsule.org`
-(`capsule_emit.checkpoint.DEFAULT_TS_URL`). Registration is **opt-in, always**:
+(`cll.checkpoint.emit.DEFAULT_TS_URL`). Registration is **opt-in, always**:
 no `--witness`/`--ts-url` means self-checkpointed, no network.
 
 ## Path 1 (native Rust plugin) nodes: the cadence lives in-process

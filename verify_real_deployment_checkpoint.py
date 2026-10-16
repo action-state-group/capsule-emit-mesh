@@ -24,12 +24,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from agent_action_capsule.verify import verify as verify_capsule
 from capsule_emit.checkpoint import (
-    DEFAULT_TS_URL,
     CheckpointRecord,
     MmrLedger,
     WitnessRecord,
     verify_receipt_offline,
 )
+from cll.checkpoint.emit import DEFAULT_TS_URL
 from scitt_cose import cll
 
 from ledger_store_backend import open_log_source_for_checkpointing, read_all_capsules
@@ -202,7 +202,8 @@ def main() -> None:
     log("  # through the same CheckpointState reconnect() path a real node uses instead:")
     log("  python3 - <<'PY'")
     log("  from pathlib import Path")
-    log("  from capsule_emit.checkpoint import CheckpointConfig, DEFAULT_TS_URL")
+    log("  from capsule_emit.checkpoint import CheckpointConfig")
+    log("  from cll.checkpoint.emit import DEFAULT_TS_URL")
     log("  from checkpointing import CheckpointState, Ed25519Signer")
     log("  from ledger_store_backend import open_log_source_for_checkpointing")
     log(f"  ledger_dir = Path({str(ledger_dir)!r})")
