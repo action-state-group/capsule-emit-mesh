@@ -930,3 +930,21 @@ def test_a_record_that_is_its_own_octets_is_read_with_its_material_in_any_order(
     assert ah.served_records(_read(sent, shuffled, request))[2] == [
         "the material is not the anchor checkpoint and the record's proofs"
     ]
+
+
+def test_a_record_that_is_its_own_octets_needs_the_profiles_pass(node_state):
+    """Under a trust policy that does not accept the responder's log key the
+    profile's check does not PASS: the record is not proven, as at the
+    plugin's requester."""
+    from agent_action_capsule.canonical import jcs
+    from agent_action_capsule.interop_profile._common import TrustPolicy
+
+    cids = _seal_and_checkpoint(node_state, 1)
+    request = ah.build_request(er.Subject("record", cids[0]))
+    sent, wire = _answer(node_state, request)
+    line = json.loads(er.parse_reply(json.dumps(wire).encode()).artifact)
+    preimage = jcs({k: v for k, v in line.items() if k not in ("capsule_id", "signature", "key_id")})
+    own = _resign(node_state, sent, wire, artifact=preimage)
+    reply = ah.read_reply(ah.Exchange(er.request_digest(sent), json.dumps(own).encode(), request), trust=TrustPolicy())
+    records, _anchor, problems = ah.served_records(reply)
+    assert records == [] and problems and problems[0].startswith("anchor_inclusion:")

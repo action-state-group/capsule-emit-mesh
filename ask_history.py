@@ -523,9 +523,11 @@ def _record_digest(body: bytes) -> str | None:
     (capsule-emit's Rust ``jcs::compute_capsule_id``): SHA-256 of the RFC
     8785 JSON of the line without ``capsule_id`` and the local-only producer
     envelope members, whatever its format. ``None`` for a body that is not
-    such a line (duplicate members included)."""
+    such a line. Stricter than the plugin in one respect: a body with a
+    duplicate member (which the plugin's decoder reads as its last value) is
+    no record here, and the body must be UTF-8 as written."""
     try:
-        line = json.loads(body, object_pairs_hook=_no_duplicate_members)
+        line = json.loads(body.decode("utf-8"), object_pairs_hook=_no_duplicate_members)
         stated = line.get("capsule_id")
         preimage = {k: v for k, v in line.items() if k != "capsule_id" and k not in LOCAL_ONLY_FIELDS}
         return stated if isinstance(stated, str) and hashlib.sha256(jcs(preimage)).hexdigest() == stated else None
@@ -689,7 +691,12 @@ def _served_record(reply: Reply, material: list[tuple[str, bytes]]) -> tuple[lis
     if envelope.artifact_digest != digest and _record_digest(artifact) != digest:
         return [], None, ["the artifact is not the record the subject names"]
     kinds = [k for k, _ in material]
-    if envelope.artifact_digest == digest and reply.cll is not None and reply.cll.status == "PASS":
+    if envelope.artifact_digest == digest and (reply.cll is None or reply.cll.status != "PASS"):
+        # A record that is its own octets is proven by the profile's check
+        # alone, as at the plugin's requester.
+        detail = reply.cll.detail if reply.cll is not None else "no material"
+        return [], None, [f"anchor_inclusion: {detail}"]
+    if envelope.artifact_digest == digest:
         # A record that is its own octets: the profile's check found each
         # kind exactly once, in whatever order; read them by kind, as the
         # plugin's requester does.
