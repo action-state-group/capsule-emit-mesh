@@ -14,15 +14,13 @@ chain carries.
 
 Uses a REAL, hermetic (loopback-only) stub Transparency Service --
 ``tests/_stub_receipt.py`` (copied verbatim from ``capsule-emit``'s own
-test suite, same shared-helper shape ``test_bundle.py`` uses there) mints a
-genuinely COSE-verifiable receipt, so checkpoints grade WITNESSED and
-``verify_bundle`` actually returns ``ok=True`` -- ``CAPSULE_WITNESS=stub``
-(the env-var short-circuit other tests in this repo use) deliberately mints
-a garbled, non-CBOR receipt (proving the STUB MECHANICS work, never that a
-third party saw anything), which makes ``verify_bundle`` correctly report
-``ok=False`` on EVERY stub-witnessed checkpoint -- the wrong fixture for a
-test that needs `run_references`'s own "never trust an unverified bundle"
-gate to see real passing content.
+test suite) mints a genuinely COSE-verifiable receipt, so checkpoints grade
+WITNESSED and the receipts a door carries (``witness_receipts``) seed the
+sample -- ``CAPSULE_WITNESS=stub`` (the env-var short-circuit other tests in
+this repo use) deliberately mints a garbled, non-CBOR receipt (proving the
+STUB MECHANICS work, never that a third party saw anything), which never
+re-verifies as WITNESSED -- the wrong fixture for a test that needs
+`run_references`'s own seed to see real passing content.
 """
 from __future__ import annotations
 
@@ -112,7 +110,7 @@ class _StubWitnessTSHandler(http.server.BaseHTTPRequestHandler):
 def stub_witness(monkeypatch):
     """A REAL (loopback-only) stub Transparency Service pinned as the
     process's default witness -- checkpoints built under this fixture grade
-    WITNESSED and pass `verify_bundle` in full, same as the acceptance
+    WITNESSED in full, same as the acceptance
     scenario's real mesh nodes would against a real witness."""
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _StubWitnessTSHandler)
     port = srv.server_address[1]
@@ -338,12 +336,8 @@ def test_discover_counterparties_reads_nested_and_top_level_fields():
         {"x-mesh-poc-v1": {"serving_provenance": {"served_by_node_id": "gcp", "requesting_party": "gcp"}}},
     ]
 
-    class _FakeBundle:
-        def __init__(self, receipt):
-            self.receipt = receipt
-
-    bundles = [_FakeBundle(r) for r in receipts]
-    found = ah.discover_counterparties(bundles, exclude_node_id="gcp")
+    records = [ah.ServedRecord(leaf_index=i, capsule_id="ab" * 32, receipt=r) for i, r in enumerate(receipts)]
+    found = ah.discover_counterparties(records, exclude_node_id="gcp")
     assert found == ["aws", "m4"]
 
 

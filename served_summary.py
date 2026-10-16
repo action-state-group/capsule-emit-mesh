@@ -751,7 +751,7 @@ def sample_positions(n_total: int, k: int, *, nonce: str) -> list[int]:
 
 def verify_served_summary(summary_value: dict[str, Any], sampled_capsules: list[dict[str, Any]], *, source_log: str = "sidecar") -> SampledVerifyResult:
     """Sampled check: does each of ``sampled_capsules`` (pulled by position,
-    e.g. via a ``range`` evidence request's digests-tier bundles) agree with
+    e.g. via a ``range`` evidence request's records) agree with
     ``summary_value``'s claims for its model? Cheap, no bodies, no
     identifiers beyond the sample -- this reads only the same six declared
     fields the fold itself reads.

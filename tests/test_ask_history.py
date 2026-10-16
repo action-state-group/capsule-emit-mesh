@@ -39,7 +39,7 @@ from capsule_emit import seal, witness
 import ask_history as ah
 import capsule_sidecar as cs
 import evidence_server as es
-from evidence_responder import handle_evidence_request, reply_to_wire
+from evidence_responder import answer_wire
 
 
 @pytest.fixture(autouse=True)
@@ -163,16 +163,16 @@ class TestEndToEnd:
         assert reply.envelope is not None and reply.envelope.anchor_digest == _anchor_of(state)
         rendered = ah.render_artifact(reply, node_id="m4")
         assert "ARTIFACT subject=record" in rendered
-        assert "verify_bundle.ok=True" in rendered
-        assert "history card" in rendered
-        assert "continuity=" in rendered
+        assert f"record {cids[0]} (leaf 0): proven under the anchor" in rendered
+        assert "anchor checkpoint: log_id=test-node" in rendered
+        assert reply.cll.status == "NOT_CHECKED"  # a ledger line is not the committed entry itself
 
-    def test_range_request_multiple_bundles(self, peer):
+    def test_range_request_multiple_records(self, peer):
         base_url, state = peer
-        _seal_and_checkpoint(state, 3)
+        cids = _seal_and_checkpoint(state, 3)
         reply = ah.read_reply(ah.post_evidence_request(base_url, ah.build_request(er.Subject("range", (0, 2)))))
         assert reply.ok, reply.errors
-        assert len(ah.verified_bundles(reply)) == 3
+        assert [r.capsule_id for r in ah.verified_records(reply)] == cids
 
     def test_expected_pin_serves_under_that_anchor(self, peer):
         base_url, state = peer
@@ -229,7 +229,7 @@ class TestEndToEnd:
         reply = ah.read_reply(ah.post_evidence_request(base_url, _record(cids[0])))
         rendered = ah.render_artifact(reply, node_id="m4", tamper_check=True)
         assert "envelope verifies=False (expected False)" in rendered
-        assert "verify.ok=False (expected False)" in rendered
+        assert "records check=False (expected False)" in rendered
 
     def test_checkpoints_subject_renders_the_chain(self, peer):
         base_url, state = peer
@@ -259,7 +259,7 @@ class _MeshToolCallHandler(http.server.BaseHTTPRequestHandler):
     (``mesh_evidence_bridge::handle_mesh_evidence_request``): unwraps the
     ``{"peer_id", "request"}`` arguments, adds a ``requester_id`` and
     re-serializes the request as the plugin does, answers with the REAL
-    ``evidence_responder.handle_evidence_request`` against a REAL ledger, and
+    ``evidence_responder.answer_wire`` against a REAL ledger, and
     reports ``{"answer", "request_digest"}`` for the bytes it sent. Proves
     ``ask_history.py``'s mesh-carrier wiring without a compiled plugin.
     """
@@ -283,13 +283,14 @@ class _MeshToolCallHandler(http.server.BaseHTTPRequestHandler):
             # This repo's admission-policy plugin: serde_json::to_vec of the
             # request as given, and the peer's reply returned as is.
             request_bytes = json.dumps(arguments["request"], separators=(",", ":")).encode("utf-8")
-            result = handle_evidence_request(self.server.state, request_bytes)  # type: ignore[attr-defined]
-            self._write(200, json.dumps(reply_to_wire(result)).encode())
+            self._write(200, json.dumps(answer_wire(self.server.state, request_bytes)).encode())  # type: ignore[attr-defined]
             return
         request = {**arguments["request"], "requester_id": "local-node"}
         request_bytes = json.dumps(request).encode("utf-8")
-        result = handle_evidence_request(self.server.state, request_bytes)  # type: ignore[attr-defined]
-        answer = {"answer": reply_to_wire(result), "request_digest": er.request_digest(request_bytes)}
+        answer = {
+            "answer": answer_wire(self.server.state, request_bytes),  # type: ignore[attr-defined]
+            "request_digest": er.request_digest(request_bytes),
+        }
         body = json.dumps(answer).encode()
         if self.server.duplicate_in_answer:  # type: ignore[attr-defined]
             body = body.replace(b'"answer": {', b'"answer": {"sig": "00", ', 1)
@@ -384,12 +385,12 @@ class TestMeshCarrier:
         exchange = ah.post_mesh_evidence_request(local_host_api, "admission-policy", "aa" * 32, _record(cids[0]))
         rendered = ah.render_artifact(ah.read_reply(exchange), node_id="m4", tamper_check=True)
         assert "envelope verifies=False (expected False)" in rendered
-        assert "verify.ok=False (expected False)" in rendered
+        assert "records check=False (expected False)" in rendered
 
 
 class TestReadReply:
     def test_unreadable_reply(self):
-        reply = ah.read_reply(ah.Exchange("00" * 32, b'{"bundles": []}'))
+        reply = ah.read_reply(ah.Exchange("00" * 32, b'{"records": []}'))
         assert not reply.ok and reply.envelope is None and reply.refusal is None
 
     def test_forged_refusal(self):
@@ -410,45 +411,26 @@ class TestReadReply:
         assert not reply.ok and reply.envelope is None
         assert "duplicate" in reply.errors[0]
 
-    def test_bundle_not_under_the_anchor_is_left_out(self, peer):
+    def test_a_record_not_under_the_envelopes_anchor_is_not_trusted(self, peer):
         base_url, state = peer
         cids = _seal_and_checkpoint(state, 1)
         reply = ah.read_reply(ah.post_evidence_request(base_url, _record(cids[0])))
-        moved = ah.Reply(ok=True, errors=(), envelope=reply.envelope, body={**reply.body, "anchor": "x"})
-        assert len(ah.verified_bundles(moved)) == 1
-        other = ah.Reply(ok=True, errors=(), envelope=dataclasses.replace(reply.envelope, anchor_digest="ab" * 32),
-                         body=reply.body)
-        bundles, problems = ah.artifact_bundles(other)
-        assert bundles == [] and "not proven under the envelope's anchor" in problems[0]
+        assert len(ah.verified_records(reply)) == 1
+        other = dataclasses.replace(reply, envelope=dataclasses.replace(reply.envelope, anchor_digest="ab" * 32))
+        records, _anchor, problems = ah.served_records(other)
+        assert records == [] and problems == ["the envelope names another anchor than its checkpoint"]
+        assert ah.verified_records(other) == []
+
+    def test_a_malformed_witness_receipts_member_is_an_error(self, peer):
+        base_url, state = peer
+        cids = _seal_and_checkpoint(state, 1)
+        exchange = ah.post_evidence_request(base_url, _record(cids[0]))
+        wire = {**json.loads(exchange.reply), "witness_receipts": [{"checkpoint": "x"}]}
+        reply = ah.read_reply(ah.Exchange(exchange.request_digest, json.dumps(wire).encode()))
+        assert not reply.ok and "a witness receipt is malformed" in reply.errors
 
 
-def test_signed_envelope_with_malformed_bundles_is_read_not_raised():
-    from agent_action_capsule.canonical import jcs
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-
-    class _Signer:
-        def __init__(self) -> None:
-            self._key = Ed25519PrivateKey.generate()
-            self.key_id = self._key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
-
-        def sign(self, body: bytes) -> tuple[str, str]:
-            return self._key.sign(body).hex(), self.key_id
-
-    request_bytes = json.dumps(ah.build_request(er.Subject("full_history"))).encode()
-    envelope = er.sign_envelope(
-        request_bytes, er.Subject("full_history"), "ab" * 32, jcs({"bundles": [None, {"v": 1}]}),
-        signer=_Signer(), issued_at="2026-10-15T00:00:00Z",
-    )
-    reply = ah.read_reply(ah.Exchange(er.request_digest(request_bytes), envelope.encode("json")))
-    assert reply.ok
-    bundles, problems = ah.artifact_bundles(reply)
-    assert bundles == [] and len(problems) == 2
-    assert ah.verified_bundles(reply) == []
-
-
-def _signed_checkpoints_reply(body: dict, *, anchor: str = "ab" * 32) -> ah.Exchange:
-    from agent_action_capsule.canonical import jcs
+def _signer():
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
@@ -460,38 +442,109 @@ def _signed_checkpoints_reply(body: dict, *, anchor: str = "ab" * 32) -> ah.Exch
         def sign(self, data: bytes) -> tuple[str, str]:
             return key.sign(data).hex(), self.key_id
 
+    return _Signer()
+
+
+@pytest.mark.parametrize("records", [[None, {"v": 1}], [{"body": "zz", "digest": "ab" * 32, "leaf_index": 0}], []])
+def test_signed_envelope_with_malformed_records_is_read_not_raised(records):
+    from agent_action_capsule.canonical import jcs
+
+    request_bytes = json.dumps(ah.build_request(er.Subject("full_history"))).encode()
+    body = {"anchor": "ab" * 32, "evidence_stream": "s", "records": records, "subject": {"full_history": None}}
+    material = [("cll-checkpoint", b"\xd2")] + [("cll-inclusion-proof", b"\x82\x00\x80")] * len(records)
+    envelope = er.sign_envelope(
+        request_bytes, er.Subject("full_history"), "ab" * 32, jcs(body),
+        signer=_signer(), issued_at="2026-10-15T00:00:00Z", verification=material,
+    )
+    reply = ah.read_reply(ah.Exchange(er.request_digest(request_bytes), envelope.encode("json")))
+    records_read, _anchor, problems = ah.served_records(reply)
+    assert records_read == [] and problems
+    assert ah.verified_records(reply) == []
+
+
+def _signed_checkpoints_reply(body: dict, *, anchor: str = "ab" * 32) -> ah.Exchange:
+    from agent_action_capsule.canonical import jcs
+
     request_bytes = json.dumps(ah.build_request(er.Subject("checkpoints"))).encode()
     envelope = er.sign_envelope(
-        request_bytes, er.Subject("checkpoints"), anchor, jcs(body), signer=_Signer(), issued_at="2026-10-15T00:00:00Z"
+        request_bytes, er.Subject("checkpoints"), anchor, jcs(body), signer=_signer(), issued_at="2026-10-15T00:00:00Z"
     )
     return ah.Exchange(er.request_digest(request_bytes), envelope.encode("json"))
 
 
-@pytest.mark.parametrize("checkpoints", [{"unexpected": {}}, [], ["not a map"], [{"mmr_size": 3}]])
+@pytest.mark.parametrize("checkpoints", [{"unexpected": {}}, [], ["not hex"], ["d2"], [{"mmr_size": 3}]])
 def test_malformed_checkpoints_answer_is_a_runtime_error_for_the_default_pull(checkpoints):
     exchange = _signed_checkpoints_reply({"checkpoints": checkpoints})
     with pytest.raises(RuntimeError, match="does not check out"):
-        ah._recent_records_request(lambda _request: exchange, "x")
+        ah._x_checkpoints(lambda _request: exchange, "x")
     _lines, problems = ah.answer_checkpoints(ah.read_reply(exchange))
     assert problems
 
 
+def test_checkpoints_signed_by_another_key_than_the_responder_are_refused(node_state):
+    """Statements the node signed, in an envelope another key signed: the
+    statements are not the responder's."""
+    import hashlib
+
+    _seal_and_checkpoint(node_state, 1)
+    lines = [json.loads(x) for x in (node_state.ledger_dir / "checkpoints.jsonl").read_text().splitlines() if x]
+    anchor = hashlib.sha256(bytes.fromhex(lines[-1]["checkpoint_cose"])).hexdigest()
+    body = {"anchor": anchor, "checkpoints": [line["checkpoint_cose"] for line in lines],
+            "evidence_stream": "test-node", "subject": {"checkpoints": None}}
+    _lines, problems = ah.answer_checkpoints(ah.read_reply(_signed_checkpoints_reply(body, anchor=anchor)))
+    assert problems == ["checkpoint 0 is not the responder's, or does not verify"]
+
+
+def test_a_checkpoint_list_that_skips_a_link_is_refused(node_state):
+    import hashlib
+
+    for _ in range(3):
+        _seal_and_checkpoint(node_state, 1)
+    request_bytes = json.dumps(ah.build_request(er.Subject("checkpoints"))).encode()
+    wire = answer_wire(node_state, request_bytes)
+    exchange = ah.Exchange(er.request_digest(request_bytes), json.dumps(wire).encode())
+    lines, problems = ah.answer_checkpoints(ah.read_reply(exchange))
+    assert len(lines) == 3 and not problems
+    # Drop the middle statement and re-sign the envelope with the node key.
+    from evidence_responder import node_signer
+
+    statements = [line["checkpoint_cose"] for line in lines]
+    anchor = hashlib.sha256(bytes.fromhex(statements[-1])).hexdigest()
+    from agent_action_capsule.canonical import jcs
+
+    body = {"anchor": anchor, "checkpoints": [statements[0], statements[2]], "evidence_stream": "test-node",
+            "subject": {"checkpoints": None}}
+    envelope = er.sign_envelope(request_bytes, er.Subject("checkpoints"), anchor, jcs(body),
+                                signer=node_signer(node_state), issued_at="2026-10-15T00:00:00Z")
+    _lines, problems = ah.answer_checkpoints(ah.read_reply(ah.Exchange(er.request_digest(request_bytes), envelope.encode("json"))))
+    assert problems == ["a checkpoint does not extend the one listed before it"]
+
+
 def test_default_pull_sizes_the_window_from_the_signed_anchor(node_state):
-    """A door that shrinks the unsigned mmr_size beside its real anchor
-    statement cannot move the stranger's window."""
+    """The window and the pin come from the anchor's own verified statement."""
     import hashlib
 
     _seal_and_checkpoint(node_state, 1)
     _seal_and_checkpoint(node_state, 2)
-    lines = [json.loads(x) for x in (node_state.ledger_dir / "checkpoints.jsonl").read_text().splitlines() if x]
+    request_bytes = json.dumps(ah.build_request(er.Subject("checkpoints"))).encode()
+    exchange = ah.Exchange(er.request_digest(request_bytes), json.dumps(answer_wire(node_state, request_bytes)).encode())
+    _reply, lines = ah._x_checkpoints(lambda _request: exchange, "x")
     assert len(lines) == 2
-    real_size = lines[-1]["mmr_size"]
-    shrunk = [lines[0], {**lines[-1], "mmr_size": 1}]
-    anchor = hashlib.sha256(bytes.fromhex(lines[-1]["checkpoint_cose"])).hexdigest()
-    exchange = _signed_checkpoints_reply({"checkpoints": shrunk}, anchor=anchor)
-    request = ah._recent_records_request(lambda _request: exchange, "x")
+    request = ah._recent_records_request(lines, "x")
+    raw = [json.loads(x) for x in (node_state.ledger_dir / "checkpoints.jsonl").read_text().splitlines() if x]
+    anchor = hashlib.sha256(bytes.fromhex(raw[-1]["checkpoint_cose"])).hexdigest()
     from cll.checkpoint.core import leaf_count
 
-    last = leaf_count(real_size) - 1
+    last = leaf_count(raw[-1]["mmr_size"]) - 1
     assert request["subject"] == {"range": [max(0, last - ah.DEFAULT_PULL_RECORDS + 1), last]}
     assert request["coverage"] == {"expected_pin": anchor}
+
+
+@pytest.mark.parametrize("leaf", [0, 1, 2, 3, 7, 8, 1000, (1 << 52) - 1, 1 << 52])
+def test_leaf_of_node_index_inverts_the_leaf_index(leaf):
+    assert ah._leaf_of_node_index(2 * leaf - bin(leaf).count("1")) == leaf
+
+
+@pytest.mark.parametrize("index", [2, 5, 6, -1, 1 << 53, True, "3", None])
+def test_leaf_of_node_index_refuses_what_is_no_leaf(index):
+    assert ah._leaf_of_node_index(index) is None

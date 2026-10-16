@@ -1,0 +1,51 @@
+{
+  "request_hex": "7b227375626a656374223a7b227265636f7264223a2237613066373436373064383866623665633137316161353864663738656336363135613530643563353461643661313130646539373834646639346138393564227d2c22636f766572616765223a7b2265787065637465645f70696e223a2239316135626636623632613136633531353636636339386233373161333931363636306333616332623664326465666434663534663539336435383635373836227d7d",
+  "reply": {
+    "anchor": {
+      "digest": "91a5bf6b62a16c51566cc98b371a3916660c3ac2b6d2defd4f54f593d5865786"
+    },
+    "artifact": "eyJhY3Rpb25fdHlwZSI6ImluZmVyZW5jZSIsImVmZmVjdCI6eyJzdGF0dXMiOiJjb25maXJtZWQifSwibW9kZWxfYXR0ZXN0YXRpb24iOnsiY29tcHV0ZV9hdHRlc3RhdGlvbiI6eyJ4LW1lc2gtcG9jLXYxIjp7InJvbGUiOiJzZXJ2ZWQiLCJsYXRlbmN5X21zIjoiNjAuMDAwIiwic2VydmluZ19wcm92ZW5hbmNlIjp7Im1vZGVsX2Nhbm9uaWNhbF9yZWYiOiJtb2RlbC14IiwicXVhbnRpemF0aW9uIjoicTRfa19tIiwicmVxdWVzdGluZ19wYXJ0eSI6Im5vZGUtYSJ9fX19LCJjYXBzdWxlX2lkIjoiN2EwZjc0NjcwZDg4ZmI2ZWMxNzFhYTU4ZGY3OGVjNjYxNWE1MGQ1YzU0YWQ2YTExMGRlOTc4NGRmOTRhODk1ZCJ9",
+    "artifact_digest": "27a9133970d03c9494b22f0da3c3c739d8b58fab55fe9a83eac4f939e199fd59",
+    "issued_at": "2026-09-29T00:00:00Z",
+    "profile": "evidence-interop/0",
+    "request_digest": "9fb064fb06e37d97b21ca4f85a97b6287b6e01a37a8abcdfc8164b47f10d2f0b",
+    "responder": "8146640f02493af4fbc54fe33388e75dc2c937ae0b7727cc2b2afb1b75199a3e",
+    "sig": "bc853b6f51dafa917a51750fb937e70f5664f999d7370e48e196367c153b3813ea75dc878883a27d53473c2043ca017969536b165cee604da411d9a5868a5103",
+    "subject": {
+      "record": "7a0f74670d88fb6ec171aa58df78ec6615a50d5c54ad6a110de9784df94a895d"
+    },
+    "verification": [
+      {
+        "digest": "91a5bf6b62a16c51566cc98b371a3916660c3ac2b6d2defd4f54f593d5865786",
+        "kind": "cll-checkpoint"
+      },
+      {
+        "digest": "27fcdc60b9c67ab1c789db6df5b8de1c6cb33928c484b460e147e92b15bd9670",
+        "kind": "cll-inclusion-proof"
+      },
+      {
+        "digest": "5addd52eea9a762758e3b0b99761e6f5a447ba741ff4731829fd1ee28ccc8c43",
+        "kind": "cll-consistency-proof"
+      }
+    ],
+    "verification_content": [
+      "0oRYcKQBJwN4H2FwcGxpY2F0aW9uL2NsbC1jaGVja3BvaW50K2Nib3IEWCCBRmQPAkk69PvFT-MziOddwsk3rgt3J8wrKvsbdRmaPg-iAW9jb3JwdXMtbm9kZS1sb2cCc2NvcnB1cy1ub2RlLWxvZyM1OTagWQKPp2RraW5kbmNsbC1jaGVja3BvaW50aGxvZ19zaXplGQJUaWlzc3VlZF9hdHQyMDI2LTA5LTI4VDEyOjAwOjAwWmlwcmV2X3NpemUYH2pjb21taXRtZW50WImEWCA1TrJQ8WxBbGRBCe78u_D_txrLtg4iZcO4zR-RE8EWCVggM5fIMf3Nq-HoGmxHjYa6Hou54zNHvRphyxL7GuEXbTpYIH2IcwPwCHdeLZHbY08hWCMN6vuPiW69_VTZ5rsTgUGfWCAQkSnVIK2tJMXxJ9kF65miqRZwL9WJ8pO6EF6VZUEgJG9wcmV2X2NvbW1pdG1lbnRYI4FYIBeMuTes29hQDZB5U8K19piMOmdj0-taK5VOj5d_CjZdcWNvbnNpc3RlbmN5X3Byb29mpWZzaXplX2EYH2ZzaXplX2IZAlRnd2l0bmVzc4GEWCA1Gh0T8SVuKA_RTYSXohb9OYH6p4EcbRDCUZe4AmljSlggmAyQ1IpX7T_WSkYftb34MKkaHF3UIJKV0I_T7nHyY6tYIC8DLMENauYCAEEovaPd6tA3l7y-KmscEGzh7_8EpWgEWCBqZ_c0nMaqC0UfUzxbQeCVJPhNxTYS2ir4jjJA3zL8PmluZXdfcGVha3OEWCA1TrJQ8WxBbGRBCe78u_D_txrLtg4iZcO4zR-RE8EWCVggM5fIMf3Nq-HoGmxHjYa6Hou54zNHvRphyxL7GuEXbTpYIH2IcwPwCHdeLZHbY08hWCMN6vuPiW69_VTZ5rsTgUGfWCAQkSnVIK2tJMXxJ9kF65miqRZwL9WJ8pO6EF6VZUEgJGlvbGRfcGVha3OBWCAXjLk3rNvYUA2QeVPCtfaYjDpnY9PrWiuVTo-Xfwo2XVhAaKD3Trp_ZOeq-HqW5wkmrqLxMIdS-gSdfjZ2nheVeJivQQeFMusTlL_qcK9M_xSfQSLGmDrINglphNNrwXW1CA",
+      "ghggiFggKcjedl-Xnzt6WMOgil40okE9w-EgKQwmNHjrihiTVd5YIB2nHPzctNAp8REoPS9IjLK-rolHil9R8Nqk-U5ANM4dWCAa3Pqms6fgdQGhxdTwk4djtmlbsDRnPV-ugG-ao2YfqlggEJK1msA5sPP0iHDBkqbOqhMQIhQTaIIqn0ISvRHeEZhYIBeMuTes29hQDZB5U8K19piMOmdj0-taK5VOj5d_CjZdWCCYDJDUilftP9ZKRh-1vfgwqRocXdQgkpXQj9PucfJjq1ggLwMswQ1q5gIAQSi9o93q0DeXvL4qaxwQbOHv_wSlaARYIGpn9zScxqoLRR9TPFtB4JUk-E3FNhLaKviOMkDfMvw-",
+      "hBgfGQJUgYRYIDUaHRPxJW4oD9FNhJeiFv05gfqngRxtEMJRl7gCaWNKWCCYDJDUilftP9ZKRh-1vfgwqRocXdQgkpXQj9PucfJjq1ggLwMswQ1q5gIAQSi9o93q0DeXvL4qaxwQbOHv_wSlaARYIGpn9zScxqoLRR9TPFtB4JUk-E3FNhLaKviOMkDfMvw-g1ggM5fIMf3Nq-HoGmxHjYa6Hou54zNHvRphyxL7GuEXbTpYIH2IcwPwCHdeLZHbY08hWCMN6vuPiW69_VTZ5rsTgUGfWCAQkSnVIK2tJMXxJ9kF65miqRZwL9WJ8pO6EF6VZUEgJA"
+    ],
+    "witness_receipts": [
+      {
+        "checkpoint": "91a5bf6b62a16c51566cc98b371a3916660c3ac2b6d2defd4f54f593d5865786",
+        "witness": {
+          "ts_url": "https://witness.example",
+          "entry_hash": "d0cda404cd070271dc8e72746951a6e8484984c393bfbd9339822733827a9e42",
+          "receipt_b64": "",
+          "leaf_index": 0,
+          "tree_size": 1,
+          "is_stub": true
+        }
+      }
+    ]
+  },
+  "responder": "8146640f02493af4fbc54fe33388e75dc2c937ae0b7727cc2b2afb1b75199a3e"
+}

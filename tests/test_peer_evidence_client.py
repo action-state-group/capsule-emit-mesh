@@ -24,7 +24,7 @@ import pytest
 from agent_action_capsule import evidence_request as er
 from agent_action_capsule.canonical import jcs
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -54,9 +54,13 @@ _VALID_SERVED_SUMMARY = {
 }
 
 class _MockSigner:
+    """The peer's node key: it signs the peer's checkpoints and its
+    envelopes alike, as a mesh node's does."""
+
     def __init__(self) -> None:
         self._key = Ed25519PrivateKey.generate()
         self.key_id = self._key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
+        self.pem = self._key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
 
     def sign(self, body: bytes) -> tuple[str, str]:
         return self._key.sign(body).hex(), self.key_id
@@ -102,10 +106,12 @@ class _MockPeerHandler(BaseHTTPRequestHandler):
             self._send_json(200, _envelope(body_raw, {"anchor": _ANCHOR, "served_summary": _VALID_SERVED_SUMMARY}))
         else:
             # The history path asks for checkpoints: answer with the
-            # committed demo ledger's real checkpoint lines, or none.
-            lines = self.server.checkpoint_lines  # type: ignore[attr-defined]
+            # peer ledger's real checkpoint statements, or none.
+            statements = self.server.checkpoint_lines  # type: ignore[attr-defined]
             anchor = self.server.anchor  # type: ignore[attr-defined]
-            self._send_json(200, _envelope(body_raw, {"anchor": anchor, "checkpoints": lines}, anchor=anchor))
+            artifact = {"anchor": anchor, "checkpoints": statements, "evidence_stream": _LOG_ID,
+                        "subject": {"checkpoints": None}}
+            self._send_json(200, _envelope(body_raw, artifact, anchor=anchor))
 
     def _send_json(self, status: int, data: dict[str, Any]) -> None:
         body = json.dumps(data).encode("utf-8")
@@ -116,16 +122,40 @@ class _MockPeerHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-_DEMO_CHECKPOINTS = [
-    json.loads(line)
-    for line in (Path(__file__).resolve().parent.parent / "ledger-checkpoint-demo" / "checkpoints.jsonl")
-    .read_text()
-    .splitlines()
-    if line.strip()
-]
+_LOG_ID = "peer-log"
 
 
-_DEMO_ANCHOR = hashlib.sha256(bytes.fromhex(_DEMO_CHECKPOINTS[-1]["checkpoint_cose"])).hexdigest()
+def _peer_checkpoint_statements(n: int = 3) -> list[str]:
+    """A peer ledger checkpointed ``n`` times under ``_SIGNER``'s key: each
+    checkpoint's COSE statement, in hex."""
+    import tempfile
+
+    from cll.checkpoint import CheckpointConfig
+
+    from checkpointing import CheckpointState, Ed25519Signer, JsonlLogSource
+
+    root = Path(tempfile.mkdtemp())
+    key_path = root / "node-key.pem"
+    key_path.write_bytes(_SIGNER.pem)
+    ledger_path = root / "capsules.jsonl"
+    state = CheckpointState.load(
+        ledger_dir=root,
+        log_source=JsonlLogSource(ledger_path),
+        cfg=CheckpointConfig(cadence_entries=1, max_lag_entries=10, ts_urls=[]),
+        signer=Ed25519Signer(key_path),
+        log_id=_LOG_ID,
+    )
+    for i in range(n):
+        with ledger_path.open("a") as fh:
+            fh.write(json.dumps({"capsule_id": hashlib.sha256(bytes([i])).hexdigest()}) + "\n")
+        state.reconnect()
+    lines = [json.loads(x) for x in (root / "checkpoints.jsonl").read_text().splitlines() if x]
+    assert len(lines) == n
+    return [line["checkpoint_cose"] for line in lines]
+
+
+_DEMO_CHECKPOINTS = _peer_checkpoint_statements()
+_DEMO_ANCHOR = hashlib.sha256(bytes.fromhex(_DEMO_CHECKPOINTS[-1])).hexdigest()
 
 
 def _start_mock_server(
@@ -218,7 +248,7 @@ def test_fetch_peer_history_no_checkpoints_fails() -> None:
     try:
         result = fetch_peer_history(base_url, timeout_seconds=5, peer_id="test-peer")
         assert result["status"] == "failed"
-        assert result["reason"] == "the artifact carries no checkpoint lines"
+        assert result["reason"] == "the artifact carries no checkpoints"
     finally:
         server.shutdown()
 
@@ -230,7 +260,7 @@ def test_fetch_peer_history_folds_the_peers_checkpoints() -> None:
         assert result["status"] == "verified", result
         summary = result["history_summary"]
         assert summary["checkpoint_count"] == len(_DEMO_CHECKPOINTS)
-        assert summary["latest_checkpoint"] == _DEMO_CHECKPOINTS[-1]
+        assert summary["latest_checkpoint"]["checkpoint_cose"] == _DEMO_CHECKPOINTS[-1]
         assert summary["anchor"] == _DEMO_ANCHOR
         assert summary["continuity"] == "unbroken"
     finally:
@@ -238,31 +268,31 @@ def test_fetch_peer_history_folds_the_peers_checkpoints() -> None:
 
 
 def test_fetch_peer_history_refuses_a_forged_genesis() -> None:
-    """A signed envelope around a first checkpoint whose statement is not its
-    own (here, the last line's) is never folded into a verified card."""
-    forged = [{**_DEMO_CHECKPOINTS[0], "checkpoint_cose": _DEMO_CHECKPOINTS[-1]["checkpoint_cose"]}]
-    forged_anchor = hashlib.sha256(bytes.fromhex(forged[-1]["checkpoint_cose"])).hexdigest()
+    """A signed envelope whose list does not start the stream (here, it
+    starts at the last checkpoint) is never folded into a verified card."""
+    forged = [_DEMO_CHECKPOINTS[-1]]
+    forged_anchor = hashlib.sha256(bytes.fromhex(forged[-1])).hexdigest()
     server, base_url = _start_mock_server(checkpoint_lines=forged, anchor=forged_anchor)
     try:
         result = fetch_peer_history(base_url, timeout_seconds=5, peer_id="test-peer")
         assert result["status"] == "failed"
-        assert "first checkpoint" in result["reason"]
+        assert "does not start the stream" in result["reason"]
     finally:
         server.shutdown()
 
 
 def test_fetch_peer_history_refuses_a_chain_whose_later_link_fails() -> None:
-    """A verified genesis followed by a line whose statement does not prove
-    it (here, the genesis statement again) is not verified history, even
-    when the envelope's anchor names that last statement."""
-    assert len(_DEMO_CHECKPOINTS) > 1
-    broken = [*_DEMO_CHECKPOINTS[:-1], {**_DEMO_CHECKPOINTS[-1], "checkpoint_cose": _DEMO_CHECKPOINTS[0]["checkpoint_cose"]}]
-    anchor = hashlib.sha256(bytes.fromhex(broken[-1]["checkpoint_cose"])).hexdigest()
+    """A genesis followed by a checkpoint that does not extend it (here, one
+    link is skipped) is not verified history, even when the envelope's
+    anchor names the last statement."""
+    assert len(_DEMO_CHECKPOINTS) > 2
+    broken = [_DEMO_CHECKPOINTS[0], _DEMO_CHECKPOINTS[2]]
+    anchor = hashlib.sha256(bytes.fromhex(broken[-1])).hexdigest()
     server, base_url = _start_mock_server(checkpoint_lines=broken, anchor=anchor)
     try:
         result = fetch_peer_history(base_url, timeout_seconds=5, peer_id="test-peer")
         assert result["status"] == "failed"
-        assert "does not verify" in result["reason"]
+        assert "does not extend" in result["reason"]
     finally:
         server.shutdown()
 

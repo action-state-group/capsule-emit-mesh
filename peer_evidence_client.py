@@ -179,8 +179,9 @@ def fetch_peer_history(
     """Fetch and verify a peer's checkpoint history via their evidence door.
 
     Asks for the peer's ``checkpoints`` (served whatever the log's length),
-    verifies the signed reply, checks that the lines start with a verified
-    statement and end at the envelope's anchor (``ask_history
+    verifies the signed reply, checks that every checkpoint statement is the
+    peer's own, that the list starts the stream, that each extends the one
+    before it and that the last is the envelope's anchor (``ask_history
     .answer_checkpoints``), and folds them into a history card
     (``history_card.build_history_card``), which re-verifies every link.
 

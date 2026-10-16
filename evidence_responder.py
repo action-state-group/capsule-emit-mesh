@@ -28,29 +28,45 @@ counterparty reference, or an adjudication verdict ``contradicted:<id>``).
 Mesh records cite no exchange halves by digest, so ``exchange`` is never
 held. Matching is exact throughout: no prefixes.
 
-**Artifacts.** The artifact octets are RFC 8785 JSON, the same for every
-requester (-00 §5):
+**Artifacts.** The artifact octets are the same for every requester (-00
+§5), in the forms evidencebook and the Mesh-LLM capsules plugin
+(``crates/evidence-plugin/src/evidence_artifact.rs``) serve, so either
+requester reads this door's answers and this door's requester reads theirs:
 
-* ``record``, ``range``, ``correlation``, ``full_history``: ``{anchor,
-  evidence_stream, subject, bundles}``, one ``cll.checkpoint.bundle.Bundle``
-  per record in log order, each proving its record's inclusion under the
-  anchor checkpoint itself (and that checkpoint's consistency with its
-  predecessor). A requester checks each with ``capsule_emit.bundle
-  .verify_bundle`` and that its ``checkpoint_cose`` hashes to the anchor.
-  Only records the anchor covers are served; more than
-  :data:`MAX_ANSWER_RECORDS` is refused ``policy_declined`` (ask for a
-  range). There is no paging: an answer is whole or refused.
-* ``checkpoints``: ``{anchor, checkpoints, evidence_stream, subject}``, the
-  ``checkpoints.jsonl`` lines up to the anchor (each with its witnesses and
-  COSE statement). This replaces the pre-00 ``chain_segment`` subject.
+* ``record``: the record's ledger line, RFC 8785 JSON (with its
+  ``capsule_id`` and producer signature). Material: the anchor's
+  ``cll-checkpoint``, the record's ``cll-inclusion-proof`` and, when the
+  anchor extends an earlier checkpoint, its ``cll-consistency-proof``
+  (profile §6.2.1). The proof's entry is the ``capsule_id``, which is not the
+  SHA-256 of the line, so a profile verifier reports ``anchor_inclusion``
+  ``NOT_CHECKED`` (§6.2.1 step 5), never ``FAIL``; a requester recomputes the
+  ``capsule_id`` from the line and checks the proof against the checkpoint's
+  peaks itself. The line is served whole so the producer's signature over it
+  travels with it.
+* ``range``, ``correlation``, ``full_history``: ``{anchor, evidence_stream,
+  records, subject}``, each record ``{body, digest, leaf_index}`` (``body``
+  the ledger line in hex, ``digest`` its ``capsule_id``), in log order. Only
+  records the anchor covers are served; more than :data:`MAX_ANSWER_RECORDS`
+  is refused ``policy_declined`` (ask for a range). Material, beyond the
+  profile (P-13, which defines none for a set): the anchor's
+  ``cll-checkpoint`` and one ``cll-inclusion-proof`` per record, in the
+  artifact's order.
+* ``checkpoints``: ``{anchor, checkpoints, evidence_stream, subject}``, each
+  checkpoint's COSE statement in hex, from the first of the stream to the
+  anchor. A checkpoint persisted without its statement leaves a gap no list
+  can prove, so the list is refused under an anchor after one.
 * ``served_summary/1`` (a mesh derivation, for ``full_history``):
-  ``{anchor, derivation, evidence_stream, served_summary, subject}``. It is
-  a static export: served only under an ``expected_pin`` naming the latest
-  anchor, never on demand.
+  ``{anchor, derivation, evidence_stream, served_summary, subject}``, with
+  the anchor's ``cll-checkpoint``. It is a static export: served only under
+  an ``expected_pin`` naming the latest anchor, never on demand.
 
-The envelope carries no verification material: the profile defines
-Checkpointed Local Log material only for an artifact that is the committed
-entry itself (§6.2.1), and these artifacts carry their proofs inside.
+Under ``min_freshness`` the envelope states the anchor's ``freshness`` as its
+MMR size or its time, as evidencebook does. The receipts the anchor's
+witnesses issued (every listed checkpoint's, for ``checkpoints``) ride beside
+the envelope as an unsigned top-level ``witness_receipts`` member,
+``[{checkpoint: <anchor digest>, witness: <WitnessRecord>}]``: a receipt
+authenticates itself, and a profile reader ignores the member
+(:func:`answer_wire`).
 
 **Additive wire vocabulary** (``[mesh-fabric-vocab-alignment]``).
 :func:`augment_evidence_answer_dict` adds the fabric's ``status`` (and, on
@@ -82,6 +98,15 @@ MAX_ANSWER_RECORDS = 200
 
 #: The most checkpoints one ``checkpoints`` answer carries.
 MAX_ANSWER_CHECKPOINTS = 1024
+
+#: The profile's Checkpointed Local Log material kinds (§6.2.1).
+KIND_CHECKPOINT = "cll-checkpoint"
+KIND_INCLUSION = "cll-inclusion-proof"
+KIND_CONSISTENCY = "cll-consistency-proof"
+
+#: The reply's unsigned member carrying witness receipts (see the module
+#: docstring).
+WITNESS_RECEIPTS = "witness_receipts"
 
 #: [mesh-fabric-vocab-alignment] the fabric's additive per-answer status
 #: vocabulary -- see the module docstring.
@@ -304,6 +329,11 @@ class MeshEvidenceStore:
                     issued_at=record.timestamp,
                 )
             self.checkpoints.append(_Checkpoint(line, record, anchor))
+        #: What the last :meth:`artifact` built besides its octets: the
+        #: envelope's verification material and the checkpoints whose
+        #: witness receipts go with the answer.
+        self.material: list[tuple[str, bytes]] = []
+        self.carried: list[_Checkpoint] = []
 
     # -- the EvidenceStore questions --
 
@@ -334,18 +364,47 @@ class MeshEvidenceStore:
 
     def artifact(self, subject: er.Subject, derivation: str | None, resolution: er.Resolution) -> bytes:
         at = self._checkpoint_for(resolution.anchor)
+        statement = bytes.fromhex(at.line["checkpoint_cose"])
+        self.carried = [at]
         head = {"anchor": at.anchor.digest, "evidence_stream": at.record.log_id, "subject": subject.to_wire()}
         if derivation == SERVED_SUMMARY_DERIVATION_TOKEN:
+            self.material = [(KIND_CHECKPOINT, statement)]
             return jcs({**head, "derivation": derivation, "served_summary": self._served_summary(at)})
         if subject.form == "checkpoints":
             chain = self.checkpoints[: self.checkpoints.index(at) + 1]
             if len(chain) > MAX_ANSWER_CHECKPOINTS:
                 raise er.Decline(er.REASON_POLICY_DECLINED, "more checkpoints than one answer carries")
-            return jcs({**head, "checkpoints": [cp.line for cp in chain]})
+            if any(cp.anchor is None for cp in chain):
+                raise er.Decline(
+                    er.REASON_COVERAGE_UNSATISFIABLE, "a checkpoint before the anchor has no statement to list"
+                )
+            self.carried = chain
+            return jcs({**head, "checkpoints": [cp.line["checkpoint_cose"] for cp in chain]})
         indices = self._record_indices(subject, at.anchor.size)
         if len(indices) > MAX_ANSWER_RECORDS:
             raise er.Decline(er.REASON_POLICY_DECLINED, f"more than {MAX_ANSWER_RECORDS} records: ask for a range")
-        return jcs({**head, "bundles": [b.to_dict() for b in self._bundles(indices, at)]})
+        tree = self._tree(at)
+        proofs = [self._inclusion(tree, i, at) for i in indices]
+        self.material = [(KIND_CHECKPOINT, statement)] + [(KIND_INCLUSION, p) for p in proofs]
+        if subject.form == "record":
+            if at.record.prev_size > 0:
+                self.material.append((KIND_CONSISTENCY, self._consistency(tree, at)))
+            return jcs(self.records[indices[0]])
+        records = [
+            {"body": jcs(self.records[i]).hex(), "digest": self.records[i]["capsule_id"], "leaf_index": i}
+            for i in indices
+        ]
+        return jcs({**head, "records": records})
+
+    def witness_receipts(self) -> list[dict[str, Any]]:
+        """The receipts the checkpoints the last artifact carries hold, as
+        the reply's unsigned ``witness_receipts`` member (see the module
+        docstring)."""
+        return [
+            {"checkpoint": cp.anchor.digest, "witness": witness}
+            for cp in self.carried
+            for witness in cp.line.get("witnesses") or []
+        ]
 
     # -- building --
 
@@ -373,12 +432,10 @@ class MeshEvidenceStore:
             return indices
         return list(range(min(covered, len(self.records))))  # full_history
 
-    def _bundles(self, indices: list[int], at: _Checkpoint) -> list[Any]:
-        """One bundle per record at ``indices``, each under ``at`` itself:
-        ``cll.checkpoint.bundle.bundle`` proves a record under the first
-        checkpoint covering it, and -00 serves under the resolved anchor."""
+    def _tree(self, at: _Checkpoint) -> Any:
+        """The MMR of the records ``at`` covers, rebuilt from the ledger and
+        checked against ``at``'s root: proofs come from it."""
         from cll.checkpoint import core as mmr_core
-        from cll.checkpoint.bundle import Bundle
         from cll.checkpoint.store import MemoryNodeStore
 
         cp = at.record
@@ -387,11 +444,6 @@ class MeshEvidenceStore:
             # An unmounted segment: positions in self.records are no longer
             # log positions, so nothing is proven until it is mounted again.
             raise er.Decline(er.REASON_COVERAGE_UNSATISFIABLE, "records of this log are not mounted")
-        prior = None
-        if cp.prev_size > 0:
-            prior = next((c.record for c in self.checkpoints if c.record.mmr_size == cp.prev_size), None)
-            if prior is None:
-                raise er.Decline(er.REASON_COVERAGE_UNSATISFIABLE, "the anchor's predecessor checkpoint is missing")
         store = MemoryNodeStore()
         try:
             for record in self.records[:covered]:
@@ -404,21 +456,29 @@ class MeshEvidenceStore:
             mmr_core.root_from_peaks([store.node(p) for p in mmr_core.peaks(cp.mmr_size)]).hex() != cp.root
         ):
             raise er.Decline(er.REASON_COVERAGE_UNSATISFIABLE, "the ledger does not reproduce the anchor")
-        consistency = mmr_core.consistency_proof(store, prior.mmr_size, cp.mmr_size) if prior is not None else None
-        return [
-            Bundle(
-                v=1,
-                capsule_id=self.records[i]["capsule_id"],
-                seq=i + 1,
-                receipt=self.records[i],
-                inclusion_proof=mmr_core.inclusion_proof(store, i, cp.mmr_size),
-                checkpoint=cp,
-                prior_checkpoint=prior,
-                consistency_proof=consistency,
-                checkpoint_cose=bytes.fromhex(at.line["checkpoint_cose"]),
-            )
-            for i in indices
-        ]
+        return store
+
+    @staticmethod
+    def _inclusion(tree: Any, index: int, at: _Checkpoint) -> bytes:
+        from cll.checkpoint import core as mmr_core
+
+        proof = mmr_core.inclusion_proof(tree, index, at.record.mmr_size)
+        return er.encode_cll_inclusion_proof(index, [bytes.fromhex(h) for h in proof.witness])
+
+    @staticmethod
+    def _consistency(tree: Any, at: _Checkpoint) -> bytes:
+        """``at``'s proof that it extends its predecessor (``prev_size``)."""
+        from cll.checkpoint import core as mmr_core
+
+        cp = at.record
+        proof = mmr_core.consistency_proof(tree, cp.prev_size, cp.mmr_size)
+        return er.encode_cll_consistency_proof(
+            cp.prev_size,
+            cp.mmr_size,
+            [bytes.fromhex(h) for h in proof.old_peaks],
+            [[bytes.fromhex(h) for h in path] for path in proof.witness],
+            [bytes.fromhex(h) for h in proof.new_peaks],
+        )
 
     def _served_summary(self, at: _Checkpoint) -> dict[str, Any]:
         from served_summary import answer_served_summary_request
@@ -460,17 +520,7 @@ def node_signer(state: Any) -> Any:
     return resolve_signer(os.fspath(state.ledger_dir), key_path=state.signing_key_path)
 
 
-def handle_evidence_request(state: Any, request_bytes: bytes, *, now: str | None = None) -> er.Envelope | er.Refusal:
-    """Answer one evidence request (its JSON bytes as received) against
-    ``state``'s own ledger: a signed :class:`~agent_action_capsule
-    .evidence_request.Envelope` or a signed ``Refusal``. Never raises for any
-    request bytes.
-
-    ``now`` (RFC 3339 UTC) overrides the clock for deterministic tests; the
-    envelope's ``issued_at`` is it to the second. The door never writes:
-    ``allow_forced_checkpoint`` stays off, so ``min_freshness`` is answered
-    from the anchors already held.
-    """
+def _answer(state: Any, request_bytes: bytes, now: str | None) -> tuple[er.Envelope | er.Refusal, MeshEvidenceStore | None]:
     log_request_purpose(request_bytes)
     issued_at = _profile_time(now) if now is not None else _now_profile_time()
     signer = node_signer(state)
@@ -485,21 +535,23 @@ def handle_evidence_request(state: Any, request_bytes: bytes, *, now: str | None
         and request.coverage.expected_pin is None
     ):
         # A static export: never built on demand for whatever is freshest.
-        return er.sign_refusal(
+        refusal = er.sign_refusal(
             er.request_digest(request_bytes), er.REASON_POLICY_DECLINED, signer=signer, issued_at=issued_at
         )
+        return refusal, None
 
     store = MeshEvidenceStore(state.ledger_dir)
     result = er.answer(request_bytes, store=store, signer=signer, now=issued_at)
     if isinstance(result, er.Refusal):
-        return result
+        return result, None
 
     freshness = None
     min_freshness = request.coverage.min_freshness
     if min_freshness is not None:
-        anchor = next(a for a in store.anchors() if a.digest == result.anchor)
-        freshness = anchor.size if isinstance(min_freshness, int) else _profile_time(anchor.issued_at)
-    return er.sign_envelope(
+        # As evidencebook states it: the anchor's MMR size, or its time.
+        (served,) = store.carried[-1:]
+        freshness = served.record.mmr_size if isinstance(min_freshness, int) else _profile_time(served.anchor.issued_at)
+    envelope = er.sign_envelope(
         request_bytes,
         result.subject,
         result.anchor,
@@ -508,7 +560,36 @@ def handle_evidence_request(state: Any, request_bytes: bytes, *, now: str | None
         issued_at=issued_at,
         derivation=result.derivation,
         freshness=freshness,
+        verification=store.material,
     )
+    return envelope, store
+
+
+def handle_evidence_request(state: Any, request_bytes: bytes, *, now: str | None = None) -> er.Envelope | er.Refusal:
+    """Answer one evidence request (its JSON bytes as received) against
+    ``state``'s own ledger: a signed :class:`~agent_action_capsule
+    .evidence_request.Envelope` or a signed ``Refusal``. Never raises for any
+    request bytes.
+
+    ``now`` (RFC 3339 UTC) overrides the clock for deterministic tests; the
+    envelope's ``issued_at`` is it to the second. The door never writes:
+    ``allow_forced_checkpoint`` stays off, so ``min_freshness`` is answered
+    from the anchors already held. :func:`answer_wire` is the same answer as
+    sent, with its witness receipts.
+    """
+    return _answer(state, request_bytes, now)[0]
+
+
+def answer_wire(state: Any, request_bytes: bytes, *, now: str | None = None) -> dict[str, Any]:
+    """:func:`handle_evidence_request`'s answer in the JSON binding, as the
+    door sends it: :func:`reply_to_wire` plus, on an envelope whose
+    checkpoints hold witness receipts, the unsigned ``witness_receipts``."""
+    reply, store = _answer(state, request_bytes, now)
+    wire = reply_to_wire(reply)
+    receipts = store.witness_receipts() if store is not None else []
+    if receipts:
+        wire[WITNESS_RECEIPTS] = receipts
+    return wire
 
 
 def reply_to_wire(reply: er.Envelope | er.Refusal) -> dict[str, Any]:
