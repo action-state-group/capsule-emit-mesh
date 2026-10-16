@@ -39,12 +39,13 @@ GGUF_PATH="${2:?missing gguf-blob-path}"
 MODEL_ID="${3:?missing model-id}"
 CAPSULE_ANCHOR="false"
 # capsule-emit 0.9.1+ has no default anchor endpoint: anchor mode with no
-# AAC_ANCHOR_URL sends nothing. Name the endpoint this script has always
-# posted to, unless the caller set another.
+# AAC_ANCHOR_URL sends nothing. Name the transparency service it reached
+# before (agent-action-capsule's default SCITT base, which capsule-emit's
+# anchor channel registers with), unless the caller set another.
 ANCHOR_ENV=""
 if [[ "${4:-}" == "anchor" ]]; then
   CAPSULE_ANCHOR="true"
-  AAC_ANCHOR_URL="${AAC_ANCHOR_URL:-https://anchor.agentactioncapsule.org/v1/digest}"
+  AAC_ANCHOR_URL="${AAC_ANCHOR_URL:-https://ts.agentactioncapsule.org}"
   ANCHOR_ENV="AAC_ANCHOR_URL=$AAC_ANCHOR_URL "
   echo "!!! ANCHOR MODE: this run's capsules WILL be posted to the live production transparency log. !!!"
   echo "!!! Only use this for the final call-take run, never for a rehearsal.                          !!!"
