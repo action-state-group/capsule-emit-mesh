@@ -739,6 +739,8 @@ def test_a_history_card_answer_is_checked_link_by_link(node_state):
     assert ah.check_artifact(answer([history[1]])) == ["a history entry's consistency proof is missing or out of place"]
     later_only = [{**history[1], "consistency_from_previous": None}]
     assert ah.check_artifact(answer(later_only)) == ["the checkpoint list does not start the stream"]
+    unnamed = [{"checkpoint": history[0]["checkpoint"]}, history[1]]
+    assert ah.check_artifact(answer(unnamed)) == ["a history entry's consistency proof is missing or out of place"]
 
 
 def test_an_unchecked_derivation_is_a_problem(node_state):
@@ -818,3 +820,74 @@ def test_only_checkpoints_covering_every_pulled_record_can_seed_the_sample():
     assert sizes == [node_count(4), node_count(4), node_count(6)]
     # A chain that does not run through the anchor seeds nothing beyond the anchor.
     assert [cp.mmr_size for cp in ah._seed_checkpoints(anchor, records, [old, later])] == [node_count(4)]
+
+
+def test_a_record_consistency_proof_must_run_from_the_anchors_predecessor(node_state):
+    """A proof that verifies between the stated peaks but names other tree
+    sizes is not the anchor's own proof."""
+    import cbor2
+
+    cids = _seal_and_checkpoint(node_state, 1)
+    _seal_and_checkpoint(node_state, 1)
+    request = ah.build_request(er.Subject("record", cids[0]))
+    sent, wire = _answer(node_state, request)
+    assert ah.verified_records(_read(sent, wire, request))
+    envelope = er.parse_reply(json.dumps(wire).encode())
+    old, new, paths, right = cbor2.loads(envelope.verification[2][1])
+    resized = cbor2.dumps([old, new + 1, paths, right], canonical=True)
+    forged = _resign(node_state, sent, wire, verification=(*envelope.verification[:2], ("cll-consistency-proof", resized)))
+    assert ah.served_records(_read(sent, forged, request))[2] == [
+        "the anchor's consistency proof is not from its predecessor to it"
+    ]
+
+
+@pytest.mark.parametrize("member", [None, {"checkpoint": "ab" * 32}])
+def test_a_witness_receipts_member_that_is_not_a_list_is_malformed(node_state, member):
+    _seal_and_checkpoint(node_state, 1)
+    request = ah.build_request(er.Subject("range", (0, 0)))
+    sent, wire = _answer(node_state, request)
+    reply = _read(sent, {**wire, "witness_receipts": member}, request)
+    assert not reply.ok and "witness_receipts is not a list of at most 10000 receipts" in reply.errors
+
+
+def test_a_witness_receipt_size_past_64_bits_is_malformed(node_state):
+    _seal_and_checkpoint(node_state, 1)
+    request = ah.build_request(er.Subject("range", (0, 0)))
+    sent, wire = _answer(node_state, request)
+    witness = {"ts_url": "u", "entry_hash": "00" * 32, "receipt_b64": "AA==", "leaf_index": 1 << 64, "tree_size": 1,
+               "is_stub": True}
+    anchor = json.loads(er.parse_reply(json.dumps(wire).encode()).artifact)["anchor"]
+    reply = _read(sent, {**wire, "witness_receipts": [{"checkpoint": anchor, "witness": witness}]}, request)
+    assert not reply.ok and "a witness receipt is malformed" in reply.errors
+
+
+def test_a_record_that_is_its_own_octets_passes_the_profile_and_is_accepted(node_state):
+    """evidencebook's PASS path: the artifact is the capsule_id preimage,
+    the committed entry itself, under the same material."""
+    from agent_action_capsule.canonical import jcs
+
+    cids = _seal_and_checkpoint(node_state, 1)
+    request = ah.build_request(er.Subject("record", cids[0]))
+    sent, wire = _answer(node_state, request)
+    line = json.loads(er.parse_reply(json.dumps(wire).encode()).artifact)
+    preimage = jcs({k: v for k, v in line.items() if k not in ("capsule_id", "signature", "key_id")})
+    import hashlib
+
+    assert hashlib.sha256(preimage).hexdigest() == cids[0]
+    own = _read(sent, _resign(node_state, sent, wire, artifact=preimage), request)
+    assert own.ok and own.cll.status == "PASS"
+    assert [r.capsule_id for r in ah.verified_records(own)] == cids
+
+
+def test_a_time_freshness_answer_is_checked_against_the_request(node_state):
+    _seal_and_checkpoint(node_state, 1)
+    request = ah.build_request(er.Subject("range", (0, 0)), min_freshness="2000-01-01T00:00:00Z")
+    sent, wire = _answer(node_state, request)
+    assert ah.served_records(_read(sent, wire, request))[2] == []
+    lied = _resign(node_state, sent, wire, freshness="2999-01-01T00:00:00Z")
+    assert ah.served_records(_read(sent, lied, request))[2] == ["the anchor is not as fresh as asked"]
+    future = ah.build_request(er.Subject("range", (0, 0)), min_freshness="2999-01-01T00:00:00Z")
+    future_sent = json.dumps(future).encode()
+    assert ah.served_records(_read(future_sent, _resign(node_state, future_sent, wire), future))[2] == [
+        "the anchor is not as fresh as asked"
+    ]

@@ -311,9 +311,9 @@ def _witness_receipts(raw: bytes) -> tuple[tuple[tuple[str, WitnessRecord], ...]
         members = json.loads(raw)
     except (UnicodeDecodeError, ValueError):
         return (), []
-    carried = members.get(WITNESS_RECEIPTS) if isinstance(members, dict) else None
-    if carried is None:
+    if not isinstance(members, dict) or WITNESS_RECEIPTS not in members:
         return (), []
+    carried = members[WITNESS_RECEIPTS]
     if not isinstance(carried, list) or len(carried) > MAX_ITEMS:
         return (), ["witness_receipts is not a list of at most 10000 receipts"]
     out: list[tuple[str, WitnessRecord]] = []
@@ -332,7 +332,7 @@ def _well_typed(witness: Any) -> bool:
         return False
     texts = all(isinstance(witness.get(k), str) for k in ("ts_url", "entry_hash", "receipt_b64"))
     sizes = all(
-        isinstance(witness.get(k), int) and not isinstance(witness.get(k), bool) and witness[k] >= 0
+        isinstance(witness.get(k), int) and not isinstance(witness.get(k), bool) and 0 <= witness[k] < 1 << 64
         for k in ("leaf_index", "tree_size")
     )
     return texts and sizes and isinstance(witness.get("is_stub", False), bool)
@@ -687,6 +687,8 @@ def _served_record(reply: Reply, material: list[tuple[str, bytes]]) -> tuple[lis
     artifact = envelope.artifact
     if envelope.artifact_digest != digest and _record_digest(artifact) != digest:
         return [], None, ["the artifact is not the record the subject names"]
+    # In this order, as evidencebook (interop_cll.go cllMaterial), the plugin
+    # and this repository's door all send it.
     kinds = [k for k, _ in material]
     if kinds not in ([KIND_CHECKPOINT, KIND_INCLUSION], [KIND_CHECKPOINT, KIND_INCLUSION, KIND_CONSISTENCY]):
         return [], None, ["the material is not the anchor checkpoint and the record's proofs"]
@@ -700,6 +702,8 @@ def _served_record(reply: Reply, material: list[tuple[str, bytes]]) -> tuple[lis
     if leaf is None or not _proves(material[1][1], leaf, digest, anchor):
         return [], anchor, ["the record's inclusion proof does not hold"]
     if len(material) == 3:
+        if cbor_sizes(material[2][1]) != (anchor.record.prev_size, anchor.record.mmr_size):
+            return [], anchor, ["the anchor's consistency proof is not from its predecessor to it"]
         try:
             er.verify_cll_consistency(list(anchor.prev_peaks), list(anchor.peaks), material[2][1])
         except er.VerificationError as exc:
@@ -821,7 +825,9 @@ def check_derived(reply: Reply) -> list[str]:
         if problems:
             return problems
         for i, (entry, cp) in enumerate(zip(history, listed)):
-            proof = entry.get("consistency_from_previous") if isinstance(entry, dict) else None
+            if not isinstance(entry, dict) or "consistency_from_previous" not in entry:
+                return ["a history entry's consistency proof is missing or out of place"]
+            proof = entry["consistency_from_previous"]
             if i == 0:
                 if proof is not None:
                     return ["a history entry's consistency proof is missing or out of place"]
