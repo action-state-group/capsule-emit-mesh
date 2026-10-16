@@ -57,7 +57,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from capsule_emit.checkpoint import (
-    DEFAULT_TS_URL,
     CheckpointConfig,
     CheckpointError,
     CheckpointRecord,
@@ -68,6 +67,7 @@ from capsule_emit.checkpoint import (
     register_checkpoint,
 )
 from capsule_emit.checkpoint import leaf_count as _leaf_count_at_size
+from cll.checkpoint.emit import DEFAULT_TS_URL
 from capsule_emit.signing import LocalKeypairSigner
 
 __all__ = [

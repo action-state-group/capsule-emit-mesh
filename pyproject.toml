@@ -18,15 +18,17 @@ dependencies = [
     # evidence_responder.py and ask_history.py use. 0.6.0 was the first whose
     # emit() stamps draft-mih-scitt-agent-action-capsule-05 (format 4).
     "agent-action-capsule>=0.8.1",
-    # Floor 0.8.6 (matches requirements.txt): the release the test suite is
-    # verified against. Originally 0.8.0: ask_history.py's `references <X>`
+    # Floor 0.10 (matches requirements.txt): the release the test suite is
+    # verified against, and the first whose checkpointed-local-log bound
+    # (>=0.6,<0.7) agrees with this repo's; 0.9.x caps it below 0.6, so a
+    # lower floor resolved back to 0.8.6. Originally 0.8.0: ask_history.py's `references <X>`
     # BUILDS a correlation-subject request, which only ships from 0.8.0 (#155);
     # 0.8.0 also carries chain_segment ([capsule-emit-pypi-tag-behind-main]),
     # the reason this release was cut. This floor is untested by CI (which
     # installs from requirements.txt, never builds this wheel) so it drifted
     # stale at 0.5.1 once before -- the exact broken version this sweep started
     # from -- keep it in lockstep with requirements.txt by hand.
-    "capsule-emit>=0.8.6",
+    "capsule-emit>=0.10",
     # scitt-cose and cryptography are NOT pulled by plain capsule-emit; capsule_sidecar.py imports
     # scitt_cose directly, and requester_commitment.py / node_ownership.py import cryptography directly.
     "scitt-cose>=0.2.2",

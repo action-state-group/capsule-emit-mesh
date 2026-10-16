@@ -57,7 +57,7 @@ Usage (see run_node.sh for the copy-pasteable node bring-up):
 
 Anchoring is OPT-IN, always (this repo's posture): omit --witness/--ts-url to
 stay self-checkpointed (Layer 2, no network). Pass --witness to also register
-with the default neutral witness (capsule_emit.checkpoint.DEFAULT_TS_URL,
+with the default neutral witness (cll.checkpoint.emit.DEFAULT_TS_URL,
 witness.agentactioncapsule.org).
 """
 from __future__ import annotations
@@ -71,7 +71,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from capsule_emit.checkpoint import DEFAULT_TS_URL, CheckpointConfig
+from capsule_emit.checkpoint import CheckpointConfig
+from cll.checkpoint.emit import DEFAULT_TS_URL
 from capsule_sidecar import DEFAULT_DISCLOSURE_TTL_SECONDS, prune_disclosures
 from checkpointing import (
     CheckpointState,

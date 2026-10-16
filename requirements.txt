@@ -50,7 +50,14 @@
 # than the suite was last verified on, which is how earlier version-skew
 # failures crept in unnoticed. Raise this floor (and pyproject.toml's) when the
 # suite is re-verified against a newer release.
-capsule-emit[mcp]>=0.8.6
+#
+# Floor is now 0.10: 0.9.x requires checkpointed-local-log <0.6 while this
+# repo needs 0.6, so with a lower floor the resolver fell back to 0.8.6,
+# which predates 0.9.0's registered chain relations. 0.10.0 requires
+# checkpointed-local-log>=0.6,<0.7. capsule_emit.checkpoint no longer
+# re-exports DEFAULT_TS_URL (0.9.1); this repo imports it from
+# cll.checkpoint.emit.
+capsule-emit[mcp]>=0.10
 # agent-action-capsule 0.6.0 is the first release whose emit() stamps
 # draft-mih-scitt-agent-action-capsule-05 (format 4); the sidecar seals through it.
 # Its verifier accepts -04 and -05.

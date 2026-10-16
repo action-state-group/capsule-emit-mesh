@@ -57,7 +57,8 @@ from capsule_sidecar import NodeState, default_state, run_sidecar
 from checkpointing import JsonlLogSource
 
 from agent_action_capsule.verify import verify as verify_capsule
-from capsule_emit.checkpoint import DEFAULT_TS_URL, MmrLedger, verify_receipt_offline
+from capsule_emit.checkpoint import MmrLedger, verify_receipt_offline
+from cll.checkpoint.emit import DEFAULT_TS_URL
 from scitt_cose import cll
 
 ROOT = Path(__file__).parent
