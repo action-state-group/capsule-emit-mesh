@@ -548,3 +548,218 @@ def test_leaf_of_node_index_inverts_the_leaf_index(leaf):
 @pytest.mark.parametrize("index", [2, 5, 6, -1, 1 << 53, True, "3", None])
 def test_leaf_of_node_index_refuses_what_is_no_leaf(index):
     assert ah._leaf_of_node_index(index) is None
+
+
+# --- what a lying responder, signing with its own key, cannot get past ----------------------------
+
+
+def _answer(state, request_map: dict) -> tuple[bytes, dict]:
+    sent = json.dumps(request_map).encode()
+    return sent, answer_wire(state, sent)
+
+
+def _resign(state, sent: bytes, wire: dict, **changes) -> dict:
+    """``wire``'s envelope with ``changes`` made, signed again by the node
+    key, its witness receipts kept."""
+    from evidence_responder import node_signer
+
+    envelope = er.parse_reply(json.dumps(wire).encode())
+    parts = {
+        "subject": envelope.subject, "anchor_digest": envelope.anchor_digest, "artifact": envelope.artifact,
+        "derivation": envelope.derivation, "freshness": envelope.freshness, "verification": envelope.verification,
+    }
+    parts.update(changes)
+    signed = er.sign_envelope(
+        sent, parts["subject"], parts["anchor_digest"], parts["artifact"], signer=node_signer(state),
+        issued_at="2026-10-15T00:00:00Z", derivation=parts["derivation"], freshness=parts["freshness"],
+        verification=parts["verification"],
+    )
+    out = json.loads(signed.encode("json"))
+    if "witness_receipts" in wire:
+        out["witness_receipts"] = wire["witness_receipts"]
+    return out
+
+
+def _read(sent: bytes, wire: dict, request_map: dict | None) -> ah.Reply:
+    return ah.read_reply(ah.Exchange(er.request_digest(sent), json.dumps(wire).encode(), request_map))
+
+
+def test_a_leaf_that_is_a_peak_cannot_pass_for_another_leaf(node_state):
+    """In a three-leaf MMR the third leaf is a peak by itself: its entry
+    with an empty path reaches a peak of the commitment. It must not pass
+    for leaf 0."""
+    from agent_action_capsule.canonical import jcs
+
+    cids = _seal_and_checkpoint(node_state, 3)
+    request = ah.build_request(er.Subject("range", (0, 0)))
+    sent, wire = _answer(node_state, request)
+    assert ah.verified_records(_read(sent, wire, request))
+    lines = [json.loads(bytes.fromhex(r["body"])) for r in json.loads(er.parse_reply(json.dumps(wire).encode()).artifact)["records"]]
+    third = ah.read_reply(ah.Exchange(*(lambda s, w: (er.request_digest(s), json.dumps(w).encode()))(
+        *_answer(node_state, ah.build_request(er.Subject("range", (2, 2)))))))
+    third_line = json.loads(bytes.fromhex(third.body["records"][0]["body"]))
+    assert third_line["capsule_id"] == cids[2] and lines[0]["capsule_id"] == cids[0]
+    body = {**json.loads(er.parse_reply(json.dumps(wire).encode()).artifact)}
+    body["records"] = [{"body": jcs(third_line).hex(), "digest": cids[2], "leaf_index": 0}]
+    envelope = er.parse_reply(json.dumps(wire).encode())
+    forged = _resign(node_state, sent, wire, artifact=jcs(body),
+                     verification=(envelope.verification[0], ("cll-inclusion-proof", er.encode_cll_inclusion_proof(0, []))))
+    records, _anchor, problems = ah.served_records(_read(sent, forged, request))
+    assert records == [] and problems == ["record 0's inclusion proof does not hold"]
+
+
+def test_an_answer_under_another_anchor_than_the_pin_is_refused(node_state):
+    _seal_and_checkpoint(node_state, 1)
+    _seal_and_checkpoint(node_state, 1)
+    from evidence_responder import MeshEvidenceStore
+
+    early, late = [a.digest for a in MeshEvidenceStore(node_state.ledger_dir).anchors()]
+    pinned = ah.build_request(er.Subject("range", (0, 0)), expected_pin=early)
+    sent = json.dumps(pinned).encode()
+    # The node's honest answer for the latest anchor, signed for the pinned request.
+    _other_sent, fresh = _answer(node_state, ah.build_request(er.Subject("range", (0, 0)), expected_pin=late))
+    forged = _resign(node_state, sent, fresh)
+    assert ah.served_records(_read(sent, forged, pinned))[2] == ["the anchor is not the pinned one"]
+    # Without the request the requester can only check the answer against itself.
+    assert ah.served_records(_read(sent, forged, None))[2] == []
+
+
+def test_a_freshness_the_anchor_does_not_attain_is_refused(node_state):
+    _seal_and_checkpoint(node_state, 2)
+    request = ah.build_request(er.Subject("range", (0, 1)), min_freshness=1)
+    sent, wire = _answer(node_state, request)
+    assert ah.served_records(_read(sent, wire, request))[2] == []
+    lied = _resign(node_state, sent, wire, freshness=999)
+    assert ah.served_records(_read(sent, lied, request))[2] == ["the anchor is not as fresh as asked"]
+    too_stale = ah.build_request(er.Subject("range", (0, 1)), min_freshness=50)
+    stale_sent = json.dumps(too_stale).encode()
+    stale = _resign(node_state, stale_sent, wire)
+    assert ah.served_records(_read(stale_sent, stale, too_stale))[2] == ["the anchor is not as fresh as asked"]
+
+
+def test_an_answer_for_another_subject_is_an_error(node_state):
+    _seal_and_checkpoint(node_state, 2)
+    asked = ah.build_request(er.Subject("range", (0, 0)))
+    sent = json.dumps(asked).encode()
+    _other, wire = _answer(node_state, ah.build_request(er.Subject("range", (0, 1))))
+    forged = _resign(node_state, sent, wire)
+    reply = _read(sent, forged, asked)
+    assert not reply.ok and "the answer is not for the requested subject or derivation" in reply.errors
+
+
+def test_forged_or_unbound_witness_receipts_make_the_answer_no_evidence(node_state):
+    from evidence_responder import MeshEvidenceStore
+
+    _seal_and_checkpoint(node_state, 1)
+    request = ah.build_request(er.Subject("range", (0, 0)))
+    sent, wire = _answer(node_state, request)
+    anchor = MeshEvidenceStore(node_state.ledger_dir).anchors()[-1].digest
+    lines = [json.loads(x) for x in (node_state.ledger_dir / "checkpoints.jsonl").read_text().splitlines() if x]
+    record = ah.CheckpointRecord.from_dict(lines[-1])
+    bound = ah.sha256_hex_of_hex(record.digest())
+    forged_receipt = {"ts_url": "https://ts.example", "entry_hash": bound, "receipt_b64": "AAAA", "leaf_index": 0,
+                      "tree_size": 1}
+    cases = {
+        "a witness receipt does not cover the checkpoint it is carried on": [{"checkpoint": anchor, "witness": forged_receipt}],
+        "a witness receipt names a checkpoint the answer does not carry": [{"checkpoint": "ab" * 32, "witness": {**forged_receipt, "is_stub": True}}],
+    }
+    for problem, receipts in cases.items():
+        reply = _read(sent, {**wire, "witness_receipts": receipts}, request)
+        assert reply.ok  # unsigned: the envelope itself still verifies
+        records, _anchor, problems = ah.served_records(reply)
+        assert records == [] and problems == [problem]
+    # A stub counts for nothing, but is no forgery.
+    stub = [{"checkpoint": anchor, "witness": {**forged_receipt, "is_stub": True}}]
+    records, served, problems = ah.served_records(_read(sent, {**wire, "witness_receipts": stub}, request))
+    assert problems == [] and [w.is_stub for w in served.record.witnesses] == [True]
+
+
+def test_an_exchange_pinned_by_its_own_half_is_checked_under_the_earliest_covering_anchor():
+    """The plugin answers an exchange pinned by the requester's own half
+    under the earliest checkpoint covering the records: the envelope names
+    the half, the artifact that checkpoint (no Mesh door serves exchanges)."""
+    import types
+
+    half = "cd" * 32
+    request = er.parse_request(json.dumps({"subject": {"exchange": half}, "coverage": {"expected_pin": half}}).encode())
+    anchor = types.SimpleNamespace(digest="ef" * 32, covered=8, covered_before=4, record=types.SimpleNamespace(mmr_size=15))
+    reply = types.SimpleNamespace(request=request, envelope=types.SimpleNamespace(anchor_digest=half, freshness=None))
+    assert ah._check_coverage(reply, anchor, [2, 5]) == []
+    assert ah._check_coverage(reply, anchor, [2, 3]) == ["the anchor is not the earliest covering the records"]
+    other = types.SimpleNamespace(request=request, envelope=types.SimpleNamespace(anchor_digest="00" * 32, freshness=None))
+    assert ah._check_coverage(other, anchor, [5]) == ["the anchor is not the pinned one"]
+
+
+def test_a_served_summary_answer_is_checked(node_state):
+    from evidence_responder import MeshEvidenceStore
+
+    _seal_and_checkpoint(node_state, 1)
+    latest = MeshEvidenceStore(node_state.ledger_dir).anchors()[-1].digest
+    request = ah.build_request(er.Subject("full_history"), expected_pin=latest, derivation="served_summary/1")
+    sent, wire = _answer(node_state, request)
+    reply = _read(sent, wire, request)
+    assert reply.ok and ah.check_artifact(reply) == []
+    stripped = _resign(node_state, sent, wire, verification=())
+    assert ah.check_artifact(_read(sent, stripped, request)) == ["the answer carries no anchor checkpoint"]
+    from agent_action_capsule.canonical import jcs
+
+    body = json.loads(er.parse_reply(json.dumps(wire).encode()).artifact)
+    renamed = _resign(node_state, sent, wire, artifact=jcs({**body, "evidence_stream": "another-log"}))
+    assert ah.check_artifact(_read(sent, renamed, request)) == ["the artifact names another anchor or stream than its checkpoint's"]
+
+
+def test_a_history_card_answer_is_checked_link_by_link(node_state):
+    """``history_card/1``, as the plugin serves it: every checkpoint from the
+    start of the stream, each after the first with its consistency proof."""
+    from agent_action_capsule.canonical import jcs
+
+    from evidence_responder import MeshEvidenceStore, node_signer
+
+    _seal_and_checkpoint(node_state, 1)
+    _seal_and_checkpoint(node_state, 2)
+    store = MeshEvidenceStore(node_state.ledger_dir)
+    first, second = store.checkpoints
+    consistency = store._consistency(store._tree(second), second)
+    history = [{"checkpoint": first.line["checkpoint_cose"], "consistency_from_previous": None},
+               {"checkpoint": second.line["checkpoint_cose"], "consistency_from_previous": consistency.hex()}]
+    request = ah.build_request(er.Subject("full_history"), expected_pin=second.anchor.digest, derivation="history_card/1")
+    sent = json.dumps(request).encode()
+
+    def answer(entries):
+        body = {"anchor": second.anchor.digest, "derivation": "history_card/1", "evidence_stream": second.record.log_id,
+                "history": entries, "subject": {"full_history": None}}
+        envelope = er.sign_envelope(sent, er.Subject("full_history"), second.anchor.digest, jcs(body),
+                                    signer=node_signer(node_state), issued_at="2026-10-15T00:00:00Z",
+                                    derivation="history_card/1")
+        return _read(sent, json.loads(envelope.encode("json")), request)
+
+    assert ah.check_artifact(answer(history)) == []
+    no_proof = [history[0], {**history[1], "consistency_from_previous": None}]
+    assert ah.check_artifact(answer(no_proof)) == ["a consistency proof does not hold"]
+    assert ah.check_artifact(answer([history[1]])) == ["a history entry's consistency proof is missing or out of place"]
+    later_only = [{**history[1], "consistency_from_previous": None}]
+    assert ah.check_artifact(answer(later_only)) == ["the checkpoint list does not start the stream"]
+
+
+def test_an_unchecked_derivation_is_a_problem(node_state):
+    _seal_and_checkpoint(node_state, 1)
+    request = ah.build_request(er.Subject("full_history"), derivation="ab" * 32)
+    sent = json.dumps(request).encode()
+    from agent_action_capsule.canonical import jcs
+
+    from evidence_responder import node_signer
+
+    envelope = er.sign_envelope(sent, er.Subject("full_history"), "ab" * 32,
+                                jcs({"derivation": "ab" * 32, "subject": {"full_history": None}}),
+                                signer=node_signer(node_state), issued_at="2026-10-15T00:00:00Z", derivation="ab" * 32)
+    problems = ah.check_artifact(_read(sent, json.loads(envelope.encode("json")), request))
+    assert problems and "does not check" in problems[0]
+
+
+def test_too_many_items_are_refused_before_any_is_checked():
+    exchange = _signed_checkpoints_reply({"checkpoints": ["00"] * (ah.MAX_ITEMS + 1)})
+    assert ah.answer_checkpoints(ah.read_reply(exchange))[1] == ["the artifact carries no checkpoints"]
+    receipts = [{"checkpoint": "ab" * 32, "witness": {}}] * (ah.MAX_ITEMS + 1)
+    wire = {**json.loads(exchange.reply), "witness_receipts": receipts}
+    reply = ah.read_reply(ah.Exchange(exchange.request_digest, json.dumps(wire).encode()))
+    assert "witness_receipts is not a list of at most 10000 receipts" in reply.errors

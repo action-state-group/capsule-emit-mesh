@@ -31,7 +31,8 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures" / "evidence-interop" / "
 def _fixture(name: str) -> tuple[dict, ah.Reply]:
     fixture = json.loads((FIXTURES / f"{name}.json").read_text())
     sent = bytes.fromhex(fixture["request_hex"])
-    exchange = ah.Exchange(er.request_digest(sent), json.dumps(fixture["reply"]).encode())
+    # The request as asked: the answer is checked against its subject and coverage too.
+    exchange = ah.Exchange(er.request_digest(sent), json.dumps(fixture["reply"]).encode(), json.loads(sent))
     return fixture, ah.read_reply(exchange, responder_key=fixture["responder"])
 
 

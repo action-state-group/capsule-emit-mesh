@@ -470,18 +470,12 @@ class TestReferencesEndToEnd:
         assert result.adjudications_about_x == {"corroborated": 0, "contradicted": 0, "inconclusive": 0}
 
     def test_no_witnessed_checkpoint_draws_no_sample(self, tmp_path, stub_witness, monkeypatch):
-        """GCP's checkpoints carry receipts, but from a witness whose key the
-        asker has not pinned: nothing re-verifies as WITNESSED. The old code
-        sampled anyway, seeded by GCP's own node id; now nobody is asked and
-        the result says why."""
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-
+        """GCP's checkpoints carry receipts, but from a witness the asker has
+        not pinned: they are well formed (UNVERIFIED), nothing re-verifies as
+        WITNESSED. The old code sampled anyway, seeded by GCP's own node id;
+        now nobody is asked and the result says why."""
         gcp_state, m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path, ts_url=stub_witness)
-        other_key = Ed25519PrivateKey.generate().public_key().public_bytes(
-            Encoding.PEM, PublicFormat.SubjectPublicKeyInfo
-        )
-        monkeypatch.setattr(checkpoint_emit_mod, "DEFAULT_TS_PUBLIC_KEY_PEM", other_key)
+        monkeypatch.setattr(checkpoint_emit_mod, "DEFAULT_TS_URL", "https://another-witness.example")
 
         gcp_server, gcp_thread, gcp_url = _run_server(gcp_state)
         m4_server, m4_thread, m4_url = _run_server(m4_state)
@@ -504,6 +498,26 @@ class TestReferencesEndToEnd:
         assert result.selection["method"] == "not_sampled"
         assert "witnessed" in result.selection["reason"]
         assert "sample: none drawn" in ah.render_references_result(result)
+
+    def test_a_receipt_that_fails_under_the_pinned_witness_key_is_no_evidence(self, tmp_path, stub_witness, monkeypatch):
+        """A receipt claiming the pinned witness that does not verify under
+        its key: the answer carrying it is refused, as the plugin's
+        requester refuses it, never read as unwitnessed."""
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+        gcp_state, _m4_state, gcp_cids = _build_gcp_caught_by_m4(tmp_path, ts_url=stub_witness)
+        other_key = Ed25519PrivateKey.generate().public_key().public_bytes(
+            Encoding.PEM, PublicFormat.SubjectPublicKeyInfo
+        )
+        monkeypatch.setattr(checkpoint_emit_mod, "DEFAULT_TS_PUBLIC_KEY_PEM", other_key)
+        gcp_server, gcp_thread, gcp_url = _run_server(gcp_state)
+        try:
+            with pytest.raises(RuntimeError, match="does not cover the checkpoint"):
+                ah.run_references(gcp_url, x_node_id="gcp", x_range=(0, len(gcp_cids) - 1), peer_map={}, k=3)
+        finally:
+            gcp_server.shutdown()
+            gcp_thread.join(timeout=5)
 
     def test_self_checkpointed_x_draws_no_sample(self, tmp_path, stub_witness):
         """X checkpoints but never registers with a witness. Its node id is

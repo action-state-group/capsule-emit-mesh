@@ -71,12 +71,12 @@ _ANCHOR = "ab" * 32
 _ISSUED_AT = "2026-10-15T00:00:00Z"
 
 
-def _envelope(request_bytes: bytes, body: dict[str, Any], *, anchor: str = _ANCHOR) -> dict[str, Any]:
+def _envelope(request_bytes: bytes, body: dict[str, Any], *, anchor: str = _ANCHOR, freshness: Any = None) -> dict[str, Any]:
     """A signed -00 envelope answering ``request_bytes`` with ``body``."""
     request = er.parse_request(request_bytes)
     envelope = er.sign_envelope(
         request_bytes, request.subject, anchor, jcs(body), signer=_SIGNER, issued_at=_ISSUED_AT,
-        derivation=request.derivation,
+        derivation=request.derivation, freshness=freshness,
     )
     return json.loads(envelope.encode("json"))
 
@@ -111,7 +111,13 @@ class _MockPeerHandler(BaseHTTPRequestHandler):
             anchor = self.server.anchor  # type: ignore[attr-defined]
             artifact = {"anchor": anchor, "checkpoints": statements, "evidence_stream": _LOG_ID,
                         "subject": {"checkpoints": None}}
-            self._send_json(200, _envelope(body_raw, artifact, anchor=anchor))
+            # The anchor attains, as a size, its MMR size: the last statement's.
+            freshness = None
+            if statements:
+                from cll.checkpoint.cose_wire import verify_checkpoint_cose_offline
+
+                freshness = verify_checkpoint_cose_offline(bytes.fromhex(statements[-1])).decoded.mmr_size
+            self._send_json(200, _envelope(body_raw, artifact, anchor=anchor, freshness=freshness))
 
     def _send_json(self, status: int, data: dict[str, Any]) -> None:
         body = json.dumps(data).encode("utf-8")
@@ -302,7 +308,7 @@ def test_fetch_peer_history_refuses_lines_that_do_not_end_at_the_anchor() -> Non
     try:
         result = fetch_peer_history(base_url, timeout_seconds=5, peer_id="test-peer")
         assert result["status"] == "failed"
-        assert "not the envelope's anchor" in result["reason"]
+        assert "another anchor" in result["reason"]
     finally:
         server.shutdown()
 
