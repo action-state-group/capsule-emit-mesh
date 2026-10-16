@@ -891,3 +891,42 @@ def test_a_time_freshness_answer_is_checked_against_the_request(node_state):
     assert ah.served_records(_read(future_sent, _resign(node_state, future_sent, wire), future))[2] == [
         "the anchor is not as fresh as asked"
     ]
+
+
+def test_a_record_digest_is_plain_jcs_of_the_line_as_the_plugin_computes_it():
+    """No format check and no legacy normalization: nulls, empty members and
+    chain are all committed, as in capsule-emit's Rust compute_capsule_id."""
+    import hashlib
+
+    from agent_action_capsule.canonical import jcs
+
+    line = {"action_type": "serve", "effect": {"note": None, "tags": []}, "chain": {"prev": "x"},
+            "signature": "s", "key_id": "k"}
+    line["capsule_id"] = hashlib.sha256(jcs({k: v for k, v in line.items() if k not in ("signature", "key_id")})).hexdigest()
+    assert ah._record_digest(jcs(line)) == line["capsule_id"]
+    assert ah._record_digest(jcs({**line, "chain": {"prev": "y"}})) is None
+    assert ah._record_digest(jcs({**line, "signature": "another"})) == line["capsule_id"]  # local-only
+    duplicated = jcs(line)[:-1] + b',"action_type":"other"}'
+    assert ah._record_digest(duplicated) is None
+
+
+def test_a_record_that_is_its_own_octets_is_read_with_its_material_in_any_order(node_state):
+    from agent_action_capsule.canonical import jcs
+
+    cids = _seal_and_checkpoint(node_state, 1)
+    _seal_and_checkpoint(node_state, 1)
+    request = ah.build_request(er.Subject("record", cids[0]))
+    sent, wire = _answer(node_state, request)
+    envelope = er.parse_reply(json.dumps(wire).encode())
+    line = json.loads(envelope.artifact)
+    preimage = jcs({k: v for k, v in line.items() if k not in ("capsule_id", "signature", "key_id")})
+    checkpoint, inclusion, consistency = envelope.verification
+    reordered = _resign(node_state, sent, wire, artifact=preimage, verification=(inclusion, consistency, checkpoint))
+    reply = _read(sent, reordered, request)
+    assert reply.ok and reply.cll.status == "PASS"
+    assert [r.capsule_id for r in ah.verified_records(reply)] == [cids[0]]
+    # A named ledger line keeps the fixed order.
+    shuffled = _resign(node_state, sent, wire, verification=(inclusion, checkpoint, consistency))
+    assert ah.served_records(_read(sent, shuffled, request))[2] == [
+        "the material is not the anchor checkpoint and the record's proofs"
+    ]

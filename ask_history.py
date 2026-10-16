@@ -122,9 +122,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent_action_capsule import evidence_request as er
-from agent_action_capsule.canonical import jcs
+from agent_action_capsule.canonical import LOCAL_ONLY_FIELDS, jcs
 from agent_action_capsule.interop_profile._common import FAIL, TrustPolicy
-from capsule_emit.canonicalization import compute_capsule_id
 from capsule_emit.checkpoint import StampVerdict, verify_witness_stamp_tristate
 from cll.checkpoint.emit import CheckpointRecord, WitnessRecord
 
@@ -520,14 +519,16 @@ class ServedRecord:
 
 def _record_digest(body: bytes) -> str | None:
     """The digest a record body proves: its recomputed ``capsule_id`` when
-    it is a ledger line stating that id, as the plugin's requester reads
-    one (capsule-emit's ``compute_capsule_id``, the twin of the one it
-    calls, for a format-4 record and an earlier one alike). ``None`` for a
-    body that is not such a line."""
+    it is a ledger line stating that id, as the plugin's requester reads one
+    (capsule-emit's Rust ``jcs::compute_capsule_id``): SHA-256 of the RFC
+    8785 JSON of the line without ``capsule_id`` and the local-only producer
+    envelope members, whatever its format. ``None`` for a body that is not
+    such a line (duplicate members included)."""
     try:
-        line = json.loads(body)
+        line = json.loads(body, object_pairs_hook=_no_duplicate_members)
         stated = line.get("capsule_id")
-        return stated if isinstance(stated, str) and compute_capsule_id(line) == stated else None
+        preimage = {k: v for k, v in line.items() if k != "capsule_id" and k not in LOCAL_ONLY_FIELDS}
+        return stated if isinstance(stated, str) and hashlib.sha256(jcs(preimage)).hexdigest() == stated else None
     except (UnicodeDecodeError, ValueError, TypeError, AttributeError):
         return None
 
@@ -687,9 +688,17 @@ def _served_record(reply: Reply, material: list[tuple[str, bytes]]) -> tuple[lis
     artifact = envelope.artifact
     if envelope.artifact_digest != digest and _record_digest(artifact) != digest:
         return [], None, ["the artifact is not the record the subject names"]
-    # In this order, as evidencebook (interop_cll.go cllMaterial), the plugin
-    # and this repository's door all send it.
     kinds = [k for k, _ in material]
+    if envelope.artifact_digest == digest and reply.cll is not None and reply.cll.status == "PASS":
+        # A record that is its own octets: the profile's check found each
+        # kind exactly once, in whatever order; read them by kind, as the
+        # plugin's requester does.
+        order = [KIND_CHECKPOINT, KIND_INCLUSION, KIND_CONSISTENCY]
+        material = sorted(material, key=lambda item: order.index(item[0]) if item[0] in order else len(order))
+        kinds = [k for k, _ in material]
+    # A named ledger line's material comes in this order, as evidencebook
+    # (interop_cll.go cllMaterial), the plugin and this repository's door
+    # all send it.
     if kinds not in ([KIND_CHECKPOINT, KIND_INCLUSION], [KIND_CHECKPOINT, KIND_INCLUSION, KIND_CONSISTENCY]):
         return [], None, ["the material is not the anchor checkpoint and the record's proofs"]
     anchor, problems = _anchor(reply, material[0][1], None)
