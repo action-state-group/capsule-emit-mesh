@@ -318,14 +318,24 @@ def _witness_receipts(raw: bytes) -> tuple[tuple[tuple[str, WitnessRecord], ...]
         return (), ["witness_receipts is not a list of at most 10000 receipts"]
     out: list[tuple[str, WitnessRecord]] = []
     for item in carried:
-        try:
-            digest = item["checkpoint"]
-            if not er.is_digest(digest):
-                raise ValueError(digest)
-            out.append((digest, WitnessRecord.from_dict(item["witness"])))
-        except (KeyError, TypeError, ValueError, AttributeError):
+        if not (isinstance(item, dict) and er.is_digest(item.get("checkpoint")) and _well_typed(item.get("witness"))):
             return (), ["a witness receipt is malformed"]
+        out.append((item["checkpoint"], WitnessRecord.from_dict(item["witness"])))
     return tuple(out), []
+
+
+def _well_typed(witness: Any) -> bool:
+    """A witness record whose members have their own types, before
+    ``WitnessRecord.from_dict`` (which coerces: ``"false"`` would read as a
+    stub) reads it, as the plugin's typed decoding requires."""
+    if not isinstance(witness, dict):
+        return False
+    texts = all(isinstance(witness.get(k), str) for k in ("ts_url", "entry_hash", "receipt_b64"))
+    sizes = all(
+        isinstance(witness.get(k), int) and not isinstance(witness.get(k), bool) and witness[k] >= 0
+        for k in ("leaf_index", "tree_size")
+    )
+    return texts and sizes and isinstance(witness.get("is_stub", False), bool)
 
 
 def read_reply(exchange: Exchange, *, responder_key: str | None = None, trust: TrustPolicy | None = None) -> Reply:
@@ -657,12 +667,14 @@ def _served_set(reply: Reply, material: list[tuple[str, bytes]], form: str) -> t
             return [], anchor, [f"record {i}'s inclusion proof does not hold"]
         parsed = _parsed_record(raw)
         out.append(ServedRecord(leaf_index=leaf, capsule_id=digest, receipt=parsed if parsed is not None else {}))
-    leaves = [r.leaf_index for r in out]
+    # The leaves strictly increase, so a count and both ends pin them down,
+    # with nothing allocated in proportion to what the responder claims.
+    first, last, count = out[0].leaf_index, out[-1].leaf_index, len(out)
     if form == "range":
         a, b = envelope.subject.content
-        if leaves != list(range(a, b + 1)):
+        if (first, last, count) != (a, b, b - a + 1):
             return [], anchor, ["the records are not the range asked for"]
-    elif form == "full_history" and leaves != list(range(anchor.covered)):
+    elif form == "full_history" and (first, last, count) != (0, anchor.covered - 1, anchor.covered):
         return [], anchor, ["the records are not the full history under the anchor"]
     return out, anchor, []
 
@@ -1088,6 +1100,27 @@ def _recent_records_request(lines: list[dict[str, Any]], node_id: str) -> dict[s
     return build_request(er.Subject("range", (first, size - 1)), expected_pin=pin)
 
 
+def _seed_checkpoints(
+    anchor: ServedCheckpoint, records: list[ServedRecord], chain: list[dict[str, Any]]
+) -> list[CheckpointRecord]:
+    """The checkpoints that may seed the sample drawn from ``records``: the
+    anchor they are proven under, and those of ``X``'s checked chain that
+    cover every one of them, when that chain runs through the anchor (so each
+    is the anchor's own ancestor or successor). A checkpoint fixed before some
+    of the records were written would let ``X`` see the seed first and then
+    write records that shape the sample."""
+    from cll.checkpoint.core import leaf_count
+
+    covering = [anchor.record]
+    statements = {hashlib.sha256(bytes.fromhex(line["checkpoint_cose"])).hexdigest() for line in chain}
+    if anchor.digest in statements:
+        needed = max(r.leaf_index for r in records) + 1
+        covering += [
+            CheckpointRecord.from_dict(line) for line in chain if leaf_count(line["mmr_size"]) >= needed
+        ]
+    return covering
+
+
 def run_references(
     x_peer: str,
     *,
@@ -1132,9 +1165,7 @@ def run_references(
     verified_x_receipts = [r.receipt for r in x_records]
 
     candidates = discover_counterparties(x_records, exclude_node_id=x_node_id)
-    # The pulled records' anchor, or any checked checkpoint of X's chain:
-    # each is X's own, and a receipt fixes it at a third party.
-    seed = witnessed_seed([x_anchor.record, *(CheckpointRecord.from_dict(line) for line in chain)])
+    seed = witnessed_seed(_seed_checkpoints(x_anchor, x_records, chain))
     selection: dict[str, Any] = {"k": k, "candidates_digest": candidates_digest(candidates)}
     if seed is None:
         sampled: list[str] = []

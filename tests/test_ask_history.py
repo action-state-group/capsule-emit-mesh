@@ -763,3 +763,58 @@ def test_too_many_items_are_refused_before_any_is_checked():
     wire = {**json.loads(exchange.reply), "witness_receipts": receipts}
     reply = ah.read_reply(ah.Exchange(exchange.request_digest, json.dumps(wire).encode()))
     assert "witness_receipts is not a list of at most 10000 receipts" in reply.errors
+
+
+@pytest.mark.parametrize("witness", [
+    {"is_stub": "false"},           # a string read as truthy would make it a stub
+    {"leaf_index": "0"},
+    {"tree_size": True},
+    {"leaf_index": -1},
+    {"receipt_b64": 1},
+])
+def test_a_witness_receipt_of_the_wrong_types_is_malformed(node_state, witness):
+    _seal_and_checkpoint(node_state, 1)
+    request = ah.build_request(er.Subject("range", (0, 0)))
+    sent, wire = _answer(node_state, request)
+    base = {"ts_url": "https://ts.example", "entry_hash": "00" * 32, "receipt_b64": "AAAA", "leaf_index": 0,
+            "tree_size": 1}
+    receipts = [{"checkpoint": json.loads(er.parse_reply(json.dumps(wire).encode()).artifact)["anchor"],
+                 "witness": {**base, **witness}}]
+    reply = _read(sent, {**wire, "witness_receipts": receipts}, request)
+    assert not reply.ok and "a witness receipt is malformed" in reply.errors
+
+
+def test_a_full_history_missing_a_record_is_refused(node_state):
+    from agent_action_capsule.canonical import jcs
+
+    _seal_and_checkpoint(node_state, 3)
+    request = ah.build_request(er.Subject("full_history"))
+    sent, wire = _answer(node_state, request)
+    assert ah.verified_records(_read(sent, wire, request))
+    envelope = er.parse_reply(json.dumps(wire).encode())
+    body = json.loads(envelope.artifact)
+    body["records"] = body["records"][:2]
+    forged = _resign(node_state, sent, wire, artifact=jcs(body), verification=envelope.verification[:3])
+    assert ah.served_records(_read(sent, forged, request))[2] == ["the records are not the full history under the anchor"]
+
+
+def test_only_checkpoints_covering_every_pulled_record_can_seed_the_sample():
+    """An old witnessed checkpoint fixed before some pulled records were
+    written cannot seed: X could have seen it and then shaped the sample."""
+    import hashlib
+    import types
+
+    from cll.checkpoint.core import node_count
+
+    def line(leaves: int, statement: bytes) -> dict:
+        return {"v": 1, "kind": "mmr_checkpoint", "log_id": "x", "mmr_size": node_count(leaves), "root": "00" * 32,
+                "prev_size": 0, "prev_root": "", "key_id": "ab" * 32, "timestamp": "2026-10-15T00:00:00Z",
+                "signature": "", "checkpoint_cose": statement.hex()}
+
+    old, served, later = line(2, b"old"), line(4, b"served"), line(6, b"later")
+    anchor = types.SimpleNamespace(digest=hashlib.sha256(b"served").hexdigest(), record=ah.CheckpointRecord.from_dict(served))
+    records = [ah.ServedRecord(leaf_index=i, capsule_id="ab" * 32, receipt={}) for i in (1, 3)]
+    sizes = [cp.mmr_size for cp in ah._seed_checkpoints(anchor, records, [old, served, later])]
+    assert sizes == [node_count(4), node_count(4), node_count(6)]
+    # A chain that does not run through the anchor seeds nothing beyond the anchor.
+    assert [cp.mmr_size for cp in ah._seed_checkpoints(anchor, records, [old, later])] == [node_count(4)]
