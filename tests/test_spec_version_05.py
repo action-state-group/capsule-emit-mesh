@@ -1,8 +1,9 @@
 """Producers emit draft-mih-scitt-agent-action-capsule-05; verifiers accept
 -04 and -05.
 
-The sidecar seals through agent_action_capsule's emit(), which stamps -05
-(format 4) from 0.6.0 on -- the floor in requirements.txt and pyproject.toml.
+The sidecar seals through capsule_emit.builder.build_capsule() (AAC's former
+emit(), which stamps -05 (format 4) from AAC 0.6.0 on); see the floors in
+requirements.txt and pyproject.toml.
 The revision never selects a digest or verification algorithm, so a -04
 capsule still verifies. Released vectors and ledgers keep the revision they
 were sealed with.

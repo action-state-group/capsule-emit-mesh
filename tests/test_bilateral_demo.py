@@ -22,7 +22,7 @@ from pathlib import Path
 # and scitt_cose (same pattern as test_forwarded_copy_and_keys.py).
 # ---------------------------------------------------------------------------
 # Apply the attribute stubs ONLY to names we actually created here (the
-# not-installed path). Clobbering the real installed module's `.verify`/`.emit`
+# not-installed path). Clobbering the real installed module's `.verify`/`.build_capsule`
 # leaked a `verify -> None` stub into every later test in the same process and
 # broke the coordinator-receipt suite. `_stubbed` gates the clobber.
 _stubbed: set[str] = set()

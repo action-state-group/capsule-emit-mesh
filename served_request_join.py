@@ -257,9 +257,9 @@ def _with_references(sealed: dict[str, Any], references: list[dict[str, Any]]) -
     """Add a top-level `references` array to an already-`emit()`-sealed
     capsule and recompute `capsule_id` over the resulting bytes.
 
-    `capsule_emit.builder.build_capsule()` (and the `Capsule` dataclass behind it) has
-    no `references` parameter — the {{xref}} section landed as spec text
-    only (agent-action-capsule#85), with no python-library constructor yet.
+    This helper predates the `references` parameter of
+    `capsule_emit.builder.build_capsule()` and `Capsule`: the {{xref}}
+    section (agent-action-capsule#85) first landed as spec text only.
     `compute_capsule_id` (canonical.py) is generic over whatever top-level
     keys the dict carries: given a `jcs`-declared capsule it excludes only
     `capsule_id` and the local-only signature/key_id fields, so adding

@@ -24,9 +24,8 @@ CITATION, NOT COMPOSITION
     log, it *cites* them as an N-ary, ordered `stages[]` array of CPB typed
     digest references — the shape AAC's `references[]` / `citation_purpose`
     seam ({{xref}}, agent-action-capsule #85) defines for exactly this kind
-    of cross-record citation. AAC's `emit()` does not yet carry a top-level
-    `references` field in code, and this repo's own coordinator/per-hop
-    records are bespoke-serialized (capsule_to_bytes: plain
+    of cross-record citation. This repo's own coordinator/per-hop records
+    are not built by capsule-emit's builder: they are bespoke-serialized (capsule_to_bytes: plain
     `json.dumps(sort_keys=True)`, no JCS), so the
     citation lives in a private extension block
     (`x-mesh-coordinator-receipt-v1`) inside `compute_attestation`, mirroring

@@ -10,7 +10,7 @@ import types
 # setdefault never overwrites a real module that is already imported -- and,
 # critically, the attribute stubs below are applied ONLY to names we actually
 # created here. When agent-action-capsule IS installed the real module stays
-# untouched; clobbering the real `.verify`/`.emit` on `sys.modules` leaked a
+# untouched; clobbering the real `.verify`/`.build_capsule` on `sys.modules` leaked a
 # `verify -> None` stub into every test that ran afterwards in the same process
 # (it broke the coordinator-receipt suite's honest cases). `_stubbed` gates the
 # clobber to the not-installed path only.

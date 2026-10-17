@@ -56,7 +56,7 @@ import pytest
 import capsule_sidecar as cs
 import provenance_fold_join as pfj
 
-# agent_action_capsule.canonical/contracts/emit/verify are bound for real by
+# agent_action_capsule.canonical/contracts/verify and capsule_emit.builder are bound for real by
 # conftest.py's import-order guard before any test file collects -- they can
 # never be the fake-module stand-ins a stubbing test file creates, so
 # reloading them here bought nothing and cost identity: importlib.reload()

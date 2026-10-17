@@ -15,7 +15,7 @@ MODULE-POLLUTION GUARD
     Some sibling test files (test_forwarded_copy_and_keys.py,
     test_bilateral_demo.py, test_replay_spot_check.py) unconditionally
     `setattr` fake implementations onto agent_action_capsule.canonical/
-    contracts/emit/verify and model_identity at collection time -- these are
+    contracts/verify, capsule_emit.builder and model_identity at collection time -- these are
     the REAL modules in sys.modules, not stand-ins, so this permanently
     corrupts them for the rest of the session regardless of collection order
     (pytest collects every file before running any test). capsule_sidecar

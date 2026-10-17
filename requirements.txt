@@ -14,7 +14,8 @@
 # 0.2.0, whose format-4/JCS capsules carry different capsule_id/digest bytes
 # than 0.4.x and whose top-level emit() verb was renamed to seal()/received().
 # This repo consumes only the stable capsule_emit.checkpoint surface and
-# agent_action_capsule.emit() (aac's own emit, unchanged in 0.2.0) -- not
+# agent_action_capsule.emit() (aac's own emit, unchanged in 0.2.0; now
+# capsule_emit.builder, see the 0.11 floor below) -- not
 # capsule-emit's removed emit() verb -- so the full suite passes and the
 # committed ledger/ fixtures verify clean with no migration.
 #
