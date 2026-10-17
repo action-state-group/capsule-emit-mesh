@@ -38,12 +38,7 @@ import pytest
 import capsule_sidecar as cs
 from ledger_store_backend import read_all_capsules
 
-# `agent_action_capsule/__init__.py` does `from .emit import emit`, which
-# shadows the `emit` SUBMODULE attribute on the package with the `emit`
-# FUNCTION -- `import agent_action_capsule.emit as x` binds `x` to that
-# function, not the submodule, so reloading it would fail. sys.modules is
-# unaffected by that shadowing and always holds the real submodule objects.
-# agent_action_capsule.canonical/contracts/emit/verify are bound for real by
+# agent_action_capsule.canonical/contracts/verify and capsule_emit.builder are bound for real by
 # conftest.py's import-order guard before any test file collects -- they can
 # never be the fake-module stand-ins a stubbing test file creates, so
 # reloading them here bought nothing and cost identity: importlib.reload()

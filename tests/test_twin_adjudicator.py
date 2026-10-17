@@ -23,7 +23,7 @@ import socket
 
 import pytest
 from agent_action_capsule.contracts import Disposition, EffectRecord
-from agent_action_capsule.emit import emit
+from capsule_emit.builder import build_capsule as emit
 
 from capsule_sidecar import digest_json
 from twin_adjudicator import (

@@ -139,7 +139,7 @@ def _plugin_capsule(
     sub-objects, `agent_input_digest` at the top of `compute_attestation`,
     `role == "served"` (top-level sibling of `serving_provenance`)."""
     from agent_action_capsule.contracts import Disposition, EffectRecord
-    from agent_action_capsule.emit import emit
+    from capsule_emit.builder import build_capsule as emit
 
     serving_provenance = {
         "served_by_node_id": node_id,

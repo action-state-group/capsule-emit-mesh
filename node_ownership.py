@@ -57,7 +57,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from agent_action_capsule.contracts import Disposition
-from agent_action_capsule.emit import emit
+from capsule_emit.builder import build_capsule as emit
 
 # ---------------------------------------------------------------------------
 # Constants mirroring mesh-llm-identity/src/ownership.rs

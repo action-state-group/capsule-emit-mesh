@@ -84,7 +84,7 @@ import scitt_cose
 
 from agent_action_capsule.canonical import compute_capsule_id
 from agent_action_capsule.contracts import Disposition
-from agent_action_capsule.emit import emit
+from capsule_emit.builder import build_capsule as emit
 from agent_action_capsule.verify import verify as verify_capsule
 
 __all__ = [
@@ -257,7 +257,7 @@ def _with_references(sealed: dict[str, Any], references: list[dict[str, Any]]) -
     """Add a top-level `references` array to an already-`emit()`-sealed
     capsule and recompute `capsule_id` over the resulting bytes.
 
-    `agent_action_capsule.emit()` (and the `Capsule` dataclass behind it) has
+    `capsule_emit.builder.build_capsule()` (and the `Capsule` dataclass behind it) has
     no `references` parameter — the {{xref}} section landed as spec text
     only (agent-action-capsule#85), with no python-library constructor yet.
     `compute_capsule_id` (canonical.py) is generic over whatever top-level

@@ -68,7 +68,7 @@ from typing import Any
 
 from agent_action_capsule.canonical import FloatInDigestError, UnsafeIntegerError, json_digest
 from agent_action_capsule.contracts import Disposition, EffectRecord
-from agent_action_capsule.emit import emit
+from capsule_emit.builder import build_capsule as emit
 from agent_action_capsule.verify import verify as verify_capsule
 
 import scitt_cose

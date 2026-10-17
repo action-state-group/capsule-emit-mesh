@@ -87,7 +87,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent_action_capsule.emit import emit
+from capsule_emit.builder import build_capsule as emit
 
 # The neutral account/fold core — the single implementation of
 # fold-definition-as-DATA + definition_digest, the account object, and

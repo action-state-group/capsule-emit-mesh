@@ -52,7 +52,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent_action_capsule.contracts import InvariantError
-from agent_action_capsule.emit import emit
+from capsule_emit.builder import build_capsule as emit
 from agent_action_capsule.verify import verify as verify_capsule
 from capsule_emit.numbers import float_to_str
 
@@ -254,7 +254,7 @@ def seal_moderation_decision(
 ) -> dict[str, Any]:
     """Seal a `moderation_decision` -- same pattern as `join_card.seal_card`
     / `twin_adjudicator.seal_adjudication_capsule`: a CAPSULE built with
-    `agent_action_capsule.emit()`, verified BEFORE it is handed to a caller
+    `capsule_emit.builder.build_capsule()`, verified BEFORE it is handed to a caller
     that might persist it (`[adv-run-2-fix-batch]` discipline).
 
     `expected_weights_digest`, when supplied, is compared against the

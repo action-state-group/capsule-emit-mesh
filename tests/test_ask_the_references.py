@@ -44,7 +44,7 @@ from _stub_receipt import (
     checkpoint_entry_hash,
 )
 from agent_action_capsule.contracts import Disposition, EffectRecord
-from agent_action_capsule.emit import emit
+from capsule_emit.builder import build_capsule as emit
 from capsule_emit import seal, witness
 from capsule_emit.checkpoint import emit as checkpoint_emit_mod
 

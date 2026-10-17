@@ -42,7 +42,7 @@ import capsule_mesh_view as cmv  # noqa: E402
 import stranger_verify_bundle as svb  # noqa: E402
 
 pytest.importorskip("scitt_cose")
-pytest.importorskip("agent_action_capsule.emit")
+pytest.importorskip("capsule_emit.builder")
 
 
 def _make_signed_bundle(bundle_dir: Path) -> tuple[dict, bytes]:
@@ -54,7 +54,7 @@ def _make_signed_bundle(bundle_dir: Path) -> tuple[dict, bytes]:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
     import scitt_cose
-    from agent_action_capsule.emit import emit
+    from capsule_emit.builder import build_capsule as emit
 
     (bundle_dir / "signed-statements").mkdir(parents=True, exist_ok=True)
 
@@ -140,7 +140,7 @@ class TestStrangerVerifyBundleADV1ADV2:
         assert "OVERALL: PASS" not in out
 
     def test_adv2_fabricated_capsule_no_signature_rejected(self, tmp_path, capsys):
-        from agent_action_capsule.emit import emit
+        from capsule_emit.builder import build_capsule as emit
 
         bundle = tmp_path / "bundle"
         bundle.mkdir()

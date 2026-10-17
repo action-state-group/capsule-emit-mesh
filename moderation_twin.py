@@ -42,7 +42,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from agent_action_capsule.contracts import Disposition
-from agent_action_capsule.emit import emit
+from capsule_emit.builder import build_capsule as emit
 from agent_action_capsule.verify import verify as verify_capsule
 from moderation_decision import MODERATION_SUBJECT_KEY
 from twin_adjudicator import (

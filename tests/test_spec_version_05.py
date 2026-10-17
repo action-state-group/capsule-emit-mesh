@@ -65,14 +65,14 @@ def test_sidecar_seal_stamps_spec_version_05(tmp_path: Path) -> None:
 def test_the_installed_emit_defaults_to_05() -> None:
     # The floor (agent-action-capsule>=0.6.0) is what makes the sidecar's
     # capsules -05: build_capsule passes no spec_version of its own.
-    emit_module = sys.modules["agent_action_capsule.emit"]
-    assert inspect.signature(emit_module.emit).parameters["spec_version"].default == SPEC_05
+    emit_module = sys.modules["capsule_emit.builder"]
+    assert inspect.signature(emit_module.build_capsule).parameters["spec_version"].default == SPEC_05
     assert "spec_version" not in inspect.getsource(cs.build_capsule)
 
 
 def test_a_04_capsule_still_verifies() -> None:
-    emit_module = sys.modules["agent_action_capsule.emit"]
+    emit_module = sys.modules["capsule_emit.builder"]
     for spec in (SPEC_04, SPEC_05):
-        capsule = emit_module.emit("mesh/spec-version/1", "decide", "op", "dev", spec_version=spec)
+        capsule = emit_module.build_capsule("mesh/spec-version/1", "decide", "op", "dev", spec_version=spec)
         assert capsule["spec_version"] == spec
         assert cs.verify_capsule(capsule).ok, spec

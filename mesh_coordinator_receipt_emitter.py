@@ -61,7 +61,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from agent_action_capsule.emit import emit
+from capsule_emit.builder import build_capsule as emit
 
 from mesh_record_emitter import RecordNodeState, capsule_to_bytes, default_node_state
 from mesh_record_verifier import OBSERVATION_POINTS

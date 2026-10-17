@@ -295,7 +295,7 @@ def join_hardware_provenance(
     `served_by_node_id`.
     """
     from agent_action_capsule.contracts import Disposition
-    from agent_action_capsule.emit import emit
+    from capsule_emit.builder import build_capsule as emit
 
     for half, label in ((sidecar_capsule, "sidecar"), (plugin_capsule, "plugin")):
         result = verify_capsule(half)

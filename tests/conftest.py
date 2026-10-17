@@ -59,7 +59,7 @@ if str(_WORKTREE_ROOT) not in sys.path:
 import agent_action_capsule  # noqa: E402,F401
 import agent_action_capsule.canonical  # noqa: E402,F401
 import agent_action_capsule.contracts  # noqa: E402,F401
-import agent_action_capsule.emit  # noqa: E402,F401
+import capsule_emit.builder  # noqa: E402,F401
 import agent_action_capsule.verify  # noqa: E402,F401
 import mesh_record_emitter  # noqa: E402,F401
 import mesh_record_verifier  # noqa: E402,F401
