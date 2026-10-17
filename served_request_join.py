@@ -14,8 +14,8 @@ mints ONE new capsule — chained onto the REQUESTER's own ledger — whose
 top-level `references` array cites the PROVIDER's served-half `capsule_id`
 by CPB typed digest reference with `citation_purpose: "responds_to"`, per
 draft-mih-scitt-agent-action-capsule-04's {{xref}} section (landed as spec
-text in agent-action-capsule#85; there is no python-library constructor for
-it yet, hence `_with_references` below). The reference is a claim this new
+text in agent-action-capsule#85, before the python library had a constructor
+for it, hence `_with_references` below). The reference is a claim this new
 capsule's own digest covers: citing a record is itself a digest-committed
 assertion.
 
