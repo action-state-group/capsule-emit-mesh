@@ -14,8 +14,8 @@ mints ONE new capsule — chained onto the REQUESTER's own ledger — whose
 top-level `references` array cites the PROVIDER's served-half `capsule_id`
 by CPB typed digest reference with `citation_purpose: "responds_to"`, per
 draft-mih-scitt-agent-action-capsule-04's {{xref}} section (landed as spec
-text in agent-action-capsule#85; there is no python-library constructor for
-it yet, hence `_with_references` below). The reference is a claim this new
+text in agent-action-capsule#85, before the python library had a constructor
+for it, hence `_with_references` below). The reference is a claim this new
 capsule's own digest covers: citing a record is itself a digest-committed
 assertion.
 
@@ -84,7 +84,7 @@ import scitt_cose
 
 from agent_action_capsule.canonical import compute_capsule_id
 from agent_action_capsule.contracts import Disposition
-from agent_action_capsule.emit import emit
+from capsule_emit.builder import build_capsule as emit
 from agent_action_capsule.verify import verify as verify_capsule
 
 __all__ = [
@@ -257,9 +257,9 @@ def _with_references(sealed: dict[str, Any], references: list[dict[str, Any]]) -
     """Add a top-level `references` array to an already-`emit()`-sealed
     capsule and recompute `capsule_id` over the resulting bytes.
 
-    `agent_action_capsule.emit()` (and the `Capsule` dataclass behind it) has
-    no `references` parameter — the {{xref}} section landed as spec text
-    only (agent-action-capsule#85), with no python-library constructor yet.
+    This helper predates the `references` parameter of
+    `capsule_emit.builder.build_capsule()` and `Capsule`: the {{xref}}
+    section (agent-action-capsule#85) first landed as spec text only.
     `compute_capsule_id` (canonical.py) is generic over whatever top-level
     keys the dict carries: given a `jcs`-declared capsule it excludes only
     `capsule_id` and the local-only signature/key_id fields, so adding

@@ -33,7 +33,7 @@ if "model_identity" not in sys.modules:
 
 import pytest
 from agent_action_capsule.contracts import Disposition, EffectRecord
-from agent_action_capsule.emit import emit
+from capsule_emit.builder import build_capsule as emit
 from agent_action_capsule.evidence_request import verify_refusal_offline
 from capsule_emit.ledger import read_ledger
 

@@ -65,7 +65,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from agent_action_capsule import evidence_request as er
-from agent_action_capsule.emit import emit
+from capsule_emit.builder import build_capsule as emit
 from agent_action_capsule.verify import verify as verify_capsule
 from capsule_emit.signing import resolve_signer
 

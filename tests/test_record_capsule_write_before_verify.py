@@ -15,7 +15,7 @@ MODULE-POLLUTION GUARD
     Some sibling test files (test_forwarded_copy_and_keys.py,
     test_bilateral_demo.py, test_replay_spot_check.py) unconditionally
     `setattr` fake implementations onto agent_action_capsule.canonical/
-    contracts/emit/verify and model_identity at collection time -- these are
+    contracts/verify, capsule_emit.builder and model_identity at collection time -- these are
     the REAL modules in sys.modules, not stand-ins, so this permanently
     corrupts them for the rest of the session regardless of collection order
     (pytest collects every file before running any test). capsule_sidecar
@@ -38,12 +38,7 @@ import pytest
 import capsule_sidecar as cs
 from ledger_store_backend import read_all_capsules
 
-# `agent_action_capsule/__init__.py` does `from .emit import emit`, which
-# shadows the `emit` SUBMODULE attribute on the package with the `emit`
-# FUNCTION -- `import agent_action_capsule.emit as x` binds `x` to that
-# function, not the submodule, so reloading it would fail. sys.modules is
-# unaffected by that shadowing and always holds the real submodule objects.
-# agent_action_capsule.canonical/contracts/emit/verify are bound for real by
+# agent_action_capsule.canonical/contracts/verify and capsule_emit.builder are bound for real by
 # conftest.py's import-order guard before any test file collects -- they can
 # never be the fake-module stand-ins a stubbing test file creates, so
 # reloading them here bought nothing and cost identity: importlib.reload()

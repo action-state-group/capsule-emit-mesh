@@ -53,7 +53,7 @@ of a would-be twin comparison — no network call is made or needed:
 
     seal_adjudication_capsule(outcome, ...) -> capsule dict | None
         Mints the one new record this module adds: an ordinary capsule
-        (built with `agent_action_capsule.emit()`, the same primitive
+        (built with `capsule_emit.builder.build_capsule()`, the same primitive
         every other capsule in this sidecar uses — no new record type)
         carrying the registered `chain.relation = "confirms"` and a
         `compute_attestation.adjudication` block. Returns `None` when
@@ -117,7 +117,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from agent_action_capsule.contracts import Disposition
-from agent_action_capsule.emit import emit
+from capsule_emit.builder import build_capsule as emit
 from agent_action_capsule.verify import verify as verify_capsule
 from capsule_emit.numbers import float_to_str
 
@@ -965,7 +965,7 @@ def seal_adjudication_capsule(
 ) -> dict[str, Any] | None:
     """Seal the one new record this module adds: an adjudication capsule.
 
-    Built with `agent_action_capsule.emit()` -- the same primitive every
+    Built with `capsule_emit.builder.build_capsule()` -- the same primitive every
     other capsule in this sidecar uses (see `capsule_sidecar.build_capsule`)
     -- so this is not a new record type: a registered `chain.relation`
     (`confirms`) and a `compute_attestation.adjudication` block.

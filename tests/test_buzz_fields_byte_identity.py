@@ -47,7 +47,7 @@ from agent_action_capsule import evidence_request as er
 from agent_action_capsule import verify as verify_capsule
 from agent_action_capsule.canonical import jcs
 from agent_action_capsule.contracts import Disposition, EffectRecord
-from agent_action_capsule.emit import emit
+from capsule_emit.builder import build_capsule as emit
 from capsule_emit.canonicalization import compute_capsule_id
 from capsule_emit.ledger import append_to_ledger
 from capsule_emit.signing import resolve_signer, sign_producer_envelope

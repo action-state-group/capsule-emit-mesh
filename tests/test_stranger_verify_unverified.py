@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import stranger_verify_bundle as svb  # noqa: E402
 
 pytest.importorskip("scitt_cose")
-pytest.importorskip("agent_action_capsule.emit")
+pytest.importorskip("capsule_emit.builder")
 
 
 def _make_signed_bundle(bundle_dir: Path) -> bytes:
@@ -44,7 +44,7 @@ def _make_signed_bundle(bundle_dir: Path) -> bytes:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
     import scitt_cose
-    from agent_action_capsule.emit import emit
+    from capsule_emit.builder import build_capsule as emit
 
     (bundle_dir / "signed-statements").mkdir(parents=True, exist_ok=True)
 

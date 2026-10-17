@@ -327,7 +327,7 @@ class LifecycleVerdict:
 def _extract_lifecycle_block(record: dict[str, Any]) -> dict[str, Any]:
     """Pull the x-mesh-lifecycle-v1 block from the record dict.
 
-    Capsules emitted by agent_action_capsule.emit() nest compute_attestation
+    Capsules built by capsule_emit.builder.build_capsule() nest compute_attestation
     under model_attestation.compute_attestation, not at the top level.
     """
     ma = record.get("model_attestation") or {}

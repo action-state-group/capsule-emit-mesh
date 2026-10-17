@@ -14,7 +14,8 @@
 # 0.2.0, whose format-4/JCS capsules carry different capsule_id/digest bytes
 # than 0.4.x and whose top-level emit() verb was renamed to seal()/received().
 # This repo consumes only the stable capsule_emit.checkpoint surface and
-# agent_action_capsule.emit() (aac's own emit, unchanged in 0.2.0) -- not
+# agent_action_capsule.emit() (aac's own emit, unchanged in 0.2.0; now
+# capsule_emit.builder, see the 0.11 floor below) -- not
 # capsule-emit's removed emit() verb -- so the full suite passes and the
 # committed ledger/ fixtures verify clean with no migration.
 #
@@ -57,9 +58,14 @@
 # checkpointed-local-log>=0.6,<0.7. capsule_emit.checkpoint no longer
 # re-exports DEFAULT_TS_URL (0.9.1); this repo imports it from
 # cll.checkpoint.emit.
-capsule-emit[mcp]>=0.10
+# Floor 0.11: every capsule here is built by capsule_emit.builder.build_capsule,
+# which ships from 0.11.0 (capsule-emit#332). It is agent-action-capsule's former
+# emit(), moved unchanged, so capsule bytes are the same; AAC removes its copy
+# in 0.10.0 (agent-action-capsule#281).
+capsule-emit[mcp]>=0.11
 # agent-action-capsule 0.6.0 is the first release whose emit() stamps
-# draft-mih-scitt-agent-action-capsule-05 (format 4); the sidecar seals through it.
+# draft-mih-scitt-agent-action-capsule-05 (format 4); capsule-emit's builder
+# keeps that default.
 # Its verifier accepts -04 and -05.
 #
 # The evidence request exchange (draft-mih-agent-evidence-request-00) is

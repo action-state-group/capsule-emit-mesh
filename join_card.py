@@ -113,7 +113,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent_action_capsule.emit import emit
+from capsule_emit.builder import build_capsule as emit
 
 __all__ = [
     "CARD_SCHEMA",
@@ -237,7 +237,7 @@ def _digest(value: dict[str, Any]) -> str:
 def _compute_attestation(line: dict[str, Any]) -> dict[str, Any]:
     """A ledger line's `compute_attestation` block lives at
     `model_attestation.compute_attestation` (the sealed capsule envelope
-    shape `agent_action_capsule.emit.emit` produces -- same path
+    shape `capsule_emit.builder.build_capsule` produces -- same path
     `capsule_mesh_view._poc_block` already reads), never at the line's own
     top level."""
     return (line.get("model_attestation") or {}).get("compute_attestation") or {}

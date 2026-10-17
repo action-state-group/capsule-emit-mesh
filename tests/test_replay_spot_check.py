@@ -28,7 +28,7 @@ import pytest
 # Stub heavy deps so these tests run without installing agent-action-capsule
 # and scitt_cose (same pattern as test_forwarded_copy_and_keys.py).
 # Apply the attribute stubs ONLY to names we actually created here (the
-# not-installed path). Clobbering the real installed module's `.verify`/`.emit`
+# not-installed path). Clobbering the real installed module's `.verify`/`.build_capsule`
 # leaked a `verify -> None` stub into every later test in the same process and
 # broke the coordinator-receipt suite. `_stubbed` gates the clobber.
 _stubbed: set[str] = set()
@@ -37,7 +37,8 @@ for _name in [
     "agent_action_capsule",
     "agent_action_capsule.canonical",
     "agent_action_capsule.contracts",
-    "agent_action_capsule.emit",
+    "capsule_emit",
+    "capsule_emit.builder",
     "agent_action_capsule.verify",
     "model_identity",
 ]:
@@ -51,8 +52,8 @@ if "agent_action_capsule.canonical" in _stubbed:
 if "agent_action_capsule.contracts" in _stubbed:
     for _n in ["Disposition", "EffectRecord"]:
         setattr(sys.modules["agent_action_capsule.contracts"], _n, object)
-if "agent_action_capsule.emit" in _stubbed:
-    sys.modules["agent_action_capsule.emit"].emit = lambda **k: {}
+if "capsule_emit.builder" in _stubbed:
+    sys.modules["capsule_emit.builder"].build_capsule = lambda **k: {}
 if "agent_action_capsule.verify" in _stubbed:
     sys.modules["agent_action_capsule.verify"].verify = lambda *a, **k: None
 if "model_identity" in _stubbed:

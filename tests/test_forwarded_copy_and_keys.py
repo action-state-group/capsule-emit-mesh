@@ -10,7 +10,7 @@ import types
 # setdefault never overwrites a real module that is already imported -- and,
 # critically, the attribute stubs below are applied ONLY to names we actually
 # created here. When agent-action-capsule IS installed the real module stays
-# untouched; clobbering the real `.verify`/`.emit` on `sys.modules` leaked a
+# untouched; clobbering the real `.verify`/`.build_capsule` on `sys.modules` leaked a
 # `verify -> None` stub into every test that ran afterwards in the same process
 # (it broke the coordinator-receipt suite's honest cases). `_stubbed` gates the
 # clobber to the not-installed path only.
@@ -20,7 +20,8 @@ for _name in [
     "agent_action_capsule",
     "agent_action_capsule.canonical",
     "agent_action_capsule.contracts",
-    "agent_action_capsule.emit",
+    "capsule_emit",
+    "capsule_emit.builder",
     "agent_action_capsule.verify",
     "model_identity",
 ]:
@@ -34,8 +35,8 @@ if "agent_action_capsule.canonical" in _stubbed:
 if "agent_action_capsule.contracts" in _stubbed:
     for _n in ["Disposition", "EffectRecord"]:
         setattr(sys.modules["agent_action_capsule.contracts"], _n, object)
-if "agent_action_capsule.emit" in _stubbed:
-    sys.modules["agent_action_capsule.emit"].emit = lambda **k: {}
+if "capsule_emit.builder" in _stubbed:
+    sys.modules["capsule_emit.builder"].build_capsule = lambda **k: {}
 if "agent_action_capsule.verify" in _stubbed:
     sys.modules["agent_action_capsule.verify"].verify = lambda *a, **k: None
 if "model_identity" in _stubbed:
