@@ -20,6 +20,10 @@ was built.
 
 `tests/test_evidence_interop_plugin.py` reads each with `ask_history`.
 
+`served-summary-t8/` holds the plugin's `served_summary/1` answer over its
+corpus with a line appended after the newest checkpoint; its own README says
+how it was made, and `tests/test_served_summary_parity.py` checks it.
+
 **How they were made, and the other direction.** A scratch clone of
 Mesh-LLM/capsules at `27043e6` gained one test in `evidence_artifact.rs`'s
 test module (never committed anywhere). It wrote these replies with the

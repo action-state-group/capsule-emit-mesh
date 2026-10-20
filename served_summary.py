@@ -384,7 +384,8 @@ def _adjudications_received(ledger_records: list[dict[str, Any]], *, own_capsule
     what this node counts about its own served exchanges."""
     received = 0
     for record in ledger_records:
-        if not is_adjudication(record):
+        # A padding record is never a verdict, as the plugin reads it.
+        if record.get("record_type") == "padding" or not is_adjudication(record):
             continue
         adjudication = ((record.get("model_attestation") or {}).get("compute_attestation") or {}).get("adjudication")
         if not adjudication:
@@ -534,11 +535,11 @@ def build_served_summary(
     ``capsule_records`` is the node's full ``capsules.jsonl``, 1-indexed by
     line -- same ordering ``checkpointing.JsonlLogSource`` folds into the MMR.
     Selection is witness-bounded exactly like ``account_capsule.build_account_capsule``:
-    only ``capsule_records[:covered_entries]`` are folded, clamped to what is
-    actually on disk if the ledger is shorter than the checkpoint claims.
+    only ``capsule_records[:covered_entries]`` are folded or counted toward
+    ``adjudications_received``, clamped to what is actually on disk if the
+    ledger is shorter than the checkpoint claims.
     """
     if latest_checkpoint is None:
-        own_capsule_ids: set[str] = {r.get("capsule_id") for r in capsule_records if r.get("capsule_id")}
         return ServedSummary(
             node_id=node_id,
             selection_from_entry=0,
@@ -551,13 +552,18 @@ def build_served_summary(
             coverage_timestamp="",
             coverage_witnesses=[],
             coverage_witnessed=False,
-            adjudications_received=_adjudications_received(capsule_records, own_capsule_ids=own_capsule_ids),
         )
 
     covered = min(_leaf_count_at_size(latest_checkpoint.mmr_size), len(capsule_records))
     selected = capsule_records[:covered]
     witnesses = sorted({w.ts_url for w in (latest_checkpoint.witnesses or [])})
-    own_capsule_ids = {r.get("capsule_id") for r in capsule_records if r.get("capsule_id")}
+    # The adjudication count reads the covered range too, verdicts and the
+    # records they name alike: a line appended after the checkpoint must not
+    # change the bytes answered for that checkpoint (R-15). Padding records
+    # are not this node's records, as the plugin's ledger index has it.
+    own_capsule_ids = {
+        r.get("capsule_id") for r in selected if r.get("capsule_id") and r.get("record_type") != "padding"
+    }
     return ServedSummary(
         node_id=node_id,
         selection_from_entry=1 if covered else 0,
@@ -570,7 +576,7 @@ def build_served_summary(
         coverage_timestamp=latest_checkpoint.timestamp,
         coverage_witnesses=witnesses,
         coverage_witnessed=bool(witnesses),
-        adjudications_received=_adjudications_received(capsule_records, own_capsule_ids=own_capsule_ids),
+        adjudications_received=_adjudications_received(selected, own_capsule_ids=own_capsule_ids),
     )
 
 

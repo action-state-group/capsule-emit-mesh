@@ -217,6 +217,78 @@ def test_entries_after_the_latest_checkpoint_are_excluded_witness_bounded(tmp_pa
     assert summary.by_model["m/1"].n_served == 6
 
 
+def _verdict(i: int, *, half_a: str, half_b: str = "f" * 64) -> dict:
+    """An adjudication capsule (``twin_adjudicator.is_adjudication``) judging
+    ``half_a`` against ``half_b``."""
+    return {
+        "capsule_id": f"{i:064x}",
+        "model_attestation": {
+            "compute_attestation": {
+                "epistemic_type": "adjudication",
+                "adjudication": {"half_a_capsule_id": half_a, "half_b_capsule_id": half_b},
+            }
+        },
+    }
+
+
+def test_adjudications_received_counts_a_covered_verdict_on_an_own_record(tmp_path, fake_witness):
+    caps = [_capsule(i) for i in range(5)] + [_verdict(100, half_a=f"{0:064x}")]
+    latest, _ = _checkpoint_over(tmp_path, caps)
+
+    summary = build_served_summary(node_id="n1", capsule_records=caps, latest_checkpoint=latest)
+
+    assert summary.adjudications_received == 1
+
+
+def test_a_verdict_appended_after_the_checkpoint_leaves_the_summary_bytes_unchanged(tmp_path, fake_witness):
+    """R-15: the answer for one checkpoint is the same bytes however much the
+    log has grown since."""
+    caps = [_capsule(i) for i in range(6)]
+    latest, _ = _checkpoint_over(tmp_path, caps)
+    at_checkpoint = build_served_summary(node_id="n1", capsule_records=caps, latest_checkpoint=latest)
+
+    grown = caps + [_verdict(100, half_a=f"{0:064x}")]
+    later = build_served_summary(node_id="n1", capsule_records=grown, latest_checkpoint=latest)
+
+    assert later.adjudications_received == 0
+    assert later.canonical_bytes() == at_checkpoint.canonical_bytes()
+
+
+def test_the_covered_range_bounds_both_the_verdicts_and_the_records_they_name(tmp_path, fake_witness):
+    """At the boundary: the last covered entry's verdict on a covered record
+    counts; a covered verdict naming a record appended after the checkpoint
+    does not, and neither does the first uncovered verdict."""
+    late_record = f"{200:064x}"
+    caps = [_capsule(i) for i in range(4)] + [
+        _verdict(100, half_a=late_record),
+        _verdict(101, half_a=f"{1:064x}"),
+    ]
+    latest, _ = _checkpoint_over(tmp_path, caps)
+    grown = caps + [_capsule(200), _verdict(102, half_a=f"{2:064x}")]
+
+    summary = build_served_summary(node_id="n1", capsule_records=grown, latest_checkpoint=latest)
+
+    assert summary.covered_entries == len(caps)
+    assert summary.adjudications_received == 1
+
+
+def test_padding_is_neither_an_own_record_nor_a_verdict(tmp_path, fake_witness):
+    padding = {"capsule_id": f"{50:064x}", "record_type": "padding", "epistemic_type": "producer_claim"}
+    padded_verdict = {**_verdict(101, half_a=f"{0:064x}"), "record_type": "padding"}
+    caps = [_capsule(i) for i in range(4)] + [padding, _verdict(100, half_a=padding["capsule_id"]), padded_verdict]
+    latest, _ = _checkpoint_over(tmp_path, caps)
+
+    summary = build_served_summary(node_id="n1", capsule_records=caps, latest_checkpoint=latest)
+
+    assert summary.adjudications_received == 0
+
+
+def test_no_checkpoint_counts_no_adjudications():
+    records = [_capsule(0), _verdict(100, half_a=f"{0:064x}")]
+    summary = build_served_summary(node_id="n1", capsule_records=records, latest_checkpoint=None)
+    assert summary.adjudications_received == 0
+
+
 # --------------------------------------------------------------------------- #
 # No requester identifiers -- ever.                                          #
 # --------------------------------------------------------------------------- #
