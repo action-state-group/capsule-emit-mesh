@@ -272,9 +272,10 @@ def test_the_covered_range_bounds_both_the_verdicts_and_the_records_they_name(tm
     assert summary.adjudications_received == 1
 
 
-def test_a_verdict_naming_a_padding_record_does_not_count(tmp_path, fake_witness):
+def test_padding_is_neither_an_own_record_nor_a_verdict(tmp_path, fake_witness):
     padding = {"capsule_id": f"{50:064x}", "record_type": "padding", "epistemic_type": "producer_claim"}
-    caps = [_capsule(i) for i in range(4)] + [padding, _verdict(100, half_a=padding["capsule_id"])]
+    padded_verdict = {**_verdict(101, half_a=f"{0:064x}"), "record_type": "padding"}
+    caps = [_capsule(i) for i in range(4)] + [padding, _verdict(100, half_a=padding["capsule_id"]), padded_verdict]
     latest, _ = _checkpoint_over(tmp_path, caps)
 
     summary = build_served_summary(node_id="n1", capsule_records=caps, latest_checkpoint=latest)

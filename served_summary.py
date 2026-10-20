@@ -384,7 +384,8 @@ def _adjudications_received(ledger_records: list[dict[str, Any]], *, own_capsule
     what this node counts about its own served exchanges."""
     received = 0
     for record in ledger_records:
-        if not is_adjudication(record):
+        # A padding record is never a verdict, as the plugin reads it.
+        if record.get("record_type") == "padding" or not is_adjudication(record):
             continue
         adjudication = ((record.get("model_attestation") or {}).get("compute_attestation") or {}).get("adjudication")
         if not adjudication:
