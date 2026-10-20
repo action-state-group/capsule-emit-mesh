@@ -558,8 +558,11 @@ def build_served_summary(
     witnesses = sorted({w.ts_url for w in (latest_checkpoint.witnesses or [])})
     # The adjudication count reads the covered range too, verdicts and the
     # records they name alike: a line appended after the checkpoint must not
-    # change the bytes answered for that checkpoint (R-15).
-    own_capsule_ids = {r.get("capsule_id") for r in selected if r.get("capsule_id")}
+    # change the bytes answered for that checkpoint (R-15). Padding records
+    # are not this node's records, as the plugin's ledger index has it.
+    own_capsule_ids = {
+        r.get("capsule_id") for r in selected if r.get("capsule_id") and r.get("record_type") != "padding"
+    }
     return ServedSummary(
         node_id=node_id,
         selection_from_entry=1 if covered else 0,
