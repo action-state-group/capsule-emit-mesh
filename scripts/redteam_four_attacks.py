@@ -53,6 +53,9 @@ class Attack:
     number: int
     title: str
     parts: list[Part]
+    # Printed after the graded parts: how the same attack looks on a live
+    # mesh, where that differs from the prototype harness. Not graded here.
+    live_note: list[str] = field(default_factory=list)
 
 
 RUNG1 = "tests/test_redteam_rung1.py"
@@ -66,7 +69,7 @@ ATTACKS = [
              pytest=[f"{RUNG1}::test_attack1_equivocation_rewrite_breaks_root",
                      f"{RUNG1}::test_attack1_equivocation_consistency_proof_goes_red"]),
     ]),
-    Attack(2, "Selective log (seal successes only)", [
+    Attack(2, "Selective log (exchanges left out of the node's log)", [
         Part("residual", "the node's log passes every integrity check: rung 1 alone can't see it",
              "docs/REDTEAM-RUNG1.md", "4",
              pytest=[f"{RUNG1}::test_attack4_selective_log_is_perfectly_witness_consistent",
@@ -81,6 +84,10 @@ ATTACKS = [
              "and can't be paired",
              "docs/REDTEAM-RUNG1.md", "4b",
              pytest=[f"{RUNG1_REQ}::test_attack4b_failure_without_a_response_id_stays_residual"]),
+    ], live_note=[
+        "On the live mesh this runs on a patched red node: it drops some exchanges it served.",
+        "Its log still passes every integrity check. You hold N halves; it shows about N/2.",
+        "Residual: today a failed exchange leaves no record on either side, a coverage gap rather than an attack.",
     ]),
     Attack(3, "Model id / quant swap", [
         Part("residual", "a consistent self-reported model claim reconciles clean",
@@ -215,6 +222,8 @@ def main(argv: list[str] | None = None) -> int:
                 for output in logs:
                     print("              | " + output.replace("\n", "\n              | "))
             print(f"    -> {'MATCH' if verdict_ok and harness_ok else 'MISMATCH'}")
+        for line in attack.live_note:
+            print(f"    live    : {line}")
         print()
 
     print("ALL MATCH" if all_ok else "MISMATCH: see the lines above")

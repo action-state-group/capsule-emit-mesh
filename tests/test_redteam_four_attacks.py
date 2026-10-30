@@ -133,3 +133,13 @@ def test_run_pytest_keeps_exit_code_and_python_above_a_long_tail(tmp_path):
     sample.write_text("def test_noisy():\n" + "".join(f"    print({i})\n" for i in range(40)) + "    assert False\n")
     _, output = runbook.run_pytest([f"{sample}::test_noisy", "-s"])
     assert output.splitlines()[0].startswith("(pytest exit 1, python ")
+
+
+def test_live_note_prints_after_the_graded_parts(monkeypatch, capsys):
+    _all_pass(monkeypatch)
+    assert runbook.main([]) == 0
+    out = capsys.readouterr().out
+    block = out[out.index("[2] "):out.index("[3] ")]
+    assert "live    : On the live mesh this runs on a patched red node" in block
+    assert "You hold N halves; it shows about N/2." in block
+    assert block.index("live    :") > block.rindex("-> MATCH")
