@@ -140,7 +140,7 @@ def _run_exchanges(
         status = "confirmed" if ok else "failed"
         digest = f"{i:064x}"
         requester_halves.append(_seal(requester, response, status=status, request_digest=digest))
-        if ok or seal_failures:  # the selective node never seals a failure
+        if ok or seal_failures:  # a selective node seals only successes
             sealed = _seal(provider, response, status=status, request_digest=digest)
             provider_records.append(sealed)
             log.append(sealed)
