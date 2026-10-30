@@ -8,7 +8,9 @@ One command, presenter-ready:
 
 For each attack this runs the harness tests the REDTEAM doc cites, then
 prints the verdict this runbook states, the grade the doc records for that
-row, and MATCH or MISMATCH. The recorded grade is read from the doc's
+row, and MATCH or MISMATCH. Run it with the Python that has this repo's
+requirements and pytest installed (the project venv); the harnesses use the
+interpreter that launched this script. The recorded grade is read from the doc's
 weak-links table at run time, so an edited doc can't silently drift from what
 the runbook says. A failing harness test, a test that doesn't exist, or a
 verdict that differs from the recorded grade makes the run exit 1.
@@ -69,11 +71,16 @@ ATTACKS = [
              "docs/REDTEAM-RUNG1.md", "4",
              pytest=[f"{RUNG1}::test_attack4_selective_log_is_perfectly_witness_consistent",
                      f"{RUNG1}::test_attack4_witness_cannot_assert_coverage"]),
-        Part("caught", "the requester's own halves name exchanges the node never sealed",
+        Part("caught", "the requester's own halves name hidden exchanges whose response carried an id, "
+             "given the node's records for the range",
              "docs/REDTEAM-RUNG1.md", "4b",
              pytest=[f"{RUNG1_REQ}::test_attack4b_selective_log_is_caught_by_the_requesters_half",
                      f"{RUNG1_REQ}::test_attack4b_an_honest_log_leaves_nothing_missing",
-                     f"{RUNG1_REQ}::test_attack4b_failure_without_a_response_id_stays_residual"]),
+                     f"{RUNG1_REQ}::test_attack4b_without_the_nodes_records_every_half_reads_missing"]),
+        Part("residual", "a failure that reached the requester as an id-less error seals 'unknown' "
+             "and can't be paired",
+             "docs/REDTEAM-RUNG1.md", "4b",
+             pytest=[f"{RUNG1_REQ}::test_attack4b_failure_without_a_response_id_stays_residual"]),
     ]),
     Attack(3, "Model id / quant swap", [
         Part("residual", "a consistent self-reported model claim reconciles clean",
@@ -95,45 +102,63 @@ ATTACKS = [
 ]
 
 
-def recorded_grade(doc: str, row: str) -> str | None:
-    """The first caught/labeled/residual word in the Outcome column of the
-    weak-links row numbered *row*, or None when the row or grade is absent."""
+def recorded_grades(doc: str, row: str) -> list[str]:
+    """Every caught/labeled/residual word in the Outcome column of the
+    weak-links row numbered *row*, in order and without repeats; empty when
+    the row or a grade is absent. A split row ("caught when ... / residual
+    when ...") yields one grade per branch."""
     for line in (REPO / doc).read_text(encoding="utf-8").splitlines():
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if len(cells) >= 4 and cells[0] == row:
-            match = re.search(r"\b(caught|labeled|residual)\b", cells[3].lower())
-            return match.group(1) if match else None
-    return None
+            found = re.findall(r"\b(caught|labeled|residual)\b", cells[3].lower())
+            return list(dict.fromkeys(found))
+    return []
 
 
-def run_pytest(node_ids: list[str]) -> dict[str, bool]:
-    """Pass/fail per node id; an id pytest didn't run is absent from the map."""
+def _tail(text: str, lines: int = 15) -> str:
+    return "\n".join(text.strip().splitlines()[-lines:])
+
+
+def run_pytest(node_ids: list[str]) -> tuple[dict[str, bool | None], str]:
+    """Pass (True), fail (False) or skip (None) per test name, plus the tail
+    of pytest's output for the presenter when something didn't pass. A test
+    pytest didn't run at all is absent from the map."""
     with tempfile.TemporaryDirectory() as tmp:
         report = Path(tmp) / "junit.xml"
-        subprocess.run(
+        proc = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", "-p", "no:warnings", "-p", "no:cacheprovider",
              f"--junitxml={report}", *node_ids],
-            cwd=REPO, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            cwd=REPO, stdin=subprocess.DEVNULL, capture_output=True, text=True,
         )
+        output = _tail(f"(pytest exit {proc.returncode}, python {sys.executable})\n{proc.stdout}\n{proc.stderr}")
         if not report.exists():
-            return {}
-        results: dict[str, bool] = {}
+            return {}, output
+        results: dict[str, bool | None] = {}
         for case in ET.parse(report).iter("testcase"):
-            ok = not any(child.tag in ("failure", "error", "skipped") for child in case)
-            results[case.get("name", "")] = ok
-        return results
+            tags = {child.tag for child in case}
+            results[case.get("name", "")] = None if "skipped" in tags else not tags & {"failure", "error"}
+        return results, output
 
 
-def run_cargo(target: str, name: str) -> bool | None:
-    """True or False for one exact cargo test; None when it didn't run."""
-    proc = subprocess.run(
-        ["cargo", "test", "--quiet", "--manifest-path", CARGO_MANIFEST, "--test", target, "--", "--exact", name],
-        cwd=REPO, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-    )
-    match = re.search(r"test result: \w+\. (\d+) passed; (\d+) failed", proc.stdout)
+def parse_cargo_summary(stdout: str) -> bool | None:
+    """True or False when exactly one test ran, else None."""
+    match = re.search(r"test result: \w+\. (\d+) passed; (\d+) failed", stdout)
     if not match or int(match.group(1)) + int(match.group(2)) != 1:
         return None
     return int(match.group(1)) == 1
+
+
+def run_cargo(target: str, name: str) -> tuple[bool | None, str]:
+    """True or False for one exact cargo test, None when it didn't run, plus
+    the tail of cargo's output for the presenter."""
+    try:
+        proc = subprocess.run(
+            ["cargo", "test", "--quiet", "--manifest-path", CARGO_MANIFEST, "--test", target, "--", "--exact", name],
+            cwd=REPO, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        )
+    except OSError as exc:
+        return None, f"cargo could not start: {exc}"
+    return parse_cargo_summary(proc.stdout), _tail(f"(cargo exit {proc.returncode})\n{proc.stdout}\n{proc.stderr}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -146,32 +171,49 @@ def main(argv: list[str] | None = None) -> int:
     print("Harnesses: capsule-emit-mesh research prototype (Python sidecar, Rust capsule-producer crate),")
     print("not the Mesh-LLM/capsules plugin on a live mesh.\n")
 
+    stated: dict[tuple[str, str], set[str]] = {}
+    for attack in ATTACKS:
+        for part in attack.parts:
+            stated.setdefault((part.doc, part.row), set()).add(part.verdict)
+
     all_ok = True
     for attack in ATTACKS:
         print(f"[{attack.number}] {attack.title}")
         for part in attack.parts:
-            recorded = recorded_grade(part.doc, part.row)
+            recorded = recorded_grades(part.doc, part.row)
             outcomes: list[tuple[str, bool | None]] = []
+            logs: list[str] = []
             if part.pytest:
-                results = run_pytest(part.pytest)
+                results, output = run_pytest(part.pytest)
                 outcomes += [(nid, results.get(nid.split("::")[-1])) for nid in part.pytest]
+                logs.append(output)
             for target, name in part.cargo:
-                outcomes.append((f"{target}::{name}", None if args.no_cargo else run_cargo(target, name)))
+                if args.no_cargo:
+                    ok, output = None, "skipped by --no-cargo"
+                else:
+                    ok, output = run_cargo(target, name)
+                outcomes.append((f"{target}::{name}", ok))
+                logs.append(output)
 
             passed = sum(1 for _, ok in outcomes if ok)
             not_run = [nid for nid, ok in outcomes if ok is None]
             failed = [nid for nid, ok in outcomes if ok is False]
-            verdict_ok = recorded == part.verdict
+            # A split row needs one part per recorded grade, so no branch of
+            # it can be dropped or read out under another branch's verdict.
+            verdict_ok = part.verdict in recorded and stated[(part.doc, part.row)] == set(recorded)
             harness_ok = not failed and not not_run
             all_ok = all_ok and verdict_ok and harness_ok
 
             print(f"    verdict : {part.verdict.upper()}: {part.says}")
-            print(f"    recorded: {recorded or 'NO GRADE FOUND'} ({Path(part.doc).name} row {part.row})")
+            print(f"    recorded: {' / '.join(recorded) or 'NO GRADE FOUND'} ({Path(part.doc).name} row {part.row})")
             print(f"    harness : {passed}/{len(outcomes)} passed"
                   + (f", {len(not_run)} NOT RUN" if not_run else "")
                   + (f", {len(failed)} FAILED" if failed else ""))
             for nid in failed + not_run:
                 print(f"              {'FAILED ' if nid in failed else 'NOT RUN'} {nid}")
+            if not harness_ok:
+                for output in logs:
+                    print("              | " + output.replace("\n", "\n              | "))
             print(f"    -> {'MATCH' if verdict_ok and harness_ok else 'MISMATCH'}")
         print()
 

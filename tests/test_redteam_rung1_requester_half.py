@@ -17,7 +17,8 @@ Outcome recorded in REDTEAM-RUNG1.md row 4b:
 
   * a hidden exchange whose response carried an id -> the requester's half has
     no provider counterpart and the pair column counts it as missing (caught
-    by the requester's half);
+    by the requester's half, given the node's records for the range: without
+    them every half reads missing, since the pair column has no refusal state);
   * a hidden exchange whose response carried no id (an error object) -> the
     requester's half records exchange_id "unknown" and cannot be paired, so the
     omission stays invisible (residual, stated rather than assumed away).
@@ -112,9 +113,11 @@ def _response(i: int, *, ok: bool, with_id: bool = True) -> dict:
     return body
 
 
-def _run_exchanges(tmp_path: Path, responses: list[tuple[dict, bool]]) -> tuple[list[dict], list[dict], CheckpointState]:
+def _run_exchanges(
+    tmp_path: Path, responses: list[tuple[dict, bool]], *, seal_failures: bool = False
+) -> tuple[list[dict], list[dict], CheckpointState]:
     """Both sides observe every exchange; the provider seals only successes
-    into a witnessed ledger. Returns (requester halves, provider records,
+    (all exchanges when *seal_failures*) into a witnessed ledger. Returns (requester halves, provider records,
     provider checkpoint state)."""
     cs_mod = _real_capsule_sidecar()
     provider = _state(tmp_path, role=cs_mod.ROLE_PROVIDER, node_id="prov-1")
@@ -137,7 +140,7 @@ def _run_exchanges(tmp_path: Path, responses: list[tuple[dict, bool]]) -> tuple[
         status = "confirmed" if ok else "failed"
         digest = f"{i:064x}"
         requester_halves.append(_seal(requester, response, status=status, request_digest=digest))
-        if ok:  # the selective node never seals a failure
+        if ok or seal_failures:  # the selective node never seals a failure
             sealed = _seal(provider, response, status=status, request_digest=digest)
             provider_records.append(sealed)
             log.append(sealed)
@@ -173,13 +176,27 @@ def test_attack4b_selective_log_is_caught_by_the_requesters_half(tmp_path, fake_
 
 
 def test_attack4b_an_honest_log_leaves_nothing_missing(tmp_path, fake_witness):
-    """Control: with nothing hidden, the same fold reports zero missing, so
-    the count above comes from the omission and not from the fold."""
-    responses = [(_response(0, ok=True), True), (_response(1, ok=True), True)]
-    requester_halves, provider_records, _ = _run_exchanges(tmp_path, responses)
+    """Control: an honest node also seals its failure, so the same fold
+    reports zero missing; the count above comes from the omission, not from
+    the fold or from the failure path itself."""
+    responses = [(_response(0, ok=True), True), (_response(1, ok=False), False)]
+    requester_halves, provider_records, _ = _run_exchanges(tmp_path, responses, seal_failures=True)
+    assert len(provider_records) == 2
     cell = pair_cell(requester_halves, requester_halves + provider_records)
     assert cell["verified"] == 2
     assert cell["missing"] == 0
+
+
+def test_attack4b_without_the_nodes_records_every_half_reads_missing(tmp_path, fake_witness):
+    """Boundary: the pair column has no refusal state. A requester that does
+    not hold the node's records for the range (not fetched, or refused) sees
+    every half as missing, so "missing" proves an omission only once the
+    node's records for the range are in hand."""
+    responses = [(_response(0, ok=True), True), (_response(1, ok=True), True)]
+    requester_halves, _, _ = _run_exchanges(tmp_path, responses)
+    cell = pair_cell(requester_halves, requester_halves)
+    assert cell["verified"] == 0
+    assert cell["missing"] == 2
 
 
 def test_attack4b_failure_without_a_response_id_stays_residual(tmp_path, fake_witness):
