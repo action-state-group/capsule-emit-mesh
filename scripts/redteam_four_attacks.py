@@ -130,7 +130,7 @@ def run_pytest(node_ids: list[str]) -> tuple[dict[str, bool | None], str]:
              f"--junitxml={report}", *node_ids],
             cwd=REPO, stdin=subprocess.DEVNULL, capture_output=True, text=True,
         )
-        output = _tail(f"(pytest exit {proc.returncode}, python {sys.executable})\n{proc.stdout}\n{proc.stderr}")
+        output = f"(pytest exit {proc.returncode}, python {sys.executable})\n" + _tail(f"{proc.stdout}\n{proc.stderr}")
         if not report.exists():
             return {}, output
         results: dict[str, bool | None] = {}
@@ -158,7 +158,7 @@ def run_cargo(target: str, name: str) -> tuple[bool | None, str]:
         )
     except OSError as exc:
         return None, f"cargo could not start: {exc}"
-    return parse_cargo_summary(proc.stdout), _tail(f"(cargo exit {proc.returncode})\n{proc.stdout}\n{proc.stderr}")
+    return parse_cargo_summary(proc.stdout), f"(cargo exit {proc.returncode})\n" + _tail(f"{proc.stdout}\n{proc.stderr}")
 
 
 def main(argv: list[str] | None = None) -> int:

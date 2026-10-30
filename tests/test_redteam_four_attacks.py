@@ -126,3 +126,10 @@ def test_run_pytest_reads_pass_fail_and_skip(tmp_path):
 )
 def test_parse_cargo_summary(stdout, expected):
     assert runbook.parse_cargo_summary(stdout) is expected
+
+
+def test_run_pytest_keeps_exit_code_and_python_above_a_long_tail(tmp_path):
+    sample = tmp_path / "test_noisy.py"
+    sample.write_text("def test_noisy():\n" + "".join(f"    print({i})\n" for i in range(40)) + "    assert False\n")
+    _, output = runbook.run_pytest([f"{sample}::test_noisy", "-s"])
+    assert output.splitlines()[0].startswith("(pytest exit 1, python ")
