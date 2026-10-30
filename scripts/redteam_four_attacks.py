@@ -53,9 +53,9 @@ class Attack:
     number: int
     title: str
     parts: list[Part]
-    # Printed after the graded parts: how the same attack looks on a live
-    # mesh, where that differs from the prototype harness. Not graded here.
-    live_note: list[str] = field(default_factory=list)
+    # Printed after the graded parts: the slide's wording for this attack.
+    # Not graded here.
+    slide_note: list[str] = field(default_factory=list)
 
 
 RUNG1 = "tests/test_redteam_rung1.py"
@@ -84,10 +84,11 @@ ATTACKS = [
              "and can't be paired",
              "docs/REDTEAM-RUNG1.md", "4b",
              pytest=[f"{RUNG1_REQ}::test_attack4b_failure_without_a_response_id_stays_residual"]),
-    ], live_note=[
-        "On the live mesh this runs on a patched red node: it drops some exchanges it served.",
+    ], slide_note=[
+        "Shown from the prototype harness, not a live node: the node drops some exchanges it served.",
         "Its log still passes every integrity check. You hold N halves; it shows about N/2.",
-        "Residual: today a failed exchange leaves no record on either side, a coverage gap rather than an attack.",
+        "Residual in the shipped capsules v0.1.5 plugin (not this harness): a failed exchange "
+        "leaves no record on either side, a coverage gap rather than an attack.",
     ]),
     Attack(3, "Model id / quant swap", [
         Part("residual", "a consistent self-reported model claim reconciles clean",
@@ -222,8 +223,8 @@ def main(argv: list[str] | None = None) -> int:
                 for output in logs:
                     print("              | " + output.replace("\n", "\n              | "))
             print(f"    -> {'MATCH' if verdict_ok and harness_ok else 'MISMATCH'}")
-        for line in attack.live_note:
-            print(f"    live    : {line}")
+        for line in attack.slide_note:
+            print(f"    slide   : {line}")
         print()
 
     print("ALL MATCH" if all_ok else "MISMATCH: see the lines above")

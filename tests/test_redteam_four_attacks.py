@@ -135,11 +135,11 @@ def test_run_pytest_keeps_exit_code_and_python_above_a_long_tail(tmp_path):
     assert output.splitlines()[0].startswith("(pytest exit 1, python ")
 
 
-def test_live_note_prints_after_the_graded_parts(monkeypatch, capsys):
+def test_slide_note_prints_after_the_graded_parts(monkeypatch, capsys):
     _all_pass(monkeypatch)
     assert runbook.main([]) == 0
     out = capsys.readouterr().out
     block = out[out.index("[2] "):out.index("[3] ")]
-    assert "live    : On the live mesh this runs on a patched red node" in block
+    assert "slide   : Shown from the prototype harness, not a live node" in block
     assert "You hold N halves; it shows about N/2." in block
-    assert block.index("live    :") > block.rindex("-> MATCH")
+    assert block.index("slide   :") > block.rindex("-> MATCH")
