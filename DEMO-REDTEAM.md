@@ -10,6 +10,15 @@ happens when a malicious relay tampers that capsule after it was sealed.
 **HELD — no merge, no flip.** This is a rehearsal/demo artifact, run on the
 live M4 mesh node directly, not part of any release path.
 
+## Four attacks in one command
+
+`python3 scripts/redteam_four_attacks.py` runs the harnesses for four attacks and prints each verdict
+(caught / labeled / residual) beside the grade the REDTEAM docs record, with MATCH or MISMATCH:
+ledger rewrite (RUNG1 #1), selective log (RUNG1 #4 and #4b), model id / quant swap (RUNG2 #5, #6)
+and post-signing measurement tamper (RUNG3 #16). It needs this repo's `requirements.txt`, `pytest`
+and `cargo`, and exits 1 on any mismatch. The harnesses run against this research prototype (the
+Python sidecar and the `plugins/capsule-producer` crate), not the Mesh-LLM/capsules plugin on a live mesh.
+
 ## What this proves / what it does NOT prove
 
 **Proves — INTEGRITY.** `capsule_id` is a digest over every field of the
