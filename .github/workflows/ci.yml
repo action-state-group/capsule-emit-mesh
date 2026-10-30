@@ -249,5 +249,8 @@ jobs:
       - name: Offline verification CLI tests (self-contained, no external workspace)
         run: cargo test --locked --test verify_cli
 
+      - name: Red-team harnesses the four-attack runbook cites (RUNG2 #8, RUNG3 tee_measured)
+        run: cargo test --locked --test redteam_rung2_self_measured --test redteam_rung3_tee_measured
+
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
