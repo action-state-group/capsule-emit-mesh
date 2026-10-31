@@ -1,5 +1,10 @@
 # capsule-emit-mesh
 
+> **Archived (2026-10-31).** Read-only. The Mesh plugin is
+> https://github.com/Mesh-LLM/capsules-plugin. The S08 liar demo scripts that
+> used to run from here live in action-state-group/company-internal-all under
+> `devcon8/s08-liar/`.
+
 > **Frozen: research + test harness. The Mesh-LLM plugin now lives at
 > https://github.com/Mesh-LLM/capsules**
 >
