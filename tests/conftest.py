@@ -110,3 +110,26 @@ def _no_writes_under_repo_tree(request):
             + "\n  ".join(changed),
             pytrace=False,
         )
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_real_witness_traffic(monkeypatch):
+    """Witnessing is on by default (issue #238), so a test config that omits
+    `ts_urls` would register with the PRODUCTION witness. Fail loudly instead;
+    a test that wants registration monkeypatches `checkpointing.register_checkpoint`
+    itself (which overrides this), one may use a loopback stub witness, and one that
+    wants none sets `ts_urls = []`."""
+    import checkpointing
+    from urllib.parse import urlparse
+
+    real = checkpointing.register_checkpoint
+
+    def _guarded(checkpoint_cose, ts_url, **kw):
+        if urlparse(ts_url).hostname not in ("127.0.0.1", "localhost", "::1"):
+            raise AssertionError(f"test attempted a real witness registration with {ts_url}")
+        return real(checkpoint_cose, ts_url, **kw)
+
+    monkeypatch.setattr(checkpointing, "register_checkpoint", _guarded)

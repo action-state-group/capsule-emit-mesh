@@ -98,12 +98,13 @@ fi
 # Anchoring: on by default (checkpoint-by-default), but overridable. WITNESS=off
 # keeps everything local (self-checkpointed, Layer 2, no network).
 if [[ "$WITNESS" == "off" ]]; then
+  ARGS+=(--no-witness)
   echo "run_node.sh: WITNESS=off -- self-checkpointed only (no witness registration)."
 elif [[ -n "${TS_URL:-}" ]]; then
   ARGS+=(--ts-url "$TS_URL")
-else
-  ARGS+=(--witness)
 fi
+# (no flag needed otherwise: checkpoint_daemon.py anchors to the default
+# neutral witness unless told --no-witness)
 
 echo "run_node.sh: checkpoint-by-default is ON"
 echo "  ledger-dir : $LEDGER_DIR"

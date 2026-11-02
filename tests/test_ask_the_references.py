@@ -133,7 +133,7 @@ def _node_state(tmp_path, name: str, *, ts_url: str | None = None):
         json.dumps({"model_id": "m/1", "source_model": {"sha256": "e" * 64, "canonical_ref": "m/1"}, "skippy_abi_version": "1"})
     )
     checkpoint_config_path = tmp_path / f"{name}-checkpoint.toml"
-    ts_urls = f'ts_urls = ["{ts_url}"]\n' if ts_url else ""
+    ts_urls = f'ts_urls = ["{ts_url}"]\n' if ts_url else "ts_urls = []\n"
     checkpoint_config_path.write_text(f'[checkpoint]\nlog_id = "{name}"\ncadence_entries = 1\n{ts_urls}')
     return cs.default_state(
         ledger_dir=tmp_path / f"{name}-ledger",

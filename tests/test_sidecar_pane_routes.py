@@ -97,7 +97,7 @@ def _make_sidecar(cs, stub_upstream, *, pane_dashboard_origin):
         json.dumps({"model_id": "m/1", "source_model": {"sha256": "e" * 64, "canonical_ref": "m/1"}, "skippy_abi_version": "1"})
     )
     checkpoint_config_path = d / "checkpoint.toml"
-    checkpoint_config_path.write_text('[checkpoint]\nlog_id = "test-node"\ncadence_entries = 1\n')
+    checkpoint_config_path.write_text('[checkpoint]\nlog_id = "test-node"\ncadence_entries = 1\nts_urls = []\n')
     state = cs.default_state(
         ledger_dir=d / "ledger",
         manifest_path=manifest_path,

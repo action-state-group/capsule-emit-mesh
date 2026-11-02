@@ -24,7 +24,7 @@ A checkpoint is a signed commitment to the *entire* capsule ledger up to a size:
   **consistency proof** binding it to the previous checkpoint. The chain of
   consistency proofs is what makes history-editing detectable: a node cannot
   quietly swap in a different past without breaking the proof.
-- **Witness receipt (Layer 3, opt-in).** The checkpoint is POSTed to the neutral
+- **Witness receipt (Layer 3, on by default).** The checkpoint is POSTed to the neutral
   witness, which independently verifies the COSE envelope and returns a COSE
   **receipt** proving the witness saw this checkpoint at some point in its own
   append-only log. That receipt is what lets a third party trust the node's
@@ -98,7 +98,7 @@ Common overrides (all env vars):
 # A different node home:
 NODE_HOME=/Users/stevenmih/asg-mesh ./run_node.sh
 
-# Local-only (self-checkpointed, no network):
+# Turn the witness off: local-only (self-checkpointed, no network):
 WITNESS=off ./run_node.sh
 
 # A tighter clock:
@@ -114,21 +114,27 @@ python3 checkpoint_daemon.py \
     --keys-dir   ~/asg-mesh/data/ledger/keys \
     --log-id     "$(hostname -s)" \
     --interval 300 \
-    --witness              # omit to stay self-checkpointed, no network
+    --no-witness           # add to stay self-checkpointed, no network (witness is on by default)
 
 # One-shot (cron / systemd-timer style): commit any backlog and exit.
-python3 checkpoint_daemon.py --ledger-dir ... --keys-dir ... --once --witness
+python3 checkpoint_daemon.py --ledger-dir ... --keys-dir ... --once
 ```
 
 A `--checkpoint-config path.toml` (see `checkpoint.example.toml`) supplies the
-base cadence/witness policy; `--interval` and `--ts-url`/`--witness` flags
-override it per invocation.
+base cadence/witness policy; `--interval`, `--ts-url` (replaces the witness
+list) and `--no-witness` override it per invocation. A `[checkpoint]` table
+that omits `ts_urls` anchors to the default witness; `ts_urls = []` turns it
+off. The same holds for the sidecar's `--checkpoint-config` and
+`--plugin-checkpoint-config`.
 
 The witness register endpoint is `POST {ts_url}/checkpoints` (COSE-wire only);
 the default neutral witness is
 `https://witness.agentactioncapsule.org`
-(`cll.checkpoint.emit.DEFAULT_TS_URL`). Registration is **opt-in, always**:
-no `--witness`/`--ts-url` means self-checkpointed, no network.
+(`cll.checkpoint.emit.DEFAULT_TS_URL`). Registration is **on by default**
+unless the operator turns it off (`--no-witness`, `WITNESS=off`, or
+`ts_urls = []`); an off node is self-checkpointed and sends no network
+traffic. The privacy throttle above is unchanged: a quiet node still sends
+nothing.
 
 ## Path 1 (native Rust plugin) nodes: the cadence lives in-process
 
@@ -146,16 +152,18 @@ Python checkpointer to also supervise". See
 `docs/DESIGN-fold-sidecar-into-plugin.md` for the fold's full design and
 invariance guarantees.
 
-**On by default (local only), mutually exclusive with `checkpoint_daemon.py`
+**On by default, mutually exclusive with `checkpoint_daemon.py`
 on the same `ledger_dir`.** The in-process cadence task runs automatically on
 plugin startup; set `ADMISSION_POLICY_CHECKPOINT_CADENCE=off` to opt a node
 OUT (e.g. because that node still runs `checkpoint_daemon.py` against the
 same ledger — see the race note below).
 `ADMISSION_POLICY_CHECKPOINT_CADENCE_SECONDS` / `_CADENCE_ENTRIES` /
-`_WITNESS_URLS` override the defaults (300s / 100 entries / no witnesses —
-same defaults `checkpoint_daemon.py` uses). Witnessing stays **opt-in**
-regardless of the cadence default: `_WITNESS_URLS` empty/unset means
-self-checkpointed only, no network, even with the cadence task running.
+`_WITNESS_URLS` override the defaults (300s / 100 entries / the default
+neutral witness — same defaults `checkpoint_daemon.py` uses). Witnessing is
+**on by default** like the daemon: `_WITNESS_URLS` unset anchors to
+`https://witness.agentactioncapsule.org`; set it to an empty string to stay
+self-checkpointed (no network), or to a comma-separated list to replace the
+default.
 **Never run both `checkpoint_daemon.py` and the in-process cadence against
 the same `ledger_dir` at once** — each appends to the same
 `checkpoints.jsonl` and neither knows about the other, so a double-run races
@@ -175,4 +183,4 @@ keeps using `checkpoint_daemon.py` regardless.
 | Sidecar hooks (per-capsule MMR fold) | `capsule_sidecar.py` (`--checkpoint-config`, `--plugin-checkpoint-config`, `--plugin-ledger-dir`) |
 | Config schema | `checkpoint.example.toml` |
 | Tests | `tests/test_checkpoint_daemon.py`, `tests/test_checkpointing.py` |
-| **Path 1 native Rust cadence (on by default, local only, see above)** | capsule-emit's `capsule_emit::checkpoint::CheckpointState` (crates.io), `plugins/admission-policy/src/checkpoint_cadence.rs` (the tokio task + `ADMISSION_POLICY_CHECKPOINT_CADENCE*` env vars) |
+| **Path 1 native Rust cadence (on by default, see above)** | capsule-emit's `capsule_emit::checkpoint::CheckpointState` (crates.io), `plugins/admission-policy/src/checkpoint_cadence.rs` (the tokio task + `ADMISSION_POLICY_CHECKPOINT_CADENCE*` env vars) |

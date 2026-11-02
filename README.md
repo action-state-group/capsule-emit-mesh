@@ -517,10 +517,10 @@ verified."
 natural-language narrative — see "Honest limitations": that phrasing is a
 *finding* from running against a real 7B model, not a stylistic choice.
 
-## Checkpointing: local MMR + signed checkpoints (Layers 1-3, opt-in)
+## Checkpointing: local MMR + signed checkpoints (Layers 1-3)
 
 Layer 0 (a signed capsule per exchange) is always on. This section adds strictly
-optional, strictly stronger layers, consuming `capsule_emit.checkpoint` as a
+stronger layers (Layers 1-2 once a checkpoint config exists; Layer 3, the witness, on by default), consuming `capsule_emit.checkpoint` as a
 library — nothing here vendors or reimplements MMR/checkpoint logic:
 
 - **Layer 1** — a local, append-only Merkle Mountain Range (MMR) over this node's
@@ -532,7 +532,8 @@ library — nothing here vendors or reimplements MMR/checkpoint logic:
 - **Layer 3** — an independent **witness** (any conforming SCITT Transparency
   Service accepting the COSE-wire `kind="cll-checkpoint"` shape, e.g. the free
   public-good checkpoint-only tier at `witness.agentactioncapsule.org`) co-signs
-  the checkpoint. Opt-in, per URL, and **never on the serving path**: an
+  the checkpoint. **On by default** (the operator turns it off with `ts_urls = []`,
+  `--no-witness` or `WITNESS=off`), sent only when there is new activity, and **never on the serving path**: an
   unreachable witness leaves the checkpoint locally-committed (self-checkpointed),
   never blocks or fails the request.
 
@@ -1043,7 +1044,7 @@ mock_mesh_node.py               schema-accurate /v1 stand-in (mock-node smoke-te
 run_demo.py                     mock-node smoke test + verification pass
 run_live_demo.sh                real mesh-llm + real goose live demo end to end
 
-# checkpointing (Layers 1-3, opt-in)
+# checkpointing (Layers 1-3)
 checkpointing.py                LogSource adapter, cadence + reconnect, witness-state rendering
 checkpoint.example.toml         example [checkpoint] config
 run_checkpoint_demo.py          synthetic checkpoint demo (exchanges -> MMR -> checkpoint -> registry -> verify)

@@ -406,6 +406,22 @@ def test_load_checkpoint_config_parses_toml_table(tmp_path):
     cfg, log_id = result
     assert log_id == "node-a"
     assert cfg.cadence_entries == 5
+    # Witnessing is on by default: no ts_urls key -> the default neutral witness.
+    assert cfg.ts_urls == [checkpointing.DEFAULT_TS_URL]
+
+
+def test_load_checkpoint_config_empty_ts_urls_is_the_off_switch(tmp_path):
+    config_path = tmp_path / "checkpoint.toml"
+    config_path.write_text('[checkpoint]\nts_urls = []\n')
+    cfg, _ = checkpointing.load_checkpoint_config(config_path)
+    assert cfg.ts_urls == []
+
+
+def test_load_checkpoint_config_explicit_ts_urls_replace_the_default(tmp_path):
+    config_path = tmp_path / "checkpoint.toml"
+    config_path.write_text('[checkpoint]\nts_urls = ["https://mine.example"]\n')
+    cfg, _ = checkpointing.load_checkpoint_config(config_path)
+    assert cfg.ts_urls == ["https://mine.example"]
 
 
 def test_load_checkpoint_config_returns_none_without_checkpoint_table(tmp_path):

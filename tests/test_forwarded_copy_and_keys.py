@@ -219,6 +219,7 @@ def test_plugin_ledger_dir_wires_a_second_read_only_checkpoint_state():
         'log_id = "shared-config-log-id"\n'
         "cadence_entries = 100\n"
         "max_lag_entries = 200\n"
+        "ts_urls = []\n"
     )
 
     state = cs.NodeState(

@@ -65,7 +65,7 @@ choose to publish it.
 
 ## Layer 3 — the witness (the only thing that leaves, and it carries no content)
 
-**Opt-in, per witness URL:** the node `register_checkpoint()`s — it `POST`s the
+**On by default, per witness URL (the operator can turn it off):** the node `register_checkpoint()`s — it `POST`s the
 **checkpoint** (not the records) to a neutral **SCITT Transparency Service** (a log it
 does **not** operate; the default is `witness.agentactioncapsule.org`, but always *an*
 instance, never the only one). The witness returns a **COSE Receipt** that anyone can
@@ -114,7 +114,7 @@ is the typed glue between "what the payload is" and "the transparency receipt ov
 | Thing | Where it lives | Who can see it |
 |---|---|---|
 | **Raw capsules** — prompts, responses, model/quant/hardware, timing, the full ledger + MMR | **on the serving node's disk** | only the operator — *unless they choose to disclose* |
-| **Checkpoint commitments** — peak hashes + signature | published to the witness (opt-in) | anyone — but they're **hashes, no content** |
+| **Checkpoint commitments** — peak hashes + signature | published to the witness (on by default) | anyone — but they're **hashes, no content** |
 | **A disclosed bundle** — selected capsules + proofs, per-field sealed-vs-shown | handed to a counterparty **deliberately** | only whom you give it to; verified **offline** |
 | **Existence + consistency** of your checkpoints | the public witness | anyone — proves your history is append-only, **reveals nothing about it** |
 

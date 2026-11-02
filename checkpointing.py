@@ -10,10 +10,14 @@ install and a strictly stronger claim:
     LAYER 2  a periodic, signed COSE-wire checkpoint  -- THIS MODULE, opt-in
              (`kind="cll-checkpoint"`, peak-list commitment,
              [cll-checkpoint-cose-wire]/[cll-commitment-interop])
-    LAYER 3  an independent witness co-signs it       -- register_checkpoint(), opt-in per URL,
-                                                          default target witness.agentactioncapsule.org
+    LAYER 3  an independent witness co-signs it       -- register_checkpoint(), ON by default
+                                                          (witness.agentactioncapsule.org) once a
+                                                          checkpoint config exists; the operator turns
+                                                          it off with `ts_urls = []`
 
-Nothing here is on by default. A node that never sets `checkpoint_config_path`
+Layers 1-2 run only once a checkpoint config is supplied; Layer 3 is then on by
+default and anchors only when there is new activity (a quiet node sends no
+witness traffic). A node that never sets `checkpoint_config_path`
 on its `NodeState` pays zero cost: `checkpointing` is only imported by
 `capsule_sidecar.py` at module load (cheap -- no MMR is built, no file is
 touched) until a `[checkpoint]` config is actually supplied, matching
@@ -187,7 +191,12 @@ def load_checkpoint_config(config_path: Path) -> tuple[CheckpointConfig, str | N
     `capsule_emit.checkpoint.emit.EXAMPLE_CONFIG_TOML`, plus an optional
     mesh-specific `log_id` key) into a `CheckpointConfig` + `log_id`.
     Returns `None` if the file has no `[checkpoint]` table -- checkpointing
-    stays off, Layer 0 only."""
+    stays off, Layer 0 only.
+
+    Witnessing is ON by default: a `[checkpoint]` table that omits `ts_urls`
+    anchors to `DEFAULT_TS_URL`. `ts_urls = []` is the operator's explicit off
+    switch (self-checkpointed, no witness traffic); a non-empty list replaces
+    the default."""
     try:
         import tomllib  # Python 3.11+
     except ModuleNotFoundError:
@@ -199,6 +208,8 @@ def load_checkpoint_config(config_path: Path) -> tuple[CheckpointConfig, str | N
     if section is None:
         return None
     cfg = CheckpointConfig.from_dict(section)
+    if "ts_urls" not in section:
+        cfg.ts_urls = [DEFAULT_TS_URL]
     return cfg, section.get("log_id")
 
 

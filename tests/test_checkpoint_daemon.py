@@ -20,6 +20,7 @@ from capsule_emit.checkpoint import CheckpointConfig, CheckpointError, WitnessRe
 from checkpointing import CheckpointState, Ed25519Signer, JsonlLogSource
 
 import checkpoint_daemon
+from cll.checkpoint.emit import DEFAULT_TS_URL
 from checkpoint_daemon import DEFAULT_INTERVAL_SECONDS, build_state, run_daemon
 
 
@@ -413,14 +414,78 @@ def test_retry_pending_witnesses_without_any_new_activity(tmp_path, monkeypatch)
 # -- build_state: mesh defaults + config/flag override -------------------------
 
 
-def test_build_state_defaults_to_300s_and_no_witness(tmp_path):
+def test_build_state_defaults_to_300s_and_the_default_witness(tmp_path):
     state = build_state(
         ledger_dir=tmp_path, keys_dir=tmp_path, log_id="node-x",
         ts_urls=[], interval_seconds=DEFAULT_INTERVAL_SECONDS,
     )
     assert state.cfg.cadence_seconds == 300
-    assert state.cfg.ts_urls == []  # anchoring opt-in
+    assert state.cfg.ts_urls == [DEFAULT_TS_URL]  # anchoring on by default
     assert state.log_id == "node-x"
+
+
+def test_build_state_no_witness_stays_self_checkpointed(tmp_path):
+    state = build_state(
+        ledger_dir=tmp_path, keys_dir=tmp_path, log_id="node-x",
+        ts_urls=[], interval_seconds=DEFAULT_INTERVAL_SECONDS, witness=False,
+    )
+    assert state.cfg.ts_urls == []
+
+
+def test_build_state_config_without_ts_urls_gets_the_default_and_empty_list_is_off(tmp_path):
+    on = tmp_path / "on.toml"
+    on.write_text('[checkpoint]\ncadence_seconds = 900\n')
+    off = tmp_path / "off.toml"
+    off.write_text('[checkpoint]\ncadence_seconds = 900\nts_urls = []\n')
+    kw = dict(ledger_dir=tmp_path, keys_dir=tmp_path, log_id="x", ts_urls=[], interval_seconds=300)
+    assert build_state(**kw, checkpoint_config_path=on).cfg.ts_urls == [DEFAULT_TS_URL]
+    assert build_state(**kw, checkpoint_config_path=off).cfg.ts_urls == []
+
+
+def _daemon_default_state(tmp_path, *, no_witness: bool):
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    (ledger / "capsules.jsonl").write_text("".join(json.dumps(_fake_capsule(i)) + "\n" for i in range(3)))
+    argv = ["--ledger-dir", str(ledger), "--keys-dir", str(keys), "--once"]
+    if no_witness:
+        argv.append("--no-witness")
+    return argv, ledger
+
+
+def test_daemon_with_no_flags_writes_a_witness_receipt_beside_the_first_checkpoint(tmp_path, fake_witness):
+    """Issue #238 acceptance: no witness flag + activity -> the first checkpoint
+    carries a witness receipt, registered with DEFAULT_TS_URL."""
+    argv, ledger = _daemon_default_state(tmp_path, no_witness=False)
+    assert checkpoint_daemon.main(argv) == 0
+    assert [url for _, url in fake_witness] == [DEFAULT_TS_URL]
+    first = json.loads((ledger / "checkpoints.jsonl").read_text().splitlines()[0])
+    assert first["witnesses"] and first["witnesses"][0]["ts_url"] == DEFAULT_TS_URL
+
+
+def test_daemon_no_witness_sends_no_traffic_and_stays_self_checkpointed(tmp_path, fake_witness):
+    argv, ledger = _daemon_default_state(tmp_path, no_witness=True)
+    assert checkpoint_daemon.main(argv) == 0
+    assert fake_witness == []
+    first = json.loads((ledger / "checkpoints.jsonl").read_text().splitlines()[0])
+    assert not first.get("witnesses")
+
+
+def test_daemon_with_default_witness_and_no_activity_sends_nothing(tmp_path, fake_witness):
+    """The privacy throttle survives the default flip: a quiet node never registers."""
+    ledger = tmp_path / "ledger"
+    ledger.mkdir()
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    (ledger / "capsules.jsonl").write_text("")
+    assert checkpoint_daemon.main(["--ledger-dir", str(ledger), "--keys-dir", str(keys), "--once"]) == 0
+    assert fake_witness == []
+
+
+def test_no_witness_conflicts_with_ts_url(tmp_path):
+    with pytest.raises(SystemExit):
+        checkpoint_daemon.main(["--ledger-dir", str(tmp_path), "--keys-dir", str(tmp_path), "--no-witness", "--witness"])
 
 
 def test_build_state_flags_override_config(tmp_path):

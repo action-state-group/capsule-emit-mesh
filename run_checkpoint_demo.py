@@ -117,7 +117,7 @@ def send_requests(state: NodeState, prompts: list[str], seed_offset: int) -> Non
 
 def write_checkpoint_config(ts_urls: list[str]) -> Path:
     cfg_path = LEDGER_DIR / "checkpoint-demo-config.toml"
-    ts_line = f'ts_urls = {json.dumps(ts_urls)}' if ts_urls else "# ts_urls left empty -- self-checkpointed only"
+    ts_line = f'ts_urls = {json.dumps(ts_urls)}' if ts_urls else "ts_urls = []  # self-checkpointed only (witnessing is on when ts_urls is omitted)"
     cfg_path.write_text(
         "[checkpoint]\n"
         'log_id = "mesh-checkpoint-demo-log"\n'

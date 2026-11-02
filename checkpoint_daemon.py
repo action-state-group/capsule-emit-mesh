@@ -52,13 +52,14 @@ written to the SIBLING `checkpoints.jsonl`, never back into `capsules.jsonl`
 Usage (see run_node.sh for the copy-pasteable node bring-up):
     python3 checkpoint_daemon.py \
         --ledger-dir <dir> --keys-dir <dir> --log-id <id> \
-        [--interval 300] [--witness | --ts-url URL ...] \
+        [--interval 300] [--no-witness | --ts-url URL ...] \
         [--checkpoint-config path.toml] [--once]
 
-Anchoring is OPT-IN, always (this repo's posture): omit --witness/--ts-url to
-stay self-checkpointed (Layer 2, no network). Pass --witness to also register
+Anchoring is ON by default: with no flags the daemon registers each checkpoint
 with the default neutral witness (cll.checkpoint.emit.DEFAULT_TS_URL,
-witness.agentactioncapsule.org).
+witness.agentactioncapsule.org), and only when there is new activity. Pass
+--no-witness (or `ts_urls = []` in the --checkpoint-config) to stay
+self-checkpointed (Layer 2, no network). --ts-url URL replaces the default.
 """
 from __future__ import annotations
 
@@ -105,6 +106,7 @@ def build_state(
     ts_urls: list[str],
     interval_seconds: int,
     checkpoint_config_path: Path | None = None,
+    witness: bool = True,
 ) -> CheckpointState:
     """Load a `CheckpointState` over `<ledger-dir>/capsules.jsonl`.
 
@@ -112,7 +114,8 @@ def build_state(
     (cadence_entries / cadence_seconds / max_lag_entries / ts_urls); explicit
     `--interval` and `--ts-url`/`--witness` flags then override it, so the
     file is the deployment default and the flags are the per-invocation knob.
-    With no config file, the mesh defaults apply (300s clock, opt-in anchor).
+    With no config file, the mesh defaults apply (300s clock, anchor to
+    DEFAULT_TS_URL). `witness=False` (--no-witness) clears every witness URL.
     """
     if checkpoint_config_path is not None:
         loaded = load_checkpoint_config(checkpoint_config_path)
@@ -126,7 +129,7 @@ def build_state(
             log_id = log_id_override
     else:
         cfg = CheckpointConfig(
-            ts_urls=[],
+            ts_urls=[DEFAULT_TS_URL],
             cadence_seconds=DEFAULT_INTERVAL_SECONDS,
         )
 
@@ -135,9 +138,11 @@ def build_state(
     if interval_seconds is not None:
         cfg.cadence_seconds = interval_seconds
     if ts_urls:
-        # Explicit --ts-url/--witness REPLACES the config's list (opt-in, and
-        # the operator asked for exactly these).
+        # Explicit --ts-url REPLACES the config's list (the operator asked
+        # for exactly these).
         cfg.ts_urls = list(ts_urls)
+    if not witness:
+        cfg.ts_urls = []
 
     log_source = open_log_source_for_checkpointing(ledger_dir, log_id=log_id)
     signer = Ed25519Signer(keys_dir / "node-key.pem")
@@ -239,8 +244,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--keys-dir", required=True, type=Path, help="dir containing node-key.pem (the key that signed the capsules)")
     parser.add_argument("--log-id", default=None, help="stable id for this log; falls back to the config's log_id, then to 'mesh-node'")
     parser.add_argument("--interval", type=int, default=None, help=f"witness-anchor clock, seconds (default {DEFAULT_INTERVAL_SECONDS}; the config's cadence_seconds if a --checkpoint-config is given)")
-    parser.add_argument("--ts-url", action="append", default=[], help="register with this witness URL (repeatable); omit to stay self-checkpointed, no network")
-    parser.add_argument("--witness", action="store_true", help=f"shorthand for --ts-url {DEFAULT_TS_URL}")
+    parser.add_argument("--ts-url", action="append", default=[], help=f"register with this witness URL (repeatable), replacing the default {DEFAULT_TS_URL}")
+    parser.add_argument("--witness", action="store_true", help=f"shorthand for --ts-url {DEFAULT_TS_URL} (the default; kept for existing scripts)")
+    parser.add_argument("--no-witness", action="store_true", help="turn the default witness off: stay self-checkpointed, no network")
     parser.add_argument("--checkpoint-config", type=Path, default=None, help="a TOML file with a [checkpoint] table (checkpoint.example.toml) supplying base cadence/ts_urls policy")
     parser.add_argument("--once", action="store_true", help="run a single reconnect checkpoint and exit (no background loop) -- for cron/systemd-timer style invocation")
     parser.add_argument(
@@ -259,6 +265,8 @@ def main(argv: list[str] | None = None) -> int:
         "first once exceeded. Omit for no size cap (age-based --disclosure-ttl still applies).",
     )
     args = parser.parse_args(argv)
+    if args.no_witness and (args.ts_url or args.witness):
+        parser.error("--no-witness conflicts with --witness/--ts-url")
 
     ts_urls = list(args.ts_url)
     if args.witness and DEFAULT_TS_URL not in ts_urls:
@@ -274,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
         ts_urls=ts_urls,
         interval_seconds=interval,
         checkpoint_config_path=args.checkpoint_config,
+        witness=not args.no_witness,
     )
 
     disclosures_dir = args.ledger_dir / "disclosures"

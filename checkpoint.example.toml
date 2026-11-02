@@ -3,9 +3,9 @@
 # Copy this file, edit as needed, and pass its path via --checkpoint-config.
 # Omitting --checkpoint-config entirely keeps a node at Layer 0 (a signed
 # capsule per exchange, no local log) -- this file is what opts a node into
-# Layer 1 (a local, append-only MMR over its own capsule ledger) and,
-# if ts_urls is set, Layer 2/3 (a periodic signed checkpoint, independently
-# witnessed by the named Transparency Service).
+# Layer 1 (a local, append-only MMR over its own capsule ledger) and
+# Layer 2/3 (a periodic signed checkpoint, independently witnessed by the
+# default or named Transparency Service unless ts_urls = []).
 #
 # Shape matches capsule_emit.checkpoint.emit.EXAMPLE_CONFIG_TOML, plus one
 # mesh-specific key (log_id) capsule_emit.checkpoint itself doesn't need to
@@ -25,15 +25,16 @@ cadence_entries = 20
 # describe_witness_state() in checkpointing.py.
 max_lag_entries = 40
 
-# EMPTY BY DEFAULT: registration is opt-in, always. Uncomment to submit each
-# COSE-wire checkpoint (kind="cll-checkpoint") to the free public-good,
-# checkpoint-only witness tier -- any conforming SCITT Transparency Service
-# accepting the [cll-checkpoint-cose-wire] shape may be substituted
-# (cll.checkpoint.emit.DEFAULT_TS_URL is this same
-# witness.agentactioncapsule.org tier). A checkpoint emitted with ts_urls = []
-# is Layer 2 only: locally committed and signed, but NOT independently
-# witnessed (see README "Witness grading").
+# ON BY DEFAULT: omit ts_urls and each COSE-wire checkpoint (kind="cll-checkpoint")
+# is submitted to the free public-good, checkpoint-only witness tier
+# (cll.checkpoint.emit.DEFAULT_TS_URL, witness.agentactioncapsule.org), only
+# when there is new activity. Set ts_urls to replace it with any conforming
+# SCITT Transparency Service accepting the [cll-checkpoint-cose-wire] shape.
+# ts_urls = [] is the OFF switch: Layer 2 only, locally committed and signed
+# but NOT independently witnessed, and no witness traffic (see README
+# "Witness grading").
 # ts_urls = ["https://witness.agentactioncapsule.org"]
+# ts_urls = []
 
 # This same [checkpoint] table doubles as the Rust plugin ledger's config when
 # capsule_sidecar.py's --plugin-checkpoint-config is omitted (only

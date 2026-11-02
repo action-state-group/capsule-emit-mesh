@@ -92,7 +92,7 @@ def _make_sidecar(cs, stub_upstream, *, pane_dashboard_origin: str):
     )
     checkpoint_config_path = d / "checkpoint.toml"
     checkpoint_config_path.write_text(
-        '[checkpoint]\nlog_id = "test-node"\ncadence_entries = 1\n'
+        '[checkpoint]\nlog_id = "test-node"\ncadence_entries = 1\nts_urls = []\n'
     )
     state = cs.default_state(
         ledger_dir=d / "ledger",

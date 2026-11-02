@@ -2539,7 +2539,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--checkpoint-config",
-        help="path to a TOML file with a [checkpoint] table (Layers 1-2: local MMR + optional witness "
+        help="path to a TOML file with a [checkpoint] table (Layers 1-2: local MMR + the default witness, off with ts_urls = [] "
         "registration); omit to stay at Layer 0 (a signed capsule per exchange, no local log). See "
         "checkpoint.example.toml.",
     )

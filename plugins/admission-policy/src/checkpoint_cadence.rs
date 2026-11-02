@@ -6,9 +6,12 @@
 //! superseding `[mesh-plugin-checkpoint-cadence]`'s off-by-default launch;
 //! `docs/DESIGN-fold-sidecar-into-plugin.md`).** The cadence task now runs
 //! unless the operator opts OUT by setting [`ENV_ENABLE`] to `"off"` --
-//! "on by default" is local checkpointing only: [`ENV_WITNESS_URLS`] stays
-//! empty/unset by default, so no network call ever happens unless the
-//! operator also sets a witness URL. `checkpoint_daemon.py` keeps
+//! "on by default" now includes the witness (issue #238): with
+//! [`ENV_WITNESS_URLS`] unset, checkpoints register with
+//! [`DEFAULT_WITNESS_URL`], and only when there is new activity (a quiet node
+//! makes no witness traffic). Setting [`ENV_WITNESS_URLS`] to an empty string
+//! is the operator's off switch (self-checkpointed, no network); a
+//! comma-separated list replaces the default. `checkpoint_daemon.py` keeps
 //! checkpointing a node's ledger on the same files until the operator opts
 //! OUT of the in-process cadence. The two must NEVER run against the same
 //! `ledger_dir` at once -- both would append lines to the same
@@ -46,11 +49,28 @@ const ENV_INTERVAL_SECONDS: &str = "ADMISSION_POLICY_CHECKPOINT_CADENCE_SECONDS"
 /// Entry-count cadence override. Defaults to 100 (upstream `capsule_emit`'s
 /// own default).
 const ENV_CADENCE_ENTRIES: &str = "ADMISSION_POLICY_CHECKPOINT_CADENCE_ENTRIES";
-/// Comma-separated witness URLs to register checkpoints with. Anchoring is
-/// OPT-IN, always (this repo's posture) -- empty/unset means
-/// self-checkpointed only, no network, matching `checkpoint_daemon.py`'s
-/// `--ts-url`/`--witness` flags.
+/// Comma-separated witness URLs to register checkpoints with. Unset means
+/// [`DEFAULT_WITNESS_URL`] (witnessing is on by default, matching
+/// `checkpoint_daemon.py`); set but empty means self-checkpointed only, no
+/// network (the operator's off switch); a list replaces the default.
 const ENV_WITNESS_URLS: &str = "ADMISSION_POLICY_CHECKPOINT_WITNESS_URLS";
+/// The default neutral witness, the same URL as
+/// `cll.checkpoint.emit.DEFAULT_TS_URL` in the Python daemon.
+pub const DEFAULT_WITNESS_URL: &str = "https://witness.agentactioncapsule.org";
+
+/// Pure decision logic behind the witness env var, taking the raw value (or
+/// `None` when unset) so it is unit-testable without mutating process env.
+fn witness_urls_for(raw: Option<&str>) -> Vec<String> {
+    match raw {
+        None => vec![DEFAULT_WITNESS_URL.to_string()],
+        Some(v) => v
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+    }
+}
 
 pub fn is_enabled() -> bool {
     is_enabled_for(std::env::var(ENV_ENABLE).ok().as_deref())
@@ -82,14 +102,7 @@ fn config_from_env() -> CheckpointCadenceConfig {
             cfg.cadence_entries = n;
         }
     }
-    if let Ok(v) = std::env::var(ENV_WITNESS_URLS) {
-        cfg.witness_urls = v
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .collect();
-    }
+    cfg.witness_urls = witness_urls_for(std::env::var(ENV_WITNESS_URLS).ok().as_deref());
     cfg
 }
 
@@ -239,6 +252,31 @@ mod tests {
     #[test]
     fn on_by_default_when_unset() {
         assert!(is_enabled_for(None));
+    }
+
+    #[test]
+    fn witness_defaults_to_the_neutral_witness_when_unset() {
+        assert_eq!(
+            witness_urls_for(None),
+            vec![DEFAULT_WITNESS_URL.to_string()]
+        );
+    }
+
+    #[test]
+    fn empty_witness_env_is_the_off_switch() {
+        assert!(witness_urls_for(Some("")).is_empty());
+        assert!(witness_urls_for(Some(" , ")).is_empty());
+    }
+
+    #[test]
+    fn explicit_witness_list_replaces_the_default() {
+        assert_eq!(
+            witness_urls_for(Some("https://a.example, https://b.example")),
+            vec![
+                "https://a.example".to_string(),
+                "https://b.example".to_string()
+            ]
+        );
     }
 
     #[test]
