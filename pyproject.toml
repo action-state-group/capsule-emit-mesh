@@ -30,12 +30,14 @@ dependencies = [
     # installs from requirements.txt, never builds this wheel) so it drifted
     # stale at 0.5.1 once before -- the exact broken version this sweep started
     # from -- keep it in lockstep with requirements.txt by hand.
-    # Floor 0.11 (matches requirements.txt; the release the test suite is
+    # Floor 0.12 (matches requirements.txt; the release the test suite is
     # verified against): every capsule here is built by
     # capsule_emit.builder.build_capsule, which ships from 0.11.0
     # (capsule-emit#332) and is agent-action-capsule's former emit(),
     # unchanged; AAC removes its copy in 0.10.0 (agent-action-capsule#281).
-    "capsule-emit>=0.11",
+    # The tests use capsule_emit.record_proof, 0.12.0's name for the removed
+    # capsule_emit.bundle.
+    "capsule-emit>=0.12",
     # scitt-cose and cryptography are NOT pulled by plain capsule-emit; capsule_sidecar.py imports
     # scitt_cose directly, and requester_commitment.py / node_ownership.py import cryptography directly.
     "scitt-cose>=0.2.2",

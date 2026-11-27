@@ -278,7 +278,7 @@ class TestPluginShapedLedger:
     """[mesh-e15-evidence-http-route] Step 0's finding: a ledger checkpointed
     READ-ONLY via ``checkpointing.CheckpointState`` into a sibling
     ``checkpoints.jsonl`` (the Rust-plugin shape) is invisible to
-    ``capsule_emit.bundle.bundle()``, which only reads in-band checkpoint
+    ``capsule_emit.record_proof.record_proof()``, which only reads in-band checkpoint
     stamps. The responder reads the sibling file itself."""
 
     def _plugin_shaped_ledger(self, tmp_path, stub_witness):
@@ -306,13 +306,13 @@ class TestPluginShapedLedger:
         return ledger_dir, key_path, [c["capsule_id"] for c in caps]
 
     def test_unbridged_ledger_path_would_never_see_the_checkpoint(self, tmp_path, stub_witness):
-        # Why the responder reads checkpoints.jsonl itself: bundle() against
-        # the raw ledger path never finds a checkpoint at all.
+        # Why the responder reads checkpoints.jsonl itself: record_proof()
+        # against the raw ledger path never finds a checkpoint at all.
         ledger_dir, _key_path, cids = self._plugin_shaped_ledger(tmp_path, stub_witness)
-        from capsule_emit.bundle import BundleError, bundle
+        from capsule_emit.record_proof import RecordProofError, record_proof
 
-        with pytest.raises(BundleError):
-            bundle(ledger_dir / "capsules.jsonl", cids[0])
+        with pytest.raises(RecordProofError):
+            record_proof(ledger_dir / "capsules.jsonl", cids[0])
 
     def test_plugin_shaped_request_over_http_returns_artifact(self, tmp_path, stub_witness):
         ledger_dir, key_path, cids = self._plugin_shaped_ledger(tmp_path, stub_witness)
